@@ -56,6 +56,10 @@ class TempBody(BaseModel):
     target_f: float
 
 
+class NudgeBody(BaseModel):
+    delta_f: float  # +/- adjustment for quick realtime control
+
+
 class ModeBody(BaseModel):
     mode: str  # auto | manual | view
 
@@ -63,6 +67,9 @@ class ModeBody(BaseModel):
 class WakeBody(BaseModel):
     wake_time: str  # HH:MM
     window_min: int | None = None
+    vibration_power: int | None = None   # 0=off, 20 low, 50 med, 100 high
+    thermal_level: int | None = None     # thermal nudge intensity for wake ramp
+    night_type: str | None = None        # work | recovery | normal | auto
 
 
 class NoteBody(BaseModel):
@@ -132,10 +139,14 @@ async def stream_status(request: Request, token: str | None = None):
 @app.get("/tonight")
 def tonight(repo=Depends(repo_dep), user: str = AuthDep):
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
     return {
         "mode": rt.get("mode", "auto"),
         "state": rt.get("state"),
         "target_temp_f": rt.get("target_temp_f"),
+        "power_on": extra.get("power_on", True),
+        "away": extra.get("away", False),
+        "wake": extra.get("wake"),
         "schedule": services.schedule_brief(repo),
         "recommendation": services.ml_recommendation(repo),
         "setpoint": services.ml_overview(repo)["setpoint"],
@@ -149,23 +160,38 @@ def _enqueue(repo, ctype, payload=None):
 
 @app.post("/control/{action}")
 def control(action: str, repo=Depends(repo_dep), user: str = AuthDep):
+    # Maps the dashboard's control buttons to daemon commands. Includes the
+    # Eight Sleep app's controls: power on/off the side, away mode, prime.
     mapping = {"start": "start", "pause": "pause", "resume": "resume",
-               "stop": "stop", "safe-default": "safe_default"}
+               "stop": "stop", "safe-default": "safe_default",
+               "power-on": "power_on", "power-off": "power_off",
+               "away-on": "away_on", "away-off": "away_off", "prime": "prime"}
     if action not in mapping:
         raise HTTPException(404, "unknown control action")
     return _enqueue(repo, mapping[action])
 
 
-@app.post("/tonight/temp")
-def set_temp(body: TempBody, repo=Depends(repo_dep), user: str = AuthDep):
+def _log_manual_temp(repo, target_f: float) -> None:
     # logged as a MANUAL override so the ML's revealed-preference learner picks it up.
     from sleepctl.models import ActionRecord
     from sleepctl.loop.cycle import ControlCycle
     night = ControlCycle.night_date(datetime.now())
     repo.log_action(ActionRecord(date=night, action_name="manual_override",
-                                 params={"target_f": body.target_f}, source="manual",
+                                 params={"target_f": target_f}, source="manual",
                                  applied=True))
+
+
+@app.post("/tonight/temp")
+def set_temp(body: TempBody, repo=Depends(repo_dep), user: str = AuthDep):
+    _log_manual_temp(repo, body.target_f)
     return _enqueue(repo, "set_temp", {"target_f": body.target_f})
+
+
+@app.post("/tonight/temp/nudge")
+def nudge_temp(body: NudgeBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Realtime +/- adjustment (the app's fine-tune buttons). The daemon applies
+    it against the current target on its next (sub-second) command poll."""
+    return _enqueue(repo, "nudge_temp", {"delta_f": body.delta_f})
 
 
 @app.post("/tonight/mode")
@@ -178,7 +204,22 @@ def set_mode(body: ModeBody, repo=Depends(repo_dep), user: str = AuthDep):
 @app.post("/tonight/wake")
 def set_wake(body: WakeBody, repo=Depends(repo_dep), user: str = AuthDep):
     return _enqueue(repo, "set_wake", {"wake_time": body.wake_time,
-                                       "window_min": body.window_min})
+                                       "window_min": body.window_min,
+                                       "vibration_power": body.vibration_power,
+                                       "thermal_level": body.thermal_level,
+                                       "night_type": body.night_type})
+
+
+@app.delete("/tonight/wake")
+def clear_wake(repo=Depends(repo_dep), user: str = AuthDep):
+    return _enqueue(repo, "clear_wake")
+
+
+@app.get("/tonight/plan")
+def tonight_plan(repo=Depends(repo_dep), user: str = AuthDep):
+    """Tonight's wake-aware, benchmark-driven sleep plan (mode, opportunity, cycles,
+    sleep debt, smart-wake window, thermal strategy, literature targets)."""
+    return services.sleep_plan(repo)
 
 
 # ------------------------------------------------------------------ data + notes
@@ -213,6 +254,27 @@ def interventions(limit: int = 50, repo=Depends(repo_dep), user: str = AuthDep):
              "state": i.state.value, "action": i.action.value,
              "magnitude_f": i.magnitude_f, "reason": i.reason}
             for i in repo.recent_interventions(limit)]
+
+
+# --------------------------------------------------------- wake-up exit survey
+class CheckInBody(BaseModel):
+    date: str | None = None
+    rested: float | None = None          # 0-10 how rested you feel
+    grogginess: float | None = None      # 0-10 sleep inertia / fogginess
+    daytime_energy: float | None = None  # 0-10 expected daytime performance
+    awakenings_felt: int | None = None   # how many wakes you remember
+    onset_feel: str | None = None        # quick | normal | slow
+    factors: dict | None = None          # caffeine/alcohol/late_work/illness/travel/stress
+
+
+@app.get("/checkin/status")
+def checkin_status(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.checkin_status(repo)
+
+
+@app.post("/checkin")
+def submit_checkin(body: CheckInBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.submit_checkin(repo, body.model_dump())
 
 
 def _ctx_dict(ctx):

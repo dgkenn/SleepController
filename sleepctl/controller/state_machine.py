@@ -35,6 +35,7 @@ class SleepStateMachine:
         now: datetime,
         wake_detected: bool,
         required_wake_time: Optional[datetime],
+        onset_confirmed: Optional[bool] = None,
     ) -> ControllerState:
         prev = self.state
         s = self.state
@@ -59,9 +60,16 @@ class SleepStateMachine:
                 self._asleep_streak += 1
             else:
                 self._asleep_streak = 0
+            # Prefer the accurate multi-signal + persistence onset detector when wired; fall
+            # back to the simple asleep-streak heuristic otherwise. This is what keeps lying
+            # in bed awake from being mistaken for sleep.
+            if onset_confirmed is None:
+                onset_ok = self._asleep_streak >= 2
+            else:
+                onset_ok = bool(onset_confirmed)
             if in_wake_window:
                 self.state, self.reason = ControllerState.WAKE_WINDOW, "entered wake window"
-            elif self._asleep_streak >= 2:
+            elif onset_ok:
                 self.state, self.reason = ControllerState.MAINTENANCE, "sleep onset confirmed"
 
         elif s is ControllerState.MAINTENANCE:

@@ -37,6 +37,7 @@ def recommend_action(
     repo,
     current: SetpointProfile,
     cfg: AppConfig,
+    mode=None,
 ) -> Optional[ActionScore]:
     rows = build_feature_rows(repo)
     usable = clean_rows(rows)  # exclude confounded nights from training
@@ -48,14 +49,15 @@ def recommend_action(
         return None  # no maintenance/deep signal yet
 
     ctx = _recent_context(rows)
-    scores = score_actions(model, current, ctx, cfg)
+    # Optimise for the situation-specific benchmark (work/short vs off-day/recovery).
+    scores = score_actions(model, current, ctx, cfg, mode=mode)
     chosen = select_action(scores, cfg)
     return chosen
 
 
-def recommend_setpoint(repo, current: SetpointProfile, cfg: AppConfig) -> Optional[SetpointProfile]:
+def recommend_setpoint(repo, current: SetpointProfile, cfg: AppConfig, mode=None) -> Optional[SetpointProfile]:
     """Convenience: return just the next profile (or None), for callers that want it."""
-    chosen = recommend_action(repo, current, cfg)
+    chosen = recommend_action(repo, current, cfg, mode=mode)
     if chosen is None or chosen.name == "no_change":
         return None
     return chosen.profile

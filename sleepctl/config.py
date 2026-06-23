@@ -64,6 +64,17 @@ class Tunables:
     induction_minutes_short: int = 15
     stale_data_seconds: int = 420  # ~7 min; refuse to act on data older than this
     wake_recovery_minutes: int = 20
+    # Accurate sleep-onset detection (asleep vs lying in bed awake). Onset is only declared
+    # after a *persistent* run of multi-signal sleep evidence; onset is back-dated to its
+    # start so latency reflects when you actually fell asleep.
+    onset_persistence_min: int = 10     # sustained sleep required (clinical persistent-sleep)
+    onset_min_signals: int = 3          # of: asleep stage, HR drop, stillness, slowed resp, HRV rise
+    onset_hr_drop_bpm: float = 3.0      # HR below awake-in-bed baseline
+    onset_still_movement: float = 0.15  # movement at/under this = stillness
+    onset_movement_unreliable: float = 0.45  # above this, BCG HR/HRV/RR are untrustworthy
+    onset_hrv_rise_frac: float = 0.08   # HRV this fraction above awake baseline
+    onset_min_stage_conf: float = 0.4   # ignore low-confidence stage labels
+    onset_resp_regular_cv: float = 0.06  # breathing-rate CV at/under this = regular (asleep)
     hot_sleeper_cool_bias_f: float = -1.5
     alarm_vibration_enabled: bool = False  # silence during sleep: no audio alarms
     # Smart wake: heat + gentle VIBRATION at the optimal (light-sleep) moment. Vibration is

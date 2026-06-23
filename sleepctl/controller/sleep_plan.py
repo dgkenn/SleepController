@@ -1,0 +1,268 @@
+"""Wake-aware nightly sleep plan.
+
+Turns the user's wake time + recent history into a concrete plan the whole stack reasons
+about: which night mode is in effect, how much sleep opportunity exists, how many NREM-REM
+cycles fit, the running sleep debt, the smart-wake window, and a phased thermal strategy.
+
+This is the bridge between the schedule and the controller objective:
+
+  NORMAL      -> NightObjective.OPTIMIZE
+  CONSTRAINED -> NightObjective.DAMAGE_CONTROL   (short work night)
+  RECOVERY    -> NightObjective.RECOVERY         (off day / repaying sleep debt)
+
+The plan is intentionally explainable — every field can be shown on the dashboard so the
+user sees *why* tonight is being run a particular way.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import List, Optional
+
+from sleepctl.benchmarks import (
+    CONSTRAINED_OPPORTUNITY_MIN,
+    CYCLE_LEN_MIN,
+    SLEEP_NEED_MIN,
+    NightMode,
+    Targets,
+    sleep_debt_min,
+    targets_for,
+)
+from sleepctl.models import NightObjective
+
+_OBJECTIVE_BY_MODE = {
+    NightMode.NORMAL: NightObjective.OPTIMIZE,
+    NightMode.CONSTRAINED: NightObjective.DAMAGE_CONTROL,
+    NightMode.RECOVERY: NightObjective.RECOVERY,
+}
+
+
+@dataclass
+class ThermalPhase:
+    name: str
+    intent: str        # cool_fast | deep_cool | maintain | rem_protect | wake_ramp
+    note: str
+
+
+@dataclass
+class SleepPlan:
+    mode: NightMode
+    objective: NightObjective
+    sleep_opportunity_min: Optional[float]   # time in bed (bedtime -> wake)
+    est_cycles: Optional[float]
+    sleep_debt_min: float
+    smart_wake_window_min: int
+    required_wake_time: Optional[datetime]
+    targets: Targets
+    # actual sleep accounting: cycles/quality are judged from when you FALL ASLEEP, not
+    # from when you get into bed (so lying awake doesn't inflate the plan).
+    est_onset_latency_min: float = 0.0
+    est_sleep_min: Optional[float] = None    # opportunity minus expected onset latency
+    thermal_phases: List[ThermalPhase] = field(default_factory=list)
+    # bias hints the controller / setpoint can apply (°F deltas; bounded downstream)
+    deep_bias_delta_f: float = 0.0
+    rem_warm_delta_f: float = 0.0
+    strategy: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "mode": self.mode.value,
+            "objective": self.objective.value,
+            "sleep_opportunity_min": self.sleep_opportunity_min,
+            "est_onset_latency_min": round(self.est_onset_latency_min, 1),
+            "est_sleep_min": round(self.est_sleep_min, 1) if self.est_sleep_min else None,
+            "est_cycles": self.est_cycles,
+            "sleep_debt_min": round(self.sleep_debt_min, 1),
+            "smart_wake_window_min": self.smart_wake_window_min,
+            "required_wake_time": self.required_wake_time.isoformat()
+            if self.required_wake_time else None,
+            "deep_bias_delta_f": self.deep_bias_delta_f,
+            "rem_warm_delta_f": self.rem_warm_delta_f,
+            "thermal_phases": [
+                {"name": p.name, "intent": p.intent, "note": p.note}
+                for p in self.thermal_phases
+            ],
+            "targets": {
+                "sol_max_min": self.targets.sol_max_min,
+                "efficiency_min": self.targets.efficiency_min,
+                "waso_max_min": self.targets.waso_max_min,
+                "awakenings_max": self.targets.awakenings_max,
+                "deep_pct_min": self.targets.deep_pct_min,
+                "deep_pct_ideal": self.targets.deep_pct_ideal,
+                "rem_pct_min": self.targets.rem_pct_min,
+                "rem_pct_ideal": self.targets.rem_pct_ideal,
+                "total_sleep_target_min": self.targets.total_sleep_target_min,
+                "rationale": self.targets.rationale,
+            },
+            "strategy": self.strategy,
+        }
+
+
+def decide_mode(
+    sleep_opportunity_min: Optional[float],
+    required_wake_time: Optional[datetime],
+    debt_min: float,
+    hint: Optional[str] = None,
+    debt_threshold_min: float = 120.0,
+) -> NightMode:
+    """Pick the night mode from an explicit hint, the wake schedule, and sleep debt."""
+    if hint:
+        h = hint.lower()
+        if h in ("recovery", "off", "off_day", "rest"):
+            return NightMode.RECOVERY
+        if h in ("work", "constrained", "short"):
+            if sleep_opportunity_min is not None and \
+                    sleep_opportunity_min < CONSTRAINED_OPPORTUNITY_MIN:
+                return NightMode.CONSTRAINED
+            return NightMode.NORMAL
+        if h in ("normal", "balanced"):
+            return NightMode.NORMAL
+        # "auto" falls through to inference
+
+    # Inference: no alarm + meaningful debt -> recovery; short opportunity -> constrained.
+    if required_wake_time is None:
+        return NightMode.RECOVERY if debt_min >= debt_threshold_min else NightMode.NORMAL
+    if sleep_opportunity_min is not None and \
+            sleep_opportunity_min < CONSTRAINED_OPPORTUNITY_MIN:
+        return NightMode.CONSTRAINED
+    return NightMode.NORMAL
+
+
+def plan_night(
+    now: datetime,
+    required_wake_time: Optional[datetime],
+    recent_summaries=None,
+    bedtime: Optional[datetime] = None,
+    hint: Optional[str] = None,
+    need_min: int = SLEEP_NEED_MIN,
+    base_window_min: int = 30,
+) -> SleepPlan:
+    """Build tonight's plan. ``bedtime`` defaults to ``now`` (planning at lights-out)."""
+    bedtime = bedtime or now
+    opportunity = None
+    if required_wake_time is not None:
+        opportunity = max(0.0, (required_wake_time - bedtime).total_seconds() / 60.0)
+
+    debt = sleep_debt_min(recent_summaries or [], need_min=need_min)
+    # Cycles + quality are judged from when you actually FALL ASLEEP, so lying awake in bed
+    # doesn't inflate the plan. Use your recent typical onset latency.
+    onset = median_onset_latency(recent_summaries or [])
+    est_sleep = max(0.0, opportunity - onset) if opportunity is not None else None
+    mode = decide_mode(est_sleep if est_sleep is not None else opportunity,
+                       required_wake_time, debt, hint=hint)
+    objective = _OBJECTIVE_BY_MODE[mode]
+
+    # Recovery extends the duration target to repay (capped) debt.
+    total_target = need_min
+    if mode == NightMode.RECOVERY:
+        total_target = int(min(need_min + 120, need_min + debt))
+    targets = targets_for(mode, total_sleep_target_min=total_target)
+
+    est_cycles = round(est_sleep / CYCLE_LEN_MIN, 1) if est_sleep else None
+
+    # Smart-wake window + thermal phasing + setpoint bias per mode.
+    phases: List[ThermalPhase] = [
+        ThermalPhase("induction", "cool_fast",
+                     "Cool quickly to drop core temperature and shorten sleep onset."),
+        ThermalPhase("early_deep", "deep_cool",
+                     "Aggressive cooling through the first cycles — deep sleep is "
+                     "front-loaded and the most restorative."),
+        ThermalPhase("maintenance", "maintain",
+                     "Hold a stable, cool setpoint; minimise swings to protect "
+                     "sleep maintenance (your #1 problem)."),
+    ]
+
+    if mode == NightMode.CONSTRAINED:
+        window = min(base_window_min, 20)
+        deep_bias_delta = -1.0   # cooler -> protect/boost deep
+        rem_warm_delta = 0.0     # don't spend the short night chasing REM warmth
+        # only add a REM-protect phase if at least ~3.5 cycles fit
+        if est_cycles and est_cycles >= 3.5:
+            phases.append(ThermalPhase("late_rem", "rem_protect",
+                          "One late cycle fits — a small warm nudge to protect REM."))
+            rem_warm_delta = 0.5
+        phases.append(ThermalPhase("wake", "wake_ramp",
+                      f"Wake you in light sleep within {window} min before "
+                      f"{_fmt(required_wake_time)} — heat + gentle vibration, no audio."))
+        strategy = (
+            f"Short night (~{_hrs(opportunity)}). Prioritising quality per hour: fast "
+            f"onset, deep sleep protected early, awakenings minimised, and waking you in "
+            f"light sleep so you avoid grogginess. Duration is not chased."
+        )
+    elif mode == NightMode.RECOVERY:
+        window = max(base_window_min, 45)
+        deep_bias_delta = -0.5
+        rem_warm_delta = 1.0     # support REM rebound (back-loaded, rebounds after debt)
+        phases.append(ThermalPhase("late_rem", "rem_protect",
+                      "Extended late cycles with a gentle warm bias to support REM "
+                      "rebound; SWS rebound supported by early cooling."))
+        phases.append(ThermalPhase("wake", "wake_ramp",
+                      "Soft wake ceiling only — let sleep complete naturally to repay "
+                      "sleep debt; smart wake fires late, in light sleep."))
+        extra = max(0, total_target - need_min)
+        strategy = (
+            f"Off day / recovery. Repaying ~{_hrs(debt)} of sleep debt: extending sleep "
+            f"toward {_hrs(total_target)} (+{extra} min), supporting REM and deep-sleep "
+            f"rebound, and prioritising autonomic (HRV) recovery. No hard wake cutoff."
+        )
+    else:  # NORMAL
+        window = base_window_min
+        deep_bias_delta = 0.0
+        rem_warm_delta = 0.5
+        phases.append(ThermalPhase("late_rem", "rem_protect",
+                      "Small warm bias in later cycles to support REM."))
+        phases.append(ThermalPhase("wake", "wake_ramp",
+                      f"Wake you in light sleep within {window} min before "
+                      f"{_fmt(required_wake_time)}."))
+        strategy = (
+            f"Balanced night (~{_hrs(opportunity)} opportunity). Targeting full "
+            f"architecture: deep 16-20%, REM 20-25%, efficiency ≥90%, minimal awakenings."
+        )
+
+    return SleepPlan(
+        mode=mode,
+        objective=objective,
+        sleep_opportunity_min=opportunity,
+        est_onset_latency_min=onset,
+        est_sleep_min=est_sleep,
+        est_cycles=est_cycles,
+        sleep_debt_min=debt,
+        smart_wake_window_min=window,
+        required_wake_time=required_wake_time,
+        targets=targets,
+        thermal_phases=phases,
+        deep_bias_delta_f=deep_bias_delta,
+        rem_warm_delta_f=rem_warm_delta,
+        strategy=strategy,
+    )
+
+
+def median_onset_latency(recent_summaries, default_min: float = 15.0,
+                         lo: float = 5.0, hi: float = 45.0) -> float:
+    """Your typical time to fall asleep, from recent nights' measured onset latency.
+
+    Lets the plan judge cycles from when you ACTUALLY fall asleep rather than when you get
+    into bed, so lying awake doesn't inflate the schedule. Bounded for robustness.
+    """
+    vals = [float(getattr(s, "sleep_onset_latency_min", None))
+            for s in (recent_summaries or [])
+            if getattr(s, "sleep_onset_latency_min", None) is not None]
+    if not vals:
+        return default_min
+    vals.sort()
+    n = len(vals)
+    med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
+    return max(lo, min(hi, med))
+
+
+def _hrs(minutes: Optional[float]) -> str:
+    if not minutes:
+        return "—"
+    h = int(minutes // 60)
+    m = int(minutes % 60)
+    return f"{h}h{m:02d}m" if m else f"{h}h"
+
+
+def _fmt(dt: Optional[datetime]) -> str:
+    return dt.strftime("%H:%M") if isinstance(dt, datetime) else "your wake time"

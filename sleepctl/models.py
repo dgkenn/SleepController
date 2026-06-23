@@ -34,10 +34,11 @@ class ControllerState(Enum):
 
 
 class NightObjective(Enum):
-    """Normal night vs. short-sleep recovery."""
+    """Per-night optimisation objective, selected from the schedule / night mode."""
 
-    OPTIMIZE = "optimize"
-    DAMAGE_CONTROL = "damage_control"
+    OPTIMIZE = "optimize"            # normal night: hit all benchmarks
+    DAMAGE_CONTROL = "damage_control"  # short work night: max quality per hour
+    RECOVERY = "recovery"           # off day / sleep-debt payback: max total recovery
 
 
 class CorrectionAction(Enum):
@@ -178,6 +179,9 @@ class ContextRecord:
     illness: Optional[bool] = None
     late_night_work: Optional[bool] = None
     routine_complete: Optional[bool] = None
+    # Night mode hint: "work"/"constrained", "recovery"/"off", "normal", or None/"auto"
+    # (inferred from the wake schedule + sleep debt). Drives the controller objective.
+    night_type: Optional[str] = None
     # Subjective morning check-in labels (0-10), feed the reward modestly.
     subjective_quality: Optional[float] = None
     grogginess: Optional[float] = None

@@ -16,6 +16,14 @@ export interface Recommendation {
   low_confidence?: boolean;
 }
 
+export interface PerfectSleep {
+  score: number;
+  mode: string;
+  components: Record<string, number>;
+  targets_met: string[];
+  rationale: string;
+}
+
 export interface LastNight {
   date: string;
   total_sleep_min: number;
@@ -25,6 +33,38 @@ export interface LastNight {
   sleep_efficiency: number;
   avg_hrv: number;
   outcome_score: number;
+  perfect_sleep?: PerfectSleep | null;
+}
+
+export interface SleepPlanTargets {
+  sol_max_min: number;
+  efficiency_min: number;
+  waso_max_min: number;
+  awakenings_max: number;
+  deep_pct_min: number;
+  deep_pct_ideal: number;
+  rem_pct_min: number;
+  rem_pct_ideal: number;
+  total_sleep_target_min: number;
+  rationale: string;
+}
+
+export interface SleepPlan {
+  mode: 'normal' | 'constrained' | 'recovery';
+  objective: string;
+  sleep_opportunity_min: number | null;
+  est_onset_latency_min: number;
+  est_sleep_min: number | null;
+  est_cycles: number | null;
+  sleep_debt_min: number;
+  smart_wake_window_min: number;
+  required_wake_time: string | null;
+  deep_bias_delta_f: number;
+  rem_warm_delta_f: number;
+  thermal_phases: Array<{ name: string; intent: string; note: string }>;
+  targets: SleepPlanTargets;
+  strategy: string;
+  last_night_index: PerfectSleep | null;
 }
 
 export interface Schedule {
@@ -33,15 +73,26 @@ export interface Schedule {
   is_short_sleep_day: boolean;
 }
 
+export interface WakeInfo {
+  wake_time: string;
+  window_min: number;
+  vibration_power: number | null;
+  thermal_level: number | null;
+  night_type?: string;
+}
+
 export interface StatusResponse {
   state: string;
   objective: string;
-  mode: 'auto' | 'manual' | 'view';
+  mode: 'auto' | 'manual' | 'view' | 'paused' | 'away';
   target_temp_f: number;
   bed_temp_f: number;
   room_temp_f: number;
   stage: string;
   confidence: number;
+  power_on: boolean;
+  away: boolean;
+  wake: WakeInfo | null;
   daemon_alive: boolean;
   stale: boolean;
   updated: string;
@@ -52,9 +103,12 @@ export interface StatusResponse {
 }
 
 export interface TonightResponse {
-  mode: 'auto' | 'manual' | 'view';
+  mode: 'auto' | 'manual' | 'view' | 'paused' | 'away';
   state: string;
   target_temp_f: number;
+  power_on: boolean;
+  away: boolean;
+  wake: WakeInfo | null;
   schedule: Schedule | null;
   recommendation: Recommendation;
   setpoint: SetpointInfo | null;
@@ -116,7 +170,7 @@ export interface MLOverview {
     action: string;
     source: string;
     confidence: number;
-    reward: number;
+    reward: number | null;
   }>;
   phenotype: Array<{ feature: string; r: number; n: number }>;
 }
@@ -169,6 +223,31 @@ export interface AuthUser {
 export interface CommandResponse {
   queued: boolean;
   command_id: string;
+}
+
+export interface CheckInStatus {
+  due: boolean;
+  date: string | null;
+  last_night: NightSummary | null;
+  perfect_sleep: PerfectSleep | null;
+}
+
+export interface CheckInPayload {
+  date?: string;
+  rested?: number;
+  grogginess?: number;
+  daytime_energy?: number;
+  awakenings_felt?: number;
+  onset_feel?: string;
+  factors?: Record<string, boolean>;
+}
+
+export interface CheckInResult {
+  date: string;
+  subjective: Record<string, number | string | null>;
+  perfect_sleep?: PerfectSleep;
+  objective?: Record<string, number | null>;
+  insights?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -243,17 +322,50 @@ export const api = {
       body: JSON.stringify({ target_f }),
     }),
 
+  // Realtime +/- adjustment (applies within ~1s via the daemon's fast command poll)
+  nudgeTemp: (delta_f: number) =>
+    apiFetch<void>('/api/tonight/temp/nudge', {
+      method: 'POST',
+      body: JSON.stringify({ delta_f }),
+    }),
+
   setMode: (mode: 'auto' | 'manual' | 'view') =>
     apiFetch<void>('/api/tonight/mode', {
       method: 'POST',
       body: JSON.stringify({ mode }),
     }),
 
-  setWake: (wake_time: string, window_min?: number) =>
+  setWake: (
+    wake_time: string,
+    window_min?: number,
+    vibration_power?: number,
+    thermal_level?: number,
+    night_type?: string
+  ) =>
     apiFetch<void>('/api/tonight/wake', {
       method: 'POST',
-      body: JSON.stringify({ wake_time, window_min }),
+      body: JSON.stringify({ wake_time, window_min, vibration_power, thermal_level, night_type }),
     }),
+
+  clearWake: () => apiFetch<void>('/api/tonight/wake', { method: 'DELETE' }),
+
+  plan: () => apiFetch<SleepPlan>('/api/tonight/plan'),
+
+  // Wake-up exit survey (morning check-in)
+  checkinStatus: () => apiFetch<CheckInStatus>('/api/checkin/status'),
+
+  submitCheckin: (payload: CheckInPayload) =>
+    apiFetch<CheckInResult>('/api/checkin', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // Power / away / prime — parity with the Eight Sleep app's bed controls
+  powerOn: () => apiFetch<CommandResponse>('/api/control/power-on', { method: 'POST' }),
+  powerOff: () => apiFetch<CommandResponse>('/api/control/power-off', { method: 'POST' }),
+  awayOn: () => apiFetch<CommandResponse>('/api/control/away-on', { method: 'POST' }),
+  awayOff: () => apiFetch<CommandResponse>('/api/control/away-off', { method: 'POST' }),
+  prime: () => apiFetch<CommandResponse>('/api/control/prime', { method: 'POST' }),
 
   // Control
   control: (cmd: 'start' | 'pause' | 'resume' | 'stop' | 'safe-default') =>

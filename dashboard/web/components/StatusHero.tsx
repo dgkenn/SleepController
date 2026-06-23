@@ -4,12 +4,16 @@ interface StatusHeroProps {
   data: StatusResponse;
 }
 
-function TempDisplay({ label, value, unit = '°F' }: { label: string; value: number; unit?: string }) {
+function fmt(value: number | null | undefined, digits = 1): string {
+  return value == null ? '--' : value.toFixed(digits);
+}
+
+function TempDisplay({ label, value, unit = '°F' }: { label: string; value: number | null; unit?: string }) {
   return (
     <div className="flex flex-col items-center gap-1">
       <span className="text-xs text-gray-500 uppercase tracking-wider">{label}</span>
       <span className="text-4xl font-bold tabular-nums text-white">
-        {value.toFixed(1)}<span className="text-xl text-gray-400">{unit}</span>
+        {fmt(value)}<span className="text-xl text-gray-400">{unit}</span>
       </span>
     </div>
   );
@@ -27,7 +31,7 @@ export default function StatusHero({ data }: StatusHeroProps) {
         <div className="flex flex-col items-center gap-1">
           <span className="text-xs text-gray-500 uppercase tracking-wider">Target</span>
           <span className="text-2xl font-semibold text-brand tabular-nums">
-            {data.target_temp_f.toFixed(1)}°F
+            {fmt(data.target_temp_f)}°F
           </span>
         </div>
         <TempDisplay label="Room" value={data.room_temp_f} />

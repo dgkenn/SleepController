@@ -8,10 +8,17 @@ import StatusHero from '@/components/StatusHero';
 import RecommendationCard from '@/components/RecommendationCard';
 import AlertBanner from '@/components/AlertBanner';
 import EmergencyStop from '@/components/EmergencyStop';
+import QuickTemp from '@/components/QuickTemp';
+import CheckInCard from '@/components/CheckInCard';
 import { useStatusStream } from '@/lib/useStatusStream';
+import useSWR from 'swr';
+import { CheckInStatus, fetcher } from '@/lib/api';
 
 function HomeContent() {
   const { data, isLive, error } = useStatusStream();
+  const { data: checkin, mutate: mutateCheckin } = useSWR<CheckInStatus>(
+    '/api/checkin/status', fetcher, { refreshInterval: 60000 }
+  );
   const [alerts, setAlerts] = useState(data?.alerts ?? []);
 
   // Sync alerts when data changes
@@ -66,8 +73,16 @@ function HomeContent() {
             <AlertBanner alerts={currentAlerts} onAck={handleAck} />
           )}
 
+          {/* Wake-up exit survey (shown when a check-in is due) */}
+          {checkin?.due && (
+            <CheckInCard date={checkin.date} onDone={() => mutateCheckin()} />
+          )}
+
           {/* Hero temps */}
           <StatusHero data={data} />
+
+          {/* Realtime temperature control */}
+          <QuickTemp targetF={data.target_temp_f} powerOn={data.power_on ?? true} />
 
           {/* Recommendation */}
           <RecommendationCard recommendation={data.recommendation} />
@@ -75,9 +90,28 @@ function HomeContent() {
           {/* Last night summary */}
           {data.last_night && (
             <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
-              <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">
-                Last Night
-              </h2>
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-sm font-semibold text-gray-400 uppercase tracking-wider">
+                  Last Night
+                </h2>
+                {data.last_night.perfect_sleep && (
+                  <div className="flex items-center gap-2" title={data.last_night.perfect_sleep.rationale}>
+                    <span className="text-[10px] text-gray-500 uppercase">Perfect Sleep</span>
+                    <span
+                      className={`text-sm font-bold tabular-nums ${
+                        data.last_night.perfect_sleep.score >= 80
+                          ? 'text-success'
+                          : data.last_night.perfect_sleep.score >= 60
+                            ? 'text-warning'
+                            : 'text-danger'
+                      }`}
+                    >
+                      {data.last_night.perfect_sleep.score.toFixed(0)}
+                      <span className="text-gray-600 text-xs font-normal">/100</span>
+                    </span>
+                  </div>
+                )}
+              </div>
               <div className="grid grid-cols-3 gap-3 text-center">
                 {[
                   {
@@ -86,7 +120,7 @@ function HomeContent() {
                   },
                   {
                     label: 'Efficiency',
-                    value: `${data.last_night.sleep_efficiency.toFixed(0)}%`,
+                    value: `${(data.last_night.sleep_efficiency * 100).toFixed(0)}%`,
                   },
                   {
                     label: 'Score',

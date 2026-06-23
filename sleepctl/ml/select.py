@@ -8,6 +8,9 @@ uncertainty-aware margin; low confidence -> no change ("do no harm").
 
 from __future__ import annotations
 
+from typing import Optional
+
+from sleepctl.benchmarks import NightMode
 from sleepctl.config import AppConfig
 from sleepctl.ml.actions import ACTIONS, ActionScore, apply_action
 from sleepctl.ml.dataset import SETPOINT_FEATURES
@@ -15,14 +18,15 @@ from sleepctl.ml.model import SetpointModel
 from sleepctl.ml.reward import reward_from_outcomes
 
 
-def score_actions(model: SetpointModel, profile, ctx: dict, cfg: AppConfig) -> list[ActionScore]:
+def score_actions(model: SetpointModel, profile, ctx: dict, cfg: AppConfig,
+                  mode: Optional[NightMode] = None) -> list[ActionScore]:
     conf = model.confidence()
     scores: list[ActionScore] = []
     for action in ACTIONS:
         cand = apply_action(profile, action)
         x = {**{k: getattr(cand, k) for k in SETPOINT_FEATURES}, **ctx}
         predicted = model.predict_outcomes(x)
-        reward = reward_from_outcomes(predicted, cfg)
+        reward = reward_from_outcomes(predicted, cfg, mode=mode)
         scores.append(ActionScore(action, cand, predicted, reward, conf,
                                   reason=f"{action.name} (mag {action.magnitude})"))
     return scores

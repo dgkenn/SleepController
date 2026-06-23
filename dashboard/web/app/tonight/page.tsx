@@ -1,33 +1,49 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import ModeToggle from '@/components/ModeToggle';
 import TempStepper from '@/components/TempStepper';
 import WakeTimePicker from '@/components/WakeTimePicker';
+import PowerControls from '@/components/PowerControls';
+import SleepPlanCard from '@/components/SleepPlanCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
 import useSWR from 'swr';
-import { TonightResponse, api, fetcher } from '@/lib/api';
+import { TonightResponse, SleepPlan, api, fetcher } from '@/lib/api';
 
 function TonightContent() {
   const { data, mutate } = useSWR<TonightResponse>('/api/tonight', fetcher, {
     refreshInterval: 15000,
   });
+  const { data: plan, mutate: mutatePlan } = useSWR<SleepPlan>('/api/tonight/plan', fetcher, {
+    refreshInterval: 30000,
+  });
 
   const [mode, setMode] = useState<'auto' | 'manual' | 'view'>('auto');
   const [targetTemp, setTargetTemp] = useState(70);
   const [wakeTime, setWakeTime] = useState('07:00');
-  const [windowMin, setWindowMin] = useState(10);
+  const [windowMin, setWindowMin] = useState(30);
+  const [vibration, setVibration] = useState(50);
+  const [nightType, setNightType] = useState('auto');
   const [loading, setLoading] = useState<string | null>(null);
   const [toast, setToast] = useState('');
+  const tempDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     if (data) {
-      setMode(data.mode);
+      // 'paused'/'away' are runtime states, not selectable modes — keep the toggle on a real mode
+      if (data.mode === 'auto' || data.mode === 'manual' || data.mode === 'view') {
+        setMode(data.mode);
+      }
       setTargetTemp(data.target_temp_f ?? 70);
-      if (data.schedule?.required_wake_time) {
+      if (data.wake) {
+        setWakeTime(data.wake.wake_time);
+        setWindowMin(data.wake.window_min ?? 30);
+        if (data.wake.vibration_power != null) setVibration(data.wake.vibration_power);
+        if (data.wake.night_type) setNightType(data.wake.night_type);
+      } else if (data.schedule?.required_wake_time) {
         setWakeTime(data.schedule.required_wake_time);
       }
     }
@@ -63,6 +79,17 @@ function TonightContent() {
     }
   };
 
+  // Realtime temperature: update the dial instantly and push the change to the
+  // daemon (debounced for slider drags). The daemon applies it within ~1s.
+  const handleTempChange = (next: number) => {
+    setTargetTemp(next);
+    if (mode !== 'manual') return;
+    if (tempDebounce.current) clearTimeout(tempDebounce.current);
+    tempDebounce.current = setTimeout(() => {
+      api.setTemp(next).then(() => mutate()).catch(() => showToast('Failed to set temp'));
+    }, 350);
+  };
+
   const handleTempSave = async () => {
     setLoading('temp');
     try {
@@ -76,14 +103,27 @@ function TonightContent() {
     }
   };
 
-  const handleWakeSave = async (t: string, w: number) => {
+  const handleWakeSave = async (t: string, w: number, v: number, nt: string) => {
     setWakeTime(t);
     setWindowMin(w);
+    setVibration(v);
+    setNightType(nt);
     try {
-      await api.setWake(t, w);
-      showToast(`Wake time set to ${t}`);
+      await api.setWake(t, w, v, undefined, nt);
+      showToast(`Smart wake set for ${t}`);
+      await Promise.all([mutate(), mutatePlan()]);
     } catch {
       showToast('Failed to update wake time');
+    }
+  };
+
+  const handleWakeClear = async () => {
+    try {
+      await api.clearWake();
+      showToast('Smart wake cleared');
+      await Promise.all([mutate(), mutatePlan()]);
+    } catch {
+      showToast('Failed to clear wake');
     }
   };
 
@@ -129,18 +169,13 @@ function TonightContent() {
             </p>
             <TempStepper
               value={targetTemp}
-              onChange={setTargetTemp}
+              onChange={handleTempChange}
               disabled={mode === 'auto' || mode === 'view'}
             />
             {mode === 'manual' && (
-              <BigButton
-                fullWidth
-                className="mt-4"
-                onClick={handleTempSave}
-                loading={loading === 'temp'}
-              >
-                Set Temperature
-              </BigButton>
+              <p className="text-xs text-gray-500 text-center mt-3">
+                Adjusts in realtime · applies within ~1s
+              </p>
             )}
             {mode === 'auto' && (
               <p className="text-xs text-gray-600 text-center mt-3">
@@ -149,13 +184,27 @@ function TonightContent() {
             )}
           </div>
 
-          {/* Wake Time */}
+          {/* Power / Away / Prime */}
+          <PowerControls
+            powerOn={data?.power_on ?? true}
+            away={data?.away ?? false}
+            onChanged={() => mutate()}
+            onToast={showToast}
+          />
+
+          {/* Smart Wake */}
           <WakeTimePicker
             value={wakeTime}
             windowMin={windowMin}
+            vibration={vibration}
+            nightType={nightType}
             onChange={handleWakeSave}
+            onClear={data?.wake ? handleWakeClear : undefined}
             disabled={mode === 'view'}
           />
+
+          {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
+          {plan && <SleepPlanCard plan={plan} />}
 
           {/* Control Buttons */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">

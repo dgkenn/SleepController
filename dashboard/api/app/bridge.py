@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 
 VALID_COMMANDS = {
     "start", "pause", "resume", "stop", "safe_default",
-    "set_mode", "set_temp", "set_wake",
+    "set_mode", "set_temp", "nudge_temp", "set_wake", "clear_wake",
+    # Eight Sleep app parity
+    "power_on", "power_off", "away_on", "away_off", "prime",
 }
 
 

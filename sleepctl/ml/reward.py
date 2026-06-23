@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from sleepctl.benchmarks import NightMode
 from sleepctl.config import AppConfig
 from sleepctl.models import NightSummary
 
@@ -28,6 +29,29 @@ CHURN_PENALTY = 0.05            # per intervention/action change
 TEMP_SWING_PENALTY = 0.03      # per °F of swing beyond the variability cap
 SUBJECTIVE_WEIGHT = 0.20       # per point of subjective quality (0-10); grogginess subtracts
 
+# Per-mode multipliers on the base weights so the SAME reward function optimises for the
+# RIGHT objective in each situation (see benchmarks.py for the literature rationale):
+#   CONSTRAINED (short work night) -> ignore raw duration; reward deep, efficiency, low WASO
+#   RECOVERY    (off day/sleep debt) -> reward total sleep, REM, HRV (rebound + debt payback)
+MODE_MULTIPLIERS = {
+    NightMode.NORMAL: {},
+    NightMode.CONSTRAINED: {
+        "total_sleep_min": 0.0, "deep_pct_points": 1.5, "sleep_eff_points": 1.6,
+        "waso_min": 1.6, "wake_events": 1.2, "rem_pct_points": 0.7,
+    },
+    NightMode.RECOVERY: {
+        "total_sleep_min": 3.0, "rem_pct_points": 2.2, "avg_hrv": 1.8,
+        "deep_pct_points": 1.1, "wake_events": 0.85,
+    },
+}
+
+
+def _w(key: str, mode: Optional[NightMode]) -> float:
+    base = WEIGHTS[key]
+    if mode is None:
+        return base
+    return base * MODE_MULTIPLIERS.get(mode, {}).get(key, 1.0)
+
 
 def reward_from_outcomes(
     outcomes: dict,
@@ -36,27 +60,34 @@ def reward_from_outcomes(
     temp_swing_over_cap: float = 0.0,
     subjective_quality: Optional[float] = None,
     grogginess: Optional[float] = None,
+    mode: Optional[NightMode] = None,
 ) -> float:
-    """Compute the reward from a dict of (predicted or observed) outcome values."""
+    """Compute the reward from a dict of (predicted or observed) outcome values.
+
+    ``mode`` selects the situation-specific objective; when None the original
+    balanced weighting is used (so behaviour is unchanged by default).
+    """
     s = 0.0
     if "wake_events" in outcomes and outcomes["wake_events"] is not None:
-        s += WEIGHTS["wake_events"] * outcomes["wake_events"]
+        s += _w("wake_events", mode) * outcomes["wake_events"]
     if outcomes.get("waso_min") is not None:
-        s += WEIGHTS["waso_min"] * outcomes["waso_min"]
+        s += _w("waso_min", mode) * outcomes["waso_min"]
     if outcomes.get("deep_pct") is not None:
-        s += WEIGHTS["deep_pct_points"] * (outcomes["deep_pct"] * 100.0)
+        s += _w("deep_pct_points", mode) * (outcomes["deep_pct"] * 100.0)
     if outcomes.get("rem_pct") is not None:
-        s += WEIGHTS["rem_pct_points"] * (outcomes["rem_pct"] * 100.0)
+        s += _w("rem_pct_points", mode) * (outcomes["rem_pct"] * 100.0)
     if outcomes.get("avg_hrv") is not None:
-        s += WEIGHTS["avg_hrv"] * outcomes["avg_hrv"]
+        s += _w("avg_hrv", mode) * outcomes["avg_hrv"]
     if outcomes.get("sleep_efficiency") is not None:
-        s += WEIGHTS["sleep_eff_points"] * (outcomes["sleep_efficiency"] * 100.0)
+        s += _w("sleep_eff_points", mode) * (outcomes["sleep_efficiency"] * 100.0)
     if outcomes.get("total_sleep_min") is not None:
-        s += WEIGHTS["total_sleep_min"] * outcomes["total_sleep_min"]
+        s += _w("total_sleep_min", mode) * outcomes["total_sleep_min"]
     if outcomes.get("sleep_onset_latency_min") is not None:
         b = cfg.benchmarks
         mid = (b.onset_latency_min + b.onset_latency_max) / 2.0
-        s -= 0.10 * abs(outcomes["sleep_onset_latency_min"] - mid)
+        # fast onset matters more on a constrained night (don't waste opportunity)
+        sol_w = 0.18 if mode == NightMode.CONSTRAINED else 0.10
+        s -= sol_w * abs(outcomes["sleep_onset_latency_min"] - mid)
 
     s -= CHURN_PENALTY * churn
     s -= TEMP_SWING_PENALTY * max(0.0, temp_swing_over_cap)
@@ -88,9 +119,10 @@ def night_outcome_score(
     temp_swing_over_cap: float = 0.0,
     subjective_quality: Optional[float] = None,
     grogginess: Optional[float] = None,
+    mode: Optional[NightMode] = None,
 ) -> float:
     """The reward for a completed night (stored as ``NightSummary.outcome_score``)."""
     return reward_from_outcomes(
         _outcomes_from_night(night), cfg, churn, temp_swing_over_cap,
-        subjective_quality, grogginess,
+        subjective_quality, grogginess, mode=mode,
     )

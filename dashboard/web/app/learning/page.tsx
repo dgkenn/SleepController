@@ -112,15 +112,19 @@ function LearningContent() {
                     </div>
                     <div className="text-right shrink-0">
                       <p className="text-xs text-gray-400">
-                        {(a.confidence * 100).toFixed(0)}%
+                        {((a.confidence ?? 0) * 100).toFixed(0)}%
                       </p>
-                      <p
-                        className={`text-xs font-medium ${
-                          a.reward >= 0 ? 'text-success' : 'text-danger'
-                        }`}
-                      >
-                        {a.reward >= 0 ? '+' : ''}{a.reward.toFixed(2)}
-                      </p>
+                      {a.reward == null ? (
+                        <p className="text-xs font-medium text-gray-500">pending</p>
+                      ) : (
+                        <p
+                          className={`text-xs font-medium ${
+                            a.reward >= 0 ? 'text-success' : 'text-danger'
+                          }`}
+                        >
+                          {a.reward >= 0 ? '+' : ''}{a.reward.toFixed(2)}
+                        </p>
+                      )}
                     </div>
                   </div>
                 ))}

@@ -14,6 +14,7 @@ from typing import Optional
 from sleepctl.config import AppConfig
 from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
+from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
 from sleepctl.controller.state_machine import SleepStateMachine
 from sleepctl.controller.thermal import ThermalController
@@ -34,6 +35,7 @@ class SleepController:
         self.cfg = cfg
         self.sm = SleepStateMachine(cfg)
         self.wake_detector = WakeDetector()
+        self.onset_detector = SleepOnsetDetector(cfg)
         self.induction = InductionRoutine(cfg)
         self.maintenance = MaintenanceRoutine(cfg)
         self.wake_recovery = WakeRecoveryRoutine(cfg)
@@ -42,13 +44,20 @@ class SleepController:
         self.thermal = ThermalController(cfg, profile=setpoints)
 
         self._bed_entry_time: Optional[datetime] = None
+        self._sleep_onset_time: Optional[datetime] = None  # accurate fall-asleep time
         self._last_target_f: float = cfg.tunables.neutral_temp_f
         self.last_wake_event = None
+        self.last_onset_event = None
         self.should_wake = False
         self.pending_wake_alarm = None  # WakeAlarmSpec to program (vibration + heat), once
 
     def _objective(self, context: Optional[ContextRecord]) -> NightObjective:
-        if context is not None and context.is_short_sleep_day:
+        if context is None:
+            return NightObjective.OPTIMIZE
+        nt = (context.night_type or "").lower()
+        if nt in ("recovery", "off", "off_day", "rest"):
+            return NightObjective.RECOVERY
+        if nt in ("work", "constrained", "short") or context.is_short_sleep_day:
             return NightObjective.DAMAGE_CONTROL
         return NightObjective.OPTIMIZE
 
@@ -82,10 +91,25 @@ class SleepController:
         self.last_wake_event = wake_event
         wake_detected = wake_event is not None
 
-        # --- advance state machine ---------------------------------------------
+        # --- accurate sleep-onset detection (asleep vs lying in bed awake) -------
         if self._bed_entry_time is None and frame.presence:
             self._bed_entry_time = now
-        state = self.sm.transition(frame, now, wake_detected, required_wake)
+            self.onset_detector.reset()
+            self._sleep_onset_time = None
+        onset_confirmed = None
+        if self._sleep_onset_time is None and self.sm.state in (
+            ControllerState.INDUCTION, ControllerState.IDLE, ControllerState.CALIBRATION,
+        ):
+            onset_event = self.onset_detector.evaluate(
+                frame, recent, now, bed_entry_time=self._bed_entry_time)
+            if onset_event is not None:
+                self._sleep_onset_time = onset_event.timestamp
+                self.last_onset_event = onset_event
+            onset_confirmed = onset_event is not None
+
+        # --- advance state machine ---------------------------------------------
+        state = self.sm.transition(frame, now, wake_detected, required_wake,
+                                   onset_confirmed=onset_confirmed)
 
         minutes_in_bed = (
             (now - self._bed_entry_time).total_seconds() / 60.0
@@ -96,6 +120,11 @@ class SleepController:
         # --- pick thermal intent per state -------------------------------------
         self.should_wake = False
         if state in (ControllerState.IDLE, ControllerState.CALIBRATION):
+            # Night ended / out of bed: reset onset tracking for the next night.
+            if frame.presence is False:
+                self._bed_entry_time = None
+                self._sleep_onset_time = None
+                self.onset_detector.reset()
             intent = ThermalIntent.NEUTRAL
         elif state is ControllerState.INDUCTION:
             intent = self.induction.step(frame, objective, minutes_in_bed)

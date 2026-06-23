@@ -47,10 +47,20 @@ class NightlyUpdater:
         # --- score the night (reward) and persist --------------------------------
         ctx = self.repo.get_context(night.date)
         churn = self._intervention_churn(night.date)
+        # Score against the night's situation-specific benchmark (work/short vs off-day).
+        mode = None
+        nt = (getattr(ctx, "night_type", None) or "").lower()
+        if nt in ("recovery", "off", "off_day", "rest"):
+            from sleepctl.benchmarks import NightMode
+            mode = NightMode.RECOVERY
+        elif nt in ("work", "constrained", "short") or getattr(ctx, "is_short_sleep_day", None):
+            from sleepctl.benchmarks import NightMode
+            mode = NightMode.CONSTRAINED
         night.outcome_score = night_outcome_score(
             night, cfg, churn=churn,
             subjective_quality=getattr(ctx, "subjective_quality", None),
             grogginess=getattr(ctx, "grogginess", None),
+            mode=mode,
         )
         self.repo.save_night_summary(night)
         self.repo.backfill_action_rewards()  # attribute rewards to the actions that earned them

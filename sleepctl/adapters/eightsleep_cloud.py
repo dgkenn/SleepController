@@ -236,6 +236,30 @@ class EightSleepClient:
     def get_current_level(self) -> int:  # pragma: no cover - requires live device
         return int(getattr(self._user, "heating_level", 0) or 0)
 
+    # ----------------------------------------------------- Eight Sleep app parity
+    # These mirror the controls exposed by the official Eight Sleep app so the
+    # dashboard offers the same functionality (power, away, prime, fine adjust).
+
+    async def turn_on_side(self) -> None:  # pragma: no cover - requires live device
+        """Power the user's side on (equivalent to the app's main on/off toggle)."""
+        await self._user.turn_on_side()
+
+    async def turn_off_side(self) -> None:  # pragma: no cover - requires live device
+        """Power the user's side off."""
+        await self._user.turn_off_side()
+
+    async def set_away_mode(self, enabled: bool) -> None:  # pragma: no cover - requires live device
+        """Start/stop away mode (the app's travel toggle)."""
+        await self._user.set_away_mode("start" if enabled else "end")
+
+    async def prime_pod(self) -> None:  # pragma: no cover - requires live device
+        """Prime the Pod's water (the app's prime/clean routine)."""
+        await self._user.prime_pod()
+
+    async def increment_level(self, offset: int) -> None:  # pragma: no cover - requires live device
+        """Nudge the heating level by ``offset`` (the app's +/- buttons)."""
+        await self._user.increment_heating_level(int(offset))
+
     async def fetch_night_summary(self, date: str) -> NightSummary:  # pragma: no cover
         # Best-effort: the pyEight user trends/intervals expose nightly metrics; map what is
         # available, leave the rest None. Detailed mapping refined against a live Pod 2.

@@ -38,7 +38,7 @@ export default function NightCard({ night, compact = false }: NightCardProps) {
           <Stat label="Total Sleep" value={fmtMin(night.total_sleep_min)} />
           <Stat label="Deep" value={fmtMin(night.deep_min)} />
           <Stat label="REM" value={fmtMin(night.rem_min)} />
-          <Stat label="Efficiency" value={`${night.sleep_efficiency.toFixed(0)}%`} />
+          <Stat label="Efficiency" value={`${(night.sleep_efficiency * 100).toFixed(0)}%`} />
           <Stat label="Wake Events" value={String(night.wake_events)} />
           <Stat label="Avg HRV" value={`${night.avg_hrv.toFixed(0)} ms`} />
         </div>
@@ -46,7 +46,7 @@ export default function NightCard({ night, compact = false }: NightCardProps) {
       {compact && (
         <div className="flex gap-4 text-xs text-gray-400">
           <span>{fmtMin(night.total_sleep_min)}</span>
-          <span>Eff {night.sleep_efficiency.toFixed(0)}%</span>
+          <span>Eff {(night.sleep_efficiency * 100).toFixed(0)}%</span>
           <span>HRV {night.avg_hrv.toFixed(0)}ms</span>
         </div>
       )}

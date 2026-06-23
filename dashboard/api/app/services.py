@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from sleepctl.benchmarks import NightMode, perfect_sleep_index
 from sleepctl.config import AppConfig
+from sleepctl.controller.sleep_plan import plan_night
 from sleepctl.ml.confounders import clean_rows
 from sleepctl.ml.dataset import build_feature_rows
 from sleepctl.ml.model import SetpointModel
@@ -21,12 +23,168 @@ from app.config import settings
 CFG = AppConfig.default()
 
 
+# ------------------------------------------------------------------ sleep plan
+def _wake_dt(wake_time: str | None):
+    """Resolve an 'HH:MM' wake string to the next datetime it occurs."""
+    from datetime import timedelta
+    if not wake_time:
+        return None
+    try:
+        hh, mm = (int(x) for x in wake_time.split(":"))
+    except Exception:
+        return None
+    now = datetime.now()
+    w = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if w <= now:
+        w += timedelta(days=1)
+    return w
+
+
+def current_plan(repo):
+    """Tonight's wake-aware plan from the stored wake settings + recent history."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    wake = extra.get("wake") or {}
+    wake_dt = _wake_dt(wake.get("wake_time"))
+    hint = wake.get("night_type") or "auto"
+    window = wake.get("window_min") or 30
+    recent = repo.recent_nights(14)
+    return plan_night(datetime.now(), wake_dt, recent, hint=hint, base_window_min=window)
+
+
+def sleep_plan(repo) -> dict:
+    plan = current_plan(repo)
+    nights = repo.recent_nights(1)
+    last_index = None
+    if nights:
+        last_index = perfect_sleep_index(nights[-1], plan.mode)
+    d = plan.to_dict()
+    d["last_night_index"] = last_index
+    return d
+
+
+def current_mode(repo) -> NightMode:
+    return current_plan(repo).mode
+
+
+# ------------------------------------------------------- wake-up exit survey
+def checkin_status(repo) -> dict:
+    """Whether a morning check-in is due for the most recent night, + that night's
+    objective benchmark score to compare the survey against."""
+    nights = repo.recent_nights(1)
+    if not nights:
+        return {"due": False, "date": None, "last_night": None, "perfect_sleep": None}
+    last = nights[-1]
+    ctx = repo.get_context(last.date)
+    done = ctx is not None and getattr(ctx, "subjective_quality", None) is not None
+    mode = current_mode(repo)
+    return {
+        "due": not done,
+        "date": last.date,
+        "last_night": _night_brief(last),
+        "perfect_sleep": perfect_sleep_index(last, mode),
+    }
+
+
+def submit_checkin(repo, payload: dict) -> dict:
+    """Persist the wake-up survey into the night's context (so the ML reward + confounder
+    handling use it) and return a felt-vs-measured comparison against the benchmarks."""
+    from sleepctl.models import ContextRecord
+    from sleepctl.ml.reward import night_outcome_score
+
+    nights = repo.recent_nights(60)
+    date = payload.get("date") or (nights[-1].date if nights else
+                                   datetime.now().date().isoformat())
+    ctx = repo.get_context(date) or ContextRecord(date=date)
+
+    rested = payload.get("rested")
+    grog = payload.get("grogginess")
+    energy = payload.get("daytime_energy")
+    ctx.subjective_quality = rested
+    ctx.grogginess = grog
+    ctx.daytime_performance = energy
+    f = payload.get("factors") or {}
+    if "caffeine" in f:
+        ctx.caffeine = bool(f["caffeine"])
+    if "alcohol" in f:
+        ctx.alcohol = bool(f["alcohol"])
+    if "late_work" in f:
+        ctx.late_night_work = bool(f["late_work"])
+    if "illness" in f:
+        ctx.illness = bool(f["illness"])
+    if "travel" in f:
+        ctx.travel = bool(f["travel"])
+    if f.get("stress"):
+        ctx.stress = 8.0
+    repo.save_context(ctx)
+
+    night = next((n for n in nights if n.date == date), None)
+    mode = current_mode(repo)
+    comparison = {"date": date, "subjective": {
+        "rested": rested, "grogginess": grog, "daytime_energy": energy,
+        "awakenings_felt": payload.get("awakenings_felt"),
+        "onset_feel": payload.get("onset_feel"),
+    }}
+    if night is not None:
+        # Re-score the night with the subjective signal + mode so the ML reward reflects it.
+        night.outcome_score = night_outcome_score(
+            night, CFG, subjective_quality=rested, grogginess=grog, mode=mode)
+        repo.save_night_summary(night)
+        psi = perfect_sleep_index(night, mode)
+        total = max(1.0, night.total_sleep_min or 0)
+        comparison["perfect_sleep"] = psi
+        comparison["objective"] = {
+            "wake_events": night.wake_events,
+            "sleep_efficiency": night.sleep_efficiency,
+            "deep_pct": (night.deep_min or 0) / total,
+            "rem_pct": (night.rem_min or 0) / total,
+            "sleep_onset_latency_min": night.sleep_onset_latency_min,
+            "avg_hrv": night.avg_hrv,
+        }
+        comparison["insights"] = _checkin_insights(payload, night, psi)
+    return comparison
+
+
+def _checkin_insights(payload: dict, night, psi: dict) -> list:
+    """Plain-language comparisons of how the user FELT vs what was MEASURED."""
+    out = []
+    rested = payload.get("rested")
+    grog = payload.get("grogginess")
+    felt_awak = payload.get("awakenings_felt")
+    onset = payload.get("onset_feel")
+    score = psi.get("score", 0)
+
+    if felt_awak is not None and night.wake_events is not None:
+        if felt_awak > night.wake_events + 1:
+            out.append("You remember more awakenings than were detected — light, fragmented "
+                       "sleep. We'll bias toward steadier temperatures to protect maintenance.")
+        elif felt_awak < night.wake_events:
+            out.append("You slept through awakenings the sensors caught — good sleep depth.")
+    if grog is not None and grog >= 6 and score >= 70:
+        out.append("High grogginess despite a strong night suggests sleep inertia — the smart "
+                   "wake will aim to catch you in lighter sleep.")
+    if rested is not None and rested <= 4 and score >= 70:
+        out.append("Measured sleep was strong but you feel unrested — likely a confounder "
+                   "(alcohol, stress, illness). Logged so it won't skew the learning.")
+    if rested is not None and rested >= 7 and score < 55:
+        out.append("You feel rested even though the metrics were modest — your personal "
+                   "benchmark is being learned from how you actually feel.")
+    if onset == "slow":
+        out.append("Slow to fall asleep — we'll cool a little faster at lights-out to speed "
+                   "onset.")
+    if not out:
+        out.append("Logged. Your subjective rating is now part of the reward the learner "
+                   "optimises — personalising the benchmarks to you.")
+    return out
+
+
 # ----------------------------------------------------------------------- status
 def build_status(repo) -> dict:
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
     nights = repo.recent_nights(1)
     last = nights[-1] if nights else None
     rec = ml_recommendation(repo)
+    extra = rt.get("extra") or {}
     return {
         "state": rt.get("state") or "IDLE",
         "objective": rt.get("objective"),
@@ -36,15 +194,28 @@ def build_status(repo) -> dict:
         "room_temp_f": rt.get("room_temp_f"),
         "stage": rt.get("stage"),
         "confidence": rt.get("confidence"),
+        "power_on": extra.get("power_on", True),
+        "away": extra.get("away", False),
+        "wake": extra.get("wake"),
         "daemon_alive": rt.get("daemon_alive", False),
         "stale": rt.get("stale", True),
         "updated": rt.get("updated"),
         "recommendation": {"action": rec.get("action"), "reason": rec.get("reason"),
-                           "confidence": rec.get("confidence")},
-        "last_night": _night_brief(last) if last else None,
+                           "confidence": rec.get("confidence"), "mode": rec.get("mode")},
+        "last_night": _last_night_brief(repo, last) if last else None,
         "alerts": active_alerts(repo),
         "schedule": schedule_brief(repo),
     }
+
+
+def _last_night_brief(repo, last) -> dict:
+    """Last-night summary with its mode-appropriate perfect-sleep score attached."""
+    d = _night_brief(last)
+    try:
+        d["perfect_sleep"] = perfect_sleep_index(last, current_mode(repo))
+    except Exception:
+        d["perfect_sleep"] = None
+    return d
 
 
 def _night_brief(n) -> dict:
@@ -68,16 +239,22 @@ def schedule_brief(repo) -> dict:
 
 
 # -------------------------------------------------------------------------- ml
-def ml_recommendation(repo) -> dict:
+def ml_recommendation(repo, mode: NightMode | None = None) -> dict:
     profile = repo.latest_setpoints() or CFG.default_setpoints()
-    chosen = recommend_action(repo, profile, CFG)
+    if mode is None:
+        try:
+            mode = current_mode(repo)
+        except Exception:
+            mode = NightMode.NORMAL
+    # The ML optimises for tonight's situation-specific benchmark (work vs off-day).
+    chosen = recommend_action(repo, profile, CFG, mode=mode)
     if chosen is None:
         return {"action": "rule-policy", "reason": "deferring to safe rule policy (insufficient "
                 "data or confidence)", "confidence": 0.0, "source": "fallback",
-                "low_confidence": True}
+                "low_confidence": True, "mode": mode.value}
     return {
         "action": chosen.name, "reason": chosen.reason, "confidence": chosen.confidence,
-        "predicted": chosen.predicted, "source": "ml",
+        "predicted": chosen.predicted, "source": "ml", "mode": mode.value,
         "low_confidence": chosen.confidence < CFG.ml.conf_min,
     }
 
