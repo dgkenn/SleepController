@@ -9,6 +9,36 @@ nightly outcomes over days and weeks.
 
 ---
 
+## 0. Pod 2 / Pod Pro hardware & sensing (research-grounded)
+
+The target device ("Pod 2") is the **Eight Sleep Pod Pro / "Pod 2 Pro" (Model 10501, 2020)**
+— a mattress cover + ~1 L water Hub with **active thermoelectric cooling**, so the
+hot-sleeper cooling strategy is supported.
+
+- **Temperature scale (authoritative, from pyEight `constants.py`).** Device range
+  **55–110 °F**. The app shows **−10…+10**; the API uses **−100…+100** (= 10× the app). The
+  level→°F map is a **non-linear lookup table** (`RAW_TO_FAHRENHEIT_MAP`), *not* a formula.
+  Anchor points: **level 0 ≈ 81 °F**, −100 = 55 °F, +92 = 110 °F (e.g. 66 °F → −68, 70 °F →
+  −49, 74 °F → −31). We vendor this table in `controller/calibration.py` and verify it matches
+  pyEight's `util.temp_to_heating_level` exactly. (A naïve linear calibration is ~10 °F off —
+  it would run the bed too *warm* for a hot sleeper.)
+- **Sensing = ballistocardiography (BCG).** Two piezo sensors → charge-to-voltage → an
+  audio-codec ADC concurrently samples both channels → downsampled → uploaded (Eight Sleep
+  patent US12048529; this is the `raw-api-upload.8slp.net` stream used by Tier 1). Validated
+  vs gold standard: HR < 1 bpm MAE, HRV r² = 0.91 (Pod 3), RR 98%. **BCG requires stillness**,
+  so HR/HRV/RR are unreliable during movement — the controller discounts decision confidence
+  when movement is high (`SleepController._biometric_reliability`). HR updates per-minute;
+  **HRV/RR update per-session** (slower), so the controller never expects fast HRV response.
+- **Validated control strategy (Eight Sleep Autopilot RCT, *SLEEP* 2024, abs. 0462).** Cooler
+  offsets promote **deep** sleep; warmer offsets promote **REM**; the offset magnitude is
+  escalated when the prior night had **deep < 15%** or **REM < 20%**. Measured effects are
+  small (HRV +4.9 ms, deep +4.7 min/night). Our controller mirrors this: `DEEP_BIAS_COOL`,
+  a small REM warm offset (`Tunables.rem_warm_offset_f`), the deep/REM-fraction escalation
+  triggers (`Benchmarks.deep_pct_floor`/`rem_pct_floor`), and conservative small steps with
+  multi-night learning — consistent with effects this small.
+
+---
+
 ## 1. Executive summary
 
 The user is a quantitatively-minded anesthesiology trainee (5'9", 190 lb, hot sleeper,

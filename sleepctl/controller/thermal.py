@@ -12,23 +12,23 @@ from collections import deque
 from typing import Callable, Optional
 
 from sleepctl.config import AppConfig
+from sleepctl.controller.calibration import (
+    clamp_fahrenheit,
+    fahrenheit_to_level,
+    level_to_fahrenheit,
+)
 from sleepctl.models import NightObjective, ThermalIntent
 
 
-# Default linear calibration between target °F and the device's unitless -100..100
-# level. Eight Sleep's scale is unitless; this is a documented starting point that the
-# `calibrate` CLI refines per user. We anchor neutral (70°F) -> 0, and roughly 5°F per
-# 50 level units (so 60°F -> -100, 80°F -> +100).
-_F_AT_ZERO = 70.0
-_F_PER_LEVEL = 0.20  # 1 level unit ~= 0.2°F
-
-
+# Calibration uses the REAL Eight Sleep non-linear lookup table (see calibration.py):
+# 55-110 °F, level 0 ~= 81 °F. These thin wrappers let `calibrate` swap in a per-user
+# refinement later without changing the controller.
 def default_f_to_level(target_f: float) -> int:
-    return round((target_f - _F_AT_ZERO) / _F_PER_LEVEL)
+    return fahrenheit_to_level(target_f)
 
 
 def default_level_to_f(level: int) -> float:
-    return _F_AT_ZERO + level * _F_PER_LEVEL
+    return level_to_fahrenheit(level)
 
 
 class ThermalController:
@@ -63,7 +63,10 @@ class ThermalController:
         elif intent is ThermalIntent.DEEP_BIAS_COOL:
             target = t.deep_bias_temp_f + bias
         elif intent is ThermalIntent.REM_NEUTRAL:
-            target = neutral  # avoid overcooling during REM
+            # Evidence (Eight Sleep Autopilot RCT, SLEEP 2024): warmth promotes REM. Apply
+            # a SMALL warm offset above neutral -- kept gentle + slew-limited to protect the
+            # user's sleep-maintenance priority (no abrupt change).
+            target = neutral + t.rem_warm_offset_f
         elif intent is ThermalIntent.WAKE_RAMP:
             target = t.wake_ramp_temp_f  # warm toward wake (no cool bias)
         elif intent is ThermalIntent.STABILIZE:
@@ -78,7 +81,7 @@ class ThermalController:
             ThermalIntent.DEEP_BIAS_COOL,
         ):
             target = (target + neutral) / 2.0
-        return target
+        return clamp_fahrenheit(target)  # never request outside the device's 55-110 °F
 
     # -- safety limiting ---------------------------------------------------------
     def slew_limit(self, current_f: float, target_f: float) -> float:

@@ -42,12 +42,23 @@ class TieredPolicy:
     def __init__(self, cfg: AppConfig) -> None:
         self.cfg = cfg
         self.candidate: Optional[_Candidate] = None
+        self._last_night: Optional[NightSummary] = None
 
     def register_outcome(self, night: NightSummary) -> None:
         """Feed last night's result into the held candidate's trail."""
+        self._last_night = night
         if self.candidate is not None:
             self.candidate.outcomes.append(_priority_score(night))
             self.candidate.nights_held += 1
+
+    @staticmethod
+    def _stage_fraction(night: Optional[NightSummary], stage_min: str) -> Optional[float]:
+        if night is None or night.total_sleep_min in (None, 0):
+            return None
+        val = getattr(night, stage_min, None)
+        if val is None:
+            return None
+        return float(val) / float(night.total_sleep_min)
 
     def recommend(
         self,
@@ -63,13 +74,27 @@ class TieredPolicy:
         # No active candidate -> start a minimal trial aimed at the top priority.
         if self.candidate is None:
             wake_delta = deltas.get("wake_events_delta", 0.0)
-            target = "thermal_stability" if wake_delta and wake_delta > 0 else "deep_bias_cooling"
+            deep_pct = self._stage_fraction(self._last_night, "deep_min")
+            rem_pct = self._stage_fraction(self._last_night, "rem_min")
+            reason = "start minimal {} trial (Tier 1)"
+            # Priority order: maintenance (wake events) first, then the Autopilot-style
+            # low-deep / low-REM stage triggers.
+            if wake_delta and wake_delta > 0:
+                target, reason = "thermal_stability", "wake events up vs baseline -> " + reason
+            elif deep_pct is not None and deep_pct < cfg.benchmarks.deep_pct_floor:
+                target = "deep_bias_cooling"
+                reason = f"deep {deep_pct:.0%} < {cfg.benchmarks.deep_pct_floor:.0%} -> " + reason
+            elif rem_pct is not None and rem_pct < cfg.benchmarks.rem_pct_floor:
+                target = "rem_warming"
+                reason = f"REM {rem_pct:.0%} < {cfg.benchmarks.rem_pct_floor:.0%} -> " + reason
+            else:
+                target = "deep_bias_cooling"
             self.candidate = _Candidate(target=target, magnitude_f=min(1.0, max_step))
             return {
                 "action": "try",
                 "target": target,
                 "magnitude_f": self.candidate.magnitude_f,
-                "reason": f"start minimal {target} trial (Tier 1)",
+                "reason": reason.format(target),
             }
 
         c = self.candidate

@@ -47,6 +47,10 @@ class Benchmarks:
     onset_latency_min: int = 10
     onset_latency_max: int = 20
     hrv_target_ms: int = 70
+    # Escalation thresholds from Eight Sleep's Autopilot RCT (SLEEP 2024): if the prior
+    # night fell below these stage fractions, increase the temperature-offset magnitude.
+    deep_pct_floor: float = 0.15  # deep sleep < 15% of the night
+    rem_pct_floor: float = 0.20   # REM sleep  < 20% of the night
 
 
 @dataclass
@@ -62,9 +66,12 @@ class Tunables:
     wake_recovery_minutes: int = 20
     hot_sleeper_cool_bias_f: float = -1.5
     alarm_vibration_enabled: bool = False  # silence: thermal-only smart wake
+    # Target WATER temperatures on the real Eight Sleep 55-110 °F scale (level 0 ~= 81 °F).
+    # For a hot sleeper these sit on the cool side: 70 °F -> level ~-49, 66 °F -> ~-68.
     neutral_temp_f: float = 70.0
     deep_bias_temp_f: float = 66.0
     wake_ramp_temp_f: float = 74.0
+    rem_warm_offset_f: float = 1.5  # small warm bias in REM (Autopilot RCT) above neutral
     level_min: int = -100
     level_max: int = 100
 

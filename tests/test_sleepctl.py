@@ -80,6 +80,37 @@ def test_thermal_to_level_clamped():
     assert -100 <= tc.to_level(120.0) <= 100
 
 
+def test_calibration_matches_real_eight_sleep_table():
+    """The vendored Eight Sleep lookup table maps known points correctly."""
+    from sleepctl.controller.calibration import (
+        MAX_TEMP_F,
+        MIN_TEMP_F,
+        fahrenheit_to_level,
+        level_to_fahrenheit,
+    )
+
+    # Authoritative reference points from pyEight RAW_TO_FAHRENHEIT_MAP.
+    assert fahrenheit_to_level(55) == -100
+    assert fahrenheit_to_level(66) == -68
+    assert fahrenheit_to_level(70) == -49
+    assert fahrenheit_to_level(74) == -31
+    assert level_to_fahrenheit(0) == 81  # NOT 70 (the old wrong assumption)
+    assert level_to_fahrenheit(-100) == 55
+    # out-of-range targets clamp to the device's supported window
+    assert MIN_TEMP_F <= level_to_fahrenheit(fahrenheit_to_level(40)) <= MAX_TEMP_F
+    assert fahrenheit_to_level(200) == fahrenheit_to_level(MAX_TEMP_F)
+
+
+def test_rem_gets_small_warm_bias():
+    """REM target is warmer than deep (evidence: warmth promotes REM)."""
+    from sleepctl.models import NightObjective, ThermalIntent
+
+    tc = ThermalController(AppConfig.default())
+    deep = tc.target_for(ThermalIntent.DEEP_BIAS_COOL, NightObjective.OPTIMIZE, hot_sleeper=True)
+    rem = tc.target_for(ThermalIntent.REM_NEUTRAL, NightObjective.OPTIMIZE, hot_sleeper=True)
+    assert rem > deep
+
+
 # ---------------------------------------------------------------------- wake detect
 
 
@@ -133,12 +164,12 @@ def test_wake_recovery_triggers_on_awakenings():
 
 
 def test_slew_limit_never_violated_end_to_end():
-    cfg, actuator, _, _ = _run_scenario("normal")
-    levels = actuator.commands
-    max_f_per_level = 0.2  # default calibration
-    max_levels = cfg.tunables.max_step_f / max_f_per_level
-    for a, b in zip(levels, levels[1:]):
-        assert abs(b - a) <= max_levels + 1e-6
+    # Assert the true invariant in °F (table-agnostic): the commanded target never moves
+    # more than max_step_f between consecutive ticks.
+    cfg, _, _, decisions = _run_scenario("normal")
+    targets = [d.target_temp_f for d in decisions]
+    for a, b in zip(targets, targets[1:]):
+        assert abs(b - a) <= cfg.tunables.max_step_f + 1e-6
 
 
 def test_dataset_all_three_layers_populated():
@@ -177,6 +208,21 @@ def test_single_bad_night_does_not_revert():
     p.register_outcome(bad("2026-06-12"))
     rec = p.recommend(Baselines(), {}, {})
     assert rec["action"] != "revert"
+
+
+def test_policy_low_stage_triggers():
+    """Autopilot-style triggers: low deep -> cooling trial; low REM -> warming trial."""
+    cfg = AppConfig.default()
+    # low deep (10% of night): expect a deep-cooling trial
+    p = TieredPolicy(cfg)
+    p.register_outcome(NightSummary(date="d", total_sleep_min=400, deep_min=40, rem_min=120,
+                                    wake_events=1))
+    assert p.recommend(Baselines(), {}, {})["target"] == "deep_bias_cooling"
+    # adequate deep but low REM (10%): expect a REM-warming trial
+    p2 = TieredPolicy(cfg)
+    p2.register_outcome(NightSummary(date="d", total_sleep_min=400, deep_min=100, rem_min=40,
+                                     wake_events=1))
+    assert p2.recommend(Baselines(), {}, {})["target"] == "rem_warming"
 
 
 def test_sustained_worsening_reverts():

@@ -117,6 +117,9 @@ class SleepController:
         action = self._action_for(current_f, target_f)
         reason = self._reason(state, intent, wake_event)
         confidence = 0.9 if not wake_detected else min(0.9, wake_event.confidence + 0.3)
+        # The Pod senses HR/HRV/RR via ballistocardiography, which needs stillness, so
+        # discount confidence when there is significant movement (biometrics less reliable).
+        confidence *= self._biometric_reliability(frame)
 
         self._last_target_f = target_f
         return self._build(
@@ -127,6 +130,14 @@ class SleepController:
         )
 
     # -- helpers -----------------------------------------------------------------
+    @staticmethod
+    def _biometric_reliability(frame: SensorFrame) -> float:
+        """1.0 when still; lower when moving (ballistocardiography needs stillness)."""
+        if frame.movement is None:
+            return 1.0
+        # movement ~0 -> 1.0; movement >= 0.5 -> ~0.6 floor. Linear in between.
+        return max(0.6, 1.0 - 0.8 * min(frame.movement, 0.5))
+
     def _action_for(self, current_f: float, target_f: float) -> CorrectionAction:
         delta = target_f - current_f
         if abs(delta) < 0.5:

@@ -233,7 +233,11 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
               f"bed_temp_f={frame.bed_temp_f}  room_temp_f={frame.room_temp_f}")
         print(f"  HR={frame.heart_rate} HRV={frame.hrv} RR={frame.respiratory_rate} "
               f"stage={frame.stage.value} presence={frame.presence} age={frame.data_age_seconds}s")
-        print("\n(read-only; no commands were sent)")
+        from sleepctl.controller.calibration import fahrenheit_to_level
+        print("\nLevel scale: 55-110 F (API -100..100, non-linear). "
+              f"Controller targets map e.g. 66F->{fahrenheit_to_level(66)}, "
+              f"70F->{fahrenheit_to_level(70)}, 74F->{fahrenheit_to_level(74)}.")
+        print("(read-only; no commands were sent)")
         await client.close()
 
     try:
