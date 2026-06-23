@@ -40,6 +40,7 @@ class LiveClient(Protocol):
     def read_frame(self) -> SensorFrame: ...
     def now(self) -> datetime: ...
     async def set_heating_level(self, level: int, duration_s: int = 0) -> None: ...
+    async def set_wake_alarm(self, spec) -> None: ...
     async def fetch_night_summary(self, date: str) -> NightSummary: ...
     async def close(self) -> None: ...
 
@@ -105,6 +106,9 @@ class LiveDaemon:
                 level = self.cycle.pending_level(decision, frame, now)
                 if level is not None and not dry_run:
                     await self.client.set_heating_level(level)
+                alarm = self.cycle.pending_alarm()
+                if alarm is not None and not dry_run:
+                    await self.client.set_wake_alarm(alarm)
                 self.cycle.log(frame, decision, now)
 
                 self._log(
@@ -218,6 +222,9 @@ class SimulatedLiveClient:
 
     async def set_heating_level(self, level: int, duration_s: int = 0) -> None:
         self.actuator.set_level(level, duration_s)
+
+    async def set_wake_alarm(self, spec) -> None:
+        self.actuator.set_alarm(spec.time, spec.vibration_power, spec.thermal_level)
 
     async def fetch_night_summary(self, date: str) -> NightSummary:
         return self.source.fetch_night_summary(date)

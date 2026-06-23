@@ -16,6 +16,7 @@ from sleepctl.learning.baselines import BaselineEngine
 from sleepctl.learning.policy import TieredPolicy
 from sleepctl.learning.response import ResponseEstimator
 from sleepctl.learning.setpoints import apply_recommendation
+from sleepctl.ml.preference import revealed_preference
 from sleepctl.ml.recommend import recommend_action
 from sleepctl.ml.reward import night_outcome_score
 from sleepctl.models import ActionRecord, NightSummary
@@ -82,6 +83,13 @@ class NightlyUpdater:
                 "confidence": 0.0, "reason": recommendation["reason"],
                 "predicted": {}, "params": {"target": recommendation.get("target")},
             }
+
+        # Anchor toward the user's repeated MANUAL temperature choices (revealed preference),
+        # so constant manual tweaks pull the optimum instead of being fought each night.
+        anchored = revealed_preference(self.repo, next_profile, cfg)
+        if anchored is not None:
+            next_profile = anchored
+            chosen["reason"] += " | anchored toward manual preference"
 
         changed = next_profile.version != active.version
         if changed and not dry_run:

@@ -11,9 +11,16 @@ from __future__ import annotations
 from sleepctl.ml.dataset import FeatureRow
 
 
+# A night with this many manual overrides reflects the user's manual temps, not the
+# automated setpoint, so it's excluded from automated-action attribution (it still informs
+# the revealed-preference anchor in ml/preference.py).
+MANUAL_OVERRIDE_CONFOUND = 3
+
+
 def is_confounded(row: FeatureRow) -> bool:
     return bool(
         row.illness or row.travel or row.alcohol or row.is_short_sleep_day
+        or (row.manual_overrides or 0) >= MANUAL_OVERRIDE_CONFOUND
     )
 
 
