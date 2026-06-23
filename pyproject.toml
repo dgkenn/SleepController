@@ -10,7 +10,8 @@ requires-python = ">=3.11"
 dependencies = ["PyYAML"]
 
 [project.optional-dependencies]
-eightsleep = ["pyEight"]
+# The async OAuth2 fork (NOT the old sync PyPI pyEight). Installed from git.
+eightsleep = ["pyEight @ git+https://github.com/lukas-clarke/pyEight.git"]
 google = ["google-api-python-client", "google-auth-oauthlib"]
 dev = ["pytest"]
 

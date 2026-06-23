@@ -54,6 +54,9 @@ Run synthetic nights through the full controller loop and write the dataset:
 python -m sleepctl.cli replay                 # in-memory DB, prints per-night summary
 python -m sleepctl.cli replay --db sleep.db   # persist the dataset
 python -m sleepctl.cli report --db sleep.db   # show baselines + recent nights
+
+# drive the live DAEMON offline against the simulator (no device, no creds):
+python -m sleepctl.cli run --simulate --wake 07:00
 ```
 
 Run the tests:
@@ -62,15 +65,39 @@ Run the tests:
 pytest tests/
 ```
 
+## Live run (real Pod 2)
+
+The live daemon talks to the Pod through the async [`pyEight`](https://github.com/lukas-clarke/pyEight)
+OAuth2 library (`pip install -e ".[eightsleep]"`).
+
+```bash
+# 1. store credentials once (written to ~/.config/sleepctl/credentials.json, mode 0600;
+#    or set EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD / EIGHTSLEEP_TIMEZONE / EIGHTSLEEP_SIDE)
+python -m sleepctl.cli auth --test
+
+# 2. read-only probe of the device (no commands sent)
+python -m sleepctl.cli calibrate
+
+# 3. dry-run for a night: reads sensors + logs every decision, sends NO temperature commands
+python -m sleepctl.cli run --dry-run --wake 07:00
+
+# 4. go live: the daemon controls bed temperature in a closed loop
+python -m sleepctl.cli run --wake 07:00
+```
+
+Safety: thermal changes are slew- and variability-limited (≤2 °F/step), stale data is held
+on, `--dry-run` is always available for a read-only shakedown, and `calibrate` never writes.
+`--wake HH:MM` supplies the required wake time (v1); Google Calendar is scaffolded for later.
+
 ## CLI subcommands
 
 | Command     | What it does |
 |-------------|--------------|
 | `replay`    | Drive synthetic nights (normal / short_sleep / clustered_awakenings) through the controller offline |
 | `report`    | Print rolling baselines + recent nightly summaries from the dataset |
-| `run`       | Live closed-loop daemon (requires a configured Pod adapter; wiring is the remaining integration step) |
-| `auth`      | Authenticate to Eight Sleep / Google Calendar |
-| `calibrate` | Probe Pod 2 capabilities + build the °F↔level calibration |
+| `run`       | Live closed-loop daemon. Flags: `--dry-run`, `--wake HH:MM`, `--poll-seconds`, `--side`, `--simulate`, `--max-ticks`, `--db` |
+| `auth`      | Store Eight Sleep credentials (0600 file or env vars); `--test` verifies the connection |
+| `calibrate` | Read-only probe of the live Pod (capabilities, current level, bed/room temp, biometrics) |
 
 ## Project layout
 
