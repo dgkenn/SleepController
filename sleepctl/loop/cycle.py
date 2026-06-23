@@ -84,6 +84,16 @@ class ControlCycle:
         wake = bool(self.controller.last_wake_event)
         self.repo.log_sample(frame, decision.state.value, wake, night_date)
         self.repo.log_decision(decision, night_date)
+        # Record an anticipatory pre-cool event (edge-triggered) for efficacy learning.
+        evt = getattr(self.controller, "pending_precool_event", None)
+        if evt is not None:
+            try:
+                self.repo.log_precool_event(
+                    night_date, evt["ts"], evt["window_type"],
+                    evt["lead_used_min"], evt["eta_min"])
+            except Exception:
+                pass
+            self.controller.pending_precool_event = None
         self.recent.append(frame)
         if len(self.recent) > 60:
             self.recent = self.recent[-60:]

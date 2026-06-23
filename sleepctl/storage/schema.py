@@ -136,6 +136,21 @@ CREATE TABLE IF NOT EXISTS actions (
 );
 CREATE INDEX IF NOT EXISTS idx_actions_night ON actions(night_date);
 
+-- Anticipatory pre-cool efficacy ledger: each time the controller pre-cools ahead of a
+-- vulnerable window, log it; after the window passes, label whether an awakening was
+-- prevented. The lead-time learner optimises lead-times against this measured prevention.
+CREATE TABLE IF NOT EXISTS precool_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    night_date TEXT,
+    ts TEXT,
+    window_type TEXT,
+    lead_used_min REAL,
+    eta_min REAL,
+    prevented INTEGER,        -- 1 = no awakening in the window, 0 = awakening occurred, NULL = unresolved
+    resolved INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_precool_night ON precool_events(night_date);
+
 CREATE INDEX IF NOT EXISTS idx_raw_samples_night ON raw_samples(night_date);
 CREATE INDEX IF NOT EXISTS idx_interventions_night ON interventions(night_date);
 CREATE INDEX IF NOT EXISTS idx_decisions_night ON decisions(night_date);

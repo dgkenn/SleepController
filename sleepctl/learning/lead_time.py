@@ -102,15 +102,27 @@ def learn_response_lag(repo, lookback: int = 6000, drop_f: float = 0.8) -> Optio
     return statistics.median(lags)
 
 
-def build_lead_time_profile(repo, need_min_wake_events: float = 1.0) -> LeadTimeProfile:
-    """Construct the lead-time profile: evidence preset adjusted by the learned response lag
-    and how often the user is still waking (outcome feedback)."""
+def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
+                            target_prevention: float = 0.75, min_events: int = 4
+                            ) -> LeadTimeProfile:
+    """Construct the lead-time profile from three signals, in order of authority:
+
+      1. the learned thermal-response lag (sets the floor),
+      2. MEASURED pre-cool efficacy per window (the closed loop): if anticipatory cooling at
+         the current lead still isn't preventing awakenings, lengthen that window's lead; if
+         it reliably prevents, trim it toward the floor,
+      3. a global outcome bump if the user is still waking more than the benchmark.
+    """
+    # Resolve any pending efficacy labels first so the rates are up to date.
+    try:
+        repo.resolve_precool_events()
+    except Exception:
+        pass
+
     lag = learn_response_lag(repo)
     learned = lag is not None
     lag = lag if learned else _DEFAULT_LAG_MIN
 
-    # Outcome feedback: if recent nights still wake more than the benchmark (>=1), be more
-    # anticipatory (scale leads up, bounded). If consistently <=1, leave as-is.
     bump = 1.0
     try:
         nights = repo.recent_nights(14)
@@ -122,7 +134,31 @@ def build_lead_time_profile(repo, need_min_wake_events: float = 1.0) -> LeadTime
     except Exception:
         pass
 
-    src = "learned" if learned else "preset"
-    if learned and bump > 1.0:
-        src = "blended"
-    return LeadTimeProfile.from_lag(lag, bump=bump, source=src)
+    profile = LeadTimeProfile.from_lag(lag, bump=bump,
+                                       source=("learned" if learned else "preset"))
+
+    # Closed-loop adjustment from measured prevention rates.
+    try:
+        eff = repo.precool_efficacy()
+    except Exception:
+        eff = {}
+    adjusted = False
+    for wtype, lead in list(profile.leads.items()):
+        e = eff.get(wtype)
+        if not e or e.get("n", 0) < min_events or e.get("rate") is None:
+            continue
+        rate = e["rate"]
+        if rate < target_prevention:
+            # not preventing enough -> start cooling earlier (proportional to the shortfall)
+            new = lead * (1.0 + 0.5 * (target_prevention - rate))
+        elif rate > 0.92:
+            # reliably preventing -> trim toward the response-lag floor to avoid over-cooling
+            new = max(profile.response_lag_min, lead * 0.95)
+        else:
+            continue
+        profile.leads[wtype] = round(max(_LEAD_BOUNDS[0], min(_LEAD_BOUNDS[1], new)), 1)
+        adjusted = True
+
+    if adjusted or (learned and bump > 1.0):
+        profile.source = "blended"
+    return profile

@@ -235,6 +235,7 @@ export interface MaintenanceSummary {
   response_lag_min?: number;
   lead_times_min?: Record<string, number>;
   lead_source?: string;
+  precool_efficacy?: Record<string, { n: number; prevented: number; rate: number | null; mean_lead: number | null }>;
   strategy: string;
 }
 

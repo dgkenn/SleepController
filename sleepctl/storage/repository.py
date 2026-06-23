@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sleepctl.models import (
@@ -299,6 +299,63 @@ class Repository:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    # ---- anticipatory pre-cool efficacy ledger -------------------------------
+    def log_precool_event(self, night_date, ts, window_type: str,
+                          lead_used_min: float, eta_min: float) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO precool_events (night_date, ts, window_type, lead_used_min, "
+            "eta_min, prevented, resolved) VALUES (?,?,?,?,?,NULL,0)",
+            (night_date, _iso(ts) if not isinstance(ts, str) else ts,
+             window_type, float(lead_used_min), float(eta_min)),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def resolve_precool_events(self, tail_buffer_min: float = 8.0) -> int:
+        """Label unresolved pre-cool events whose window has passed: prevented unless a
+        wake-event was logged inside [ts, ts + eta + buffer]. Returns rows resolved."""
+        rows = self.conn.execute(
+            "SELECT id, ts, eta_min FROM precool_events WHERE resolved = 0"
+        ).fetchall()
+        resolved = 0
+        for r in rows:
+            t0 = _dt(r["ts"])
+            if t0 is None:
+                continue
+            end = t0 + timedelta(minutes=float(r["eta_min"]) + tail_buffer_min)
+            if datetime.now() < end:
+                continue  # window hasn't fully passed yet
+            hit = self.conn.execute(
+                "SELECT COUNT(*) c FROM raw_samples WHERE wake_event = 1 AND ts >= ? AND ts <= ?",
+                (_iso(t0), _iso(end)),
+            ).fetchone()["c"]
+            self.conn.execute(
+                "UPDATE precool_events SET prevented = ?, resolved = 1 WHERE id = ?",
+                (0 if hit else 1, r["id"]),
+            )
+            resolved += 1
+        if resolved:
+            self.conn.commit()
+        return resolved
+
+    def precool_efficacy(self) -> dict:
+        """Per-window prevention rate from resolved events: {window: {n, prevented, rate,
+        mean_lead}}."""
+        rows = self.conn.execute(
+            "SELECT window_type, COUNT(*) n, SUM(prevented) prevented, AVG(lead_used_min) lead "
+            "FROM precool_events WHERE resolved = 1 GROUP BY window_type"
+        ).fetchall()
+        out = {}
+        for r in rows:
+            n = r["n"] or 0
+            prevented = r["prevented"] or 0
+            out[r["window_type"]] = {
+                "n": n, "prevented": prevented,
+                "rate": round(prevented / n, 3) if n else None,
+                "mean_lead": round(r["lead"], 1) if r["lead"] is not None else None,
+            }
+        return out
 
     def backfill_action_rewards(self) -> None:
         """Set each action's reward = mean outcome_score of the nights its version produced.

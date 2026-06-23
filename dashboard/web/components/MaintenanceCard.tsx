@@ -77,6 +77,26 @@ export default function MaintenanceCard() {
         </div>
       )}
 
+      {/* Closed-loop: measured prevention rate of anticipatory pre-cools */}
+      {data.precool_efficacy && Object.keys(data.precool_efficacy).length > 0 && (
+        <div>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+            Pre-cool prevention (measured)
+          </p>
+          <div className="space-y-1">
+            {Object.entries(data.precool_efficacy).map(([w, e]) => (
+              <div key={w} className="flex items-center justify-between text-xs">
+                <span className="text-gray-400">{w.replace(/_/g, ' ')}</span>
+                <span className="text-white tabular-nums">
+                  {e.rate != null ? `${Math.round(e.rate * 100)}% prevented` : '—'}
+                  <span className="text-gray-600"> (n={e.n})</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <p className="text-xs text-gray-400 leading-relaxed">{data.strategy}</p>
     </div>
   );

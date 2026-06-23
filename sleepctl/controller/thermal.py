@@ -47,6 +47,15 @@ class ThermalController:
         self.profile = profile or cfg.default_setpoints()
         # recent commanded temps for the variability cap (short rolling window)
         self._recent_targets: deque[float] = deque(maxlen=8)
+        # latency-awareness state: the response lag + the last material command's time/value
+        self.response_lag_min: float = cfg.tunables.thermal_response_lag_min
+        self._last_cmd_time = None
+        self._last_cmd_water = None
+
+    def set_response_lag(self, minutes: float) -> None:
+        """Update the learned actuation latency the control loop anticipates."""
+        if minutes and minutes > 0:
+            self.response_lag_min = float(minutes)
 
     # -- composite (effective) temperature ---------------------------------------
     # Effective comfort = a blend of what the COVERED body feels (the Pod's bed-surface
@@ -163,12 +172,18 @@ class ThermalController:
         last_target_f: float,
         bed_temp_f: Optional[float] = None,
         ambient_temp_f: Optional[float] = None,
+        now=None,
     ) -> tuple[float, int]:
         """Composite-feedback pipeline -> safe (water_target_f, device level).
 
         Drives the **effective** (blended) temperature to its per-intent target by nudging
         the commanded water temperature. Self-calibrates to body heat (via the measured bed
         temp) and exposed-skin ambient. Always bounded by slew + variability + device range.
+
+        Latency-aware: a fresh closed-loop correction is DAMPED while the previous command is
+        still taking effect (within ``response_lag_min``), because the measured error hasn't
+        yet reflected the in-flight change. This prevents stacking corrections faster than the
+        bed can respond -> no overshoot/oscillation.
         """
         t = self.cfg.tunables
         last = last_target_f if last_target_f is not None else t.neutral_temp_f
@@ -183,11 +198,34 @@ class ThermalController:
             if measured is not None:
                 # Closed loop on the composite: error in effective-comfort °F nudges water.
                 error = eff_target - measured
-                water = last + t.composite_feedback_gain * error
+                step = t.composite_feedback_gain * error
+                step *= self._latency_damping(now, step)  # don't over-correct in-flight
+                water = last + step
             else:
                 # No measured bed temp -> feedforward blend inversion (ambient only).
                 water = self.required_water_open_loop(eff_target, ambient_temp_f)
 
         slewed = self.slew_limit(last, water)
         capped = self.enforce_variability_cap(slewed)
-        return clamp_fahrenheit(capped), self.to_level(clamp_fahrenheit(capped))
+        final = clamp_fahrenheit(capped)
+        # Remember a MATERIAL command so the next ticks can damp against its in-flight effect.
+        if now is not None and abs(final - last) >= 0.25:
+            self._last_cmd_time = now
+            self._last_cmd_water = final
+        return final, self.to_level(final)
+
+    def _latency_damping(self, now, step: float) -> float:
+        """Damping factor in [0,1] for a fresh closed-loop correction.
+
+        Right after a material command the bed hasn't responded yet, so the measured error is
+        stale and a full new correction would over-shoot. We scale the correction by
+        ``elapsed / response_lag`` while inside the lag window (0 -> just commanded, 1 -> the
+        effect has had time to land). Slew/variability still bound everything."""
+        if now is None or self._last_cmd_time is None:
+            return 1.0
+        try:
+            elapsed = (now - self._last_cmd_time).total_seconds() / 60.0
+        except Exception:
+            return 1.0
+        lag = max(1.0, self.response_lag_min)
+        return max(0.0, min(1.0, elapsed / lag))

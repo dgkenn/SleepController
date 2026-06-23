@@ -74,7 +74,11 @@ def maintenance_summary(repo) -> dict:
     from sleepctl.learning.lead_time import build_lead_time_profile
     from sleepctl.ml.wake_profile import build_wake_profile
     profile = build_wake_profile(repo)
-    lead = build_lead_time_profile(repo)
+    lead = build_lead_time_profile(repo)  # also resolves pending pre-cool efficacy labels
+    try:
+        efficacy = repo.precool_efficacy()
+    except Exception:
+        efficacy = {}
 
     def _hhmm(m):
         return f"{m // 60:02d}:{m % 60:02d}"
@@ -97,6 +101,7 @@ def maintenance_summary(repo) -> dict:
         "response_lag_min": lead.response_lag_min,
         "lead_times_min": lead.leads,
         "lead_source": lead.source,
+        "precool_efficacy": efficacy,
         "strategy": (
             "Prevent: watches for wake precursors (rising heart rate, restlessness, the bed "
             "running warm, and your recurring wake times) and pre-emptively cools in light "

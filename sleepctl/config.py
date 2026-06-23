@@ -99,6 +99,12 @@ class Tunables:
     # A proportional loop nudges the water temp to drive effective -> target.
     composite_bed_weight: float = 0.75   # ~25% of comfort attributed to exposed skin
     composite_feedback_gain: float = 0.6  # °F water step per °F effective error (slew-capped)
+    # Actuation latency: minutes from a water-temp command until the bed meaningfully
+    # responds. The control loop is latency-aware — it damps fresh corrections while the
+    # previous command is still taking effect (prevents overshoot/oscillation), and
+    # time-targeted ramps (wake) start this many minutes early. Learned per-user; this is
+    # the default/floor.
+    thermal_response_lag_min: float = 12.0
     # Outdoor weather is only an ambient FALLBACK when the Pod reports no bed/room temp.
     weather_enabled: bool = True
     weather_latitude: float = 42.3601   # Boston, MA

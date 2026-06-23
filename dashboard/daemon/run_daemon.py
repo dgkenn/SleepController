@@ -233,7 +233,21 @@ class DashboardDaemon:
                 if alarm is not None:
                     self.actuator.set_alarm(alarm.time, alarm.vibration_power, alarm.thermal_level)
             self.cycle.log(frame, decision, now)
+            # When a night ends (back to IDLE), resolve pre-cool efficacy and refresh the
+            # learned wake + lead-time profiles so prevention improves night over night.
+            if decision is not None and decision.state.value.lower() == "idle":
+                self._refresh_profiles()
         bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
+
+    def _refresh_profiles(self) -> None:
+        try:
+            from sleepctl.learning.lead_time import build_lead_time_profile
+            from sleepctl.ml.wake_profile import build_wake_profile
+            self.cycle.controller.set_wake_profile(
+                build_wake_profile(self.repo),
+                lead_profile=build_lead_time_profile(self.repo))
+        except Exception as exc:
+            print(f"profile refresh skipped: {exc}", flush=True)
 
     def command_tick(self) -> None:
         """Fast path: apply queued overrides and, when one lands, actuate + snapshot now so

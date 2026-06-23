@@ -58,6 +58,8 @@ class SleepController:
         self.last_wake_risk = None        # last WakeRisk
         self._arousal_started: Optional[datetime] = None  # for re-settling latency
         self.last_resettle_latency_min: Optional[float] = None
+        self._anticipatory_active = False
+        self.pending_precool_event = None  # consumed + logged by the cycle
         self.should_wake = False
         self.pending_wake_alarm = None  # WakeAlarmSpec to program (vibration + heat), once
 
@@ -119,6 +121,21 @@ class SleepController:
                 # Pre-empt on rising risk OR a micro-arousal we want to settle quickly.
                 self._preempt_cool = risk.preempt or (
                     arousal.level is ArousalLevel.MICRO and frame.stage is not SleepStage.DEEP)
+                # Edge-trigger a pre-cool efficacy event when anticipatory cooling first
+                # fires for a window (so the lead-time learner can later score prevention).
+                anticip = next((r for r in risk.reasons if r.startswith("anticipatory_")), None)
+                if anticip and not self._anticipatory_active:
+                    wtype = anticip[len("anticipatory_"):]
+                    eta, _ = self.wake_risk_assessor.profile.next_window_eta(
+                        now, mins_since_onset)
+                    lead = (self.wake_risk_assessor.lead_profile.lead_for(wtype)
+                            if self.wake_risk_assessor.lead_profile else None)
+                    self.pending_precool_event = {
+                        "ts": now, "window_type": wtype,
+                        "lead_used_min": lead if lead is not None else 0.0,
+                        "eta_min": eta if eta is not None else 0.0,
+                    }
+                self._anticipatory_active = bool(anticip)
         else:
             wake_event = None
         self.last_wake_event = wake_event
@@ -194,7 +211,7 @@ class SleepController:
         # slew is anchored to the last command so the device never jumps > max_step_f.
         target_f, level = self.thermal.resolve(
             intent, objective, cfg.profile.hot_sleeper, self._last_target_f,
-            bed_temp_f, ambient_temp_f,
+            bed_temp_f, ambient_temp_f, now=now,
         )
 
         # --- correction action vs current bed temp -----------------------------
@@ -230,6 +247,8 @@ class SleepController:
             self.wake_risk_assessor.profile = profile
         if lead_profile is not None:
             self.wake_risk_assessor.lead_profile = lead_profile
+            # Make the whole thermal loop latency-aware with the learned actuation lag.
+            self.thermal.set_response_lag(lead_profile.response_lag_min)
 
     @staticmethod
     def _sleep_baseline(recent: list) -> tuple:
