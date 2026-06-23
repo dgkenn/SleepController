@@ -44,15 +44,41 @@ _STAGE_MAP = {
 
 
 def map_stage(raw: Optional[str]) -> SleepStage:
-    """Map a pyEight sleep-stage string (e.g. 'asleep:deep') to SleepStage."""
+    """Map a pyEight sleep-stage string to SleepStage.
+
+    Tolerant of the formats seen across firmwares: ``"deep"``, ``"asleep:deep"``,
+    camelCase ``"asleepDeep"``, ``"out"`` (out of bed), etc.
+    """
     if not raw:
         return SleepStage.UNKNOWN
     key = raw.lower().split(":")[-1].strip()
-    return _STAGE_MAP.get(key, SleepStage.UNKNOWN)
+    if key in _STAGE_MAP:
+        return _STAGE_MAP[key]
+    # substring fallback for camelCase / compound labels (e.g. "asleepDeep")
+    for token, stage in (("deep", SleepStage.DEEP), ("rem", SleepStage.REM),
+                         ("light", SleepStage.LIGHT), ("awake", SleepStage.AWAKE),
+                         ("out", SleepStage.AWAKE)):
+        if token in key:
+            return stage
+    return SleepStage.UNKNOWN
 
 
 def _looks_like_fahrenheit(value: Optional[float]) -> bool:
     return value is not None and 50.0 <= value <= 120.0
+
+
+def _safe(fn, default=None):
+    """Call ``fn`` and return ``default`` on ANY error.
+
+    pyEight properties read from internal JSON that may be empty/partial — especially on
+    a Pod 2, which can report fewer fields than Pod 3/4. Some properties raise (e.g.
+    ``heating_level`` -> IndexError when device data is unloaded), which a plain getattr
+    would not catch. This keeps a single missing field from crashing a whole tick.
+    """
+    try:
+        return fn()
+    except Exception:
+        return default
 
 
 class EightSleepClient:
@@ -119,21 +145,22 @@ class EightSleepClient:
         now = datetime.now()
         age = (now - self._last_update).total_seconds() if self._last_update else None
 
-        bed_temp = getattr(user, "current_bed_temp", None)
+        # Every property read is wrapped: on a Pod 2 some fields may be missing or raise.
+        bed_temp = _safe(lambda: user.current_bed_temp)
         bed_temp_f = bed_temp if _looks_like_fahrenheit(bed_temp) else self._convert_bed_temp(bed_temp)
 
         return SensorFrame(
             timestamp=self._last_update or now,
-            stage=map_stage(getattr(user, "current_sleep_stage", None)),
+            stage=map_stage(_safe(lambda: user.current_sleep_stage)),
             stage_confidence=None,
-            heart_rate=getattr(user, "current_heart_rate", None),
-            hrv=getattr(user, "current_hrv", None),
-            respiratory_rate=getattr(user, "current_breath_rate", None),
+            heart_rate=_safe(lambda: user.current_heart_rate),
+            hrv=_safe(lambda: user.current_hrv),
+            respiratory_rate=_safe(lambda: user.current_breath_rate),
             movement=None,
-            presence=getattr(user, "bed_presence", None),
+            presence=_safe(lambda: user.bed_presence),
             bed_temp_f=bed_temp_f,
             room_temp_f=self._room_temp_f(user),
-            commanded_level=getattr(user, "heating_level", None),
+            commanded_level=_safe(lambda: user.heating_level),
             data_age_seconds=age,
         )
 
@@ -147,9 +174,9 @@ class EightSleepClient:
             return None
 
     def _room_temp_f(self, user):  # pragma: no cover - requires live device
-        val = getattr(user, "current_room_temp", None)
+        val = _safe(lambda: user.current_room_temp)
         if val is None:
-            val = getattr(self._eight, "room_temperature", None)
+            val = _safe(lambda: self._eight.room_temperature)
         return val if _looks_like_fahrenheit(val) else None
 
     # -- acting ------------------------------------------------------------------
@@ -191,8 +218,56 @@ class EightSleepClient:
         # available, leave the rest None. Detailed mapping refined against a live Pod 2.
         return NightSummary(date=date)
 
+    async def probe(self) -> dict:  # pragma: no cover - requires live device
+        """Live per-field capability probe — run this on the real Pod 2 (calibrate CLI).
+
+        Reports what THIS device actually supports rather than guessing from the model:
+        whether it cools, whether a base is present, which biometric fields populate, and
+        which control commands the library exposes. Use it the first time you connect a
+        Pod 2 to confirm the controller's assumptions hold.
+        """
+        await self.update()
+        user = self._user
+        eight = self._eight
+
+        is_pod = bool(_safe(lambda: eight.is_pod, False))
+        has_base = bool(_safe(lambda: eight._has_base, False))
+
+        fields = {}
+        for name in ("current_heart_rate", "current_hrv", "current_breath_rate",
+                     "current_sleep_stage", "current_bed_temp", "current_room_temp",
+                     "bed_presence", "heating_level", "target_heating_level"):
+            val = _safe(lambda n=name: getattr(user, n))
+            fields[name] = {"available": val is not None, "value": val}
+
+        commands = {
+            name: hasattr(user, name)
+            for name in ("set_heating_level", "set_smart_heating_level",
+                         "set_alarm_direct", "turn_on_side", "turn_off_side")
+        }
+
+        warnings = []
+        if not is_pod:
+            warnings.append(
+                "Device does not report the 'cooling' feature — it may be heat-only. "
+                "The cooling-biased control rules will have limited effect."
+            )
+        for core in ("current_heart_rate", "current_sleep_stage", "heating_level"):
+            if not fields[core]["available"]:
+                warnings.append(f"Core field '{core}' is unavailable on this device.")
+
+        return {
+            "is_pod_with_cooling": is_pod,
+            "has_base": has_base,
+            "side": self.side,
+            "fields": fields,
+            "commands": commands,
+            "warnings": warnings,
+            "device_data_keys": sorted(_safe(lambda: list(eight.device_data.keys()), [])),
+        }
+
     def capabilities(self) -> dict:
-        """Expected Pod 2 capabilities; the calibrate CLI refines this against the device."""
+        """Expected Pod 2 capabilities (static baseline); ``probe()`` confirms live."""
         return {
             "source": "eightsleep_cloud",
             "real_time": False,

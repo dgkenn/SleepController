@@ -118,3 +118,35 @@ def test_credentials_roundtrip_and_env_override(tmp_path, monkeypatch):
 
 def test_credentials_missing_is_incomplete(tmp_path):
     assert not load_credentials(str(tmp_path / "nope.json")).is_complete()
+
+
+class _RaisingUser:
+    """Mimics a pyEight user whose properties raise on partial/empty data (Pod 2)."""
+
+    def _raise(self):
+        raise IndexError("device data not loaded")
+
+    current_heart_rate = property(_raise)
+    current_hrv = property(_raise)
+    current_breath_rate = property(_raise)
+    current_sleep_stage = property(_raise)
+    current_bed_temp = property(_raise)
+    current_room_temp = property(_raise)
+    bed_presence = property(_raise)
+    heating_level = property(_raise)
+
+
+def test_read_frame_survives_partial_data():
+    """A field that raises (e.g. heating_level IndexError) must not crash a tick."""
+    from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+
+    client = EightSleepClient("u@e.com", "pw", "UTC", side="left")
+    client._user = _RaisingUser()
+    client._eight = object()  # room_temperature access will also raise -> guarded
+    client._last_update = datetime.now()
+
+    frame = client.read_frame()  # must not raise
+    assert frame.heart_rate is None
+    assert frame.commanded_level is None
+    assert frame.bed_temp_f is None
+    assert frame.stage is SleepStage.UNKNOWN

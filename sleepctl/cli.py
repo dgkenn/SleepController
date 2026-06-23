@@ -211,14 +211,29 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
                                   creds.client_id, creds.client_secret)
         await client.connect()
-        await client.update()
+        report = await client.probe()  # live per-field Pod 2 capability probe
         frame = client.read_frame()
-        print("Capabilities:", client.capabilities())
-        print(f"Current heating level: {client.get_current_level()}")
-        print(f"Bed temp (F): {frame.bed_temp_f}   Room temp (F): {frame.room_temp_f}")
-        print(f"HR={frame.heart_rate} HRV={frame.hrv} RR={frame.respiratory_rate} "
+
+        print("=== Pod capability probe (this device) ===")
+        print(f"  side: {report['side']}   cooling-capable Pod: {report['is_pod_with_cooling']}"
+              f"   base present: {report['has_base']}")
+        print("  biometric / control fields:")
+        for name, info in report["fields"].items():
+            mark = "ok " if info["available"] else "-- "
+            print(f"    [{mark}] {name:22} = {info['value']}")
+        print("  commands available:")
+        for name, ok in report["commands"].items():
+            print(f"    [{'ok ' if ok else '-- '}] {name}")
+        if report["warnings"]:
+            print("  WARNINGS:")
+            for w in report["warnings"]:
+                print(f"    ! {w}")
+        print("\n=== current snapshot ===")
+        print(f"  heating level: {client.get_current_level()}   "
+              f"bed_temp_f={frame.bed_temp_f}  room_temp_f={frame.room_temp_f}")
+        print(f"  HR={frame.heart_rate} HRV={frame.hrv} RR={frame.respiratory_rate} "
               f"stage={frame.stage.value} presence={frame.presence} age={frame.data_age_seconds}s")
-        print("(read-only; no commands sent)")
+        print("\n(read-only; no commands were sent)")
         await client.close()
 
     try:

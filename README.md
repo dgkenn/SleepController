@@ -67,23 +67,40 @@ pytest tests/
 
 ## Live run (real Pod 2)
 
-The live daemon talks to the Pod through the async [`pyEight`](https://github.com/lukas-clarke/pyEight)
-OAuth2 library (`pip install -e ".[eightsleep]"`).
+The live daemon talks to the Pod through the async
+[`pyEight`](https://github.com/lukas-clarke/pyEight) OAuth2 library. That fork is **not
+pip-installable** (it ships no `setup.py`), so install its deps via the extra and put the
+`pyeight` package on your `PYTHONPATH`:
 
 ```bash
-# 1. store credentials once (written to ~/.config/sleepctl/credentials.json, mode 0600;
-#    or set EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD / EIGHTSLEEP_TIMEZONE / EIGHTSLEEP_SIDE)
+pip install -e ".[eightsleep]"                         # aiohttp, httpx, python-dateutil
+git clone https://github.com/lukas-clarke/pyEight.git  # the async OAuth2 fork
+export PYTHONPATH="$PWD/pyEight:$PYTHONPATH"            # makes `import pyeight` work
+```
+
+Then, **with your Pod 2 (start here the first time you connect a unit):**
+
+```bash
+# 1. store credentials once (~/.config/sleepctl/credentials.json, mode 0600; or set
+#    EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD / EIGHTSLEEP_TIMEZONE / EIGHTSLEEP_SIDE)
 python -m sleepctl.cli auth --test
 
-# 2. read-only probe of the device (no commands sent)
+# 2. PROBE your specific Pod 2 (read-only): does it cool? which fields/commands work?
 python -m sleepctl.cli calibrate
 
-# 3. dry-run for a night: reads sensors + logs every decision, sends NO temperature commands
+# 3. dry-run a night: reads sensors + logs every decision, sends NO commands
 python -m sleepctl.cli run --dry-run --wake 07:00
 
 # 4. go live: the daemon controls bed temperature in a closed loop
 python -m sleepctl.cli run --wake 07:00
 ```
+
+**Pod 2 notes.** The lukas-clarke fork is validated mostly on Pod 3/4, so run `calibrate`
+first on a Pod 2: it reports whether the device advertises **active cooling** (a hot
+sleeper needs this), and exactly which biometric fields and control commands your unit
+exposes — warning on anything missing. The adapter reads every field defensively, so a
+Pod 2 that reports fewer fields degrades gracefully instead of crashing (verified by the
+`pyeight` integration test).
 
 Safety: thermal changes are slew- and variability-limited (≤2 °F/step), stale data is held
 on, `--dry-run` is always available for a read-only shakedown, and `calibrate` never writes.
