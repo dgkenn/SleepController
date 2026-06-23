@@ -1,0 +1,5 @@
+# Dashboard API runtime deps (stdlib-only auth — no jose/passlib/cryptography).
+fastapi>=0.110
+uvicorn[standard]>=0.29
+PyYAML>=6.0
+# the sleepctl engine is installed from the repo root: `pip install -e .`

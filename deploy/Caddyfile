@@ -1,0 +1,69 @@
+# Caddy configuration for sleepctl dashboard
+# Uses `tls internal` to issue a self-signed local CA cert — no public domain or
+# account required.  iPhone users accept the cert once (or install Caddy's root CA
+# for a green lock; see README.md).
+
+{
+    # Local CA — no ACME account, no external traffic
+    local_certs
+}
+
+# Serve on all interfaces so LAN devices (iPhone) can reach the box.
+# Replace `:443` with `<hostname>.local:443` or your LAN IP if you prefer.
+:443 {
+    tls internal
+
+    # ── SSE / streaming endpoint — disable all buffering ─────────────────────
+    # /api/stream/* → upstream /stream/*  (strip only the /api prefix)
+    handle /api/stream/* {
+        uri strip_prefix /api
+        reverse_proxy api:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+            flush_interval -1
+            transport http {
+                # Keep the SSE connection alive; no read timeout
+                read_timeout 0
+            }
+        }
+    }
+
+    # ── REST API — strip /api prefix, forward the rest ────────────────────────
+    # /api/foo → upstream /foo
+    handle_path /api/* {
+        reverse_proxy api:8000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # ── Next.js PWA (everything else) ────────────────────────────────────────
+    handle {
+        reverse_proxy web:3000 {
+            header_up X-Real-IP {remote_host}
+            header_up X-Forwarded-Proto {scheme}
+        }
+    }
+
+    # Compress responses
+    encode gzip
+
+    # Basic security headers for PWA/iOS
+    header {
+        # HSTS (short max-age for local CA so you can undo easily)
+        Strict-Transport-Security "max-age=3600"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "SAMEORIGIN"
+        Referrer-Policy "same-origin"
+    }
+
+    log {
+        output stderr
+        level INFO
+    }
+}
+
+# Redirect plain HTTP → HTTPS
+:80 {
+    redir https://{host}{uri} 302
+}

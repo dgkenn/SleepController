@@ -1,0 +1,206 @@
+"""Service helpers: status assembly, analytics, ML surfacing, alerts, data-source health.
+
+All read through the sleepctl ``Repository`` + the dashboard tables, reusing engine logic
+(config objective rules, ML recommender, phenotype). Kept in one module for v1 simplicity.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from sleepctl.config import AppConfig
+from sleepctl.ml.confounders import clean_rows
+from sleepctl.ml.dataset import build_feature_rows
+from sleepctl.ml.model import SetpointModel
+from sleepctl.ml.phenotype import correlate_with_outcome
+from sleepctl.ml.recommend import recommend_action
+
+from app import bridge
+from app.config import settings
+
+CFG = AppConfig.default()
+
+
+# ----------------------------------------------------------------------- status
+def build_status(repo) -> dict:
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    nights = repo.recent_nights(1)
+    last = nights[-1] if nights else None
+    rec = ml_recommendation(repo)
+    return {
+        "state": rt.get("state") or "IDLE",
+        "objective": rt.get("objective"),
+        "mode": rt.get("mode", "auto"),
+        "target_temp_f": rt.get("target_temp_f"),
+        "bed_temp_f": rt.get("bed_temp_f"),
+        "room_temp_f": rt.get("room_temp_f"),
+        "stage": rt.get("stage"),
+        "confidence": rt.get("confidence"),
+        "daemon_alive": rt.get("daemon_alive", False),
+        "stale": rt.get("stale", True),
+        "updated": rt.get("updated"),
+        "recommendation": {"action": rec.get("action"), "reason": rec.get("reason"),
+                           "confidence": rec.get("confidence")},
+        "last_night": _night_brief(last) if last else None,
+        "alerts": active_alerts(repo),
+        "schedule": schedule_brief(repo),
+    }
+
+
+def _night_brief(n) -> dict:
+    return {
+        "date": n.date, "total_sleep_min": n.total_sleep_min, "deep_min": n.deep_min,
+        "rem_min": n.rem_min, "wake_events": n.wake_events,
+        "sleep_efficiency": n.sleep_efficiency, "avg_hrv": n.avg_hrv,
+        "outcome_score": n.outcome_score,
+    }
+
+
+def schedule_brief(repo) -> dict:
+    today = datetime.now().date().isoformat()
+    ctx = repo.get_context(today)
+    return {
+        "required_wake_time": ctx.required_wake_time.isoformat()
+        if ctx and ctx.required_wake_time else None,
+        "sleep_opportunity_min": getattr(ctx, "sleep_opportunity_min", None),
+        "is_short_sleep_day": getattr(ctx, "is_short_sleep_day", None),
+    }
+
+
+# -------------------------------------------------------------------------- ml
+def ml_recommendation(repo) -> dict:
+    profile = repo.latest_setpoints() or CFG.default_setpoints()
+    chosen = recommend_action(repo, profile, CFG)
+    if chosen is None:
+        return {"action": "rule-policy", "reason": "deferring to safe rule policy (insufficient "
+                "data or confidence)", "confidence": 0.0, "source": "fallback",
+                "low_confidence": True}
+    return {
+        "action": chosen.name, "reason": chosen.reason, "confidence": chosen.confidence,
+        "predicted": chosen.predicted, "source": "ml",
+        "low_confidence": chosen.confidence < CFG.ml.conf_min,
+    }
+
+
+def ml_overview(repo) -> dict:
+    baselines = repo.latest_baselines()
+    sp = repo.latest_setpoints()
+    rows = build_feature_rows(repo)
+    clean = clean_rows(rows)
+    confidence = 0.0
+    if len(clean) >= 3:
+        confidence = SetpointModel(lam=CFG.ml.ridge_lambda).fit(clean).confidence()
+    actions = [
+        {"date": a.date, "action": a.action_name, "source": a.source,
+         "confidence": a.confidence, "reward": a.reward_observed}
+        for a in repo.recent_actions(10)
+    ]
+    return {
+        "baselines": baselines.metrics if baselines else {},
+        "setpoint": _setpoint_dict(sp) if sp else None,
+        "model_confidence": confidence,
+        "clean_nights": len(clean),
+        "min_nights": CFG.ml.min_nights,
+        "recommendation": ml_recommendation(repo),
+        "actions": actions,
+        "phenotype": [{"feature": f, "r": r, "n": n}
+                      for f, r, n in correlate_with_outcome(repo)[:6]],
+    }
+
+
+def _setpoint_dict(sp) -> dict:
+    return {"version": sp.version, "source": sp.source, "neutral_f": sp.neutral_f,
+            "deep_bias_f": sp.deep_bias_f, "rem_warm_offset_f": sp.rem_warm_offset_f,
+            "wake_ramp_f": sp.wake_ramp_f, "composite_bed_weight": sp.composite_bed_weight}
+
+
+# ------------------------------------------------------------------- analytics
+_METRIC_FIELDS = {
+    "wake_events": "wake_events", "deep_min": "deep_min", "rem_min": "rem_min",
+    "avg_hrv": "avg_hrv", "total_sleep_min": "total_sleep_min",
+    "sleep_efficiency": "sleep_efficiency", "outcome_score": "outcome_score",
+}
+
+
+def trends(repo, metric: str, window: int = 30) -> dict:
+    field = _METRIC_FIELDS.get(metric)
+    if field is None:
+        return {"metric": metric, "points": []}
+    nights = repo.recent_nights(window)
+    points = [{"date": n.date, "value": getattr(n, field)} for n in nights]
+    return {"metric": metric, "points": points}
+
+
+def effectiveness(repo) -> dict:
+    """Mean reward by action, from the action ledger (intervention effectiveness)."""
+    rows = repo.conn.execute(
+        """SELECT action_name, COUNT(*) c, AVG(reward_observed) r
+           FROM actions WHERE reward_observed IS NOT NULL GROUP BY action_name"""
+    ).fetchall()
+    return {"by_action": [{"action": x["action_name"], "n": x["c"],
+                           "mean_reward": x["r"]} for x in rows]}
+
+
+# ---------------------------------------------------------------------- alerts
+def active_alerts(repo) -> list[dict]:
+    rows = repo.conn.execute(
+        "SELECT * FROM alerts WHERE acknowledged=0 ORDER BY id DESC LIMIT 20"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def generate_alerts(repo) -> int:
+    """Rule-based alerts from the latest night + runtime; returns count created."""
+    created = 0
+    nights = repo.recent_nights(1)
+    if nights:
+        n = nights[-1]
+        b = CFG.benchmarks
+        if n.wake_events is not None and n.wake_events > b.wake_events_max:
+            created += _add_alert(repo, "wake_events", "warning",
+                                  f"{n.wake_events} wake events last night (target ≤{b.wake_events_max}).")
+        if n.avg_hrv is not None and n.avg_hrv < b.hrv_target_ms * 0.8:
+            created += _add_alert(repo, "low_hrv", "warning",
+                                  f"HRV {n.avg_hrv:.0f} ms is low vs target {b.hrv_target_ms}.")
+        if n.total_sleep_min is not None and n.total_sleep_min < 360:
+            created += _add_alert(repo, "short_sleep", "info",
+                                  f"Short sleep: {n.total_sleep_min:.0f} min.")
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    if rt.get("stale"):
+        created += _add_alert(repo, "stale_data", "critical",
+                              "Controller data is stale / daemon not reporting.")
+    if rt.get("confidence") is not None and rt["confidence"] < CFG.ml.conf_min:
+        created += _add_alert(repo, "low_confidence", "info",
+                              "Model confidence low — using safe rule policy.")
+    return created
+
+
+def _add_alert(repo, atype: str, severity: str, message: str) -> int:
+    # de-dupe: skip if an identical unacknowledged alert already exists today
+    today = datetime.now().date().isoformat()
+    exists = repo.conn.execute(
+        "SELECT 1 FROM alerts WHERE type=? AND acknowledged=0 AND substr(ts,1,10)=? LIMIT 1",
+        (atype, today),
+    ).fetchone()
+    if exists:
+        return 0
+    repo.conn.execute(
+        "INSERT INTO alerts (ts, type, severity, message, acknowledged) VALUES (?,?,?,?,0)",
+        (datetime.now(timezone.utc).isoformat(), atype, severity, message),
+    )
+    repo.conn.commit()
+    return 1
+
+
+# -------------------------------------------------------------- data-source health
+def data_health(repo) -> dict:
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    rows = repo.conn.execute("SELECT * FROM data_sync").fetchall()
+    sources = {r["source"]: dict(r) for r in rows}
+    return {
+        "daemon": {"alive": rt.get("daemon_alive", False), "updated": rt.get("updated"),
+                   "stale": rt.get("stale", True)},
+        "sources": sources,
+        "pending_commands": repo.conn.execute(
+            "SELECT COUNT(*) c FROM commands WHERE status='pending'").fetchone()["c"],
+    }

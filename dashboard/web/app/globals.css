@@ -1,0 +1,49 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { color-scheme: dark; }
+* { -webkit-tap-highlight-color: transparent; box-sizing: border-box; }
+
+html { font-family: ui-rounded, 'SF Pro Rounded', Inter, system-ui, -apple-system, sans-serif; }
+body {
+  background-color: #070910;
+  color: #eef2f8;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  font-feature-settings: 'tnum' 1;
+  background-image:
+    radial-gradient(1200px 620px at 50% -14%, rgba(108,140,255,0.20), transparent 60%),
+    radial-gradient(900px 520px at 96% 6%, rgba(124,92,255,0.14), transparent 55%),
+    radial-gradient(700px 500px at 0% 30%, rgba(34,211,238,0.10), transparent 55%);
+  background-attachment: fixed;
+}
+
+/* Safe-area helpers (iPhone notch / home bar) */
+.safe-area-pb { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.safe-area-pt { padding-top: env(safe-area-inset-top, 0px); }
+
+/* Glass treatment applied to the existing card surfaces (no per-component edits needed) */
+.bg-surface-card, .bg-surface-raised {
+  border: 1px solid rgba(255,255,255,0.09) !important;
+  background-image: linear-gradient(180deg, rgba(255,255,255,0.07), rgba(255,255,255,0.025)) !important;
+  box-shadow: 0 10px 34px rgba(0,0,0,0.45), inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+  animation: rise .4s cubic-bezier(.2,.7,.3,1) both;
+}
+
+/* Brand/danger/success buttons get depth + gradient + glow */
+.bg-brand { background-image: linear-gradient(180deg, #8aa3ff, #6c8cff) !important; box-shadow: 0 8px 22px rgba(108,140,255,0.4); color: #060810 !important; }
+.bg-danger { background-image: linear-gradient(180deg, #fb7185, #e11d48) !important; box-shadow: 0 8px 24px rgba(244,63,94,0.45); }
+.bg-success { background-image: linear-gradient(180deg, #4ade80, #22c55e) !important; }
+button { transition: transform .12s ease, box-shadow .2s ease; }
+button:active { transform: scale(0.97); }
+
+.tabular-nums { font-variant-numeric: tabular-nums; }
+input, textarea, select { font-size: 16px; } /* prevent iOS focus zoom */
+::-webkit-scrollbar { width: 0; height: 0; }
+
+.live-dot { display:inline-block; width:8px; height:8px; border-radius:9999px; background:#34d399; box-shadow:0 0 10px #34d399; animation: pulseDot 2s ease-in-out infinite; }
+@keyframes pulseDot { 0%,100%{opacity:1} 50%{opacity:.3} }
+@keyframes rise { from{opacity:0; transform:translateY(10px)} to{opacity:1; transform:none} }
