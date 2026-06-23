@@ -29,6 +29,15 @@ class ControlCycle:
         self.controller = controller or SleepController(cfg)
         self.recent: list[SensorFrame] = []
         self._last_action_level: Optional[int] = None
+        self._wake_alarm_sent = False
+
+    def pending_alarm(self):
+        """Return the controller's wake alarm spec once (heat+vibration), else None."""
+        spec = getattr(self.controller, "pending_wake_alarm", None)
+        if spec is not None and not self._wake_alarm_sent:
+            self._wake_alarm_sent = True
+            return spec
+        return None
 
     @staticmethod
     def night_date(now: datetime) -> str:

@@ -45,6 +45,7 @@ class SleepController:
         self._last_target_f: float = cfg.tunables.neutral_temp_f
         self.last_wake_event = None
         self.should_wake = False
+        self.pending_wake_alarm = None  # WakeAlarmSpec to program (vibration + heat), once
 
     def _objective(self, context: Optional[ContextRecord]) -> NightObjective:
         if context is not None and context.is_short_sleep_day:
@@ -104,6 +105,8 @@ class SleepController:
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
             intent, self.should_wake = self.smart_wake.step(frame, now, required_wake)
+            # Program a heat + gentle-vibration smart alarm for the optimal light-sleep wake.
+            self.pending_wake_alarm = self.smart_wake.alarm_spec(now, required_wake)
         else:
             intent = ThermalIntent.NEUTRAL
 

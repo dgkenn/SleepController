@@ -50,6 +50,8 @@ class FeatureRow:
     # subjective labels (optional)
     subjective_quality: Optional[float] = None
     grogginess: Optional[float] = None
+    # count of manual temperature overrides on this night (confounder for auto attribution)
+    manual_overrides: Optional[int] = None
     # outcomes
     total_sleep_min: Optional[float] = None
     deep_pct: Optional[float] = None
@@ -66,9 +68,17 @@ def _mean_or_none(values):
     return fmean(vals) if vals else None
 
 
+def _manual_override_counts(repo: Repository) -> dict[str, int]:
+    rows = repo.conn.execute(
+        "SELECT night_date, COUNT(*) AS c FROM actions WHERE source='manual' GROUP BY night_date"
+    ).fetchall()
+    return {r["night_date"]: r["c"] for r in rows}
+
+
 def build_feature_rows(repo: Repository) -> list[FeatureRow]:
     nights = repo.all_nights()
     setpoints = repo.setpoints_by_version()
+    manual_counts = _manual_override_counts(repo)
     rows: list[FeatureRow] = []
     for n in nights:
         sp = setpoints.get(n.setpoint_version) if n.setpoint_version is not None else None
@@ -102,6 +112,7 @@ def build_feature_rows(repo: Repository) -> list[FeatureRow]:
                              if ctx and ctx.late_night_work is not None else None),
             subjective_quality=getattr(ctx, "subjective_quality", None),
             grogginess=getattr(ctx, "grogginess", None),
+            manual_overrides=manual_counts.get(n.date, 0),
             total_sleep_min=n.total_sleep_min,
             deep_pct=deep_pct,
             rem_pct=rem_pct,

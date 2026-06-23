@@ -267,6 +267,19 @@ against the outcome columns — so the ML can learn the optimal per-stage effect
 and blend weight from real (setpoint, context, outcome) tuples. A trained model simply writes a
 new `SetpointProfile` with `source="ml"`; nothing else in the controller changes.
 
+### 5a. Smart wake (heat + gentle vibration) & manual-override learning
+
+- **Optimal-moment wake:** inside the wake window before the required time, `SmartWakeRoutine`
+  programs a **vibration + thermal** alarm (`set_alarm_direct`, `smart_light_sleep=True`) so the
+  Pod wakes the user during **light sleep**, with a warming ramp. **Audio stays OFF** — "silence"
+  means no noise; vibration is tactile. Falls back to the hard deadline if no light window occurs.
+  Vibration power is configurable (`Tunables.wake_vibration_power`, gentle default).
+- **Manual overrides feed the ML (revealed preference):** every manual temperature change is
+  logged as `ActionRecord(source="manual")`. `ml/preference.py` anchors the learned setpoint
+  toward the **median manual target** (bounded nudge) so the system stops fighting the user and
+  settles on their true optimum; and manual-heavy nights are **flagged as confounded**
+  (`confounders.py`) so constant tweaking doesn't corrupt the automated reward attribution.
+
 ### 6b. Self-learning ML module (`sleepctl/ml/`)
 
 An interpretable **action-value learner** that maps `context → predicted outcome under each

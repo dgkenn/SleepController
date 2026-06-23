@@ -65,7 +65,15 @@ class Tunables:
     stale_data_seconds: int = 420  # ~7 min; refuse to act on data older than this
     wake_recovery_minutes: int = 20
     hot_sleeper_cool_bias_f: float = -1.5
-    alarm_vibration_enabled: bool = False  # silence: thermal-only smart wake
+    alarm_vibration_enabled: bool = False  # silence during sleep: no audio alarms
+    # Smart wake: heat + gentle VIBRATION at the optimal (light-sleep) moment. Vibration is
+    # tactile, not audio, so "silence" is preserved. Audio is never used.
+    wake_vibration_enabled: bool = True
+    wake_vibration_power: int = 50  # 0-100; gentle default
+    # Manual-override learning: how strongly the learned setpoint is anchored toward the
+    # user's repeated manual temperature choices (revealed preference), per nightly update.
+    manual_preference_gain: float = 0.5  # fraction of (manual_median - current) applied
+    manual_preference_min_count: int = 3  # need this many manual overrides before anchoring
     # Target WATER temperatures on the real Eight Sleep 55-110 °F scale (level 0 ~= 81 °F).
     # For a hot sleeper these sit on the cool side: 70 °F -> level ~-49, 66 °F -> ~-68.
     neutral_temp_f: float = 70.0

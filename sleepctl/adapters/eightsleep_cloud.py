@@ -210,6 +210,29 @@ class EightSleepClient:
             smart_sleep_cap_minutes=0,
         )
 
+    async def set_wake_alarm(self, spec) -> None:  # pragma: no cover - requires live device
+        """Program the heat + gentle-vibration smart wake alarm (audio OFF for silence)."""
+        from datetime import datetime as _dt
+
+        time_str = spec.time.strftime("%H:%M") if isinstance(spec.time, _dt) else str(spec.time)
+        await self._user.set_alarm_direct(
+            alarm_id="sleepctl-wake",
+            enabled=True,
+            time=time_str,
+            weekdays=None,
+            vibration_enabled=spec.vibration_power > 0,
+            vibration_power=spec.vibration_power,
+            vibration_pattern="RISE",
+            thermal_enabled=True,
+            thermal_level=self._clamp(spec.thermal_level),
+            audio_enabled=False,                 # silence preserved
+            audio_level=0,
+            audio_track=None,
+            smart_light_sleep=True,              # fire during light sleep in the window
+            smart_sleep_cap=True,
+            smart_sleep_cap_minutes=spec.window_min,
+        )
+
     def get_current_level(self) -> int:  # pragma: no cover - requires live device
         return int(getattr(self._user, "heating_level", 0) or 0)
 
