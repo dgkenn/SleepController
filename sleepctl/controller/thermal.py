@@ -101,6 +101,11 @@ class ThermalController:
             # a SMALL warm offset above neutral -- kept gentle + slew-limited to protect the
             # user's sleep-maintenance priority (no abrupt change).
             target = neutral + p.rem_warm_offset_f
+        elif intent is ThermalIntent.SETTLE_COOL:
+            # Gentle cooling to pre-empt / recover from an awakening (cooling promotes
+            # sleep). Small step below neutral, slew-limited downstream; never as deep as
+            # the induction dip so it doesn't jolt the sleeper.
+            target = neutral - 1.0
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)
         elif intent is ThermalIntent.STABILIZE:

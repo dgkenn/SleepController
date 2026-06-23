@@ -94,6 +94,12 @@ def test_status_has_perfect_sleep_and_mode(auth_client):
         assert "perfect_sleep" in body["last_night"]
 
 
+def test_maintenance_summary(auth_client):
+    m = auth_client.get("/maintenance").json()
+    assert "recurring_wake_times" in m and "strategy" in m
+    assert "avg_wake_events" in m and "recent" in m
+
+
 def test_checkin_status_and_submit(auth_client):
     st = auth_client.get("/checkin/status").json()
     assert "due" in st and "perfect_sleep" in st

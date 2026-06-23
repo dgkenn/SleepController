@@ -67,6 +67,40 @@ def current_mode(repo) -> NightMode:
     return current_plan(repo).mode
 
 
+# ------------------------------------------------------ sleep maintenance
+def maintenance_summary(repo) -> dict:
+    """The proactive + reactive sleep-maintenance picture: the learned awakening pattern
+    used to PREVENT wakeups, plus how recent nights' awakenings were handled."""
+    from sleepctl.ml.wake_profile import build_wake_profile
+    profile = build_wake_profile(repo)
+
+    def _hhmm(m):
+        return f"{m // 60:02d}:{m % 60:02d}"
+
+    nights = repo.recent_nights(14)
+    recent = [{"date": n.date, "wake_events": n.wake_events, "waso_min": n.waso_min}
+              for n in nights[-7:]]
+    avg_wakes = (sum((n.wake_events or 0) for n in nights) / len(nights)) if nights else None
+    avg_waso = None
+    wasos = [n.waso_min for n in nights if n.waso_min is not None]
+    if wasos:
+        avg_waso = sum(wasos) / len(wasos)
+    return {
+        "recurring_wake_times": [_hhmm(m) for m in profile.awakening_minutes],
+        "personal_warm_threshold_f": profile.warm_temp_threshold_f,
+        "avg_wake_events": round(avg_wakes, 1) if avg_wakes is not None else None,
+        "avg_waso_min": round(avg_waso, 1) if avg_waso is not None else None,
+        "recent": recent,
+        "strategy": (
+            "Prevent: watches for wake precursors (rising heart rate, restlessness, the bed "
+            "running warm, and your recurring wake times) and pre-emptively cools in light "
+            "sleep — never disturbing deep sleep. Handle: a detected awakening triggers a "
+            "gentle cooling assist to re-settle you fast, then holds steady. Both are tuned "
+            "to your own awakening pattern and rewarded for fewer, shorter wakeups."
+        ),
+    }
+
+
 # ------------------------------------------------------- wake-up exit survey
 def checkin_status(repo) -> dict:
     """Whether a morning check-in is due for the most recent night, + that night's

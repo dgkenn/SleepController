@@ -24,6 +24,7 @@ WEIGHTS = {
     "avg_hrv": 0.05,            # per ms
     "sleep_eff_points": 0.10,   # per percentage-point of efficiency
     "total_sleep_min": 0.01,    # per minute
+    "resettle_latency_min": -0.15,  # per minute to fall back asleep after an awakening
 }
 CHURN_PENALTY = 0.05            # per intervention/action change
 TEMP_SWING_PENALTY = 0.03      # per °F of swing beyond the variability cap
@@ -82,6 +83,9 @@ def reward_from_outcomes(
         s += _w("sleep_eff_points", mode) * (outcomes["sleep_efficiency"] * 100.0)
     if outcomes.get("total_sleep_min") is not None:
         s += _w("total_sleep_min", mode) * outcomes["total_sleep_min"]
+    # Handling awakenings well = falling back asleep fast (maintenance is the priority).
+    if outcomes.get("resettle_latency_min") is not None:
+        s += WEIGHTS["resettle_latency_min"] * outcomes["resettle_latency_min"]
     if outcomes.get("sleep_onset_latency_min") is not None:
         b = cfg.benchmarks
         mid = (b.onset_latency_min + b.onset_latency_max) / 2.0

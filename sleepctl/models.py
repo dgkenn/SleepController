@@ -57,6 +57,9 @@ class ThermalIntent(Enum):
     WAKE_RAMP = "wake_ramp"
     STABILIZE = "stabilize"
     NEUTRAL = "neutral"
+    # Gentle cooling assist for sleep maintenance: pre-empt an awakening when wake-risk
+    # rises, and help re-settle after one (cooling promotes sleep). Small + slew-limited.
+    SETTLE_COOL = "settle_cool"
 
 
 # ---------------------------------------------------------------------- dataclasses

@@ -222,6 +222,13 @@ def tonight_plan(repo=Depends(repo_dep), user: str = AuthDep):
     return services.sleep_plan(repo)
 
 
+@app.get("/maintenance")
+def maintenance(repo=Depends(repo_dep), user: str = AuthDep):
+    """Sleep-maintenance summary: learned awakening pattern (prevention) + how recent
+    awakenings were handled."""
+    return services.maintenance_summary(repo)
+
+
 # ------------------------------------------------------------------ data + notes
 @app.get("/nights")
 def nights(limit: int = 30, repo=Depends(repo_dep), user: str = AuthDep):

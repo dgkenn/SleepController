@@ -14,9 +14,11 @@ from typing import Optional
 from sleepctl.config import AppConfig
 from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
+from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
 from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
 from sleepctl.controller.state_machine import SleepStateMachine
+from sleepctl.controller.wake_risk import WakeRiskAssessor
 from sleepctl.controller.thermal import ThermalController
 from sleepctl.controller.wake_detection import WakeDetector
 from sleepctl.models import (
@@ -26,6 +28,7 @@ from sleepctl.models import (
     Decision,
     NightObjective,
     SensorFrame,
+    SleepStage,
     ThermalIntent,
 )
 
@@ -36,6 +39,9 @@ class SleepController:
         self.sm = SleepStateMachine(cfg)
         self.wake_detector = WakeDetector()
         self.onset_detector = SleepOnsetDetector(cfg)
+        self.arousal_detector = ArousalDetector(cfg)
+        # Proactive sleep-maintenance: a learned WakeProfile can be attached by the loop.
+        self.wake_risk_assessor = WakeRiskAssessor(cfg)
         self.induction = InductionRoutine(cfg)
         self.maintenance = MaintenanceRoutine(cfg)
         self.wake_recovery = WakeRecoveryRoutine(cfg)
@@ -48,6 +54,10 @@ class SleepController:
         self._last_target_f: float = cfg.tunables.neutral_temp_f
         self.last_wake_event = None
         self.last_onset_event = None
+        self.last_arousal = None          # last ArousalAssessment
+        self.last_wake_risk = None        # last WakeRisk
+        self._arousal_started: Optional[datetime] = None  # for re-settling latency
+        self.last_resettle_latency_min: Optional[float] = None
         self.should_wake = False
         self.pending_wake_alarm = None  # WakeAlarmSpec to program (vibration + heat), once
 
@@ -84,12 +94,43 @@ class SleepController:
                 wake_signals=[],
             )
 
-        # --- wake detection -----------------------------------------------------
-        wake_event = None
+        # --- graded arousal detection (maintenance: detect + grade disturbances) -
+        sleep_hr_base, sleep_hrv_base = self._sleep_baseline(recent)
+        arousal = None
+        wake_detected = False
+        self._preempt_cool = False
         if self.sm.state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY):
-            wake_event = self.wake_detector.evaluate(frame, recent, now)
+            arousal = self.arousal_detector.assess(
+                frame, recent, now, sleep_hr_base, sleep_hrv_base)
+            self.last_arousal = arousal
+            wake_detected = arousal.is_awakening
+            wake_event = arousal.wake_event
+            # Proactive prevention: in maintenance, watch for wake PRECURSORS and pre-empt
+            # with a gentle cooling assist before a disturbance becomes an awakening.
+            if self.sm.state is ControllerState.MAINTENANCE and not wake_detected:
+                mins_since_onset = (
+                    (now - self._sleep_onset_time).total_seconds() / 60.0
+                    if self._sleep_onset_time is not None else None)
+                risk = self.wake_risk_assessor.assess(
+                    frame, recent, now, target_temp_f=self._last_target_f,
+                    sleep_hr_baseline=sleep_hr_base,
+                    minutes_since_onset=mins_since_onset)
+                self.last_wake_risk = risk
+                # Pre-empt on rising risk OR a micro-arousal we want to settle quickly.
+                self._preempt_cool = risk.preempt or (
+                    arousal.level is ArousalLevel.MICRO and frame.stage is not SleepStage.DEEP)
+        else:
+            wake_event = None
         self.last_wake_event = wake_event
-        wake_detected = wake_event is not None
+
+        # Re-settling latency: time from an awakening to physiology re-stabilising.
+        if wake_detected and self._arousal_started is None:
+            self._arousal_started = now
+        elif (not wake_detected and self._arousal_started is not None
+              and self.sm.state is ControllerState.MAINTENANCE):
+            self.last_resettle_latency_min = (
+                now - self._arousal_started).total_seconds() / 60.0
+            self._arousal_started = None
 
         # --- accurate sleep-onset detection (asleep vs lying in bed awake) -------
         if self._bed_entry_time is None and frame.presence:
@@ -129,7 +170,8 @@ class SleepController:
         elif state is ControllerState.INDUCTION:
             intent = self.induction.step(frame, objective, minutes_in_bed)
         elif state is ControllerState.MAINTENANCE:
-            intent = self.maintenance.step(frame, objective)
+            intent = self.maintenance.step(frame, objective,
+                                           preempt_cool=getattr(self, "_preempt_cool", False))
         elif state is ControllerState.WAKE_RECOVERY:
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
@@ -158,7 +200,11 @@ class SleepController:
         # --- correction action vs current bed temp -----------------------------
         action = self._action_for(current_f, target_f)
         reason = self._reason(state, intent, wake_event)
-        confidence = 0.9 if not wake_detected else min(0.9, wake_event.confidence + 0.3)
+        if not wake_detected:
+            confidence = 0.9
+        else:
+            arousal_conf = arousal.confidence if arousal is not None else 0.6
+            confidence = min(0.9, arousal_conf + 0.3)
         # The Pod senses HR/HRV/RR via ballistocardiography, which needs stillness, so
         # discount confidence when there is significant movement (biometrics less reliable).
         confidence *= self._biometric_reliability(frame)
@@ -176,6 +222,26 @@ class SleepController:
     @staticmethod
     def _round_opt(value, ndigits: int = 2):
         return round(value, ndigits) if value is not None else None
+
+    def set_wake_profile(self, profile) -> None:
+        """Attach the learned per-user awakening phenotype to the wake-risk assessor."""
+        if profile is not None:
+            self.wake_risk_assessor.profile = profile
+
+    @staticmethod
+    def _sleep_baseline(recent: list) -> tuple:
+        """Recent settled-sleep HR/HRV baselines (from asleep, low-motion frames) so the
+        arousal + wake-risk detectors measure surges/creep against the right reference."""
+        asleep = [f for f in (recent or [])
+                  if f.stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
+                  and (f.movement is None or f.movement < 0.2)]
+        pool = asleep[-15:] if asleep else (recent[-10:] if recent else [])
+        hrs = [f.heart_rate for f in pool if f.heart_rate is not None]
+        hrvs = [f.hrv for f in pool if f.hrv is not None]
+        import statistics as _st
+        hr = _st.fmean(hrs) if hrs else None
+        hrv = _st.fmean(hrvs) if hrvs else None
+        return hr, hrv
 
     @staticmethod
     def _biometric_reliability(frame: SensorFrame) -> float:

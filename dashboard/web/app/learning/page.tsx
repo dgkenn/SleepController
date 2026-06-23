@@ -4,6 +4,7 @@ import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import ConfidenceMeter from '@/components/ConfidenceMeter';
 import RecommendationCard from '@/components/RecommendationCard';
+import MaintenanceCard from '@/components/MaintenanceCard';
 import useSWR from 'swr';
 import { MLOverview, fetcher } from '@/lib/api';
 
@@ -45,6 +46,9 @@ function LearningContent() {
         </div>
 
         <div className="px-4 space-y-4">
+          {/* Sleep maintenance: prevent + handle awakenings */}
+          <MaintenanceCard />
+
           {/* Model confidence */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">
             <p className="text-xs text-gray-500 uppercase tracking-wider">Model Confidence</p>

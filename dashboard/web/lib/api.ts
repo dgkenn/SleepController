@@ -225,6 +225,15 @@ export interface CommandResponse {
   command_id: string;
 }
 
+export interface MaintenanceSummary {
+  recurring_wake_times: string[];
+  personal_warm_threshold_f: number | null;
+  avg_wake_events: number | null;
+  avg_waso_min: number | null;
+  recent: Array<{ date: string; wake_events: number; waso_min: number | null }>;
+  strategy: string;
+}
+
 export interface CheckInStatus {
   due: boolean;
   date: string | null;
@@ -350,6 +359,8 @@ export const api = {
   clearWake: () => apiFetch<void>('/api/tonight/wake', { method: 'DELETE' }),
 
   plan: () => apiFetch<SleepPlan>('/api/tonight/plan'),
+
+  maintenance: () => apiFetch<MaintenanceSummary>('/api/maintenance'),
 
   // Wake-up exit survey (morning check-in)
   checkinStatus: () => apiFetch<CheckInStatus>('/api/checkin/status'),

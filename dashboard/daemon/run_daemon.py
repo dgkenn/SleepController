@@ -50,8 +50,14 @@ class DashboardDaemon:
                  command_poll_seconds: float = 1.0) -> None:
         self.cfg = AppConfig.default()
         self.repo = get_repo()
-        self.cycle = ControlCycle(self.cfg, self.repo, SleepController(self.cfg,
-                                  setpoints=self.repo.latest_setpoints()))
+        controller = SleepController(self.cfg, setpoints=self.repo.latest_setpoints())
+        # Attach the learned awakening phenotype so proactive sleep-maintenance is personalised.
+        try:
+            from sleepctl.ml.wake_profile import build_wake_profile
+            controller.set_wake_profile(build_wake_profile(self.repo))
+        except Exception as exc:
+            print(f"wake-profile load skipped: {exc}", flush=True)
+        self.cycle = ControlCycle(self.cfg, self.repo, controller)
         self.poll_seconds = poll_seconds
         self.command_poll_seconds = command_poll_seconds
         self.mode = "auto"
