@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sleepctl"
+version = "0.1.0"
+description = "Closed-loop sleep-optimization controller for Eight Sleep Pod 2"
+requires-python = ">=3.11"
+dependencies = ["PyYAML"]
+
+[project.optional-dependencies]
+eightsleep = ["pyEight"]
+google = ["google-api-python-client", "google-auth-oauthlib"]
+dev = ["pytest"]
+
+[project.scripts]
+sleepctl = "sleepctl.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["sleepctl*"]

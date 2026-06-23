@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# sleepctl runtime artifacts
+*.db
+*.db-wal
+*.db-shm
+raw_capture.jsonl
+token.json
+credentials.json
+sleepctl.egg-info/
