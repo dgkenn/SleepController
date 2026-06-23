@@ -53,8 +53,11 @@ class DashboardDaemon:
         controller = SleepController(self.cfg, setpoints=self.repo.latest_setpoints())
         # Attach the learned awakening phenotype so proactive sleep-maintenance is personalised.
         try:
+            from sleepctl.learning.lead_time import build_lead_time_profile
             from sleepctl.ml.wake_profile import build_wake_profile
-            controller.set_wake_profile(build_wake_profile(self.repo))
+            controller.set_wake_profile(
+                build_wake_profile(self.repo),
+                lead_profile=build_lead_time_profile(self.repo))
         except Exception as exc:
             print(f"wake-profile load skipped: {exc}", flush=True)
         self.cycle = ControlCycle(self.cfg, self.repo, controller)

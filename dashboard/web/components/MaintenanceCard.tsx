@@ -58,6 +58,25 @@ export default function MaintenanceCard() {
         )}
       </div>
 
+      {/* Learned cooling lead-times — how far ahead of each window we start cooling */}
+      {data.lead_times_min && (
+        <div>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+            Pre-cool lead times{' '}
+            <span className="text-gray-600 normal-case">
+              ({data.lead_source}, ~{Math.round(data.response_lag_min ?? 0)} min thermal lag)
+            </span>
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(data.lead_times_min).map(([w, m]) => (
+              <span key={w} className="text-[11px] px-2 py-1 rounded-lg bg-surface-raised border border-surface-border text-gray-300">
+                {w.replace(/_/g, ' ')}: {Math.round(m)}m
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
       <p className="text-xs text-gray-400 leading-relaxed">{data.strategy}</p>
     </div>
   );

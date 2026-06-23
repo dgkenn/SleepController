@@ -231,6 +231,10 @@ export interface MaintenanceSummary {
   avg_wake_events: number | null;
   avg_waso_min: number | null;
   recent: Array<{ date: string; wake_events: number; waso_min: number | null }>;
+  profile_source?: string;
+  response_lag_min?: number;
+  lead_times_min?: Record<string, number>;
+  lead_source?: string;
   strategy: string;
 }
 

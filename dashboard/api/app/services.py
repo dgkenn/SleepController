@@ -71,8 +71,10 @@ def current_mode(repo) -> NightMode:
 def maintenance_summary(repo) -> dict:
     """The proactive + reactive sleep-maintenance picture: the learned awakening pattern
     used to PREVENT wakeups, plus how recent nights' awakenings were handled."""
+    from sleepctl.learning.lead_time import build_lead_time_profile
     from sleepctl.ml.wake_profile import build_wake_profile
     profile = build_wake_profile(repo)
+    lead = build_lead_time_profile(repo)
 
     def _hhmm(m):
         return f"{m // 60:02d}:{m % 60:02d}"
@@ -91,6 +93,10 @@ def maintenance_summary(repo) -> dict:
         "avg_wake_events": round(avg_wakes, 1) if avg_wakes is not None else None,
         "avg_waso_min": round(avg_waso, 1) if avg_waso is not None else None,
         "recent": recent,
+        "profile_source": profile.source,
+        "response_lag_min": lead.response_lag_min,
+        "lead_times_min": lead.leads,
+        "lead_source": lead.source,
         "strategy": (
             "Prevent: watches for wake precursors (rising heart rate, restlessness, the bed "
             "running warm, and your recurring wake times) and pre-emptively cools in light "

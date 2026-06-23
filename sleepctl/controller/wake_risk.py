@@ -91,6 +91,31 @@ class WakeProfile:
         return (minutes_since_onset is not None
                 and minutes_since_onset >= self.back_half_after_cycle * self.cycle_len_min)
 
+    def next_window_eta(self, now: datetime, minutes_since_onset: Optional[float]):
+        """Minutes until the nearest UPCOMING vulnerable window, and its type, so the
+        controller can start pre-cooling a learned lead-time ahead. Returns (eta, type) or
+        (None, None)."""
+        candidates = []
+        # next NREM-REM cycle boundary
+        if minutes_since_onset is not None and minutes_since_onset >= self.cycle_len_min - 30:
+            phase = minutes_since_onset % self.cycle_len_min
+            candidates.append((self.cycle_len_min - phase, "cycle_boundary"))
+        # circadian core-temp nadir window onset
+        m = now.hour * 60 + now.minute
+        lo = self.circadian_window[0]
+        eta_circ = (lo - m) % 1440
+        if 0 < eta_circ <= 180:  # only when it's within ~3h ahead
+            candidates.append((float(eta_circ), "circadian"))
+        # next personal recurring wake time
+        for c in self.awakening_minutes:
+            eta = (c - m) % 1440
+            if 0 < eta <= 120:
+                candidates.append((float(eta), "recurring"))
+        if not candidates:
+            return None, None
+        eta, wtype = min(candidates, key=lambda x: x[0])
+        return eta, wtype
+
 
 @dataclass
 class WakeRisk:
@@ -102,14 +127,16 @@ class WakeRisk:
 class WakeRiskAssessor:
     """Scores the live risk of an imminent awakening from precursor trends + the profile."""
 
-    def __init__(self, cfg=None, profile: Optional[WakeProfile] = None) -> None:
+    def __init__(self, cfg=None, profile: Optional[WakeProfile] = None,
+                 lead_profile=None) -> None:
         t = getattr(cfg, "tunables", None)
         self.hr_creep = getattr(t, "wake_risk_hr_creep_bpm", 4.0)
         self.move_rise = getattr(t, "wake_risk_movement", 0.3)
         self.warm_margin_f = getattr(t, "wake_risk_warm_margin_f", 1.5)
         self.preempt_threshold = getattr(t, "wake_risk_preempt_threshold", 0.5)
-        # Default to the evidence-backed preset until the ML supplies a learned profile.
+        # Default to the evidence-backed presets until the ML supplies learned profiles.
         self.profile = profile or WakeProfile.evidence_default()
+        self.lead_profile = lead_profile  # LeadTimeProfile (learned cooling lead times)
 
     def assess(
         self,
@@ -179,8 +206,18 @@ class WakeRiskAssessor:
             score += 0.12
             reasons.append("circadian_nadir")
 
+        # 8) ANTICIPATORY pre-cool: if a vulnerable window is closer than the learned cooling
+        #    lead-time, start cooling now so the bed is already cool when it arrives.
+        anticipatory = False
+        if self.lead_profile is not None:
+            eta, wtype = self.profile.next_window_eta(now, minutes_since_onset)
+            if eta is not None and eta <= self.lead_profile.lead_for(wtype):
+                anticipatory = True
+                score += 0.16
+                reasons.append(f"anticipatory_{wtype}")
+
         score = min(1.0, score)
         # Only pre-empt in non-deep sleep (never jolt deep sleep, which is protective).
-        preempt = (score >= self.preempt_threshold
+        preempt = ((score >= self.preempt_threshold or anticipatory)
                    and frame.stage is not SleepStage.DEEP)
         return WakeRisk(score=score, reasons=reasons, preempt=preempt)

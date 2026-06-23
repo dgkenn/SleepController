@@ -44,7 +44,7 @@ def build_wake_profile(
     preset = WakeProfile.evidence_default()
     try:
         rows = repo.conn.execute(
-            "SELECT timestamp, bed_temp_f FROM raw_samples WHERE wake_event = 1 "
+            "SELECT ts, bed_temp_f FROM raw_samples WHERE wake_event = 1 "
             "ORDER BY id DESC LIMIT ?",
             (lookback_samples,),
         ).fetchall()
@@ -55,7 +55,7 @@ def build_wake_profile(
     temps: List[float] = []
     day_keys = {}  # bin -> set of dates (so we count distinct nights, not samples)
     for r in rows:
-        ts = _parse_ts(r["timestamp"] if hasattr(r, "keys") else r[0])
+        ts = _parse_ts(r["ts"] if hasattr(r, "keys") else r[0])
         if ts is None:
             continue
         minute = ts.hour * 60 + ts.minute

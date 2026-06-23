@@ -223,10 +223,13 @@ class SleepController:
     def _round_opt(value, ndigits: int = 2):
         return round(value, ndigits) if value is not None else None
 
-    def set_wake_profile(self, profile) -> None:
-        """Attach the learned per-user awakening phenotype to the wake-risk assessor."""
+    def set_wake_profile(self, profile=None, lead_profile=None) -> None:
+        """Attach the learned per-user awakening phenotype + cooling lead-times to the
+        wake-risk assessor (proactive sleep maintenance)."""
         if profile is not None:
             self.wake_risk_assessor.profile = profile
+        if lead_profile is not None:
+            self.wake_risk_assessor.lead_profile = lead_profile
 
     @staticmethod
     def _sleep_baseline(recent: list) -> tuple:
