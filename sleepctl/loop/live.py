@@ -189,6 +189,15 @@ class SimulatedLiveClient:
         self.actuator = SimulatorActuator(self.source)
         self._trailing = trailing_out_of_bed
         self._extra = 0
+        # device-parity state (so the dashboard live daemon is testable offline)
+        self.powered = True
+        self.away = False
+        self.prime_count = 0
+        self.off_count = 0
+        self.on_count = 0
+        self.last_alarm = None
+        self.last_level = None
+        self.level_set_count = 0
 
     async def connect(self) -> None:
         return None
@@ -221,10 +230,35 @@ class SimulatedLiveClient:
         return self.source.exhausted and self._extra >= self._trailing
 
     async def set_heating_level(self, level: int, duration_s: int = 0) -> None:
+        self.last_level = level
+        self.level_set_count += 1
         self.actuator.set_level(level, duration_s)
 
     async def set_wake_alarm(self, spec) -> None:
+        self.last_alarm = spec
         self.actuator.set_alarm(spec.time, spec.vibration_power, spec.thermal_level)
+
+    # ---- Eight Sleep app-parity controls (no-ops over the simulator) -------------
+    async def turn_on_side(self) -> None:
+        self.powered = True
+        self.on_count += 1
+
+    async def turn_off_side(self) -> None:
+        self.powered = False
+        self.off_count += 1
+        self.actuator.set_level(0)
+
+    async def set_away_mode(self, enabled: bool) -> None:
+        self.away = bool(enabled)
+        if enabled:
+            self.actuator.set_level(0)
+
+    async def prime_pod(self) -> None:
+        self.prime_count += 1
+
+    async def increment_level(self, offset: int) -> None:
+        self._level = int(getattr(self, "_level", 0) + offset)
+        self.actuator.set_level(self._level)
 
     async def fetch_night_summary(self, date: str) -> NightSummary:
         return self.source.fetch_night_summary(date)

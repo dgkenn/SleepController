@@ -203,7 +203,7 @@ export interface SettingsResponse {
 }
 
 export interface AdminHealth {
-  daemon: { alive: boolean; updated: string; stale: boolean };
+  daemon: { alive: boolean; updated: string; stale: boolean; live?: boolean; dry_run?: boolean };
   sources: Record<string, { ok: boolean; last_ok?: string; error?: string }>;
   pending_commands: number;
 }

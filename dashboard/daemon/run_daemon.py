@@ -285,17 +285,59 @@ class DashboardDaemon:
             time.sleep(self.command_poll_seconds)
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--live", action="store_true", help="use the real Eight Sleep client")
+    ap.add_argument("--live", action="store_true",
+                    help="drive the REAL Eight Sleep Pod (default: simulator)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="live mode but read-only: log decisions, send no device commands")
     ap.add_argument("--poll-seconds", type=float, default=30.0,
                     help="control-cycle cadence (manual overrides apply faster)")
     ap.add_argument("--command-poll-seconds", type=float, default=1.0,
                     help="override-queue poll cadence (realtime temp control)")
     ap.add_argument("--max-ticks", type=int, default=None)
     args = ap.parse_args()
-    DashboardDaemon(simulate=not args.live, poll_seconds=args.poll_seconds,
-                    command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
+
+    # Env toggles let docker-compose enable live mode without changing the command.
+    live = args.live or _env_truthy("SLEEPCTL_LIVE")
+    dry_run = args.dry_run or _env_truthy("SLEEPCTL_DRY_RUN")
+
+    if not live:
+        DashboardDaemon(simulate=True, poll_seconds=args.poll_seconds,
+                        command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
+        return
+
+    # --- live: drive the real Pod via the async client ----------------------------
+    import asyncio
+
+    from sleepctl.adapters.credentials import load_credentials
+    from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+    from sleepctl.config import AppConfig
+    from app.db import get_repo
+    from live_daemon import LiveDashboardDaemon
+
+    creds = load_credentials(os.environ.get("EIGHTSLEEP_CREDENTIALS") or None)
+    if not creds.is_complete():
+        print("[daemon] live mode requires Eight Sleep credentials "
+              "(EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD). Falling back to simulator.",
+              flush=True)
+        DashboardDaemon(simulate=True, poll_seconds=args.poll_seconds,
+                        command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
+        return
+
+    client = EightSleepClient(
+        email=creds.email, password=creds.password, timezone=creds.timezone,
+        side=os.environ.get("EIGHTSLEEP_SIDE") or creds.side,
+        client_id=creds.client_id, client_secret=creds.client_secret,
+    )
+    daemon = LiveDashboardDaemon(AppConfig.default(), client, get_repo(), dry_run=dry_run)
+    asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
+                           command_poll_seconds=args.command_poll_seconds,
+                           max_ticks=args.max_ticks))
 
 
 if __name__ == "__main__":

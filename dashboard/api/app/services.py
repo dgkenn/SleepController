@@ -419,9 +419,12 @@ def data_health(repo) -> dict:
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
     rows = repo.conn.execute("SELECT * FROM data_sync").fetchall()
     sources = {r["source"]: dict(r) for r in rows}
+    extra = rt.get("extra") or {}
     return {
         "daemon": {"alive": rt.get("daemon_alive", False), "updated": rt.get("updated"),
-                   "stale": rt.get("stale", True)},
+                   "stale": rt.get("stale", True),
+                   "live": bool(extra.get("live", False)),
+                   "dry_run": bool(extra.get("dry_run", False))},
         "sources": sources,
         "pending_commands": repo.conn.execute(
             "SELECT COUNT(*) c FROM commands WHERE status='pending'").fetchone()["c"],
