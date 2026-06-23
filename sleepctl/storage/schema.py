@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS nightly_summaries (
     avg_respiratory_rate REAL,
     temp_profile_summary TEXT,
     intervention_summary TEXT,
-    setpoint_version INTEGER
+    setpoint_version INTEGER,
+    outcome_score REAL
 );
 
 CREATE TABLE IF NOT EXISTS context (
@@ -72,7 +73,10 @@ CREATE TABLE IF NOT EXISTS context (
     travel INTEGER,
     illness INTEGER,
     late_night_work INTEGER,
-    routine_complete INTEGER
+    routine_complete INTEGER,
+    subjective_quality REAL,
+    grogginess REAL,
+    daytime_performance REAL
 );
 
 CREATE TABLE IF NOT EXISTS interventions (
@@ -116,6 +120,21 @@ CREATE TABLE IF NOT EXISTS setpoints (
     source TEXT,
     profile TEXT
 );
+
+-- Action ledger: the learning action chosen per night + its predictions and observed reward.
+CREATE TABLE IF NOT EXISTS actions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    night_date TEXT,
+    action_name TEXT,
+    params TEXT,
+    predicted TEXT,
+    confidence REAL,
+    reward_observed REAL,
+    applied INTEGER,
+    source TEXT,
+    creates_version INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_actions_night ON actions(night_date);
 
 CREATE INDEX IF NOT EXISTS idx_raw_samples_night ON raw_samples(night_date);
 CREATE INDEX IF NOT EXISTS idx_interventions_night ON interventions(night_date);

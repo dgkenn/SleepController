@@ -91,6 +91,18 @@ def _cmd_report(args: argparse.Namespace) -> int:
               f"neutral={sp.neutral_f:.1f}F deep={sp.deep_bias_f:.1f}F "
               f"rem_offset=+{sp.rem_warm_offset_f:.1f}F wake={sp.wake_ramp_f:.1f}F "
               f"blend_a={sp.composite_bed_weight:.2f}")
+    actions = repo.recent_actions(5)
+    if actions:
+        print("\nRecent learning actions:")
+        for a in actions:
+            rw = f"{a.reward_observed:.2f}" if a.reward_observed is not None else "—"
+            print(f"  {a.date}: {a.action_name} ({a.source}) conf={a.confidence:.2f} reward={rw}")
+    from sleepctl.ml.phenotype import correlate_with_outcome
+    corr = correlate_with_outcome(repo)
+    if corr:
+        print("\nPhenotype — factors most correlated with the night's reward:")
+        for name, r, n in corr[:5]:
+            print(f"  {name}: r={r} (n={n})")
     repo.close()
     return 0
 
@@ -274,6 +286,107 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_export(args: argparse.Namespace) -> int:
+    from sleepctl.ml.dataset import export_csv, export_parquet
+    from sleepctl.storage.repository import Repository
+
+    repo = Repository(args.db)
+    try:
+        if args.format == "parquet":
+            n = export_parquet(repo, args.out)
+        else:
+            n = export_csv(repo, args.out)
+        print(f"Wrote {n} feature rows to {args.out} ({args.format}).")
+    finally:
+        repo.close()
+    return 0
+
+
+def _cmd_train(args: argparse.Namespace) -> int:
+    """Refit the ML models and propose (or apply) the next setpoint."""
+    from sleepctl.ml.recommend import recommend_action
+    from sleepctl.storage.repository import Repository
+
+    cfg = AppConfig.default()
+    repo = Repository(args.db)
+    try:
+        active = repo.latest_setpoints() or cfg.default_setpoints()
+        chosen = recommend_action(repo, active, cfg)
+        if chosen is None:
+            n = len(repo.all_nights())
+            print(f"ML deferring to rule policy: need >= {cfg.ml.min_nights} clean nights "
+                  f"and sufficient confidence (have {n} nights).")
+            return 0
+        print(f"ML chose: {chosen.name} (confidence {chosen.confidence:.2f})")
+        print(f"  reason: {chosen.reason}")
+        if chosen.predicted:
+            keys = ["wake_events", "deep_pct", "avg_hrv", "sleep_efficiency"]
+            preds = {k: round(chosen.predicted[k], 3) for k in keys if k in chosen.predicted}
+            print(f"  predicted: {preds}")
+        if chosen.name != "no_change":
+            p = chosen.profile
+            print(f"  -> setpoint v{p.version}: deep={p.deep_bias_f:.1f}F "
+                  f"neutral={p.neutral_f:.1f}F rem_off=+{p.rem_warm_offset_f:.1f}F "
+                  f"blend_a={p.composite_bed_weight:.2f}")
+            if args.apply:
+                repo.save_setpoints(chosen.profile)
+                print(f"  applied: setpoint v{chosen.profile.version} is now active.")
+            else:
+                print("  (dry: re-run with --apply to persist)")
+    finally:
+        repo.close()
+    return 0
+
+
+def _cmd_checkin(args: argparse.Namespace) -> int:
+    """Log subjective morning data (0-10) for a night."""
+    from sleepctl.models import ContextRecord
+    from sleepctl.storage.repository import Repository
+
+    repo = Repository(args.db)
+    try:
+        date = args.date or datetime.now().date().isoformat()
+        ctx = repo.get_context(date) or ContextRecord(date=date)
+        if args.quality is not None:
+            ctx.subjective_quality = args.quality
+        if args.grogginess is not None:
+            ctx.grogginess = args.grogginess
+        if args.performance is not None:
+            ctx.daytime_performance = args.performance
+        repo.save_context(ctx)
+        print(f"Logged check-in for {date}: quality={ctx.subjective_quality} "
+              f"grogginess={ctx.grogginess} performance={ctx.daytime_performance}")
+    finally:
+        repo.close()
+    return 0
+
+
+def _cmd_recalibrate(args: argparse.Namespace) -> int:
+    """Monthly: re-anchor baselines + report model confidence and learned setpoint."""
+    from sleepctl.ml.confounders import clean_rows
+    from sleepctl.ml.dataset import build_feature_rows
+    from sleepctl.ml.model import SetpointModel
+    from sleepctl.storage.repository import Repository
+
+    cfg = AppConfig.default()
+    repo = Repository(args.db)
+    try:
+        rows = build_feature_rows(repo)
+        clean = clean_rows(rows)
+        print(f"Nights: {len(rows)} total, {len(clean)} clean (non-confounded).")
+        if len(clean) >= 3:
+            model = SetpointModel(lam=cfg.ml.ridge_lambda).fit(clean)
+            print(f"Model confidence: {model.confidence():.2f}; "
+                  f"trained outcomes: {model.trained_outcomes()}")
+        sp = repo.latest_setpoints()
+        if sp:
+            print(f"Learned setpoint v{sp.version} ({sp.source}): deep={sp.deep_bias_f:.1f}F "
+                  f"neutral={sp.neutral_f:.1f}F blend_a={sp.composite_bed_weight:.2f}")
+    finally:
+        repo.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sleepctl", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -320,6 +433,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_cal = sub.add_parser("calibrate", help="Read-only probe of the live Pod")
     p_cal.add_argument("--credentials", default=None, help="path to credentials JSON")
     p_cal.set_defaults(func=_cmd_calibrate)
+
+    p_export = sub.add_parser("export", help="Export the ML-ready feature table")
+    p_export.add_argument("--db", default="sleepctl.db")
+    p_export.add_argument("--out", default="features.csv")
+    p_export.add_argument("--format", choices=["csv", "parquet"], default="csv")
+    p_export.set_defaults(func=_cmd_export)
+
+    p_train = sub.add_parser("train", help="Refit ML models + propose/apply the next setpoint")
+    p_train.add_argument("--db", default="sleepctl.db")
+    p_train.add_argument("--apply", action="store_true", help="persist the proposed setpoint")
+    p_train.set_defaults(func=_cmd_train)
+
+    p_checkin = sub.add_parser("checkin", help="Log subjective morning data (0-10)")
+    p_checkin.add_argument("--db", default="sleepctl.db")
+    p_checkin.add_argument("--date", default=None, help="ISO date (default today)")
+    p_checkin.add_argument("--quality", type=float, default=None)
+    p_checkin.add_argument("--grogginess", type=float, default=None)
+    p_checkin.add_argument("--performance", type=float, default=None)
+    p_checkin.set_defaults(func=_cmd_checkin)
+
+    p_recal = sub.add_parser("recalibrate", help="Monthly: re-anchor + report ML status")
+    p_recal.add_argument("--db", default="sleepctl.db")
+    p_recal.set_defaults(func=_cmd_recalibrate)
     return parser
 
 

@@ -126,6 +126,23 @@ override location with `--lat/--lon`; disable the weather fallback with `--no-we
 | `run`       | Live closed-loop daemon. Flags: `--dry-run`, `--wake HH:MM`, `--poll-seconds`, `--side`, `--simulate`, `--max-ticks`, `--db` |
 | `auth`      | Store Eight Sleep credentials (0600 file or env vars); `--test` verifies the connection |
 | `calibrate` | Read-only probe of the live Pod (capabilities, current level, bed/room temp, biometrics) |
+| `export`    | Dump the ML-ready joined feature table (`--format csv|parquet`) |
+| `train`     | Refit the ML models and propose (or `--apply`) the next setpoint |
+| `checkin`   | Log subjective morning data (`--quality/--grogginess/--performance`, 0–10) |
+| `recalibrate` | Monthly re-anchor + ML status report |
+
+## Self-learning (ML)
+
+The controller tailors itself over time with an interpretable **action-value learner**
+(`sleepctl/ml/`, pure-Python — `pip install -e ".[ml]"` only adds numpy/pandas for speed +
+parquet). Each night it scores the result with a **maintenance-dominant reward**, and once it
+has enough clean nights and sufficient confidence it **auto-applies the smallest effective
+setpoint change** (cooling, REM warmth, or the body-vs-exposed-skin **blend weight**), else it
+falls back to the conservative rule policy ("do no harm"). Confounded nights (illness, travel,
+alcohol, short-sleep) are excluded from training, rewards are attributed across the nights an
+action actually produced (delayed effects), and every change stays within the controller's
+slew/variability/55–110 °F safety limits. Typical cadence: `train` weekly, `recalibrate`
+monthly, `checkin` each morning. See **[DESIGN.md](DESIGN.md) §6b**.
 
 ## Project layout
 

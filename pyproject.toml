@@ -16,6 +16,8 @@ dependencies = ["PyYAML"]
 # libraries it imports.
 eightsleep = ["aiohttp>=3.8.0", "httpx>=0.24.0", "python-dateutil>=2.8.0"]
 google = ["google-api-python-client", "google-auth-oauthlib"]
+# The ML module is pure-Python by default; these only accelerate it / enable parquet export.
+ml = ["numpy", "pandas", "pyarrow"]
 dev = ["pytest"]
 
 [project.scripts]

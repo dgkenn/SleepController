@@ -87,10 +87,23 @@ class Tunables:
 
 
 @dataclass
+class MLConfig:
+    """Gates + hyperparameters for the self-learning module (conservative defaults)."""
+
+    min_nights: int = 14          # data-sufficiency gate before ML may act
+    conf_min: float = 0.35        # minimum model confidence to act at all
+    base_margin: float = 0.5      # reward improvement required (scaled by 1/confidence)
+    lookahead_nights: int = 2     # K-night reward attribution for delayed effects
+    ridge_lambda: float = 1.0
+    retrain_window_nights: int = 60
+
+
+@dataclass
 class AppConfig:
     profile: UserProfile = field(default_factory=UserProfile)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
     tunables: Tunables = field(default_factory=Tunables)
+    ml: MLConfig = field(default_factory=MLConfig)
 
     @classmethod
     def default(cls) -> "AppConfig":
@@ -132,6 +145,7 @@ class AppConfig:
             ("profile", cfg.profile),
             ("benchmarks", cfg.benchmarks),
             ("tunables", cfg.tunables),
+            ("ml", cfg.ml),
         ):
             overrides = data.get(section_name) or {}
             if not is_dataclass(section_obj):

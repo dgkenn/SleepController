@@ -149,6 +149,7 @@ class NightSummary:
     temp_profile_summary: dict = field(default_factory=dict)
     intervention_summary: dict = field(default_factory=dict)
     setpoint_version: Optional[int] = None  # which SetpointProfile produced this night
+    outcome_score: Optional[float] = None   # computed multi-objective reward for the night
 
 
 @dataclass
@@ -177,6 +178,29 @@ class ContextRecord:
     illness: Optional[bool] = None
     late_night_work: Optional[bool] = None
     routine_complete: Optional[bool] = None
+    # Subjective morning check-in labels (0-10), feed the reward modestly.
+    subjective_quality: Optional[float] = None
+    grogginess: Optional[float] = None
+    daytime_performance: Optional[float] = None
+
+
+@dataclass
+class ActionRecord:
+    """A learning action the ML/policy chose for a night, with its predictions + result.
+
+    This closes the action -> outcome loop: ``predicted`` are the model's expected effects,
+    ``reward_observed`` is filled in once the night's outcome is known.
+    """
+
+    date: str  # ISO night date
+    action_name: str
+    params: dict = field(default_factory=dict)
+    predicted: dict = field(default_factory=dict)
+    confidence: float = 0.0
+    reward_observed: Optional[float] = None
+    applied: bool = False
+    source: str = "policy"  # "policy" | "ml" | "fallback"
+    creates_version: Optional[int] = None  # the SetpointProfile version this action produced
 
 
 @dataclass

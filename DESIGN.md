@@ -267,6 +267,35 @@ against the outcome columns — so the ML can learn the optimal per-stage effect
 and blend weight from real (setpoint, context, outcome) tuples. A trained model simply writes a
 new `SetpointProfile` with `source="ml"`; nothing else in the controller changes.
 
+### 6b. Self-learning ML module (`sleepctl/ml/`)
+
+An interpretable **action-value learner** that maps `context → predicted outcome under each
+candidate action → smallest effective action → observed reward → updated profile`. Pure
+Python (no hard numpy/pandas dep); evolves toward bandit/RL/causal without controller changes.
+
+- **Dataset** (`ml/dataset.py`): joins the 3 layers + setpoints → one `FeatureRow`/night;
+  `export` to CSV/parquet. **Features** (`ml/features.py`) add rolling engineered signals
+  (bedtime/wake consistency, sleep-opportunity ratio, prev-night fragmentation, rolling HRV
+  deviation + wake trend, behavioral flags).
+- **Models** (`ml/model.py` + `ml/linalg.py`): per-outcome **ridge** regression (standardized,
+  y-centered, **missing-data imputation**), each with an **uncertainty/confidence** from
+  residual spread + data support.
+- **Reward** (`ml/reward.py`): multi-objective, **maintenance-dominant** (wake events −3/event),
+  + deep/REM/HRV/efficiency/total, − onset deviation, − **churn**, − **temp swings**, +
+  subjective check-in. Stored per night as `outcome_score`.
+- **Actions** (`ml/actions.py`): a small discrete set (no-change, slight/strong cool, slight
+  warm, more-REM-warmth, and **blend-weight** `skin_more/less`) → bounded, versioned setpoint
+  deltas. **Selection** (`ml/select.py`) takes the **smallest effective** action whose benefit
+  clears an **uncertainty-aware** margin; low confidence → no change.
+- **Confounders** (`ml/confounders.py`): illness/travel/alcohol/short-sleep nights excluded
+  from training (never block control). **Phenotype** (`ml/phenotype.py`): correlation report.
+- **Orchestration** (`loop/nightly.py`): each night scores the reward, then **ML when confident
+  + ≥ `ml.min_nights` clean nights, else the rule policy** ("do no harm"); logs the action and
+  **attributes rewards by the setpoint version it created** (captures delayed multi-night
+  effects). Auto-applies the chosen action (gated; `--dry-run` blocks device writes).
+- **Cadence**: `train` (weekly refit + propose/`--apply`), `recalibrate` (monthly re-anchor +
+  status), `checkin` (subjective labels). Gates in `config.MLConfig`.
+
 ## 7. Data schema
 
 SQLite, three dataset layers + three ledgers (`sleepctl/storage/schema.py`), shaped flat

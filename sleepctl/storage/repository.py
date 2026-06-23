@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 from sleepctl.models import (
+    ActionRecord,
     Baselines,
     ContextRecord,
     ControllerState,
@@ -162,8 +163,8 @@ class Repository:
             (date, bedtime, wake_time, total_sleep_min, sleep_onset_latency_min,
              deep_min, rem_min, light_min, wake_events, waso_min, sleep_efficiency,
              avg_hr, avg_hrv, avg_respiratory_rate, temp_profile_summary,
-             intervention_summary, setpoint_version)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             intervention_summary, setpoint_version, outcome_score)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
              bedtime=excluded.bedtime, wake_time=excluded.wake_time,
              total_sleep_min=excluded.total_sleep_min,
@@ -175,7 +176,8 @@ class Repository:
              avg_respiratory_rate=excluded.avg_respiratory_rate,
              temp_profile_summary=excluded.temp_profile_summary,
              intervention_summary=excluded.intervention_summary,
-             setpoint_version=excluded.setpoint_version""",
+             setpoint_version=excluded.setpoint_version,
+             outcome_score=excluded.outcome_score""",
             (
                 ns.date,
                 _iso(ns.bedtime),
@@ -194,6 +196,7 @@ class Repository:
                 _jdump(ns.temp_profile_summary),
                 _jdump(ns.intervention_summary),
                 ns.setpoint_version,
+                ns.outcome_score,
             ),
         )
         self.conn.commit()
@@ -205,8 +208,9 @@ class Repository:
              sleep_opportunity_min, is_short_sleep_day, schedule_variable, steps,
              workout_timing, workout_intensity, resting_hr_trend, hr_recovery,
              strain, caffeine, alcohol, screen_time_min, stress, travel, illness,
-             late_night_work, routine_complete)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             late_night_work, routine_complete, subjective_quality, grogginess,
+             daytime_performance)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
              required_wake_time=excluded.required_wake_time,
              work_start_time=excluded.work_start_time,
@@ -223,7 +227,10 @@ class Repository:
              screen_time_min=excluded.screen_time_min, stress=excluded.stress,
              travel=excluded.travel, illness=excluded.illness,
              late_night_work=excluded.late_night_work,
-             routine_complete=excluded.routine_complete""",
+             routine_complete=excluded.routine_complete,
+             subjective_quality=excluded.subjective_quality,
+             grogginess=excluded.grogginess,
+             daytime_performance=excluded.daytime_performance""",
             (
                 ctx.date,
                 _iso(ctx.required_wake_time),
@@ -247,6 +254,9 @@ class Repository:
                 _b2i(ctx.illness),
                 _b2i(ctx.late_night_work),
                 _b2i(ctx.routine_complete),
+                ctx.subjective_quality,
+                ctx.grogginess,
+                ctx.daytime_performance,
             ),
         )
         self.conn.commit()
@@ -276,6 +286,57 @@ class Repository:
         )
         self.conn.commit()
 
+    def log_action(self, action: ActionRecord) -> int:
+        """Append a learning action to the ledger; returns its row id."""
+        cur = self.conn.execute(
+            """INSERT INTO actions
+            (night_date, action_name, params, predicted, confidence, reward_observed,
+             applied, source, creates_version)
+            VALUES (?,?,?,?,?,?,?,?,?)""",
+            (action.date, action.action_name, _jdump(action.params),
+             _jdump(action.predicted), action.confidence, action.reward_observed,
+             int(bool(action.applied)), action.source, action.creates_version),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def backfill_action_rewards(self) -> None:
+        """Set each action's reward = mean outcome_score of the nights its version produced.
+
+        Averaging over all nights that ran on a version naturally captures an action's
+        multi-night (delayed) effect.
+        """
+        self.conn.execute(
+            """UPDATE actions SET reward_observed = (
+                SELECT AVG(n.outcome_score) FROM nightly_summaries n
+                WHERE n.setpoint_version = actions.creates_version
+                  AND n.outcome_score IS NOT NULL
+            ) WHERE creates_version IS NOT NULL"""
+        )
+        self.conn.commit()
+
+    def recent_actions(self, n: int) -> list[ActionRecord]:
+        rows = self.conn.execute(
+            "SELECT * FROM actions ORDER BY id DESC LIMIT ?", (n,)
+        ).fetchall()
+        out = [self._row_to_action(r) for r in rows]
+        out.reverse()
+        return out
+
+    @staticmethod
+    def _row_to_action(r: sqlite3.Row) -> ActionRecord:
+        return ActionRecord(
+            date=r["night_date"],
+            action_name=r["action_name"],
+            params=_jload(r["params"]),
+            predicted=_jload(r["predicted"]),
+            confidence=r["confidence"] or 0.0,
+            reward_observed=r["reward_observed"],
+            applied=bool(r["applied"]),
+            source=r["source"],
+            creates_version=r["creates_version"],
+        )
+
     def latest_setpoints(self) -> "Optional[SetpointProfile]":
         row = self.conn.execute(
             "SELECT * FROM setpoints ORDER BY version DESC LIMIT 1"
@@ -302,6 +363,31 @@ class Repository:
         nights = [self._row_to_night(r) for r in rows]
         nights.reverse()  # oldest-first
         return nights
+
+    def all_nights(self) -> list[NightSummary]:
+        """Every night summary, oldest-first (for ML dataset building)."""
+        rows = self.conn.execute(
+            "SELECT * FROM nightly_summaries ORDER BY date ASC"
+        ).fetchall()
+        return [self._row_to_night(r) for r in rows]
+
+    def setpoints_by_version(self) -> dict[int, SetpointProfile]:
+        """All stored setpoint versions keyed by version (for joining to nights)."""
+        rows = self.conn.execute("SELECT * FROM setpoints").fetchall()
+        out: dict[int, SetpointProfile] = {}
+        for r in rows:
+            p = _jload(r["profile"])
+            out[r["version"]] = SetpointProfile(
+                neutral_f=p["neutral_f"],
+                deep_bias_f=p["deep_bias_f"],
+                rem_warm_offset_f=p["rem_warm_offset_f"],
+                wake_ramp_f=p["wake_ramp_f"],
+                composite_bed_weight=p["composite_bed_weight"],
+                version=r["version"],
+                source=r["source"],
+                updated=_dt(r["ts"]),
+            )
+        return out
 
     def recent_interventions(self, n: int) -> list[Intervention]:
         rows = self.conn.execute(
@@ -372,6 +458,7 @@ class Repository:
             temp_profile_summary=_jload(r["temp_profile_summary"]),
             intervention_summary=_jload(r["intervention_summary"]),
             setpoint_version=r["setpoint_version"],
+            outcome_score=r["outcome_score"],
         )
 
     @staticmethod
@@ -414,4 +501,7 @@ class Repository:
             illness=_i2b(r["illness"]),
             late_night_work=_i2b(r["late_night_work"]),
             routine_complete=_i2b(r["routine_complete"]),
+            subjective_quality=r["subjective_quality"],
+            grogginess=r["grogginess"],
+            daytime_performance=r["daytime_performance"],
         )
