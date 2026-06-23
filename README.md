@@ -106,6 +106,13 @@ Safety: thermal changes are slew- and variability-limited (≤2 °F/step), stale
 on, `--dry-run` is always available for a read-only shakedown, and `calibrate` never writes.
 `--wake HH:MM` supplies the required wake time (v1); Google Calendar is scaffolded for later.
 
+**Ambient awareness.** Comfort targets adapt to how hot/cold it is: the controller prefers
+the Pod's measured **bedroom** temperature and falls back to **outdoor weather** (free
+[Open-Meteo](https://open-meteo.com), no API key; defaults to **Boston, MA**). A hotter
+ambient biases the bed cooler, colder biases it warmer — a small, capped offset (≤2 °F) that
+still respects the slew/variability limits. Override with `--lat/--lon`, or disable with
+`--no-weather`.
+
 ## CLI subcommands
 
 | Command     | What it does |

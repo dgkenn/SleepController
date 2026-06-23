@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS context (
     required_wake_time TEXT,
     work_start_time TEXT,
     first_commitment TEXT,
+    outdoor_temp_f REAL,
     sleep_opportunity_min REAL,
     is_short_sleep_day INTEGER,
     schedule_variable INTEGER,

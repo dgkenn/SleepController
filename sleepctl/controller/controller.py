@@ -106,11 +106,17 @@ class SleepController:
         else:
             intent = ThermalIntent.NEUTRAL
 
+        # --- ambient awareness: prefer measured bedroom temp, else outdoor weather ----
+        ambient_temp_f = frame.room_temp_f
+        if ambient_temp_f is None and context is not None:
+            ambient_temp_f = context.outdoor_temp_f
+
         # --- resolve safe target + level ---------------------------------------
         # Anchor the slew limit to the LAST COMMANDED target (not measured bed temp),
         # so the device never receives a jump larger than max_step_f between commands.
         target_f, level = self.thermal.resolve(
-            intent, objective, cfg.profile.hot_sleeper, self._last_target_f, self._last_target_f
+            intent, objective, cfg.profile.hot_sleeper, self._last_target_f,
+            self._last_target_f, ambient_temp_f,
         )
 
         # --- correction action vs current bed temp -----------------------------
@@ -127,6 +133,7 @@ class SleepController:
             confidence, frame,
             wake_signals=wake_event.signals if wake_event else [],
             minutes_in_bed=minutes_in_bed,
+            ambient_temp_f=ambient_temp_f,
         )
 
     # -- helpers -----------------------------------------------------------------
@@ -155,6 +162,7 @@ class SleepController:
     def _build(
         self, now, state, objective, intent, target_f, level, action, reason,
         confidence, frame, wake_signals, minutes_in_bed: float = 0.0,
+        ambient_temp_f=None,
     ) -> Decision:
         log_payload = {
             "stage": frame.stage.value,
@@ -164,6 +172,9 @@ class SleepController:
             "respiratory_rate": frame.respiratory_rate,
             "movement": frame.movement,
             "bed_temp_f": frame.bed_temp_f,
+            "room_temp_f": frame.room_temp_f,
+            "ambient_temp_f": ambient_temp_f,
+            "ambient_offset_f": round(self.thermal.ambient_offset(ambient_temp_f), 2),
             "data_age_seconds": frame.data_age_seconds,
             "wake_signals": wake_signals,
             "should_wake": self.should_wake,

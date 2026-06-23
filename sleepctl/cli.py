@@ -140,7 +140,19 @@ def _cmd_run(args: argparse.Namespace) -> int:
         max_ticks = args.max_ticks
         poll = args.poll_seconds
 
-    daemon = LiveDaemon(cfg, client, repo, context=context)
+    weather = None
+    if not args.no_weather and cfg.tunables.weather_enabled:
+        from sleepctl.adapters.weather import OpenMeteoWeather
+
+        weather = OpenMeteoWeather(
+            latitude=args.lat if args.lat is not None else cfg.tunables.weather_latitude,
+            longitude=args.lon if args.lon is not None else cfg.tunables.weather_longitude,
+        )
+        t = weather.current_temp_f()
+        print(f"Ambient awareness: outdoor temp = {t} °F"
+              if t is not None else "Ambient awareness: weather unavailable (will retry)")
+
+    daemon = LiveDaemon(cfg, client, repo, context=context, weather=weather)
     try:
         asyncio.run(daemon.run(poll_seconds=poll, dry_run=args.dry_run, max_ticks=max_ticks))
     except KeyboardInterrupt:
@@ -276,6 +288,10 @@ def build_parser() -> argparse.ArgumentParser:
                        help="drive the daemon from the offline simulator (no device)")
     p_run.add_argument("--scenario", default="normal",
                        help="simulator scenario: normal|short_sleep|clustered_awakenings")
+    p_run.add_argument("--no-weather", action="store_true",
+                       help="disable outdoor-temperature (Open-Meteo) ambient awareness")
+    p_run.add_argument("--lat", type=float, default=None, help="weather latitude (default Boston)")
+    p_run.add_argument("--lon", type=float, default=None, help="weather longitude (default Boston)")
     p_run.set_defaults(func=_cmd_run)
 
     p_auth = sub.add_parser("auth", help="Store Eight Sleep credentials")

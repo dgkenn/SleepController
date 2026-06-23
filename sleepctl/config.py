@@ -74,6 +74,14 @@ class Tunables:
     rem_warm_offset_f: float = 1.5  # small warm bias in REM (Autopilot RCT) above neutral
     level_min: int = -100
     level_max: int = 100
+    # Ambient-awareness: shift the comfort target by ambient deviation from baseline.
+    # Hotter ambient -> cooler bed; colder -> warmer. Small + capped to stay conservative.
+    ambient_baseline_f: float = 70.0
+    ambient_gain: float = 0.08  # °F target shift per °F ambient deviation
+    ambient_offset_cap_f: float = 2.0
+    weather_enabled: bool = True
+    weather_latitude: float = 42.3601   # Boston, MA
+    weather_longitude: float = -71.0589
 
 
 @dataclass

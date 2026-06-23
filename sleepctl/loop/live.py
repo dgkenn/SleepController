@@ -52,12 +52,14 @@ class LiveDaemon:
         repo: Repository,
         context: Optional[ContextRecord] = None,
         controller: Optional[SleepController] = None,
+        weather=None,
         verbose: bool = True,
     ) -> None:
         self.cfg = cfg
         self.client = client
         self.repo = repo
-        self.context = context
+        self.context = context or ContextRecord(date=datetime.now().date().isoformat())
+        self.weather = weather  # optional WeatherSource for ambient awareness
         self.cycle = ControlCycle(cfg, repo, controller)
         self.nightly = NightlyUpdater(cfg, repo)
         self.verbose = verbose
@@ -68,6 +70,14 @@ class LiveDaemon:
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def _refresh_weather(self) -> None:
+        """Update the context's outdoor temp from the weather source (fails soft)."""
+        if self.weather is None:
+            return
+        temp = self.weather.current_temp_f()  # cached internally; safe to call each tick
+        if temp is not None:
+            self.context.outdoor_temp_f = temp
 
     async def run(
         self,
@@ -85,6 +95,7 @@ class LiveDaemon:
         try:
             while True:
                 await self.client.update()
+                self._refresh_weather()
                 frame = self.client.read_frame()
                 now = self.client.now()
 
@@ -142,7 +153,11 @@ class LiveDaemon:
             and self._prev_state is not ControllerState.IDLE
         )
         if left_bed and self._saw_sleep:
-            night = await self.client.fetch_night_summary(self.cycle.night_date(now))
+            night_date = self.cycle.night_date(now)
+            # Persist the night's ambient/schedule context (layer 3) before learning.
+            self.context.date = night_date
+            self.repo.save_context(self.context)
+            night = await self.client.fetch_night_summary(night_date)
             result = self.nightly.run(night)
             rec = result["recommendation"]
             self._log(f"  nightly learn: {rec['action']} -> {rec['reason']}")

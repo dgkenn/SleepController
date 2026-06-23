@@ -44,6 +44,21 @@ class ThermalController:
         # recent commanded temps for the variability cap (short rolling window)
         self._recent_targets: deque[float] = deque(maxlen=8)
 
+    # -- ambient awareness -------------------------------------------------------
+    def ambient_offset(self, ambient_temp_f: Optional[float]) -> float:
+        """Comfort shift from ambient temperature (hotter -> cooler bed), bounded.
+
+        ``ambient_temp_f`` is the best available ambient: the Pod's measured bedroom temp
+        when present, else outdoor weather. Returns 0.0 when unknown.
+        """
+        if ambient_temp_f is None:
+            return 0.0
+        t = self.cfg.tunables
+        deviation = ambient_temp_f - t.ambient_baseline_f
+        offset = -t.ambient_gain * deviation  # hot ambient -> negative (cooler) target
+        cap = t.ambient_offset_cap_f
+        return max(-cap, min(cap, offset))
+
     # -- intent -> target --------------------------------------------------------
     def target_for(
         self,
@@ -51,6 +66,7 @@ class ThermalController:
         objective: NightObjective,
         hot_sleeper: bool,
         last_target_f: Optional[float] = None,
+        ambient_temp_f: Optional[float] = None,
     ) -> float:
         t = self.cfg.tunables
         bias = t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0
@@ -81,6 +97,12 @@ class ThermalController:
             ThermalIntent.DEEP_BIAS_COOL,
         ):
             target = (target + neutral) / 2.0
+
+        # Ambient-awareness: nudge comfort setpoints by outside/bedroom temperature. Skip
+        # STABILIZE (holds the last target) and WAKE_RAMP (its warmth is intentional).
+        if intent not in (ThermalIntent.STABILIZE, ThermalIntent.WAKE_RAMP):
+            target += self.ambient_offset(ambient_temp_f)
+
         return clamp_fahrenheit(target)  # never request outside the device's 55-110 °F
 
     # -- safety limiting ---------------------------------------------------------
@@ -122,9 +144,10 @@ class ThermalController:
         hot_sleeper: bool,
         current_f: float,
         last_target_f: Optional[float] = None,
+        ambient_temp_f: Optional[float] = None,
     ) -> tuple[float, int]:
         """Full pipeline: intent -> target -> slew -> variability cap -> level."""
-        raw = self.target_for(intent, objective, hot_sleeper, last_target_f)
+        raw = self.target_for(intent, objective, hot_sleeper, last_target_f, ambient_temp_f)
         slewed = self.slew_limit(current_f, raw)
         capped = self.enforce_variability_cap(slewed)
         return capped, self.to_level(capped)

@@ -120,6 +120,45 @@ def test_credentials_missing_is_incomplete(tmp_path):
     assert not load_credentials(str(tmp_path / "nope.json")).is_complete()
 
 
+def test_weather_adapter_caches_and_fails_soft():
+    from sleepctl.adapters.weather import OpenMeteoWeather
+
+    class FakeWeather(OpenMeteoWeather):
+        calls = 0
+
+        def _fetch(self):
+            FakeWeather.calls += 1
+            return 64.0
+
+    w = FakeWeather()
+    assert w.current_temp_f() == 64.0
+    assert w.current_temp_f() == 64.0  # served from cache
+    assert FakeWeather.calls == 1      # only one network call
+
+    class BadWeather(OpenMeteoWeather):
+        def _fetch(self):
+            raise OSError("network down")
+
+    assert BadWeather().current_temp_f() is None  # fails soft, no crash
+
+
+def test_live_daemon_applies_weather_ambient():
+    cfg = AppConfig.default()
+    start = datetime(2026, 6, 23, 23, 0)
+    client = SimulatedLiveClient(scenario="normal", seed=7, start=start)
+    repo = Repository(":memory:")
+
+    class StubWeather:
+        def current_temp_f(self):
+            return 90.0  # hot night
+
+    daemon = LiveDaemon(cfg, client, repo, context=_context(start), weather=StubWeather(),
+                        verbose=False)
+    asyncio.run(daemon.run(poll_seconds=0.0, dry_run=True, max_ticks=5))
+    # weather was wired into the context (used as ambient fallback when no bedroom temp)
+    assert daemon.context.outdoor_temp_f == 90.0
+
+
 class _RaisingUser:
     """Mimics a pyEight user whose properties raise on partial/empty data (Pod 2)."""
 

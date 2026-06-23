@@ -59,6 +59,14 @@ class CalendarSource(ABC):
         """Return schedule-derived context for the given ISO date."""
 
 
+class WeatherSource(ABC):
+    """Outdoor ambient temperature, used to make comfort targets ambient-aware."""
+
+    @abstractmethod
+    def current_temp_f(self) -> "float | None":
+        """Return the current outdoor temperature in °F, or None if unavailable."""
+
+
 class WearableSource(ABC):
     """Optional daytime wearable context.
 

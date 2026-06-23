@@ -198,16 +198,17 @@ class Repository:
     def save_context(self, ctx: ContextRecord) -> None:
         self.conn.execute(
             """INSERT INTO context
-            (date, required_wake_time, work_start_time, first_commitment,
+            (date, required_wake_time, work_start_time, first_commitment, outdoor_temp_f,
              sleep_opportunity_min, is_short_sleep_day, schedule_variable, steps,
              workout_timing, workout_intensity, resting_hr_trend, hr_recovery,
              strain, caffeine, alcohol, screen_time_min, stress, travel, illness,
              late_night_work, routine_complete)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
              required_wake_time=excluded.required_wake_time,
              work_start_time=excluded.work_start_time,
              first_commitment=excluded.first_commitment,
+             outdoor_temp_f=excluded.outdoor_temp_f,
              sleep_opportunity_min=excluded.sleep_opportunity_min,
              is_short_sleep_day=excluded.is_short_sleep_day,
              schedule_variable=excluded.schedule_variable, steps=excluded.steps,
@@ -225,6 +226,7 @@ class Repository:
                 _iso(ctx.required_wake_time),
                 _iso(ctx.work_start_time),
                 _iso(ctx.first_commitment),
+                ctx.outdoor_temp_f,
                 ctx.sleep_opportunity_min,
                 _b2i(ctx.is_short_sleep_day),
                 _b2i(ctx.schedule_variable),
@@ -354,6 +356,7 @@ class Repository:
             required_wake_time=_dt(r["required_wake_time"]),
             work_start_time=_dt(r["work_start_time"]),
             first_commitment=_dt(r["first_commitment"]),
+            outdoor_temp_f=r["outdoor_temp_f"],
             sleep_opportunity_min=r["sleep_opportunity_min"],
             is_short_sleep_day=_i2b(r["is_short_sleep_day"]),
             schedule_variable=_i2b(r["schedule_variable"]),

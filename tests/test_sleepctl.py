@@ -101,6 +101,55 @@ def test_calibration_matches_real_eight_sleep_table():
     assert fahrenheit_to_level(200) == fahrenheit_to_level(MAX_TEMP_F)
 
 
+def test_ambient_offset_bounded_and_directional():
+    tc = ThermalController(AppConfig.default())
+    cap = AppConfig.default().tunables.ambient_offset_cap_f
+    assert tc.ambient_offset(None) == 0.0
+    # hotter than baseline -> cooler (negative) target; colder -> warmer (positive)
+    assert tc.ambient_offset(85.0) < 0
+    assert tc.ambient_offset(50.0) > 0
+    # bounded by the cap in both directions
+    assert tc.ambient_offset(200.0) == -cap
+    assert tc.ambient_offset(-50.0) == cap
+
+
+def test_controller_prefers_bedroom_temp_over_outdoor():
+    from sleepctl.models import ContextRecord
+
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    now = datetime(2026, 6, 23, 23, 0)
+    ctx = ContextRecord(date="2026-06-23", outdoor_temp_f=95.0)
+    # frame reports a cool bedroom; controller should use 68F (bedroom), not 95F (outdoor)
+    frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, movement=0.05,
+                        bed_temp_f=70.0, room_temp_f=68.0, data_age_seconds=30)
+    d = c.decide(frame, ctx, [], now)
+    assert d.log_payload["ambient_temp_f"] == 68.0
+
+
+def test_controller_uses_outdoor_when_no_bedroom_temp():
+    from sleepctl.models import ContextRecord
+
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    now = datetime(2026, 6, 23, 23, 30)
+    ctx = ContextRecord(date="2026-06-23", outdoor_temp_f=95.0)  # hot night
+    # no room_temp_f on the frame -> falls back to outdoor weather
+    frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, movement=0.05,
+                        bed_temp_f=72.0, room_temp_f=None, data_age_seconds=30)
+    d = c.decide(frame, ctx, [], now)
+    assert d.log_payload["ambient_temp_f"] == 95.0
+    assert d.log_payload["ambient_offset_f"] < 0  # hot -> cooler bias
+
+
+def test_context_outdoor_temp_roundtrip():
+    from sleepctl.models import ContextRecord
+
+    r = Repository(":memory:")
+    r.save_context(ContextRecord(date="2026-06-23", outdoor_temp_f=72.5))
+    assert r.get_context("2026-06-23").outdoor_temp_f == 72.5
+
+
 def test_rem_gets_small_warm_bias():
     """REM target is warmer than deep (evidence: warmth promotes REM)."""
     from sleepctl.models import NightObjective, ThermalIntent

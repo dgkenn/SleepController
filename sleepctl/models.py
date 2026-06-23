@@ -158,6 +158,7 @@ class ContextRecord:
     required_wake_time: Optional[datetime] = None
     work_start_time: Optional[datetime] = None
     first_commitment: Optional[datetime] = None
+    outdoor_temp_f: Optional[float] = None  # ambient context (weather), for comfort offset
     sleep_opportunity_min: Optional[float] = None
     is_short_sleep_day: Optional[bool] = None
     schedule_variable: Optional[bool] = None
