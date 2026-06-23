@@ -1,0 +1,73 @@
+services:
+
+  # ── FastAPI backend ──────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ..          # repo root — Dockerfile COPYs the whole tree
+      dockerfile: dashboard/api/Dockerfile
+    image: sleepctl-api
+    env_file: .env
+    environment:
+      SLEEPCTL_DB: /data/sleepctl.db
+      PYTHONPATH: /app:/app/dashboard/api
+    volumes:
+      - sleepdata:/data
+    restart: unless-stopped
+    # No ports exposed directly; Caddy is the only public ingress.
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ── Control daemon (same image, different CMD) ───────────────────────────────
+  daemon:
+    image: sleepctl-api          # reuse the image built above
+    depends_on:
+      api:
+        condition: service_started
+    command: ["python", "/app/dashboard/daemon/run_daemon.py"]
+    env_file: .env
+    environment:
+      SLEEPCTL_DB: /data/sleepctl.db
+      PYTHONPATH: /app:/app/dashboard/api
+    volumes:
+      - sleepdata:/data
+    restart: unless-stopped
+
+  # ── Next.js PWA frontend ─────────────────────────────────────────────────────
+  web:
+    build:
+      context: ..
+      dockerfile: dashboard/web/Dockerfile
+    image: sleepctl-web
+    environment:
+      # Used by Next.js server-side rewrites / middleware to reach the API
+      API_URL: http://api:8000
+      NEXT_PUBLIC_API_URL: ""   # empty → browser uses relative /api/* paths via Caddy
+      PORT: "3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # ── Caddy reverse proxy (HTTPS + PWA host) ───────────────────────────────────
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+volumes:
+  sleepdata:
+  caddy_data:
+  caddy_config:

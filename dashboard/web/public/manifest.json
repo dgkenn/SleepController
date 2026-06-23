@@ -1,0 +1,37 @@
+{
+  "name": "SleepCtl",
+  "short_name": "SleepCtl",
+  "description": "Sleep controller dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f0f14",
+  "theme_color": "#0f0f14",
+  "orientation": "portrait",
+  "categories": ["health", "utilities"],
+  "icons": [
+    {
+      "src": "/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Tonight",
+      "url": "/tonight",
+      "description": "Control tonight's sleep"
+    },
+    {
+      "name": "Status",
+      "url": "/",
+      "description": "View current status"
+    }
+  ]
+}

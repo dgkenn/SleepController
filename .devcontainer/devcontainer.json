@@ -1,0 +1,14 @@
+{
+  "name": "sleepctl dashboard",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+  "postCreateCommand": "pip install -e . && pip install -r dashboard/api/requirements.txt && npm ci --prefix dashboard/web",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": { "label": "sleepctl dashboard", "onAutoForward": "notify" },
+    "8000": { "label": "sleepctl api", "onAutoForward": "silent" }
+  },
+  "postAttachCommand": "echo 'Run ./scripts/codespace-up.sh to start the dashboard, then open port 3000.'"
+}
