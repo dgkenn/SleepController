@@ -29,6 +29,17 @@ hot-sleeper cooling strategy is supported.
   so HR/HRV/RR are unreliable during movement — the controller discounts decision confidence
   when movement is high (`SleepController._biometric_reliability`). HR updates per-minute;
   **HRV/RR update per-session** (slower), so the controller never expects fast HRV response.
+- **Composite (effective) temperature control.** The Pod's measured **bed-surface
+  temperature** already integrates the water setpoint + the sleeper's body heat + the room,
+  and the sleeper's **exposed skin** (head/face) feels the **ambient air**. We therefore
+  control a blended *effective* temperature `composite = a·bed + (1−a)·ambient`
+  (`Tunables.composite_bed_weight`, default a=0.75). Per-stage targets are *effective comfort*
+  temperatures; a proportional loop (`composite_feedback_gain`) nudges the commanded water
+  temperature to drive `composite → target`, bounded by the slew/variability limits. This
+  **self-calibrates** the Eight Sleep water temp to the user's body heat and room conditions:
+  a cold room (cold exposed skin) commands a warmer bed, a hot/heat-retaining body commands a
+  cooler one. When no measured bed temp is available the loop falls back to feed-forward blend
+  inversion; ambient comes from the Pod's room sensor, with outdoor weather only as a fallback.
 - **Validated control strategy (Eight Sleep Autopilot RCT, *SLEEP* 2024, abs. 0462).** Cooler
   offsets promote **deep** sleep; warmer offsets promote **REM**; the offset magnitude is
   escalated when the prior night had **deep < 15%** or **REM < 20%**. Measured effects are

@@ -74,11 +74,13 @@ class Tunables:
     rem_warm_offset_f: float = 1.5  # small warm bias in REM (Autopilot RCT) above neutral
     level_min: int = -100
     level_max: int = 100
-    # Ambient-awareness: shift the comfort target by ambient deviation from baseline.
-    # Hotter ambient -> cooler bed; colder -> warmer. Small + capped to stay conservative.
-    ambient_baseline_f: float = 70.0
-    ambient_gain: float = 0.08  # °F target shift per °F ambient deviation
-    ambient_offset_cap_f: float = 2.0
+    # Composite (effective) temperature control. Effective comfort is a blend of the
+    # COVERED body (bed surface temp) and EXPOSED skin (room/ambient air):
+    #   effective = composite_bed_weight*bed + (1-composite_bed_weight)*ambient.
+    # A proportional loop nudges the water temp to drive effective -> target.
+    composite_bed_weight: float = 0.75   # ~25% of comfort attributed to exposed skin
+    composite_feedback_gain: float = 0.6  # °F water step per °F effective error (slew-capped)
+    # Outdoor weather is only an ambient FALLBACK when the Pod reports no bed/room temp.
     weather_enabled: bool = True
     weather_latitude: float = 42.3601   # Boston, MA
     weather_longitude: float = -71.0589

@@ -101,16 +101,33 @@ def test_calibration_matches_real_eight_sleep_table():
     assert fahrenheit_to_level(200) == fahrenheit_to_level(MAX_TEMP_F)
 
 
-def test_ambient_offset_bounded_and_directional():
+def test_composite_blend_and_inversion():
     tc = ThermalController(AppConfig.default())
-    cap = AppConfig.default().tunables.ambient_offset_cap_f
-    assert tc.ambient_offset(None) == 0.0
-    # hotter than baseline -> cooler (negative) target; colder -> warmer (positive)
-    assert tc.ambient_offset(85.0) < 0
-    assert tc.ambient_offset(50.0) > 0
-    # bounded by the cap in both directions
-    assert tc.ambient_offset(200.0) == -cap
-    assert tc.ambient_offset(-50.0) == cap
+    a = AppConfig.default().tunables.composite_bed_weight
+    # blend: covered body (bed) weighted with exposed-skin ambient
+    assert tc.composite_temp(80.0, 60.0) == a * 80.0 + (1 - a) * 60.0
+    assert tc.composite_temp(None, 60.0) is None         # no bed temp -> unknown
+    assert tc.composite_temp(80.0, None) == 80.0         # no ambient -> just bed surface
+    # feedforward inversion is the exact inverse of the blend
+    eff, ambient = 70.0, 60.0
+    water = tc.required_water_open_loop(eff, ambient)
+    assert abs((a * water + (1 - a) * ambient) - eff) < 1e-6
+
+
+def test_cold_exposed_skin_drives_bed_warmer():
+    """Cold room (exposed head) should push the commanded water WARMER to compensate."""
+    cfg = AppConfig.default()
+    tc = ThermalController(cfg)
+    from sleepctl.models import NightObjective, ThermalIntent
+
+    last = cfg.tunables.neutral_temp_f
+    # same intent, same bed temp, but a cold vs warm room
+    warm_room, _ = tc.resolve(ThermalIntent.NEUTRAL, NightObjective.OPTIMIZE, True,
+                              last, bed_temp_f=70.0, ambient_temp_f=75.0)
+    tc2 = ThermalController(cfg)
+    cold_room, _ = tc2.resolve(ThermalIntent.NEUTRAL, NightObjective.OPTIMIZE, True,
+                               last, bed_temp_f=70.0, ambient_temp_f=55.0)
+    assert cold_room > warm_room  # colder exposed skin -> warmer bed command
 
 
 def test_controller_prefers_bedroom_temp_over_outdoor():
@@ -120,11 +137,12 @@ def test_controller_prefers_bedroom_temp_over_outdoor():
     c = SleepController(cfg)
     now = datetime(2026, 6, 23, 23, 0)
     ctx = ContextRecord(date="2026-06-23", outdoor_temp_f=95.0)
-    # frame reports a cool bedroom; controller should use 68F (bedroom), not 95F (outdoor)
+    # frame reports a cool bedroom; controller should use 68F (bedroom) as exposed-skin ambient
     frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, movement=0.05,
                         bed_temp_f=70.0, room_temp_f=68.0, data_age_seconds=30)
     d = c.decide(frame, ctx, [], now)
     assert d.log_payload["ambient_temp_f"] == 68.0
+    assert d.log_payload["composite_temp_f"] is not None
 
 
 def test_controller_uses_outdoor_when_no_bedroom_temp():
@@ -134,12 +152,11 @@ def test_controller_uses_outdoor_when_no_bedroom_temp():
     c = SleepController(cfg)
     now = datetime(2026, 6, 23, 23, 30)
     ctx = ContextRecord(date="2026-06-23", outdoor_temp_f=95.0)  # hot night
-    # no room_temp_f on the frame -> falls back to outdoor weather
+    # no room_temp_f on the frame -> falls back to outdoor weather for exposed-skin ambient
     frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, movement=0.05,
                         bed_temp_f=72.0, room_temp_f=None, data_age_seconds=30)
     d = c.decide(frame, ctx, [], now)
     assert d.log_payload["ambient_temp_f"] == 95.0
-    assert d.log_payload["ambient_offset_f"] < 0  # hot -> cooler bias
 
 
 def test_context_outdoor_temp_roundtrip():

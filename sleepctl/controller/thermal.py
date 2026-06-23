@@ -44,30 +44,40 @@ class ThermalController:
         # recent commanded temps for the variability cap (short rolling window)
         self._recent_targets: deque[float] = deque(maxlen=8)
 
-    # -- ambient awareness -------------------------------------------------------
-    def ambient_offset(self, ambient_temp_f: Optional[float]) -> float:
-        """Comfort shift from ambient temperature (hotter -> cooler bed), bounded.
-
-        ``ambient_temp_f`` is the best available ambient: the Pod's measured bedroom temp
-        when present, else outdoor weather. Returns 0.0 when unknown.
-        """
+    # -- composite (effective) temperature ---------------------------------------
+    # Effective comfort = a blend of what the COVERED body feels (the Pod's bed-surface
+    # temperature, which already integrates body heat + water + room) and what EXPOSED
+    # skin (head/face) feels (the room/ambient air). A cold head therefore calls for a
+    # warmer bed to keep the blended comfort on target, and vice-versa.
+    def composite_temp(
+        self, bed_temp_f: Optional[float], ambient_temp_f: Optional[float]
+    ) -> Optional[float]:
+        """Measured effective temperature = a*bed + (1-a)*ambient (None if no bed temp)."""
+        if bed_temp_f is None:
+            return None
         if ambient_temp_f is None:
-            return 0.0
-        t = self.cfg.tunables
-        deviation = ambient_temp_f - t.ambient_baseline_f
-        offset = -t.ambient_gain * deviation  # hot ambient -> negative (cooler) target
-        cap = t.ambient_offset_cap_f
-        return max(-cap, min(cap, offset))
+            return bed_temp_f  # no exposed-skin info -> just the bed surface
+        a = self.cfg.tunables.composite_bed_weight
+        return a * bed_temp_f + (1.0 - a) * ambient_temp_f
 
-    # -- intent -> target --------------------------------------------------------
+    def required_water_open_loop(
+        self, effective_target_f: float, ambient_temp_f: Optional[float]
+    ) -> float:
+        """Feedforward: invert the blend to get the bed/water target (no measured bed temp)."""
+        if ambient_temp_f is None:
+            return effective_target_f
+        a = self.cfg.tunables.composite_bed_weight
+        return clamp_fahrenheit((effective_target_f - (1.0 - a) * ambient_temp_f) / a)
+
+    # -- intent -> EFFECTIVE comfort target --------------------------------------
     def target_for(
         self,
         intent: ThermalIntent,
         objective: NightObjective,
         hot_sleeper: bool,
         last_target_f: Optional[float] = None,
-        ambient_temp_f: Optional[float] = None,
     ) -> float:
+        """Per-intent EFFECTIVE comfort target (the blended temperature we want felt)."""
         t = self.cfg.tunables
         bias = t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0
         neutral = t.neutral_temp_f + bias
@@ -98,12 +108,7 @@ class ThermalController:
         ):
             target = (target + neutral) / 2.0
 
-        # Ambient-awareness: nudge comfort setpoints by outside/bedroom temperature. Skip
-        # STABILIZE (holds the last target) and WAKE_RAMP (its warmth is intentional).
-        if intent not in (ThermalIntent.STABILIZE, ThermalIntent.WAKE_RAMP):
-            target += self.ambient_offset(ambient_temp_f)
-
-        return clamp_fahrenheit(target)  # never request outside the device's 55-110 °F
+        return clamp_fahrenheit(target)
 
     # -- safety limiting ---------------------------------------------------------
     def slew_limit(self, current_f: float, target_f: float) -> float:
@@ -142,12 +147,34 @@ class ThermalController:
         intent: ThermalIntent,
         objective: NightObjective,
         hot_sleeper: bool,
-        current_f: float,
-        last_target_f: Optional[float] = None,
+        last_target_f: float,
+        bed_temp_f: Optional[float] = None,
         ambient_temp_f: Optional[float] = None,
     ) -> tuple[float, int]:
-        """Full pipeline: intent -> target -> slew -> variability cap -> level."""
-        raw = self.target_for(intent, objective, hot_sleeper, last_target_f, ambient_temp_f)
-        slewed = self.slew_limit(current_f, raw)
+        """Composite-feedback pipeline -> safe (water_target_f, device level).
+
+        Drives the **effective** (blended) temperature to its per-intent target by nudging
+        the commanded water temperature. Self-calibrates to body heat (via the measured bed
+        temp) and exposed-skin ambient. Always bounded by slew + variability + device range.
+        """
+        t = self.cfg.tunables
+        last = last_target_f if last_target_f is not None else t.neutral_temp_f
+
+        if intent is ThermalIntent.STABILIZE:
+            water = last                                   # hold the last command
+        elif intent is ThermalIntent.WAKE_RAMP:
+            water = self.target_for(intent, objective, hot_sleeper, last)  # direct warming
+        else:
+            eff_target = self.target_for(intent, objective, hot_sleeper, last)
+            measured = self.composite_temp(bed_temp_f, ambient_temp_f)
+            if measured is not None:
+                # Closed loop on the composite: error in effective-comfort °F nudges water.
+                error = eff_target - measured
+                water = last + t.composite_feedback_gain * error
+            else:
+                # No measured bed temp -> feedforward blend inversion (ambient only).
+                water = self.required_water_open_loop(eff_target, ambient_temp_f)
+
+        slewed = self.slew_limit(last, water)
         capped = self.enforce_variability_cap(slewed)
-        return capped, self.to_level(capped)
+        return clamp_fahrenheit(capped), self.to_level(clamp_fahrenheit(capped))

@@ -106,17 +106,20 @@ class SleepController:
         else:
             intent = ThermalIntent.NEUTRAL
 
-        # --- ambient awareness: prefer measured bedroom temp, else outdoor weather ----
+        # --- composite temperature inputs --------------------------------------
+        # Exposed-skin ambient = bedroom air (preferred) or outdoor weather fallback.
         ambient_temp_f = frame.room_temp_f
         if ambient_temp_f is None and context is not None:
             ambient_temp_f = context.outdoor_temp_f
+        # Covered-body signal = the Pod's measured bed-surface temperature.
+        bed_temp_f = frame.bed_temp_f
 
-        # --- resolve safe target + level ---------------------------------------
-        # Anchor the slew limit to the LAST COMMANDED target (not measured bed temp),
-        # so the device never receives a jump larger than max_step_f between commands.
+        # --- resolve safe target + level (composite feedback) ------------------
+        # The water command is nudged so the blended effective temperature hits target;
+        # slew is anchored to the last command so the device never jumps > max_step_f.
         target_f, level = self.thermal.resolve(
             intent, objective, cfg.profile.hot_sleeper, self._last_target_f,
-            self._last_target_f, ambient_temp_f,
+            bed_temp_f, ambient_temp_f,
         )
 
         # --- correction action vs current bed temp -----------------------------
@@ -137,6 +140,10 @@ class SleepController:
         )
 
     # -- helpers -----------------------------------------------------------------
+    @staticmethod
+    def _round_opt(value, ndigits: int = 2):
+        return round(value, ndigits) if value is not None else None
+
     @staticmethod
     def _biometric_reliability(frame: SensorFrame) -> float:
         """1.0 when still; lower when moving (ballistocardiography needs stillness)."""
@@ -174,7 +181,13 @@ class SleepController:
             "bed_temp_f": frame.bed_temp_f,
             "room_temp_f": frame.room_temp_f,
             "ambient_temp_f": ambient_temp_f,
-            "ambient_offset_f": round(self.thermal.ambient_offset(ambient_temp_f), 2),
+            "composite_temp_f": self._round_opt(
+                self.thermal.composite_temp(frame.bed_temp_f, ambient_temp_f)
+            ),
+            "effective_target_f": round(
+                self.thermal.target_for(intent, objective, self.cfg.profile.hot_sleeper,
+                                        self._last_target_f), 2
+            ),
             "data_age_seconds": frame.data_age_seconds,
             "wake_signals": wake_signals,
             "should_wake": self.should_wake,

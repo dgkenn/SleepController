@@ -106,12 +106,16 @@ Safety: thermal changes are slew- and variability-limited (≤2 °F/step), stale
 on, `--dry-run` is always available for a read-only shakedown, and `calibrate` never writes.
 `--wake HH:MM` supplies the required wake time (v1); Google Calendar is scaffolded for later.
 
-**Ambient awareness.** Comfort targets adapt to how hot/cold it is: the controller prefers
-the Pod's measured **bedroom** temperature and falls back to **outdoor weather** (free
-[Open-Meteo](https://open-meteo.com), no API key; defaults to **Boston, MA**). A hotter
-ambient biases the bed cooler, colder biases it warmer — a small, capped offset (≤2 °F) that
-still respects the slew/variability limits. Override with `--lat/--lon`, or disable with
-`--no-weather`.
+**Composite (effective) temperature.** Comfort is controlled as a *blend*: your **covered
+body** feels the Pod's bed-surface temperature, while your **exposed skin** (head/face) feels
+the room air. The controller targets an effective temperature
+`composite = a·bed + (1−a)·ambient` and runs a gentle feedback loop that nudges the Pod's
+water temperature until the blend hits target — so a **cold room makes the bed run warmer**
+to compensate (and vice-versa), and it **self-calibrates** to how much your body heats the
+bed. Exposed-skin ambient comes from the Pod's **bedroom** sensor, with **outdoor weather**
+(free [Open-Meteo](https://open-meteo.com), no API key, default **Boston, MA**) only as a
+*fallback* when the Pod reports no room temp. Tune the blend with `composite_bed_weight`;
+override location with `--lat/--lon`; disable the weather fallback with `--no-weather`.
 
 ## CLI subcommands
 
