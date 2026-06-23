@@ -148,6 +148,7 @@ class NightSummary:
     avg_respiratory_rate: Optional[float] = None
     temp_profile_summary: dict = field(default_factory=dict)
     intervention_summary: dict = field(default_factory=dict)
+    setpoint_version: Optional[int] = None  # which SetpointProfile produced this night
 
 
 @dataclass
@@ -176,6 +177,26 @@ class ContextRecord:
     illness: Optional[bool] = None
     late_night_work: Optional[bool] = None
     routine_complete: Optional[bool] = None
+
+
+@dataclass
+class SetpointProfile:
+    """The per-user, learnable composite-temperature setpoint — the object the learning
+    loop (and, later, the ML model) tailors over time.
+
+    Holds the **effective comfort** targets (°F, on the blended composite scale) and the
+    blend weight. It is versioned and stamped with its ``source`` so every night's outcome
+    can be attributed to the exact setpoint that produced it (clean ML training rows).
+    """
+
+    neutral_f: float
+    deep_bias_f: float
+    rem_warm_offset_f: float
+    wake_ramp_f: float
+    composite_bed_weight: float
+    version: int = 0
+    source: str = "default"  # "default" | "policy" | "ml"
+    updated: Optional[datetime] = None
 
 
 @dataclass

@@ -12,6 +12,7 @@ from sleepctl.config import AppConfig
 from sleepctl.learning.baselines import BaselineEngine
 from sleepctl.learning.policy import TieredPolicy
 from sleepctl.learning.response import ResponseEstimator
+from sleepctl.learning.setpoints import apply_recommendation
 from sleepctl.models import NightSummary
 from sleepctl.storage.repository import Repository
 
@@ -25,7 +26,11 @@ class NightlyUpdater:
         self.policy = policy or TieredPolicy(cfg)
 
     def run(self, night: NightSummary) -> dict:
-        """Persist + learn from a completed night; return the recommendation."""
+        """Persist + learn from a completed night; evolve the setpoint; return the result."""
+        # The setpoint that was ACTIVE during the night gets credit/blame for its outcome.
+        active = self.repo.latest_setpoints() or self.cfg.default_setpoints()
+        self.repo.save_setpoints(active)  # ensure this version is recorded for ML
+        night.setpoint_version = active.version
         self.repo.save_night_summary(night)
 
         history = self.repo.recent_nights(14)
@@ -40,10 +45,17 @@ class NightlyUpdater:
         self.policy.register_outcome(night)
         recommendation = self.policy.recommend(baselines, deltas, response, self.cfg)
 
+        # Evolve the learnable setpoint for the NEXT night and persist the new version.
+        next_profile = apply_recommendation(active, recommendation, self.cfg)
+        if next_profile.version != active.version:
+            self.repo.save_setpoints(next_profile)
+
         return {
             "date": night.date,
             "baselines": baselines.metrics,
             "deltas": deltas,
             "response": response,
             "recommendation": recommendation,
+            "setpoint_version": active.version,
+            "next_setpoint_version": next_profile.version,
         }

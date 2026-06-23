@@ -36,7 +36,11 @@ def _cmd_replay(args: argparse.Namespace) -> int:
         calendar = ManualCalendarSource(required_wake_time=required_wake, bedtime=night_start)
         context = calendar.get_context(night_start.date().isoformat())
 
-        runtime = Runtime(cfg, source, actuator, repo, calendar)
+        # Use the latest learned setpoint profile (evolves night to night).
+        from sleepctl.controller.controller import SleepController
+
+        controller = SleepController(cfg, setpoints=repo.latest_setpoints())
+        runtime = Runtime(cfg, source, actuator, repo, calendar, controller=controller)
         decisions = runtime.replay(context)
 
         states = {}
@@ -81,6 +85,12 @@ def _cmd_report(args: argparse.Namespace) -> int:
         for key in sorted(baselines.metrics):
             if key.endswith("_7d_median"):
                 print(f"  {key}: {baselines.metrics[key]:.2f}")
+    sp = repo.latest_setpoints()
+    if sp:
+        print(f"\nLearned setpoint v{sp.version} ({sp.source}): "
+              f"neutral={sp.neutral_f:.1f}F deep={sp.deep_bias_f:.1f}F "
+              f"rem_offset=+{sp.rem_warm_offset_f:.1f}F wake={sp.wake_ramp_f:.1f}F "
+              f"blend_a={sp.composite_bed_weight:.2f}")
     repo.close()
     return 0
 
@@ -152,7 +162,11 @@ def _cmd_run(args: argparse.Namespace) -> int:
         print(f"Ambient awareness: outdoor temp = {t} °F"
               if t is not None else "Ambient awareness: weather unavailable (will retry)")
 
-    daemon = LiveDaemon(cfg, client, repo, context=context, weather=weather)
+    from sleepctl.controller.controller import SleepController
+
+    controller = SleepController(cfg, setpoints=repo.latest_setpoints())
+    daemon = LiveDaemon(cfg, client, repo, context=context, weather=weather,
+                        controller=controller)
     try:
         asyncio.run(daemon.run(poll_seconds=poll, dry_run=args.dry_run, max_ticks=max_ticks))
     except KeyboardInterrupt:

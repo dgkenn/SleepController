@@ -303,6 +303,65 @@ def test_sustained_worsening_reverts():
     assert p.recommend(Baselines(), {}, {})["action"] == "revert"
 
 
+def test_setpoint_profile_roundtrip():
+    from sleepctl.models import SetpointProfile
+
+    r = Repository(":memory:")
+    assert r.latest_setpoints() is None
+    p = SetpointProfile(neutral_f=70, deep_bias_f=66, rem_warm_offset_f=1.5, wake_ramp_f=74,
+                        composite_bed_weight=0.75, version=3, source="policy")
+    r.save_setpoints(p)
+    got = r.latest_setpoints()
+    assert got.version == 3 and got.deep_bias_f == 66 and got.source == "policy"
+
+
+def test_apply_recommendation_evolves_setpoint():
+    from sleepctl.learning.setpoints import apply_recommendation
+
+    cfg = AppConfig.default()
+    base = cfg.default_setpoints()
+    # a deep-cooling trial lowers the deep setpoint and bumps the version
+    after = apply_recommendation(base, {"action": "try", "target": "deep_bias_cooling",
+                                        "magnitude_f": 1.0}, cfg)
+    assert after.deep_bias_f == base.deep_bias_f - 1.0
+    assert after.version == base.version + 1 and after.source == "policy"
+    # a rem-warming trial raises the REM offset
+    rem = apply_recommendation(base, {"action": "try", "target": "rem_warming",
+                                      "magnitude_f": 1.0}, cfg)
+    assert rem.rem_warm_offset_f == base.rem_warm_offset_f + 1.0
+    # "hold" makes no change (no version churn)
+    held = apply_recommendation(base, {"action": "hold", "target": "deep_bias_cooling"}, cfg)
+    assert held.version == base.version
+
+
+def test_nightly_stamps_and_evolves_setpoint():
+    cfg = AppConfig.default()
+    repo = Repository(":memory:")
+    updater = NightlyUpdater(cfg, repo)
+    # low-deep night -> policy starts a deep-cooling trial -> setpoint should evolve
+    night = NightSummary(date="2026-06-10", total_sleep_min=400, deep_min=40, rem_min=120,
+                         wake_events=1, sleep_efficiency=0.88, avg_hrv=66)
+    result = updater.run(night)
+    # the night is attributed to the active (v0) setpoint
+    assert repo.recent_nights(1)[0].setpoint_version == 0
+    # a new, evolved setpoint version was persisted for the next night
+    assert repo.latest_setpoints().version == result["next_setpoint_version"]
+    assert repo.latest_setpoints().version >= 1
+
+
+def test_controller_uses_injected_setpoint():
+    from sleepctl.models import NightObjective, SetpointProfile, ThermalIntent
+
+    cfg = AppConfig.default()
+    # a custom profile with a much cooler deep target should change the effective target
+    custom = SetpointProfile(neutral_f=70, deep_bias_f=60, rem_warm_offset_f=1.5,
+                             wake_ramp_f=74, composite_bed_weight=0.75, version=9)
+    c = SleepController(cfg, setpoints=custom)
+    t = c.thermal.target_for(ThermalIntent.DEEP_BIAS_COOL, NightObjective.OPTIMIZE,
+                             hot_sleeper=False)
+    assert t == 60.0  # uses the injected profile's deep_bias_f, not the config default (66)
+
+
 def test_baselines_update_and_nightly_pipeline():
     cfg = AppConfig.default()
     repo = Repository(":memory:")

@@ -30,7 +30,7 @@ from sleepctl.models import (
 
 
 class SleepController:
-    def __init__(self, cfg: AppConfig) -> None:
+    def __init__(self, cfg: AppConfig, setpoints=None) -> None:
         self.cfg = cfg
         self.sm = SleepStateMachine(cfg)
         self.wake_detector = WakeDetector()
@@ -38,7 +38,8 @@ class SleepController:
         self.maintenance = MaintenanceRoutine(cfg)
         self.wake_recovery = WakeRecoveryRoutine(cfg)
         self.smart_wake = SmartWakeRoutine(cfg)
-        self.thermal = ThermalController(cfg)
+        # The learnable setpoint profile (updated nightly by the learning loop / ML).
+        self.thermal = ThermalController(cfg, profile=setpoints)
 
         self._bed_entry_time: Optional[datetime] = None
         self._last_target_f: float = cfg.tunables.neutral_temp_f

@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS nightly_summaries (
     avg_hrv REAL,
     avg_respiratory_rate REAL,
     temp_profile_summary TEXT,
-    intervention_summary TEXT
+    intervention_summary TEXT,
+    setpoint_version INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS context (
@@ -106,6 +107,14 @@ CREATE TABLE IF NOT EXISTS baselines (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT NOT NULL,
     metrics TEXT
+);
+
+-- Versioned snapshots of the learnable composite setpoint (the object the ML tailors).
+CREATE TABLE IF NOT EXISTS setpoints (
+    version INTEGER PRIMARY KEY,
+    ts TEXT NOT NULL,
+    source TEXT,
+    profile TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_raw_samples_night ON raw_samples(night_date);

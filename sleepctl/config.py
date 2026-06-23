@@ -96,6 +96,21 @@ class AppConfig:
     def default(cls) -> "AppConfig":
         return cls()
 
+    def default_setpoints(self):
+        """Build the starting (learnable) SetpointProfile from these tunables."""
+        from sleepctl.models import SetpointProfile
+
+        t = self.tunables
+        return SetpointProfile(
+            neutral_f=t.neutral_temp_f,
+            deep_bias_f=t.deep_bias_temp_f,
+            rem_warm_offset_f=t.rem_warm_offset_f,
+            wake_ramp_f=t.wake_ramp_temp_f,
+            composite_bed_weight=t.composite_bed_weight,
+            version=0,
+            source="default",
+        )
+
     @classmethod
     def from_yaml(cls, path) -> "AppConfig":
         """Load overrides from a YAML file; missing file -> defaults.

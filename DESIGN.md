@@ -250,6 +250,23 @@ Conservative, explainable, and resistant to overfitting (`sleepctl/learning/`).
 
 ---
 
+### 6a. Learnable setpoint profile (ML-ready)
+
+The composite **setpoint is a first-class, persisted, versioned object** (`SetpointProfile`:
+per-stage effective targets + blend weight), not a hardcoded constant — because it is the
+quantity a future ML model will tailor per user. Each night:
+
+1. the controller runs on the **active** profile version;
+2. the night's `NightSummary` is **stamped with that version** (`setpoint_version`);
+3. the tiered policy's recommendation is applied to produce the **next** version
+   (`learning/setpoints.apply_recommendation`, bounded + small steps), persisted in the
+   `setpoints` table with its `source` (`default`/`policy`/`ml`).
+
+This yields clean training rows — join `nightly_summaries.setpoint_version → setpoints.profile`
+against the outcome columns — so the ML can learn the optimal per-stage effective temperatures
+and blend weight from real (setpoint, context, outcome) tuples. A trained model simply writes a
+new `SetpointProfile` with `source="ml"`; nothing else in the controller changes.
+
 ## 7. Data schema
 
 SQLite, three dataset layers + three ledgers (`sleepctl/storage/schema.py`), shaped flat

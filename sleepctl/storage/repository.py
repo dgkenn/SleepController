@@ -22,6 +22,7 @@ from sleepctl.models import (
     NightObjective,
     NightSummary,
     SensorFrame,
+    SetpointProfile,
     SleepStage,
     ThermalIntent,
 )
@@ -161,8 +162,8 @@ class Repository:
             (date, bedtime, wake_time, total_sleep_min, sleep_onset_latency_min,
              deep_min, rem_min, light_min, wake_events, waso_min, sleep_efficiency,
              avg_hr, avg_hrv, avg_respiratory_rate, temp_profile_summary,
-             intervention_summary)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+             intervention_summary, setpoint_version)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
              bedtime=excluded.bedtime, wake_time=excluded.wake_time,
              total_sleep_min=excluded.total_sleep_min,
@@ -173,7 +174,8 @@ class Repository:
              avg_hr=excluded.avg_hr, avg_hrv=excluded.avg_hrv,
              avg_respiratory_rate=excluded.avg_respiratory_rate,
              temp_profile_summary=excluded.temp_profile_summary,
-             intervention_summary=excluded.intervention_summary""",
+             intervention_summary=excluded.intervention_summary,
+             setpoint_version=excluded.setpoint_version""",
             (
                 ns.date,
                 _iso(ns.bedtime),
@@ -191,6 +193,7 @@ class Repository:
                 ns.avg_respiratory_rate,
                 _jdump(ns.temp_profile_summary),
                 _jdump(ns.intervention_summary),
+                ns.setpoint_version,
             ),
         )
         self.conn.commit()
@@ -254,6 +257,42 @@ class Repository:
             (_iso(baselines.updated or datetime.now()), _jdump(baselines.metrics)),
         )
         self.conn.commit()
+
+    def save_setpoints(self, profile: "SetpointProfile") -> None:
+        """Persist a versioned snapshot of the learnable setpoint profile."""
+        payload = {
+            "neutral_f": profile.neutral_f,
+            "deep_bias_f": profile.deep_bias_f,
+            "rem_warm_offset_f": profile.rem_warm_offset_f,
+            "wake_ramp_f": profile.wake_ramp_f,
+            "composite_bed_weight": profile.composite_bed_weight,
+        }
+        self.conn.execute(
+            """INSERT INTO setpoints (version, ts, source, profile) VALUES (?,?,?,?)
+            ON CONFLICT(version) DO UPDATE SET
+             ts=excluded.ts, source=excluded.source, profile=excluded.profile""",
+            (profile.version, _iso(profile.updated or datetime.now()), profile.source,
+             _jdump(payload)),
+        )
+        self.conn.commit()
+
+    def latest_setpoints(self) -> "Optional[SetpointProfile]":
+        row = self.conn.execute(
+            "SELECT * FROM setpoints ORDER BY version DESC LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return None
+        p = _jload(row["profile"])
+        return SetpointProfile(
+            neutral_f=p["neutral_f"],
+            deep_bias_f=p["deep_bias_f"],
+            rem_warm_offset_f=p["rem_warm_offset_f"],
+            wake_ramp_f=p["wake_ramp_f"],
+            composite_bed_weight=p["composite_bed_weight"],
+            version=row["version"],
+            source=row["source"],
+            updated=_dt(row["ts"]),
+        )
 
     # -- reads -------------------------------------------------------------------
     def recent_nights(self, n: int) -> list[NightSummary]:
@@ -332,6 +371,7 @@ class Repository:
             avg_respiratory_rate=r["avg_respiratory_rate"],
             temp_profile_summary=_jload(r["temp_profile_summary"]),
             intervention_summary=_jload(r["intervention_summary"]),
+            setpoint_version=r["setpoint_version"],
         )
 
     @staticmethod

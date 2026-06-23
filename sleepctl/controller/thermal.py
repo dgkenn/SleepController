@@ -38,9 +38,13 @@ class ThermalController:
         self,
         cfg: AppConfig,
         f_to_level: Optional[Callable[[float], int]] = None,
+        profile=None,
     ) -> None:
         self.cfg = cfg
         self._f_to_level = f_to_level or default_f_to_level
+        # The learnable setpoint profile supplies the personalized effective targets +
+        # blend weight; falls back to config defaults. The learning loop / ML updates it.
+        self.profile = profile or cfg.default_setpoints()
         # recent commanded temps for the variability cap (short rolling window)
         self._recent_targets: deque[float] = deque(maxlen=8)
 
@@ -57,7 +61,7 @@ class ThermalController:
             return None
         if ambient_temp_f is None:
             return bed_temp_f  # no exposed-skin info -> just the bed surface
-        a = self.cfg.tunables.composite_bed_weight
+        a = self.profile.composite_bed_weight
         return a * bed_temp_f + (1.0 - a) * ambient_temp_f
 
     def required_water_open_loop(
@@ -66,7 +70,7 @@ class ThermalController:
         """Feedforward: invert the blend to get the bed/water target (no measured bed temp)."""
         if ambient_temp_f is None:
             return effective_target_f
-        a = self.cfg.tunables.composite_bed_weight
+        a = self.profile.composite_bed_weight
         return clamp_fahrenheit((effective_target_f - (1.0 - a) * ambient_temp_f) / a)
 
     # -- intent -> EFFECTIVE comfort target --------------------------------------
@@ -77,24 +81,28 @@ class ThermalController:
         hot_sleeper: bool,
         last_target_f: Optional[float] = None,
     ) -> float:
-        """Per-intent EFFECTIVE comfort target (the blended temperature we want felt)."""
+        """Per-intent EFFECTIVE comfort target (the blended temperature we want felt).
+
+        Reads the learnable ``profile`` so the learning loop / ML can tailor each target.
+        """
         t = self.cfg.tunables
+        p = self.profile
         bias = t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0
-        neutral = t.neutral_temp_f + bias
+        neutral = p.neutral_f + bias
 
         if intent is ThermalIntent.WIND_DOWN:
             target = neutral - 1.0  # gentle, not aggressive
         elif intent is ThermalIntent.INDUCTION_COOL:
             target = neutral - 2.0  # short cool dip to help onset
         elif intent is ThermalIntent.DEEP_BIAS_COOL:
-            target = t.deep_bias_temp_f + bias
+            target = p.deep_bias_f + bias
         elif intent is ThermalIntent.REM_NEUTRAL:
             # Evidence (Eight Sleep Autopilot RCT, SLEEP 2024): warmth promotes REM. Apply
             # a SMALL warm offset above neutral -- kept gentle + slew-limited to protect the
             # user's sleep-maintenance priority (no abrupt change).
-            target = neutral + t.rem_warm_offset_f
+            target = neutral + p.rem_warm_offset_f
         elif intent is ThermalIntent.WAKE_RAMP:
-            target = t.wake_ramp_temp_f  # warm toward wake (no cool bias)
+            target = p.wake_ramp_f  # warm toward wake (no cool bias)
         elif intent is ThermalIntent.STABILIZE:
             target = last_target_f if last_target_f is not None else neutral
         else:  # NEUTRAL
