@@ -163,9 +163,14 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
-def connect(path: str) -> sqlite3.Connection:
-    """Open a connection with sane pragmas and initialize the schema."""
-    conn = sqlite3.connect(path)
+def connect(path: str, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a connection with sane pragmas and initialize the schema.
+
+    ``check_same_thread=False`` lets a per-request connection be created and torn down across
+    different worker threads (FastAPI runs sync dependency setup and cleanup in separate
+    threadpool threads). Safe here because each connection is used by a single request.
+    """
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     if path != ":memory:":
         conn.execute("PRAGMA journal_mode=WAL")

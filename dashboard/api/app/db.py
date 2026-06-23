@@ -77,7 +77,9 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
 
 def connect(path: str | None = None) -> sqlite3.Connection:
     """Open the shared DB with the engine schema + dashboard tables applied."""
-    conn = engine_schema.connect(path or settings.db_path)  # base sleepctl tables + pragmas
+    # check_same_thread=False: FastAPI runs sync dependency setup/teardown across different
+    # threadpool threads, and each request uses its own connection (no shared concurrent use).
+    conn = engine_schema.connect(path or settings.db_path, check_same_thread=False)
     conn.executescript(_DASHBOARD_DDL)
     conn.commit()
     return conn
@@ -85,7 +87,7 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 
 def get_repo() -> Repository:
     """A sleepctl Repository over the shared DB (ensures dashboard tables exist too)."""
-    repo = Repository(settings.db_path)
+    repo = Repository(settings.db_path, check_same_thread=False)
     repo.conn.executescript(_DASHBOARD_DDL)
     repo.conn.commit()
     return repo

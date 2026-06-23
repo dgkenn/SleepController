@@ -64,9 +64,10 @@ def _jload(value) -> dict:
 class Repository:
     """Read/write access to the sleepctl dataset."""
 
-    def __init__(self, path: str = "sleepctl.db") -> None:
+    def __init__(self, path: str = "sleepctl.db", check_same_thread: bool = True) -> None:
         self.path = path
-        self.conn: sqlite3.Connection = schema.connect(path)
+        self.conn: sqlite3.Connection = schema.connect(
+            path, check_same_thread=check_same_thread)
 
     # -- lifecycle ---------------------------------------------------------------
     def __enter__(self) -> "Repository":

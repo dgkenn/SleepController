@@ -125,23 +125,27 @@ function DataContent() {
               <div className="divide-y divide-surface-border">
                 {interventions.slice(0, 10).map((iv, i) => (
                   <div key={i} className="py-2.5 flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-white">{iv.action}</p>
-                      <p className="text-xs text-gray-500">
-                        {iv.date} · {iv.source}
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-white capitalize">
+                        {iv.action}{' '}
+                        {iv.magnitude_f ? (
+                          <span className="text-gray-400 font-normal">
+                            {Math.abs(iv.magnitude_f).toFixed(1)}°F
+                          </span>
+                        ) : null}
                       </p>
+                      <p className="text-xs text-gray-500 truncate">{iv.reason}</p>
                     </div>
-                    <div className="text-right text-xs">
+                    <div className="text-right text-xs shrink-0">
                       <p className="text-gray-400">
-                        {(iv.confidence * 100).toFixed(0)}% conf
+                        {iv.ts
+                          ? new Date(iv.ts).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            })
+                          : ''}
                       </p>
-                      {iv.reward != null && (
-                        <p
-                          className={iv.reward >= 0 ? 'text-success' : 'text-danger'}
-                        >
-                          {iv.reward >= 0 ? '+' : ''}{iv.reward.toFixed(2)}
-                        </p>
-                      )}
+                      <p className="text-gray-600">{iv.state}</p>
                     </div>
                   </div>
                 ))}

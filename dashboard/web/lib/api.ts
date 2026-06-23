@@ -145,12 +145,11 @@ export interface NightSample {
 }
 
 export interface Intervention {
-  id?: string;
-  date: string;
+  ts: string | null;
+  state: string;
   action: string;
-  source: string;
-  confidence: number;
-  reward?: number;
+  magnitude_f: number;
+  reason: string;
 }
 
 export interface Note {
