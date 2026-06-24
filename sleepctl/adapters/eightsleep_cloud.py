@@ -34,6 +34,27 @@ def _import_pyeight():
         ) from exc
 
 
+def _fix_pyeight_host_header() -> None:
+    """Work around a pyEight bug that 404s every authenticated request.
+
+    pyEight's ``DEFAULT_API_HEADERS`` hardcodes ``host: app-api.8slp.net`` and
+    reuses that single dict for *all* requests, including the ones to
+    ``client-api.8slp.net`` (e.g. ``GET /v1/users/me`` in ``fetch_device_list``).
+    aiohttp honors an explicit Host header verbatim, so the client-api host gets
+    the wrong Host and the server returns 404 — connection fails before any data
+    is read. Dropping the static Host lets aiohttp derive the correct one from
+    each URL. Verified live against the real cloud API (with vs. without the
+    header: 404 vs. 200). Safe + idempotent; no-op if the key is already gone.
+    """
+    try:
+        from pyeight import constants  # type: ignore
+
+        constants.DEFAULT_API_HEADERS.pop("host", None)
+        constants.DEFAULT_API_HEADERS.pop("Host", None)
+    except Exception:  # pragma: no cover - depends on optional install / version
+        pass
+
+
 _STAGE_MAP = {
     "awake": SleepStage.AWAKE,
     "out": SleepStage.AWAKE,
@@ -106,6 +127,7 @@ class EightSleepClient:
     # -- lifecycle ---------------------------------------------------------------
     async def connect(self) -> None:  # pragma: no cover - requires live device
         EightSleep = _import_pyeight()
+        _fix_pyeight_host_header()
         self._eight = EightSleep(
             self.email,
             self.password,
@@ -113,7 +135,19 @@ class EightSleepClient:
             client_id=self.client_id,
             client_secret=self.client_secret,
         )
-        await self._eight.start()
+        try:
+            await self._eight.start()
+        except IndexError as exc:
+            # pyEight raises a bare IndexError from assign_users() when the
+            # account authenticates but has no Pod registered yet. Translate it
+            # into an actionable message (seen live: valid login, empty device
+            # list before the Pod was paired).
+            raise RuntimeError(
+                "Signed in to Eight Sleep, but no Pod is registered to this "
+                "account yet. Finish setup in the Eight Sleep app first — fill "
+                "the Pod with water, connect the Hub to Wi-Fi, and pair the bed "
+                "— then retry."
+            ) from exc
         self._user = self._select_user()
 
     def _select_user(self):  # pragma: no cover - requires live device
