@@ -50,8 +50,44 @@ class LiveDashboardDaemon:
         self.manual_target_f: Optional[float] = None
         self.last_target_f: Optional[float] = None
         self.wake = None
+        self.session_mode = "night"
+        self.nap_plan = None
+        self.nap_deadline = None
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
+
+    # ------------------------------------------------------ onset / nap sessions
+    def _start_induce(self) -> None:
+        self.session_mode = "induce"
+        self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+        self.nap_plan, self.nap_deadline = None, None
+        self.cycle.controller.set_session("induce", keep_light=False)
+
+    def _start_nap(self, duration_min=None, wake_time=None) -> None:
+        from sleepctl.controller.nap import NapStrategy, nap_strategy
+        now = datetime.now()
+        if wake_time:
+            hh, mm = (int(x) for x in str(wake_time).split(":"))
+            deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if deadline <= now:
+                deadline += timedelta(days=1)
+        else:
+            deadline = now + timedelta(minutes=int(duration_min or 20))
+        window = max(5, int((deadline - now).total_seconds() // 60))
+        plan = nap_strategy(window, now_hour=now.hour, cfg=self.cfg)
+        ctrl_mode = "nap_power" if plan.strategy in (NapStrategy.POWER, NapStrategy.TRAP) \
+            else "nap_cycle"
+        self.session_mode = "nap"
+        self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+        self.nap_plan, self.nap_deadline = plan.to_dict(), deadline
+        self.context.required_wake_time = deadline
+        self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+
+    def _end_session(self) -> None:
+        self.session_mode = "night"
+        self.nap_plan, self.nap_deadline = None, None
+        self.context.required_wake_time = None
+        self.cycle.controller.set_session("night", keep_light=False)
 
     # ------------------------------------------------------------------ helpers
     def _log(self, msg: str) -> None:
@@ -161,6 +197,12 @@ class LiveDashboardDaemon:
                     self.context.required_wake_time = None
                     self.context.night_type = None
                     self.context.is_short_sleep_day = None
+                elif t == "induce_sleep":
+                    self._start_induce()
+                elif t == "start_nap":
+                    self._start_nap(p.get("duration_min"), p.get("wake_time"))
+                elif t == "end_session":
+                    self._end_session()
             except Exception as exc:  # never let a device hiccup wedge the queue
                 self._log(f"command {t} failed: {exc}")
             bridge.mark_applied(self.repo.conn, cmd["id"])
@@ -187,12 +229,16 @@ class LiveDashboardDaemon:
             "daemon_alive": True,
             "extra": {"manual_target_f": self.manual_target_f, "power_on": self.power_on,
                       "away": self.away, "wake": self.wake, "live": True,
-                      "dry_run": self.dry_run},
+                      "dry_run": self.dry_run, "session_mode": self.session_mode,
+                      "nap": self.nap_plan,
+                      "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None},
         }
 
     # ------------------------------------------------------------------ cycles
     async def control_tick(self) -> None:
         await self._apply_commands()
+        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
+            self._end_session()
         await self.client.update()
         frame = self.client.read_frame()
         now = self.client.now()

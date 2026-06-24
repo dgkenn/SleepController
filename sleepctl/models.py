@@ -60,6 +60,10 @@ class ThermalIntent(Enum):
     # Gentle cooling assist for sleep maintenance: pre-empt an awakening when wake-risk
     # rises, and help re-settle after one (cooling promotes sleep). Small + slew-limited.
     SETTLE_COOL = "settle_cool"
+    # Small WARM nudge to actively induce sleep onset. Cutaneous warming (~0.4 °C) speeds
+    # onset and suppresses wakefulness (Raymann/Van Someren); kept small + comfort-capped for
+    # a hot sleeper, then the controller cools once asleep to deepen sleep.
+    ONSET_WARM = "onset_warm"
 
 
 # ---------------------------------------------------------------------- dataclasses

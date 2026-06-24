@@ -17,7 +17,11 @@ class MaintenanceRoutine:
         self.cfg = cfg
 
     def step(self, frame: SensorFrame, objective: NightObjective,
-             preempt_cool: bool = False) -> ThermalIntent:
+             preempt_cool: bool = False, keep_light: bool = False) -> ThermalIntent:
+        if keep_light:
+            # Power-nap mode: hold neutral so the bed never drives slow-wave sleep — keep the
+            # nap light so waking is grogginess-free. A rising wake-risk still gets a gentle cool.
+            return ThermalIntent.SETTLE_COOL if preempt_cool else ThermalIntent.STABILIZE
         if frame.stage is SleepStage.DEEP:
             # Never disturb deep sleep with proactive moves; the deep-bias cool already runs.
             return ThermalIntent.DEEP_BIAS_COOL

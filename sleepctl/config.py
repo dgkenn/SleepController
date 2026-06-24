@@ -62,6 +62,17 @@ class Tunables:
     wake_window_min: int = 30  # smart-wake window before required wake time
     induction_minutes_normal: int = 30
     induction_minutes_short: int = 15
+    # On-demand onset induction: a small WARM nudge speeds sleep onset (cutaneous warming,
+    # Raymann/Van Someren). Kept small + comfort-capped for a hot sleeper, then cooled once
+    # asleep. ``onset_warm_nudge_f`` is °F above neutral; the cap bounds it.
+    onset_warm_nudge_f: float = 1.0
+    onset_warm_comfort_cap_f: float = 2.0
+    # Nap mode thresholds (literature-backed: Brooks & Lack 2006; Patterson 2023).
+    nap_power_max_min: int = 25      # <= this -> power nap (stay light, avoid SWS, cap wake)
+    nap_cycle_min_min: int = 60      # >= this (up to ~110) -> full-cycle nap, smart-wake light
+    nap_cycle_target_min: int = 90   # one NREM-REM cycle
+    nap_late_hour: int = 16          # naps starting at/after this hour can erode night sleep
+    nap_inertia_buffer_min: int = 20 # advise this buffer before anything critical post-nap
     stale_data_seconds: int = 420  # ~7 min; refuse to act on data older than this
     wake_recovery_minutes: int = 20
     # Accurate sleep-onset detection (asleep vs lying in bed awake). Onset is only declared

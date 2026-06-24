@@ -147,6 +147,9 @@ def tonight(repo=Depends(repo_dep), user: str = AuthDep):
         "power_on": extra.get("power_on", True),
         "away": extra.get("away", False),
         "wake": extra.get("wake"),
+        "session_mode": extra.get("session_mode", "night"),
+        "nap": extra.get("nap"),
+        "nap_deadline": extra.get("nap_deadline"),
         "schedule": services.schedule_brief(repo),
         "recommendation": services.ml_recommendation(repo),
         "setpoint": services.ml_overview(repo)["setpoint"],
@@ -220,6 +223,38 @@ def tonight_plan(repo=Depends(repo_dep), user: str = AuthDep):
     """Tonight's wake-aware, benchmark-driven sleep plan (mode, opportunity, cycles,
     sleep debt, smart-wake window, thermal strategy, literature targets)."""
     return services.sleep_plan(repo)
+
+
+class NapBody(BaseModel):
+    duration_min: int | None = None   # e.g. 20 or 90
+    wake_time: str | None = None      # HH:MM (alternative to duration)
+
+
+@app.post("/tonight/induce")
+def induce_sleep(repo=Depends(repo_dep), user: str = AuthDep):
+    """'Make me tired': run the onset-induction (warm->cool) cascade now."""
+    return _enqueue(repo, "induce_sleep")
+
+
+@app.post("/tonight/nap")
+def start_nap(body: NapBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Start a nap: fall asleep fast, optimise the nap, wake by the deadline."""
+    if not body.duration_min and not body.wake_time:
+        raise HTTPException(400, "provide duration_min or wake_time")
+    return _enqueue(repo, "start_nap", {"duration_min": body.duration_min,
+                                        "wake_time": body.wake_time})
+
+
+@app.post("/tonight/nap/preview")
+def nap_preview(body: NapBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Preview the strategy for a nap length without starting it (for the UI)."""
+    return services.nap_preview(body.duration_min, body.wake_time)
+
+
+@app.post("/tonight/session/end")
+def end_session(repo=Depends(repo_dep), user: str = AuthDep):
+    """End an active induce/nap session and return to normal night control."""
+    return _enqueue(repo, "end_session")
 
 
 @app.get("/maintenance")

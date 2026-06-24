@@ -115,6 +115,12 @@ class ThermalController:
             # sleep). Small step below neutral, slew-limited downstream; never as deep as
             # the induction dip so it doesn't jolt the sleeper.
             target = neutral - 1.0
+        elif intent is ThermalIntent.ONSET_WARM:
+            # Small WARM nudge to induce onset (cutaneous warming speeds sleep onset). Bounded
+            # by the comfort cap so a hot sleeper is never overheated; the controller cools
+            # again once asleep. The hot-sleeper cool bias is intentionally NOT applied here.
+            nudge = min(t.onset_warm_nudge_f, t.onset_warm_comfort_cap_f)
+            target = p.neutral_f + nudge
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)
         elif intent is ThermalIntent.STABILIZE:

@@ -70,6 +70,9 @@ class DashboardDaemon:
         self.wake = None  # {"wake_time","window_min","vibration_power","thermal_level"}
         self.manual_target_f = None
         self.last_target_f = None  # last effective target (for relative nudges)
+        self.session_mode = "night"   # night | induce | nap
+        self.nap_plan = None          # NapPlan.to_dict() when a nap session is active
+        self.nap_deadline = None      # datetime the nap should end
         self.simulate = simulate
         if simulate:
             self.source = SimulatorSource("normal", seed=7,
@@ -177,8 +180,50 @@ class DashboardDaemon:
                 self.context.required_wake_time = None
                 self.context.night_type = None
                 self.context.is_short_sleep_day = None
+            elif t == "induce_sleep":
+                self._start_induce()
+            elif t == "start_nap":
+                self._start_nap(p.get("duration_min"), p.get("wake_time"))
+            elif t == "end_session":
+                self._end_session()
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
+
+    # ---------------------------------------------------------- onset / nap sessions
+    def _start_induce(self) -> None:
+        """'Make me tired': run the onset-induction (warm->cool) cascade now."""
+        self.session_mode = "induce"
+        self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+        self.nap_plan, self.nap_deadline = None, None
+        self.cycle.controller.set_session("induce", keep_light=False)
+
+    def _start_nap(self, duration_min=None, wake_time=None) -> None:
+        from sleepctl.controller.nap import NapStrategy, nap_strategy
+        now = datetime.now()
+        if wake_time:
+            hh, mm = (int(x) for x in str(wake_time).split(":"))
+            deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if deadline <= now:
+                deadline += timedelta(days=1)
+        else:
+            deadline = now + timedelta(minutes=int(duration_min or 20))
+        window = max(5, int((deadline - now).total_seconds() // 60))
+        plan = nap_strategy(window, now_hour=now.hour, cfg=self.cfg)
+        ctrl_mode = "nap_power" if plan.strategy in (NapStrategy.POWER, NapStrategy.TRAP) \
+            else "nap_cycle"
+        self.session_mode = "nap"
+        self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+        self.nap_plan = plan.to_dict()
+        self.nap_deadline = deadline
+        # wake-by the deadline; smart wake catches a light-sleep moment inside the window.
+        self.context.required_wake_time = deadline
+        self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+
+    def _end_session(self) -> None:
+        self.session_mode = "night"
+        self.nap_plan, self.nap_deadline = None, None
+        self.context.required_wake_time = None
+        self.cycle.controller.set_session("night", keep_light=False)
 
     # ---------------------------------------------------------------- snapshot
     def _snapshot(self, decision, frame) -> dict:
@@ -206,6 +251,9 @@ class DashboardDaemon:
                 "power_on": self.power_on,
                 "away": self.away,
                 "wake": self.wake,
+                "session_mode": self.session_mode,
+                "nap": self.nap_plan,
+                "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
             },
         }
 
@@ -218,6 +266,9 @@ class DashboardDaemon:
     def control_tick(self) -> None:
         """Full sense->decide->act cycle plus a fresh snapshot."""
         self._apply_commands()
+        # A nap ends once its deadline has passed (the smart wake has fired by then).
+        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
+            self._end_session()
         frame, now = self._read()
         decision = None
         if self.power_on and not self.paused and not self.away:

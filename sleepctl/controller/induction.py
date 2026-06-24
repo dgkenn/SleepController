@@ -1,8 +1,10 @@
 """Wind-down + sleep-onset induction.
 
-While the user is in bed but awake we use a gentle wind-down (not aggressive cooling),
-then a short induction cool-dip to actively help sleep onset. On short nights we use a
-shorter, more aggressive window because fast onset matters more than experimentation.
+Onset is induced with a literature-backed **warm-then-cool** cascade: a small WARM nudge
+first (cutaneous warming speeds sleep onset and suppresses wakefulness — Raymann/Van Someren),
+then a cool dip as the user drifts off (the falling core temperature that warming triggers is
+what deepens sleep). Once onset is confirmed the state machine hands off to maintenance, which
+cools further. On short nights the cool dip starts sooner because fast onset matters more.
 """
 
 from __future__ import annotations
@@ -29,15 +31,15 @@ class InductionRoutine:
     ) -> ThermalIntent:
         """Return the thermal intent for this induction tick.
 
-        First ~third of the induction window: gentle wind-down. Remainder: a short
-        cool dip to drive onset. On short nights the cool dip starts almost immediately.
+        First ~third of the window: a small WARM nudge to trigger onset. Remainder: a cool
+        dip to consolidate as the user drifts off. On short nights the cool dip starts sooner.
         """
         window = self.induction_minutes(objective)
         if objective is NightObjective.DAMAGE_CONTROL:
-            wind_down_until = window * 0.15
+            warm_until = window * 0.15
         else:
-            wind_down_until = window * 0.35
+            warm_until = window * 0.35
 
-        if minutes_in_bed < wind_down_until:
-            return ThermalIntent.WIND_DOWN
+        if minutes_in_bed < warm_until:
+            return ThermalIntent.ONSET_WARM
         return ThermalIntent.INDUCTION_COOL

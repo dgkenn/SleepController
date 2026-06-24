@@ -67,6 +67,26 @@ def current_mode(repo) -> NightMode:
     return current_plan(repo).mode
 
 
+def nap_preview(duration_min=None, wake_time=None) -> dict:
+    """Preview the nap strategy (power/cycle/trap + advice) for a given length, without
+    starting it — drives the Nap card's live explanation."""
+    from datetime import timedelta
+    from sleepctl.controller.nap import nap_strategy
+    now = datetime.now()
+    if wake_time:
+        try:
+            hh, mm = (int(x) for x in str(wake_time).split(":"))
+            deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if deadline <= now:
+                deadline += timedelta(days=1)
+            window = max(5, int((deadline - now).total_seconds() // 60))
+        except Exception:
+            window = 20
+    else:
+        window = int(duration_min or 20)
+    return nap_strategy(window, now_hour=now.hour, cfg=CFG).to_dict()
+
+
 # ------------------------------------------------------ sleep maintenance
 def maintenance_summary(repo) -> dict:
     """The proactive + reactive sleep-maintenance picture: the learned awakening pattern

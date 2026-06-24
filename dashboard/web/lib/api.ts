@@ -102,6 +102,17 @@ export interface StatusResponse {
   schedule: Schedule | null;
 }
 
+export interface NapPlan {
+  strategy: 'power' | 'cycle' | 'trap';
+  window_min: number;
+  target_sleep_min: number;
+  keep_light: boolean;
+  late_day: boolean;
+  inertia_buffer_min: number;
+  headline: string;
+  advice: string;
+}
+
 export interface TonightResponse {
   mode: 'auto' | 'manual' | 'view' | 'paused' | 'away';
   state: string;
@@ -109,6 +120,9 @@ export interface TonightResponse {
   power_on: boolean;
   away: boolean;
   wake: WakeInfo | null;
+  session_mode: 'night' | 'induce' | 'nap';
+  nap: NapPlan | null;
+  nap_deadline: string | null;
   schedule: Schedule | null;
   recommendation: Recommendation;
   setpoint: SetpointInfo | null;
@@ -365,6 +379,23 @@ export const api = {
   plan: () => apiFetch<SleepPlan>('/api/tonight/plan'),
 
   maintenance: () => apiFetch<MaintenanceSummary>('/api/maintenance'),
+
+  // On-demand onset induction + naps
+  induceSleep: () => apiFetch<CommandResponse>('/api/tonight/induce', { method: 'POST' }),
+
+  startNap: (duration_min?: number, wake_time?: string) =>
+    apiFetch<CommandResponse>('/api/tonight/nap', {
+      method: 'POST',
+      body: JSON.stringify({ duration_min, wake_time }),
+    }),
+
+  napPreview: (duration_min?: number, wake_time?: string) =>
+    apiFetch<NapPlan>('/api/tonight/nap/preview', {
+      method: 'POST',
+      body: JSON.stringify({ duration_min, wake_time }),
+    }),
+
+  endSession: () => apiFetch<CommandResponse>('/api/tonight/session/end', { method: 'POST' }),
 
   // Wake-up exit survey (morning check-in)
   checkinStatus: () => apiFetch<CheckInStatus>('/api/checkin/status'),

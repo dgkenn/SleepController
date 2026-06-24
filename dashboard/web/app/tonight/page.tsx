@@ -7,6 +7,7 @@ import ModeToggle from '@/components/ModeToggle';
 import TempStepper from '@/components/TempStepper';
 import WakeTimePicker from '@/components/WakeTimePicker';
 import PowerControls from '@/components/PowerControls';
+import SleepSessionCard from '@/components/SleepSessionCard';
 import SleepPlanCard from '@/components/SleepPlanCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
@@ -183,6 +184,15 @@ function TonightContent() {
               </p>
             )}
           </div>
+
+          {/* On-demand sleep onset + naps */}
+          <SleepSessionCard
+            sessionMode={data?.session_mode ?? 'night'}
+            nap={data?.nap ?? null}
+            napDeadline={data?.nap_deadline ?? null}
+            onChanged={() => mutate()}
+            onToast={showToast}
+          />
 
           {/* Power / Away / Prime */}
           <PowerControls

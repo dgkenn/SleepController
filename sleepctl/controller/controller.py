@@ -52,6 +52,10 @@ class SleepController:
         self._bed_entry_time: Optional[datetime] = None
         self._sleep_onset_time: Optional[datetime] = None  # accurate fall-asleep time
         self._last_target_f: float = cfg.tunables.neutral_temp_f
+        # Session mode: "night" | "induce" | "nap_power" | "nap_cycle". Power naps keep the bed
+        # light so slow-wave sleep (and its grogginess on waking) doesn't set in.
+        self.session_mode = "night"
+        self.session_keep_light = False
         self.last_wake_event = None
         self.last_onset_event = None
         self.last_arousal = None          # last ArousalAssessment
@@ -188,7 +192,8 @@ class SleepController:
             intent = self.induction.step(frame, objective, minutes_in_bed)
         elif state is ControllerState.MAINTENANCE:
             intent = self.maintenance.step(frame, objective,
-                                           preempt_cool=getattr(self, "_preempt_cool", False))
+                                           preempt_cool=getattr(self, "_preempt_cool", False),
+                                           keep_light=self.session_keep_light)
         elif state is ControllerState.WAKE_RECOVERY:
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
@@ -239,6 +244,14 @@ class SleepController:
     @staticmethod
     def _round_opt(value, ndigits: int = 2):
         return round(value, ndigits) if value is not None else None
+
+    def set_session(self, mode: str, keep_light: Optional[bool] = None) -> None:
+        """Select the session mode ('night' | 'induce' | 'nap_power' | 'nap_cycle'). Power
+        naps keep the bed light so slow-wave sleep doesn't set in."""
+        self.session_mode = mode or "night"
+        if keep_light is None:
+            keep_light = mode in ("nap_power",)
+        self.session_keep_light = bool(keep_light)
 
     def set_wake_profile(self, profile=None, lead_profile=None) -> None:
         """Attach the learned per-user awakening phenotype + cooling lead-times to the

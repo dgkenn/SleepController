@@ -100,6 +100,19 @@ def test_maintenance_summary(auth_client):
     assert "avg_wake_events" in m and "recent" in m
 
 
+def test_induce_and_nap_sessions(auth_client):
+    assert auth_client.post("/tonight/induce").json()["queued"] == "induce_sleep"
+    # nap needs a duration or wake time
+    assert auth_client.post("/tonight/nap", json={}).status_code == 400
+    assert auth_client.post("/tonight/nap", json={"duration_min": 20}).json()["queued"] \
+        == "start_nap"
+    # preview returns a literature-backed strategy without starting
+    for mins, strat in [(20, "power"), (90, "cycle"), (45, "trap")]:
+        p = auth_client.post("/tonight/nap/preview", json={"duration_min": mins}).json()
+        assert p["strategy"] == strat and "advice" in p
+    assert auth_client.post("/tonight/session/end").json()["queued"] == "end_session"
+
+
 def test_checkin_status_and_submit(auth_client):
     st = auth_client.get("/checkin/status").json()
     assert "due" in st and "perfect_sleep" in st
