@@ -138,8 +138,38 @@ def _ramp_down(value: float, ideal: float, ceiling: float) -> float:
     return max(0.0, min(1.0, (ceiling - value) / (ceiling - ideal)))
 
 
+def _debt_factor(debt_min: float) -> float:
+    """0 at no debt → 1 at severe (~6 h). Monotonic + clamped (no score discontinuities)."""
+    return max(0.0, min(1.0, float(debt_min) / 360.0))
+
+
+def _debt_adjust_targets(t: "Targets", df: float) -> "Targets":
+    """Make the benchmarks debt-aware (PubMed-grounded). As debt rises a GOOD recovery night is
+    deep-heavy and long, with onset/efficiency expected tighter and REM transiently suppressed:
+      - up-weight DEEP (SWS rebounds first/most — Van Dongen 2003 doi:10.1093/sleep/26.2.117) and
+        TOTAL SLEEP (recovery is dose-driven by TST + slow-wave energy — Banks 2010
+        doi:10.1093/sleep/33.8.1013); a deep rebound already isn't penalized (the deep ramp caps
+        at 1.0), so up-weighting *rewards* it.
+      - down-weight REM (suppressed on early recovery nights — De Gennaro 2009
+        doi:10.1016/j.bbr.2009.09.030; Buguet 1995 doi:10.1111/j.1365-2869.1995.tb00173.x).
+      - tighten onset latency + efficiency (high sleep pressure → faster, more consolidated sleep).
+    Magnitudes are conservative engineering defaults; direction is well-supported.
+    """
+    from dataclasses import replace
+    w = dict(t.weights)
+    if "deep" in w:
+        w["deep"] = w["deep"] * (1.0 + 0.6 * df)
+    if "total" in w:
+        w["total"] = w["total"] * (1.0 + 0.8 * df)
+    if "rem" in w:
+        w["rem"] = w["rem"] * (1.0 - 0.4 * df)
+    return replace(t, weights=w,
+                   sol_max_min=t.sol_max_min * (1.0 - 0.3 * df),
+                   efficiency_min=min(0.97, t.efficiency_min + 0.03 * df))
+
+
 def perfect_sleep_index(summary, mode: NightMode = NightMode.NORMAL,
-                        targets: Optional[Targets] = None) -> dict:
+                        targets: Optional[Targets] = None, debt_min: float = 0.0) -> dict:
     """Score a NightSummary 0-100 against the active mode's benchmarks.
 
     Returns {score, mode, components: {metric: 0..1}, targets_met: [...], notes}.
@@ -147,6 +177,8 @@ def perfect_sleep_index(summary, mode: NightMode = NightMode.NORMAL,
     wake_events, and optionally waso_min / sleep_onset_latency_min / avg_hrv.
     """
     t = targets or targets_for(mode)
+    if debt_min and debt_min > 0:
+        t = _debt_adjust_targets(t, _debt_factor(debt_min))
     tst = max(1.0, float(getattr(summary, "total_sleep_min", 0) or 0))
     deep_pct = float(getattr(summary, "deep_min", 0) or 0) / tst
     rem_pct = float(getattr(summary, "rem_min", 0) or 0) / tst
