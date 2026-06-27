@@ -385,7 +385,18 @@ def main() -> None:
         side=os.environ.get("EIGHTSLEEP_SIDE") or creds.side,
         client_id=creds.client_id, client_secret=creds.client_secret,
     )
-    daemon = LiveDashboardDaemon(AppConfig.default(), client, get_repo(), dry_run=dry_run)
+    # Environmental pre-compensation: enable the weather feed unless explicitly disabled.
+    weather = None
+    if os.environ.get("SLEEPCTL_WEATHER", "1") not in ("0", "false", "off"):
+        try:
+            from sleepctl.adapters.weather import OpenMeteoWeather
+            lat = float(os.environ.get("SLEEPCTL_LAT", "42.3601"))
+            lon = float(os.environ.get("SLEEPCTL_LON", "-71.0589"))
+            weather = OpenMeteoWeather(latitude=lat, longitude=lon)
+        except Exception as exc:
+            print(f"[daemon] weather pre-compensation disabled: {exc}", flush=True)
+    daemon = LiveDashboardDaemon(AppConfig.default(), client, get_repo(), dry_run=dry_run,
+                                 weather=weather)
     asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
                            command_poll_seconds=args.command_poll_seconds,
                            max_ticks=args.max_ticks))
