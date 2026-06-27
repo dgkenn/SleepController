@@ -14,6 +14,23 @@ Device risk only comes from modifying the device (rooting, firmware, teardown). 
 capture is pure network observation on **your** LAN gear. Nothing is installed on the Pod; there
 is nothing to revert and nothing to brick.
 
+## Step 0 — server-side TLS pre-check (no Pod required, do this FIRST)
+The plaintext-vs-TLS question is a property of Eight Sleep's *server*, so you can answer most of
+it from **any normal machine on a normal network** — before the Pod is even reconnected, and with
+zero device involvement:
+```
+openssl s_client -connect raw-api-upload.8slp.net:1337 -servername raw-api-upload.8slp.net </dev/null 2>&1 | head -20
+```
+- A **TLS handshake / certificate** ⇒ the upload is **encrypted in transit** ⇒ passive capture is a
+  **NO-GO** (stop; you've risked nothing and need no tap).
+- **Connection refused / hang with no TLS**, or raw non-TLS bytes ⇒ **possibly plaintext** ⇒ proceed
+  to capture below.
+- Caveat: the server may accept the TCP connection but stay silent (awaiting the device's own
+  protocol), so "connects but no banner" is inconclusive — the **openssl cert result is decisive**.
+- The endpoint resolves to AWS IPs and the port is firewalled on some networks; run this from an
+  unfiltered network (a sandbox with an egress allowlist that only permits :443/:80 will time out
+  on :1337 regardless of the server).
+
 ## How to capture (pick one)
 1. **Managed-switch port mirror / SPAN (best).** Put the Pod's hub on a switch port, mirror it to
    a port running a Raspberry Pi / laptop, and capture there. The Pod is unaware.
