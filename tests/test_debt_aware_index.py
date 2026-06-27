@@ -40,6 +40,12 @@ def test_slow_onset_penalized_more_under_debt():
     assert 0.0 < base <= 1.0 and in_debt < base  # tighter onset benchmark under debt
 
 
+def test_efficiency_not_overpenalized_under_debt():
+    # a good (not elite) 92% efficiency night must NOT collapse to 0 just because debt is high
+    n = _night(deep=130, rem=70, tst=520)  # eff defaults to 0.92
+    assert perfect_sleep_index(n, debt_min=360.0)["components"]["efficiency"] > 0.0
+
+
 def test_readiness_passes_debt_through():
     from sleepctl.readiness import morning_readiness
     nights = [_night(40, 40, tst=240) for _ in range(6)]  # chronic short -> heavy debt
