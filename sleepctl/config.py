@@ -75,6 +75,13 @@ class Tunables:
     nap_inertia_buffer_min: int = 20 # advise this buffer before anything critical post-nap
     stale_data_seconds: int = 420  # ~7 min; refuse to act on data older than this
     wake_recovery_minutes: int = 20
+    # Thermal-response health check: confirm the bed is ACTUALLY heating/cooling using the
+    # Hub's own water-derived `device_level` (NOT cover-side bed temp, which tracks ambient).
+    # Verified live: under max cool the device level fell ~5 levels/min; under heat it climbed
+    # to +100. A flat device level while commanded to change => fault (low water/cover/hardware).
+    thermal_at_target_margin: int = 8       # |target-device| <= this => at setpoint (healthy)
+    thermal_response_window_min: int = 8     # window over which to judge progress toward target
+    thermal_min_progress_levels: int = 5     # min level movement toward target to count responsive
     # Accurate sleep-onset detection (asleep vs lying in bed awake). Onset is only declared
     # after a *persistent* run of multi-signal sleep evidence; onset is back-dated to its
     # start so latency reflects when you actually fell asleep.

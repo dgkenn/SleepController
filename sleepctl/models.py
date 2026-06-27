@@ -88,6 +88,11 @@ class SensorFrame:
     bed_temp_f: Optional[float] = None
     room_temp_f: Optional[float] = None
     commanded_level: Optional[int] = None  # last -100..100 device level sent
+    # Thermal-state truth from the Hub's own water-side reading (NOT bed_temp_f, which is a
+    # cover-side sensor that tracks ambient air — verified live to be an artifact). device_level
+    # is the actual achieved level (currentDeviceLevel/heating_level); target_level is the goal.
+    device_level: Optional[int] = None
+    target_level: Optional[int] = None
     data_age_seconds: Optional[float] = None
 
     def is_stale(self, max_age_seconds: float) -> bool:

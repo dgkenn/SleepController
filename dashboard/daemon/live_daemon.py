@@ -20,6 +20,7 @@ from typing import Optional
 
 from sleepctl.config import AppConfig
 from sleepctl.controller.controller import SleepController
+from sleepctl.controller.thermal_health import ThermalResponseMonitor
 from sleepctl.loop.cycle import ControlCycle
 from sleepctl.loop.nightly import NightlyUpdater
 from sleepctl.models import ContextRecord, ControllerState
@@ -41,6 +42,10 @@ class LiveDashboardDaemon:
         self._attach_profiles(controller)
         self.cycle = ControlCycle(cfg, repo, controller)
         self.nightly = NightlyUpdater(cfg, repo)
+        # Confirms the bed is actually heating/cooling from the Hub's water-side device level
+        # (not the cover-side bed temp, which can be an ambient artifact).
+        self.thermal = ThermalResponseMonitor(cfg)
+        self._thermal_state = "unknown"
         self.context = ContextRecord(date=datetime.now().date().isoformat())
         # control state (mirrors the simulator daemon)
         self.mode = "auto"
@@ -208,6 +213,15 @@ class LiveDashboardDaemon:
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
 
+    def _record_thermal(self, frame, now) -> None:
+        """Track the Hub's water-side device level vs target; warn when it stalls."""
+        self.thermal.record(now, frame.target_level, frame.device_level)
+        th = self.thermal.status(now)
+        if th.state != self._thermal_state:
+            if th.state == "stalled":
+                self._log(f"⚠ thermal: {th.reason}")
+            self._thermal_state = th.state
+
     # ------------------------------------------------------------------ snapshot
     def _snapshot(self, decision, frame) -> dict:
         target = decision.target_temp_f if decision else None
@@ -231,7 +245,8 @@ class LiveDashboardDaemon:
                       "away": self.away, "wake": self.wake, "live": True,
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       "nap": self.nap_plan,
-                      "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None},
+                      "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
+                      "thermal_health": self.thermal.status().to_dict()},
         }
 
     # ------------------------------------------------------------------ cycles
@@ -242,6 +257,7 @@ class LiveDashboardDaemon:
         await self.client.update()
         frame = self.client.read_frame()
         now = self.client.now()
+        self._record_thermal(frame, now)
         decision = None
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
@@ -266,6 +282,7 @@ class LiveDashboardDaemon:
         await self.client.update()
         frame = self.client.read_frame()
         now = self.client.now()
+        self._record_thermal(frame, now)
         decision = None
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)

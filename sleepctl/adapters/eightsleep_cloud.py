@@ -206,6 +206,9 @@ class EightSleepClient:
             bed_temp_f=bed_temp_f,
             room_temp_f=self._room_temp_f(user),
             commanded_level=_safe(lambda: user.heating_level),
+            # Water-side truth for the thermal health check (currentDeviceLevel == heating_level).
+            device_level=_safe(lambda: user.heating_level),
+            target_level=_safe(lambda: user.target_heating_level),
             data_age_seconds=age,
         )
 
