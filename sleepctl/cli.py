@@ -107,6 +107,33 @@ def _cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_night_report(args: argparse.Namespace) -> int:
+    import json as _json
+
+    from sleepctl.night_report import build_night_report
+    from sleepctl.storage.repository import Repository
+
+    repo = Repository(args.db)
+    report = build_night_report(repo)
+    repo.close()
+    if getattr(args, "json", False):
+        print(_json.dumps(report, indent=2, default=str))
+        return 0
+    print(f"━━ Nightly report — {report.get('date') or 'no data'} ━━")
+    print(report["narrative"])
+    if report.get("what_i_did", {}).get("recent"):
+        print("\nWhat I did (most recent):")
+        for a in report["what_i_did"]["recent"]:
+            print(f"  {a.get('action')} {a.get('magnitude_f')}°F — {a.get('reason')}"
+                  + ("  [held]" if a.get("held") else "")
+                  + ("  [reverted]" if a.get("reverted") else ""))
+    if report.get("suggestions"):
+        print("\nSuggested next:")
+        for s in report["suggestions"]:
+            print(f"  • {s.get('reason')}")
+    return 0
+
+
 def _wake_context(wake: str | None, when: datetime) -> "object | None":
     """Build a ManualCalendarSource context from a --wake HH:MM (tomorrow-aware)."""
     if not wake:
@@ -400,6 +427,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_report = sub.add_parser("report", help="Show baselines and recent nights")
     p_report.add_argument("--db", default="sleepctl.db")
     p_report.set_defaults(func=_cmd_report)
+
+    p_nr = sub.add_parser("night-report",
+                          help="Explainable nightly intelligence report (what/why/learned)")
+    p_nr.add_argument("--db", default="sleepctl.db")
+    p_nr.add_argument("--json", action="store_true", help="emit the full structured report as JSON")
+    p_nr.set_defaults(func=_cmd_night_report)
 
     p_run = sub.add_parser("run", help="Run the live closed-loop controller")
     p_run.add_argument("--dry-run", action="store_true",
