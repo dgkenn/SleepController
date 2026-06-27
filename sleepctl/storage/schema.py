@@ -154,6 +154,24 @@ CREATE INDEX IF NOT EXISTS idx_precool_night ON precool_events(night_date);
 CREATE INDEX IF NOT EXISTS idx_raw_samples_night ON raw_samples(night_date);
 CREATE INDEX IF NOT EXISTS idx_interventions_night ON interventions(night_date);
 CREATE INDEX IF NOT EXISTS idx_decisions_night ON decisions(night_date);
+
+-- n-of-1 self-experiments: a randomized two-arm trial the user runs on themselves. Each
+-- night is assigned an arm (a config tweak); outcomes are compared across arms with stats.
+CREATE TABLE IF NOT EXISTS experiments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    hypothesis TEXT,
+    variable TEXT,
+    arm_a TEXT,
+    arm_b TEXT,
+    metric TEXT,
+    min_nights_per_arm INTEGER DEFAULT 5,
+    status TEXT DEFAULT 'active',
+    created TEXT,
+    assignments TEXT,
+    result TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status);
 """
 
 
