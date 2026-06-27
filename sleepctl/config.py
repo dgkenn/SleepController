@@ -62,8 +62,59 @@ class Tunables:
     wake_window_min: int = 30  # smart-wake window before required wake time
     induction_minutes_normal: int = 30
     induction_minutes_short: int = 15
+    # On-demand onset induction: a small WARM nudge speeds sleep onset (cutaneous warming,
+    # Raymann/Van Someren). Kept small + comfort-capped for a hot sleeper, then cooled once
+    # asleep. ``onset_warm_nudge_f`` is °F above neutral; the cap bounds it.
+    onset_warm_nudge_f: float = 1.0
+    onset_warm_comfort_cap_f: float = 2.0
+    # Nap mode thresholds (literature-backed: Brooks & Lack 2006; Patterson 2023).
+    nap_power_max_min: int = 25      # <= this -> power nap (stay light, avoid SWS, cap wake)
+    nap_cycle_min_min: int = 60      # >= this (up to ~110) -> full-cycle nap, smart-wake light
+    nap_cycle_target_min: int = 90   # one NREM-REM cycle
+    nap_late_hour: int = 16          # naps starting at/after this hour can erode night sleep
+    nap_inertia_buffer_min: int = 20 # advise this buffer before anything critical post-nap
     stale_data_seconds: int = 420  # ~7 min; refuse to act on data older than this
     wake_recovery_minutes: int = 20
+    # Thermal-response health check: confirm the bed is ACTUALLY heating/cooling using the
+    # Hub's own water-derived `device_level` (NOT cover-side bed temp, which tracks ambient).
+    # Verified live: under max cool the device level fell ~5 levels/min; under heat it climbed
+    # to +100. A flat device level while commanded to change => fault (low water/cover/hardware).
+    thermal_at_target_margin: int = 8       # |target-device| <= this => at setpoint (healthy)
+    thermal_response_window_min: int = 8     # window over which to judge progress toward target
+    thermal_min_progress_levels: int = 5     # min level movement toward target to count responsive
+    # Predictive awakening pre-emption: detect the slow pre-arousal DRIFT (trends over a short
+    # window) before a full awakening, to buy lead time for a gentle SETTLE_COOL nudge.
+    precursor_window_min: float = 4.0          # rolling window for trend fits
+    precursor_hr_creep_slope: float = 0.6      # bpm/min rise => autonomic arousal building
+    precursor_hrv_decay_slope: float = -0.8    # ms/min fall => sympathetic shift
+    precursor_move_rise_slope: float = 0.02    # /min rise in micro-movement => restlessness
+    precursor_bed_warm_slope: float = 0.15     # °F/min bed warming trend
+    precursor_resp_cv_rise: float = 0.08       # breathing-rate CV => losing regularity
+    precursor_preempt_threshold: float = 0.40  # combined score that triggers a pre-empt
+    # Evidence (Busek 2005, PMID 16163654): a rise in HRV spectral energy is the EARLIEST,
+    # strongest precursor of cortical arousal -> weight HRV decay highest, HR/movement next.
+    precursor_w_hrv: float = 0.26
+    precursor_w_hr: float = 0.18
+    precursor_w_move: float = 0.20
+    precursor_w_bed: float = 0.16
+    precursor_w_resp: float = 0.10
+    # Sleep-instability (CAP-rate proxy): density of micro-movement bursts in the window.
+    # In unstable windows (Zucconi 1995, PMID 7797629) awakenings cluster, so pre-empt sooner.
+    precursor_instability_move: float = 0.25   # movement above this = a burst
+    precursor_instability_gain: float = 0.12   # lower the pre-empt threshold by up to this
+    # Maintenance "settle" nudge: a SMALL, comfort-bounded thermal move at a vulnerable moment.
+    # SIGNED + learnable per phenotype: cutaneous warming can suppress awakenings (Raymann 2008,
+    # DOI 10.1093/brain/awm315) yet over-cooling drives alertness (Fronczek 2008,
+    # DOI 10.1093/sleep/31.2.233) -> the controller learns the sign/magnitude that prevents
+    # THIS user's awakenings. Default cool (hot sleeper), bounded by the cap.
+    maintenance_settle_nudge_f: float = -1.0   # <0 cooler, >0 warmer (relative to neutral)
+    maintenance_settle_cap_f: float = 2.0
+    # Environmental pre-compensation: feed-forward bed bias from tonight's outdoor forecast so
+    # the bed is ahead of an overnight heat soak (hot sleeper) instead of chasing it.
+    precomp_hot_threshold_f: float = 62.0      # overnight mean outdoor above this => cool bias
+    precomp_cold_threshold_f: float = 40.0     # below this => warm bias
+    precomp_f_per_deg: float = 8.0             # °F outdoor per 1°F of bed bias
+    precomp_max_bias_f: float = 2.0            # cap the feed-forward bias
     # Accurate sleep-onset detection (asleep vs lying in bed awake). Onset is only declared
     # after a *persistent* run of multi-signal sleep evidence; onset is back-dated to its
     # start so latency reflects when you actually fell asleep.

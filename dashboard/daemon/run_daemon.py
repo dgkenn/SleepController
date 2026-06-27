@@ -70,6 +70,9 @@ class DashboardDaemon:
         self.wake = None  # {"wake_time","window_min","vibration_power","thermal_level"}
         self.manual_target_f = None
         self.last_target_f = None  # last effective target (for relative nudges)
+        self.session_mode = "night"   # night | induce | nap
+        self.nap_plan = None          # NapPlan.to_dict() when a nap session is active
+        self.nap_deadline = None      # datetime the nap should end
         self.simulate = simulate
         if simulate:
             self.source = SimulatorSource("normal", seed=7,
@@ -177,8 +180,50 @@ class DashboardDaemon:
                 self.context.required_wake_time = None
                 self.context.night_type = None
                 self.context.is_short_sleep_day = None
+            elif t == "induce_sleep":
+                self._start_induce()
+            elif t == "start_nap":
+                self._start_nap(p.get("duration_min"), p.get("wake_time"))
+            elif t == "end_session":
+                self._end_session()
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
+
+    # ---------------------------------------------------------- onset / nap sessions
+    def _start_induce(self) -> None:
+        """'Make me tired': run the onset-induction (warm->cool) cascade now."""
+        self.session_mode = "induce"
+        self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+        self.nap_plan, self.nap_deadline = None, None
+        self.cycle.controller.set_session("induce", keep_light=False)
+
+    def _start_nap(self, duration_min=None, wake_time=None) -> None:
+        from sleepctl.controller.nap import NapStrategy, nap_strategy
+        now = datetime.now()
+        if wake_time:
+            hh, mm = (int(x) for x in str(wake_time).split(":"))
+            deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if deadline <= now:
+                deadline += timedelta(days=1)
+        else:
+            deadline = now + timedelta(minutes=int(duration_min or 20))
+        window = max(5, int((deadline - now).total_seconds() // 60))
+        plan = nap_strategy(window, now_hour=now.hour, cfg=self.cfg)
+        ctrl_mode = "nap_power" if plan.strategy in (NapStrategy.POWER, NapStrategy.TRAP) \
+            else "nap_cycle"
+        self.session_mode = "nap"
+        self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+        self.nap_plan = plan.to_dict()
+        self.nap_deadline = deadline
+        # wake-by the deadline; smart wake catches a light-sleep moment inside the window.
+        self.context.required_wake_time = deadline
+        self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+
+    def _end_session(self) -> None:
+        self.session_mode = "night"
+        self.nap_plan, self.nap_deadline = None, None
+        self.context.required_wake_time = None
+        self.cycle.controller.set_session("night", keep_light=False)
 
     # ---------------------------------------------------------------- snapshot
     def _snapshot(self, decision, frame) -> dict:
@@ -206,6 +251,9 @@ class DashboardDaemon:
                 "power_on": self.power_on,
                 "away": self.away,
                 "wake": self.wake,
+                "session_mode": self.session_mode,
+                "nap": self.nap_plan,
+                "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
             },
         }
 
@@ -218,6 +266,9 @@ class DashboardDaemon:
     def control_tick(self) -> None:
         """Full sense->decide->act cycle plus a fresh snapshot."""
         self._apply_commands()
+        # A nap ends once its deadline has passed (the smart wake has fired by then).
+        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
+            self._end_session()
         frame, now = self._read()
         decision = None
         if self.power_on and not self.paused and not self.away:
@@ -285,17 +336,70 @@ class DashboardDaemon:
             time.sleep(self.command_poll_seconds)
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--live", action="store_true", help="use the real Eight Sleep client")
+    ap.add_argument("--live", action="store_true",
+                    help="drive the REAL Eight Sleep Pod (default: simulator)")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="live mode but read-only: log decisions, send no device commands")
     ap.add_argument("--poll-seconds", type=float, default=30.0,
                     help="control-cycle cadence (manual overrides apply faster)")
     ap.add_argument("--command-poll-seconds", type=float, default=1.0,
                     help="override-queue poll cadence (realtime temp control)")
     ap.add_argument("--max-ticks", type=int, default=None)
     args = ap.parse_args()
-    DashboardDaemon(simulate=not args.live, poll_seconds=args.poll_seconds,
-                    command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
+
+    # Env toggles let docker-compose enable live mode without changing the command.
+    live = args.live or _env_truthy("SLEEPCTL_LIVE")
+    dry_run = args.dry_run or _env_truthy("SLEEPCTL_DRY_RUN")
+
+    if not live:
+        DashboardDaemon(simulate=True, poll_seconds=args.poll_seconds,
+                        command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
+        return
+
+    # --- live: drive the real Pod via the async client ----------------------------
+    import asyncio
+
+    from sleepctl.adapters.credentials import load_credentials
+    from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+    from sleepctl.config import AppConfig
+    from app.db import get_repo
+    from live_daemon import LiveDashboardDaemon
+
+    creds = load_credentials(os.environ.get("EIGHTSLEEP_CREDENTIALS") or None)
+    if not creds.is_complete():
+        print("[daemon] live mode requires Eight Sleep credentials "
+              "(EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD). Falling back to simulator.",
+              flush=True)
+        DashboardDaemon(simulate=True, poll_seconds=args.poll_seconds,
+                        command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
+        return
+
+    client = EightSleepClient(
+        email=creds.email, password=creds.password, timezone=creds.timezone,
+        side=os.environ.get("EIGHTSLEEP_SIDE") or creds.side,
+        client_id=creds.client_id, client_secret=creds.client_secret,
+    )
+    # Environmental pre-compensation: enable the weather feed unless explicitly disabled.
+    weather = None
+    if os.environ.get("SLEEPCTL_WEATHER", "1") not in ("0", "false", "off"):
+        try:
+            from sleepctl.adapters.weather import OpenMeteoWeather
+            lat = float(os.environ.get("SLEEPCTL_LAT", "42.3601"))
+            lon = float(os.environ.get("SLEEPCTL_LON", "-71.0589"))
+            weather = OpenMeteoWeather(latitude=lat, longitude=lon)
+        except Exception as exc:
+            print(f"[daemon] weather pre-compensation disabled: {exc}", flush=True)
+    daemon = LiveDashboardDaemon(AppConfig.default(), client, get_repo(), dry_run=dry_run,
+                                 weather=weather)
+    asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
+                           command_poll_seconds=args.command_poll_seconds,
+                           max_ticks=args.max_ticks))
 
 
 if __name__ == "__main__":

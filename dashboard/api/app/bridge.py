@@ -16,6 +16,8 @@ VALID_COMMANDS = {
     "set_mode", "set_temp", "nudge_temp", "set_wake", "clear_wake",
     # Eight Sleep app parity
     "power_on", "power_off", "away_on", "away_off", "prime",
+    # On-demand onset induction + nap sessions
+    "induce_sleep", "start_nap", "end_session",
 }
 
 

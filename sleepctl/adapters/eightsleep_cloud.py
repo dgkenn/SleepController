@@ -15,6 +15,7 @@ Device facts honored here:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -32,6 +33,27 @@ def _import_pyeight():
             "pyEight is required for the Eight Sleep cloud adapter. Install it with "
             "`pip install pyEight` (the lukas-clarke OAuth2 fork)."
         ) from exc
+
+
+def _fix_pyeight_host_header() -> None:
+    """Work around a pyEight bug that 404s every authenticated request.
+
+    pyEight's ``DEFAULT_API_HEADERS`` hardcodes ``host: app-api.8slp.net`` and
+    reuses that single dict for *all* requests, including the ones to
+    ``client-api.8slp.net`` (e.g. ``GET /v1/users/me`` in ``fetch_device_list``).
+    aiohttp honors an explicit Host header verbatim, so the client-api host gets
+    the wrong Host and the server returns 404 — connection fails before any data
+    is read. Dropping the static Host lets aiohttp derive the correct one from
+    each URL. Verified live against the real cloud API (with vs. without the
+    header: 404 vs. 200). Safe + idempotent; no-op if the key is already gone.
+    """
+    try:
+        from pyeight import constants  # type: ignore
+
+        constants.DEFAULT_API_HEADERS.pop("host", None)
+        constants.DEFAULT_API_HEADERS.pop("Host", None)
+    except Exception:  # pragma: no cover - depends on optional install / version
+        pass
 
 
 _STAGE_MAP = {
@@ -102,10 +124,12 @@ class EightSleepClient:
         self._eight = None
         self._user = None
         self._last_update: Optional[datetime] = None
+        self._alarm_id: Optional[str] = None
 
     # -- lifecycle ---------------------------------------------------------------
     async def connect(self) -> None:  # pragma: no cover - requires live device
         EightSleep = _import_pyeight()
+        _fix_pyeight_host_header()
         self._eight = EightSleep(
             self.email,
             self.password,
@@ -113,7 +137,19 @@ class EightSleepClient:
             client_id=self.client_id,
             client_secret=self.client_secret,
         )
-        await self._eight.start()
+        try:
+            await self._eight.start()
+        except IndexError as exc:
+            # pyEight raises a bare IndexError from assign_users() when the
+            # account authenticates but has no Pod registered yet. Translate it
+            # into an actionable message (seen live: valid login, empty device
+            # list before the Pod was paired).
+            raise RuntimeError(
+                "Signed in to Eight Sleep, but no Pod is registered to this "
+                "account yet. Finish setup in the Eight Sleep app first — fill "
+                "the Pod with water, connect the Hub to Wi-Fi, and pair the bed "
+                "— then retry."
+            ) from exc
         self._user = self._select_user()
 
     def _select_user(self):  # pragma: no cover - requires live device
@@ -129,13 +165,22 @@ class EightSleepClient:
         return eight.users[uid]
 
     async def update(self) -> None:  # pragma: no cover - requires live device
-        await self._eight.update_user_data()
+        # Device data MUST refresh before user data: pyEight's update_user_data() reads
+        # device_data (e.g. target_heating_level), so a stale/empty device payload makes it
+        # raise IndexError. Refreshing the device first (and tolerating a transient miss)
+        # keeps the live daemon from dying on a single bad cloud response.
         await self._eight.update_device_data()
+        await self._eight.update_user_data()
         self._last_update = datetime.now()
 
     async def close(self) -> None:  # pragma: no cover - requires live device
         if self._eight is not None:
             await self._eight.stop()
+
+    def now(self) -> datetime:
+        """Current wall-clock time. The live dashboard daemon calls ``client.now()``
+        each tick (the simulator client overrides it with its synthetic clock)."""
+        return datetime.now()
 
     # -- sensing -----------------------------------------------------------------
     def read_frame(self) -> SensorFrame:  # pragma: no cover - requires live device
@@ -161,6 +206,9 @@ class EightSleepClient:
             bed_temp_f=bed_temp_f,
             room_temp_f=self._room_temp_f(user),
             commanded_level=_safe(lambda: user.heating_level),
+            # Water-side truth for the thermal health check (currentDeviceLevel == heating_level).
+            device_level=_safe(lambda: user.heating_level),
+            target_level=_safe(lambda: user.target_heating_level),
             data_age_seconds=age,
         )
 
@@ -210,24 +258,65 @@ class EightSleepClient:
             smart_sleep_cap_minutes=0,
         )
 
+    async def _resolve_alarm_id(self) -> Optional[str]:  # pragma: no cover - requires live device
+        """Return an existing alarm id on the device, caching it.
+
+        pyEight's ``set_alarm_direct`` can only **modify an existing alarm** — it raises
+        ``"Alarm with ID … not found"`` for an unknown id, so we must drive a real slot
+        rather than invent one. (Verified live: the device exposes ``user.alarms`` with the
+        slot's UUID.)
+        """
+        if self._alarm_id:
+            return self._alarm_id
+        u = self._user
+        for meth in ("update_alarm_data", "_ensure_alarm_data"):
+            fn = getattr(u, meth, None)
+            if fn is None:
+                continue
+            try:
+                res = fn()
+                if asyncio.iscoroutine(res):
+                    await res
+                break
+            except Exception:
+                continue
+        alarms = getattr(u, "alarms", None) or []
+        self._alarm_id = alarms[0]["id"] if alarms else None
+        return self._alarm_id
+
     async def set_wake_alarm(self, spec) -> None:  # pragma: no cover - requires live device
         """Program the heat + gentle-vibration smart wake alarm (audio OFF for silence)."""
         from datetime import datetime as _dt
 
-        time_str = spec.time.strftime("%H:%M") if isinstance(spec.time, _dt) else str(spec.time)
+        time_str = spec.time.strftime("%H:%M:%S") if isinstance(spec.time, _dt) else str(spec.time)
+        if len(time_str) == 5:               # "HH:MM" -> "HH:MM:SS" (API rejects the short form)
+            time_str += ":00"
+        alarm_id = await self._resolve_alarm_id()
+        if alarm_id is None:
+            raise RuntimeError(
+                "No alarm slot exists on the Pod to drive. Create one wake alarm in the "
+                "Eight Sleep app once — sleepctl then manages its time/level silently "
+                "(it can modify an existing alarm but cannot create one via the API)."
+            )
+        # Payload must use device-valid values (verified live, a bad field => 400):
+        #  - vibration_pattern: "INTENSE" is the recognized pattern (power sets intensity).
+        #  - thermal is left to the controller's own wake ramp (set_heating_level during the
+        #    wake window); the alarm's thermal "level" is a separate 0-100 scale, so we don't
+        #    drive it here and avoid a scale mismatch.
+        #  - audio fully off but a valid trackId, silence preserved.
         await self._user.set_alarm_direct(
-            alarm_id="sleepctl-wake",
+            alarm_id=alarm_id,
             enabled=True,
             time=time_str,
             weekdays=None,
             vibration_enabled=spec.vibration_power > 0,
-            vibration_power=spec.vibration_power,
-            vibration_pattern="RISE",
-            thermal_enabled=True,
-            thermal_level=self._clamp(spec.thermal_level),
+            vibration_power=max(0, min(100, int(spec.vibration_power))),
+            vibration_pattern="INTENSE",
+            thermal_enabled=False,
+            thermal_level=50,
             audio_enabled=False,                 # silence preserved
             audio_level=0,
-            audio_track=None,
+            audio_track="futuristic",
             smart_light_sleep=True,              # fire during light sleep in the window
             smart_sleep_cap=True,
             smart_sleep_cap_minutes=spec.window_min,

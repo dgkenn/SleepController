@@ -7,7 +7,10 @@ import ModeToggle from '@/components/ModeToggle';
 import TempStepper from '@/components/TempStepper';
 import WakeTimePicker from '@/components/WakeTimePicker';
 import PowerControls from '@/components/PowerControls';
+import SleepSessionCard from '@/components/SleepSessionCard';
 import SleepPlanCard from '@/components/SleepPlanCard';
+import WeatherCard from '@/components/WeatherCard';
+import PreemptionCard from '@/components/PreemptionCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
 import useSWR from 'swr';
@@ -184,6 +187,18 @@ function TonightContent() {
             )}
           </div>
 
+          {/* On-demand sleep onset + naps */}
+          <SleepSessionCard
+            sessionMode={data?.session_mode ?? 'night'}
+            nap={data?.nap ?? null}
+            napDeadline={data?.nap_deadline ?? null}
+            onChanged={() => mutate()}
+            onToast={showToast}
+          />
+
+          {/* Predictive pre-emption — live awakening avoidance */}
+          <PreemptionCard />
+
           {/* Power / Away / Prime */}
           <PowerControls
             powerOn={data?.power_on ?? true}
@@ -205,6 +220,9 @@ function TonightContent() {
 
           {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
           {plan && <SleepPlanCard plan={plan} />}
+
+          {/* Overnight weather feed-forward */}
+          <WeatherCard />
 
           {/* Control Buttons */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">

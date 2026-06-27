@@ -10,6 +10,7 @@ import AlertBanner from '@/components/AlertBanner';
 import EmergencyStop from '@/components/EmergencyStop';
 import QuickTemp from '@/components/QuickTemp';
 import CheckInCard from '@/components/CheckInCard';
+import ReadinessCard from '@/components/ReadinessCard';
 import { useStatusStream } from '@/lib/useStatusStream';
 import useSWR from 'swr';
 import { CheckInStatus, fetcher } from '@/lib/api';
@@ -77,6 +78,9 @@ function HomeContent() {
           {checkin?.due && (
             <CheckInCard date={checkin.date} onDone={() => mutateCheckin()} />
           )}
+
+          {/* Morning readiness — daytime performance forecast */}
+          <ReadinessCard />
 
           {/* Hero temps */}
           <StatusHero data={data} />

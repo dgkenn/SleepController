@@ -41,10 +41,27 @@ Open the **PORTS** tab (next to the terminal) → find port **3000** → right-c
 > Public means no GitHub login is needed to open the URL — the dashboard's own username/password
 > still protects it. (If you prefer, leave it Private and just sign into GitHub in iPhone Safari.)
 
-Copy the port-3000 URL — it looks like `https://<name>-3000.app.github.dev`.
+**Get the full URL.** Every Codespaces forwarded address has this exact shape:
+
+```
+https://<your-codespace-name>-3000.app.github.dev
+```
+
+i.e. your codespace's name, then `-3000` (the port), then `.app.github.dev`. For example:
+
+```
+https://glorious-dollop-5gp9q7r4x3-3000.app.github.dev
+```
+
+The PORTS panel **truncates the display** (e.g. `https://glorious-dollop-5gp…`) — the link itself
+is complete. To copy the whole thing, hover over the **Forwarded Address** and click the
+**copy / clipboard icon** that appears (or click the address to open it in a browser tab and copy
+the full URL from the address bar). Then **text or email that link to yourself** so you can open it
+on your iPhone without retyping it.
 
 ### 4. Open it on your iPhone
-In **Safari**, go to that URL and log in:
+In **Safari**, open your full forwarded URL —
+`https://<your-codespace-name>-3000.app.github.dev` — and log in:
 - **Username:** `admin`
 - **Password:** the value printed by the script
 

@@ -53,6 +53,25 @@ function AdminContent() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Mode</span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
+                        health.daemon.live
+                          ? 'bg-success/10 border-success/30 text-success'
+                          : 'bg-surface-raised border-surface-border text-gray-400'
+                      }`}
+                    >
+                      {health.daemon.live ? 'Live (real Pod)' : 'Simulator'}
+                    </span>
+                    {health.daemon.live && health.daemon.dry_run && (
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-warning/15 border border-warning/30 text-warning">
+                        dry-run
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
                   <span className="text-sm text-gray-300">Last update</span>
                   <span className="text-sm text-gray-400">
                     {health.daemon.updated

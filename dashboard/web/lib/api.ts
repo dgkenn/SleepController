@@ -102,6 +102,17 @@ export interface StatusResponse {
   schedule: Schedule | null;
 }
 
+export interface NapPlan {
+  strategy: 'power' | 'cycle' | 'trap';
+  window_min: number;
+  target_sleep_min: number;
+  keep_light: boolean;
+  late_day: boolean;
+  inertia_buffer_min: number;
+  headline: string;
+  advice: string;
+}
+
 export interface TonightResponse {
   mode: 'auto' | 'manual' | 'view' | 'paused' | 'away';
   state: string;
@@ -109,6 +120,9 @@ export interface TonightResponse {
   power_on: boolean;
   away: boolean;
   wake: WakeInfo | null;
+  session_mode: 'night' | 'induce' | 'nap';
+  nap: NapPlan | null;
+  nap_deadline: string | null;
   schedule: Schedule | null;
   recommendation: Recommendation;
   setpoint: SetpointInfo | null;
@@ -203,7 +217,7 @@ export interface SettingsResponse {
 }
 
 export interface AdminHealth {
-  daemon: { alive: boolean; updated: string; stale: boolean };
+  daemon: { alive: boolean; updated: string; stale: boolean; live?: boolean; dry_run?: boolean };
   sources: Record<string, { ok: boolean; last_ok?: string; error?: string }>;
   pending_commands: number;
 }
@@ -261,6 +275,143 @@ export interface CheckInResult {
   perfect_sleep?: PerfectSleep;
   objective?: Record<string, number | null>;
   insights?: string[];
+}
+
+export interface PreemptionResponse {
+  preempting: boolean;
+  wake_risk: number | null;
+  risk_reasons: string[];
+  precursor_score: number | null;
+  precursor_reasons: string[];
+  recurring_wake_times: string[];
+  precool_efficacy: Record<string, { n: number; prevented: number; rate: number | null; mean_lead: number | null }>;
+  stale: boolean;
+}
+
+export interface ReadinessFlag {
+  flag: string;
+  severity: 'low' | 'medium' | 'high';
+  message: string;
+}
+
+export interface ReadinessResponse {
+  available: boolean;
+  score?: number;
+  band?: 'impaired' | 'compromised' | 'adequate' | 'prime';
+  components?: { sleep_quality: number; recovery: number; continuity: number };
+  debt_min?: number;
+  flags?: ReadinessFlag[];
+  recommendation?: string;
+  date?: string;
+  mode?: string;
+}
+
+export interface WeatherForecastDetail {
+  start_f: number;
+  end_f: number;
+  low_f: number;
+  high_f: number;
+  trend: string;
+  hours: Array<{ hour: string; temp_f: number }>;
+}
+
+export interface WeatherForecast {
+  source: string;
+  bias_f: number;
+  pre_cool: boolean;
+  trend: 'warming' | 'cooling' | 'stable' | null;
+  overnight_low_f: number | null;
+  overnight_high_f: number | null;
+  overnight_mean_f?: number | null;
+  reason: string;
+  forecast?: WeatherForecastDetail;
+}
+
+export interface AwakeningCause {
+  factor: string;
+  weight: number;
+  detail: string;
+}
+
+export interface AwakeningEvent {
+  night_date: string;
+  time: string | null;
+  bed_temp_f: number | null;
+  room_temp_f: number | null;
+  heart_rate: number | null;
+  hrv: number | null;
+  stage_before: string | null;
+  likely_causes: AwakeningCause[];
+  top_cause: string;
+}
+
+export interface SuggestedExperiment {
+  name: string;
+  hypothesis: string;
+  variable: string;
+  metric: string;
+  min_nights_per_arm: number;
+  washout_nights: number;
+  arm_a: { label: string; params: Record<string, unknown> };
+  arm_b: { label: string; params: Record<string, unknown> };
+  reason: string;
+}
+
+export interface ForensicsResponse {
+  events: AwakeningEvent[];
+  summary: {
+    n_awakenings: number;
+    top_factors: Array<{ factor: string; count: number }>;
+  };
+  suggested_experiment?: SuggestedExperiment | null;
+}
+
+export interface Analysis {
+  metric: string;
+  lower_better: boolean;
+  control: { n: number; mean: number | null; sd: number | null };
+  treatment: { n: number; mean: number | null; sd: number | null };
+  diff: number | null;
+  effect_size: number | null;
+  winner: string | null;
+  enough_data: boolean;
+  // paired multi-cycle analysis (optional; older results may omit)
+  n_cycles?: number;
+  cycle_diffs?: number[];
+  ci?: [number, number] | null;
+  washout_nights?: number;
+  recommendation: string;
+}
+
+export interface Experiment {
+  id: number;
+  name: string;
+  hypothesis: string;
+  variable: string;
+  arm_a: { label: string; params: Record<string, unknown> };
+  arm_b: { label: string; params: Record<string, unknown> };
+  metric: string;
+  min_nights_per_arm: number;
+  status: 'active' | 'complete' | 'stopped';
+  created: string;
+  assignments: Record<string, 'a' | 'b'>;
+  result: Analysis | null;
+}
+
+export interface CreateExperimentBody {
+  name: string;
+  hypothesis: string;
+  variable: string;
+  metric: string;
+  min_nights_per_arm: number;
+  washout_nights?: number;
+  arm_a: { label: string; params: Record<string, unknown> };
+  arm_b: { label: string; params: Record<string, unknown> };
+}
+
+export interface ExperimentAnalyzeResponse {
+  experiment: Experiment;
+  analysis: Analysis;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,6 +517,23 @@ export const api = {
 
   maintenance: () => apiFetch<MaintenanceSummary>('/api/maintenance'),
 
+  // On-demand onset induction + naps
+  induceSleep: () => apiFetch<CommandResponse>('/api/tonight/induce', { method: 'POST' }),
+
+  startNap: (duration_min?: number, wake_time?: string) =>
+    apiFetch<CommandResponse>('/api/tonight/nap', {
+      method: 'POST',
+      body: JSON.stringify({ duration_min, wake_time }),
+    }),
+
+  napPreview: (duration_min?: number, wake_time?: string) =>
+    apiFetch<NapPlan>('/api/tonight/nap/preview', {
+      method: 'POST',
+      body: JSON.stringify({ duration_min, wake_time }),
+    }),
+
+  endSession: () => apiFetch<CommandResponse>('/api/tonight/session/end', { method: 'POST' }),
+
   // Wake-up exit survey (morning check-in)
   checkinStatus: () => apiFetch<CheckInStatus>('/api/checkin/status'),
 
@@ -441,6 +609,35 @@ export const api = {
 
   ackAlert: (id: string) =>
     apiFetch<void>(`/api/alerts/${id}/ack`, { method: 'POST' }),
+
+  // Predictive pre-emption
+  preemption: () => apiFetch<PreemptionResponse>('/api/predictive/preemption'),
+
+  // Morning readiness
+  readiness: () => apiFetch<ReadinessResponse>('/api/morning/readiness'),
+
+  // Weather feed-forward
+  weatherForecast: () => apiFetch<WeatherForecast>('/api/weather/forecast'),
+
+  // Awakening forensics
+  forensics: (limit = 20) =>
+    apiFetch<ForensicsResponse>(`/api/forensics/awakenings?limit=${limit}`),
+
+  // Experiments (A/B testing)
+  experiments: () =>
+    apiFetch<{ experiments: Experiment[] }>('/api/experiments'),
+
+  createExperiment: (body: CreateExperimentBody) =>
+    apiFetch<Experiment>('/api/experiments', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  analyzeExperiment: (id: number) =>
+    apiFetch<ExperimentAnalyzeResponse>(`/api/experiments/${id}/analyze`),
+
+  stopExperiment: (id: number) =>
+    apiFetch<Experiment>(`/api/experiments/${id}/stop`, { method: 'POST' }),
 };
 
 // SWR fetcher

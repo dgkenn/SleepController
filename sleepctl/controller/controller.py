@@ -15,6 +15,7 @@ from sleepctl.config import AppConfig
 from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
 from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
+from sleepctl.controller.precursor import PrecursorDetector
 from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
 from sleepctl.controller.state_machine import SleepStateMachine
@@ -40,6 +41,7 @@ class SleepController:
         self.wake_detector = WakeDetector()
         self.onset_detector = SleepOnsetDetector(cfg)
         self.arousal_detector = ArousalDetector(cfg)
+        self.precursor_detector = PrecursorDetector(cfg)
         # Proactive sleep-maintenance: a learned WakeProfile can be attached by the loop.
         self.wake_risk_assessor = WakeRiskAssessor(cfg)
         self.induction = InductionRoutine(cfg)
@@ -52,10 +54,15 @@ class SleepController:
         self._bed_entry_time: Optional[datetime] = None
         self._sleep_onset_time: Optional[datetime] = None  # accurate fall-asleep time
         self._last_target_f: float = cfg.tunables.neutral_temp_f
+        # Session mode: "night" | "induce" | "nap_power" | "nap_cycle". Power naps keep the bed
+        # light so slow-wave sleep (and its grogginess on waking) doesn't set in.
+        self.session_mode = "night"
+        self.session_keep_light = False
         self.last_wake_event = None
         self.last_onset_event = None
         self.last_arousal = None          # last ArousalAssessment
         self.last_wake_risk = None        # last WakeRisk
+        self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
         self._arousal_started: Optional[datetime] = None  # for re-settling latency
         self.last_resettle_latency_min: Optional[float] = None
         self._anticipatory_active = False
@@ -118,8 +125,14 @@ class SleepController:
                     sleep_hr_baseline=sleep_hr_base,
                     minutes_since_onset=mins_since_onset)
                 self.last_wake_risk = risk
-                # Pre-empt on rising risk OR a micro-arousal we want to settle quickly.
-                self._preempt_cool = risk.preempt or (
+                # Leading-edge: detect the slow pre-arousal drift (HR creep, HRV decay,
+                # building restlessness, bed warming) over a short window — earlier than the
+                # point-in-time wake-risk score.
+                precursor = self.precursor_detector.detect(
+                    frame, recent, now, sleep_hr_base, sleep_hrv_base)
+                self.last_precursor = precursor
+                # Pre-empt on rising risk OR a leading-edge precursor OR a micro-arousal.
+                self._preempt_cool = risk.preempt or precursor.should_preempt or (
                     arousal.level is ArousalLevel.MICRO and frame.stage is not SleepStage.DEEP)
                 # Edge-trigger a pre-cool efficacy event when anticipatory cooling first
                 # fires for a window (so the lead-time learner can later score prevention).
@@ -188,7 +201,8 @@ class SleepController:
             intent = self.induction.step(frame, objective, minutes_in_bed)
         elif state is ControllerState.MAINTENANCE:
             intent = self.maintenance.step(frame, objective,
-                                           preempt_cool=getattr(self, "_preempt_cool", False))
+                                           preempt_cool=getattr(self, "_preempt_cool", False),
+                                           keep_light=self.session_keep_light)
         elif state is ControllerState.WAKE_RECOVERY:
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
@@ -239,6 +253,35 @@ class SleepController:
     @staticmethod
     def _round_opt(value, ndigits: int = 2):
         return round(value, ndigits) if value is not None else None
+
+    def set_session(self, mode: str, keep_light: Optional[bool] = None) -> None:
+        """Select the session mode ('night' | 'induce' | 'nap_power' | 'nap_cycle'). Power
+        naps keep the bed light so slow-wave sleep doesn't set in."""
+        self.session_mode = mode or "night"
+        if keep_light is None:
+            keep_light = mode in ("nap_power",)
+        self.session_keep_light = bool(keep_light)
+
+    def preemption_summary(self) -> dict:
+        """Live predictive-pre-emption state for the dashboard: is the controller actively
+        heading off an awakening, and which signals (point-in-time risk + leading-edge drift)
+        drove it."""
+        risk = self.last_wake_risk
+        pre = self.last_precursor
+        preempting = bool(getattr(self, "_preempt_cool", False))
+        return {
+            "preempting": preempting,
+            "intent": "settle_cool" if preempting else None,
+            "wake_risk": round(risk.score, 3) if risk else None,
+            "risk_reasons": list(risk.reasons) if risk else [],
+            "precursor_score": round(pre.score, 3) if pre else None,
+            "precursor_reasons": list(pre.reasons) if pre else [],
+            "precursor_signals": pre.signals if pre else {},
+        }
+
+    def set_settle_nudge(self, nudge_f: float) -> None:
+        """Apply the learned signed maintenance settle nudge to the thermal controller."""
+        self.thermal.set_settle_nudge(nudge_f)
 
     def set_wake_profile(self, profile=None, lead_profile=None) -> None:
         """Attach the learned per-user awakening phenotype + cooling lead-times to the

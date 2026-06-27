@@ -51,11 +51,26 @@ class ThermalController:
         self.response_lag_min: float = cfg.tunables.thermal_response_lag_min
         self._last_cmd_time = None
         self._last_cmd_water = None
+        # Feed-forward environmental pre-compensation bias (°F), set from the overnight forecast.
+        self.ambient_bias_f: float = 0.0
+        # Signed maintenance "settle" nudge (°F vs neutral) used by SETTLE_COOL; <0 cools, >0
+        # warms. Learnable per phenotype (Raymann warming vs Fronczek cooling — see config).
+        self.settle_nudge_f: float = cfg.tunables.maintenance_settle_nudge_f
 
     def set_response_lag(self, minutes: float) -> None:
         """Update the learned actuation latency the control loop anticipates."""
         if minutes and minutes > 0:
             self.response_lag_min = float(minutes)
+
+    def set_ambient_bias(self, bias_f: float) -> None:
+        """Set the forecast-driven feed-forward bias, clamped to the configured cap."""
+        cap = self.cfg.tunables.precomp_max_bias_f
+        self.ambient_bias_f = max(-cap, min(cap, float(bias_f or 0.0)))
+
+    def set_settle_nudge(self, nudge_f: float) -> None:
+        """Set the learned signed maintenance settle nudge, clamped to the comfort cap."""
+        cap = self.cfg.tunables.maintenance_settle_cap_f
+        self.settle_nudge_f = max(-cap, min(cap, float(nudge_f or 0.0)))
 
     # -- composite (effective) temperature ---------------------------------------
     # Effective comfort = a blend of what the COVERED body feels (the Pod's bed-surface
@@ -96,7 +111,7 @@ class ThermalController:
         """
         t = self.cfg.tunables
         p = self.profile
-        bias = t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0
+        bias = (t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0) + self.ambient_bias_f
         neutral = p.neutral_f + bias
 
         if intent is ThermalIntent.WIND_DOWN:
@@ -111,10 +126,17 @@ class ThermalController:
             # user's sleep-maintenance priority (no abrupt change).
             target = neutral + p.rem_warm_offset_f
         elif intent is ThermalIntent.SETTLE_COOL:
-            # Gentle cooling to pre-empt / recover from an awakening (cooling promotes
-            # sleep). Small step below neutral, slew-limited downstream; never as deep as
-            # the induction dip so it doesn't jolt the sleeper.
-            target = neutral - 1.0
+            # Gentle SIGNED settle nudge to pre-empt / recover from an awakening. Default
+            # cools (settle_nudge_f<0, the hot-sleeper evidence default), but learnable to
+            # warm if that better prevents this user's awakenings; slew-limited downstream so
+            # it never jolts the sleeper.
+            target = neutral + self.settle_nudge_f
+        elif intent is ThermalIntent.ONSET_WARM:
+            # Small WARM nudge to induce onset (cutaneous warming speeds sleep onset). Bounded
+            # by the comfort cap so a hot sleeper is never overheated; the controller cools
+            # again once asleep. The hot-sleeper cool bias is intentionally NOT applied here.
+            nudge = min(t.onset_warm_nudge_f, t.onset_warm_comfort_cap_f)
+            target = p.neutral_f + nudge
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)
         elif intent is ThermalIntent.STABILIZE:
