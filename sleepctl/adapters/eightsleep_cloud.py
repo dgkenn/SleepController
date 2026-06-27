@@ -15,6 +15,7 @@ Device facts honored here:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from typing import Optional
 
@@ -123,6 +124,7 @@ class EightSleepClient:
         self._eight = None
         self._user = None
         self._last_update: Optional[datetime] = None
+        self._alarm_id: Optional[str] = None
 
     # -- lifecycle ---------------------------------------------------------------
     async def connect(self) -> None:  # pragma: no cover - requires live device
@@ -163,8 +165,12 @@ class EightSleepClient:
         return eight.users[uid]
 
     async def update(self) -> None:  # pragma: no cover - requires live device
-        await self._eight.update_user_data()
+        # Device data MUST refresh before user data: pyEight's update_user_data() reads
+        # device_data (e.g. target_heating_level), so a stale/empty device payload makes it
+        # raise IndexError. Refreshing the device first (and tolerating a transient miss)
+        # keeps the live daemon from dying on a single bad cloud response.
         await self._eight.update_device_data()
+        await self._eight.update_user_data()
         self._last_update = datetime.now()
 
     async def close(self) -> None:  # pragma: no cover - requires live device
@@ -249,24 +255,65 @@ class EightSleepClient:
             smart_sleep_cap_minutes=0,
         )
 
+    async def _resolve_alarm_id(self) -> Optional[str]:  # pragma: no cover - requires live device
+        """Return an existing alarm id on the device, caching it.
+
+        pyEight's ``set_alarm_direct`` can only **modify an existing alarm** — it raises
+        ``"Alarm with ID … not found"`` for an unknown id, so we must drive a real slot
+        rather than invent one. (Verified live: the device exposes ``user.alarms`` with the
+        slot's UUID.)
+        """
+        if self._alarm_id:
+            return self._alarm_id
+        u = self._user
+        for meth in ("update_alarm_data", "_ensure_alarm_data"):
+            fn = getattr(u, meth, None)
+            if fn is None:
+                continue
+            try:
+                res = fn()
+                if asyncio.iscoroutine(res):
+                    await res
+                break
+            except Exception:
+                continue
+        alarms = getattr(u, "alarms", None) or []
+        self._alarm_id = alarms[0]["id"] if alarms else None
+        return self._alarm_id
+
     async def set_wake_alarm(self, spec) -> None:  # pragma: no cover - requires live device
         """Program the heat + gentle-vibration smart wake alarm (audio OFF for silence)."""
         from datetime import datetime as _dt
 
-        time_str = spec.time.strftime("%H:%M") if isinstance(spec.time, _dt) else str(spec.time)
+        time_str = spec.time.strftime("%H:%M:%S") if isinstance(spec.time, _dt) else str(spec.time)
+        if len(time_str) == 5:               # "HH:MM" -> "HH:MM:SS" (API rejects the short form)
+            time_str += ":00"
+        alarm_id = await self._resolve_alarm_id()
+        if alarm_id is None:
+            raise RuntimeError(
+                "No alarm slot exists on the Pod to drive. Create one wake alarm in the "
+                "Eight Sleep app once — sleepctl then manages its time/level silently "
+                "(it can modify an existing alarm but cannot create one via the API)."
+            )
+        # Payload must use device-valid values (verified live, a bad field => 400):
+        #  - vibration_pattern: "INTENSE" is the recognized pattern (power sets intensity).
+        #  - thermal is left to the controller's own wake ramp (set_heating_level during the
+        #    wake window); the alarm's thermal "level" is a separate 0-100 scale, so we don't
+        #    drive it here and avoid a scale mismatch.
+        #  - audio fully off but a valid trackId, silence preserved.
         await self._user.set_alarm_direct(
-            alarm_id="sleepctl-wake",
+            alarm_id=alarm_id,
             enabled=True,
             time=time_str,
             weekdays=None,
             vibration_enabled=spec.vibration_power > 0,
-            vibration_power=spec.vibration_power,
-            vibration_pattern="RISE",
-            thermal_enabled=True,
-            thermal_level=self._clamp(spec.thermal_level),
+            vibration_power=max(0, min(100, int(spec.vibration_power))),
+            vibration_pattern="INTENSE",
+            thermal_enabled=False,
+            thermal_level=50,
             audio_enabled=False,                 # silence preserved
             audio_level=0,
-            audio_track=None,
+            audio_track="futuristic",
             smart_light_sleep=True,              # fire during light sleep in the window
             smart_sleep_cap=True,
             smart_sleep_cap_minutes=spec.window_min,
