@@ -549,6 +549,23 @@ def experiment_create(repo, spec: dict) -> dict:
     return create_experiment(repo, spec)
 
 
+def experiment_templates(repo) -> dict:
+    """Curated one-tap n-of-1 templates + a power estimate for each (vs the user's own variance)."""
+    from sleepctl.experiment_templates import estimate_nights_needed, list_templates
+    out = []
+    for t in list_templates():
+        effect = 1.0 if t["metric"] == "wake_events" else 5.0
+        t = dict(t)
+        t["power"] = estimate_nights_needed(repo, t["metric"], target_effect=effect)
+        out.append(t)
+    return {"templates": out}
+
+
+def experiment_from_template(repo, key: str, period=None, washout=None) -> dict:
+    from sleepctl.experiment_templates import create_from_template
+    return create_from_template(repo, key, period=period, washout=washout)
+
+
 def experiment_analyze(repo, exp_id: int) -> dict:
     from sleepctl.experiments import analyze_experiment, get_experiment
     exp = get_experiment(repo, exp_id)
