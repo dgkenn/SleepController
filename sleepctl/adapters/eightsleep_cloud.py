@@ -171,6 +171,11 @@ class EightSleepClient:
         if self._eight is not None:
             await self._eight.stop()
 
+    def now(self) -> datetime:
+        """Current wall-clock time. The live dashboard daemon calls ``client.now()``
+        each tick (the simulator client overrides it with its synthetic clock)."""
+        return datetime.now()
+
     # -- sensing -----------------------------------------------------------------
     def read_frame(self) -> SensorFrame:  # pragma: no cover - requires live device
         user = self._user
