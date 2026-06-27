@@ -508,6 +508,13 @@ def morning_readiness_summary(repo) -> dict:
     return out
 
 
+def wake_catalog(repo) -> dict:
+    """Each recent mid-sleep awakening with the converging-signal vector that flagged it — the
+    record for honing the personalized wake-trajectory."""
+    from sleepctl.controller.sleep_wake import catalog_awakening_signals
+    return {"awakenings": catalog_awakening_signals(repo)}
+
+
 def perfect_weights_view(repo) -> dict:
     """The user's personalized perfect-sleep weights vs the evidence prior, per mode — so the
     objective the controller optimizes toward is visible and explainable."""
