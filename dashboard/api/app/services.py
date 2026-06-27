@@ -513,14 +513,26 @@ def perfect_weights_view(repo) -> dict:
     objective the controller optimizes toward is visible and explainable."""
     from sleepctl.benchmarks import NightMode, targets_for
     from sleepctl.learning.perfect_weights import learn_perfect_weights
-    out = {}
+    out = {"active_mode": current_mode(repo).value, "modes": {}}
     for mode in NightMode:
-        prior = targets_for(mode).weights
+        t = targets_for(mode)
+        prior = t.weights
         learned = learn_perfect_weights(repo, mode)
-        out[mode.value] = {
+        out["modes"][mode.value] = {
+            # the actual targets to hit (the "what good looks like" for this mode)
+            "targets": {
+                "deep_pct": [round(t.deep_pct_min, 3), round(t.deep_pct_ideal, 3)],
+                "rem_pct": [round(t.rem_pct_min, 3), round(t.rem_pct_ideal, 3)],
+                "efficiency_min": round(t.efficiency_min, 3),
+                "sol_max_min": t.sol_max_min,
+                "waso_max_min": t.waso_max_min,
+                "awakenings_max": t.awakenings_max,
+                "total_sleep_target_min": t.total_sleep_target_min,
+            },
             "prior": {k: round(v, 4) for k, v in prior.items()},
             "personalized": learned,
             "is_personalized": learned != prior,
+            "rationale": t.rationale,
         }
     return out
 
