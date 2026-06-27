@@ -147,3 +147,23 @@ def test_live_control_tick_writes_real_frame():
     assert rt["daemon_alive"] is True
     assert rt["bed_temp_f"] is not None        # the real (simulated) frame is surfaced
     assert rt["extra"]["live"] is True
+
+
+def test_live_daemon_fuses_wearable_when_attached():
+    from datetime import datetime as _dt
+
+    from sleepctl.adapters.wearable import SimulatedWearableSource, WearableSample
+    repo = get_repo()
+    repo.conn.execute("UPDATE commands SET status='applied' WHERE status='pending'")
+    repo.conn.commit()
+    client = SimulatedLiveClient(scenario="normal", seed=7)
+    wear = SimulatedWearableSource(fixed=WearableSample(
+        timestamp=_dt(2026, 6, 27, 3, 0), heart_rate=71.0, movement=0.5, age_seconds=2.0))
+    d = LiveDashboardDaemon(AppConfig.default(), client, repo, verbose=False, wearable=wear)
+    out = {}
+
+    async def go():
+        await client.connect()
+        out["f"] = d._read_frame()        # fast wearable overlays the Pod frame
+    _run(go())
+    assert out["f"].heart_rate == 71.0 and out["f"].movement == 0.5

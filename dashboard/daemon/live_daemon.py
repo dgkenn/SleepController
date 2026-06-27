@@ -33,12 +33,16 @@ TEMP_MIN_F, TEMP_MAX_F = 55.0, 110.0
 
 class LiveDashboardDaemon:
     def __init__(self, cfg: AppConfig, client, repo, dry_run: bool = False,
-                 verbose: bool = True, weather=None) -> None:
+                 verbose: bool = True, weather=None, wearable=None) -> None:
         self.cfg = cfg
         self.client = client
         self.repo = repo
         self.dry_run = dry_run
         self.verbose = verbose
+        # Optional separate fast sensor (BLE strap / bedside radar). When present, its sub-minute
+        # HR/movement is fused onto every Pod frame (zero device risk; controller unchanged).
+        self.wearable = wearable
+        self.shift_plan = None  # advisory cross-shift sleep plan, refreshed on the control tick
         # Optional WeatherSource for environmental pre-compensation (None -> feature off,
         # keeps the simulator/test path network-free).
         self.weather = weather
@@ -125,8 +129,13 @@ class LiveDashboardDaemon:
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the
         # n-of-1 loop: the assigned arm now actually drives the controller).
         try:
+            from dataclasses import replace
+
             from sleepctl.experiments import apply_experiment_arm
+            from sleepctl.learning.wake_ramp import learn_wake_ramp
             base = self.repo.latest_setpoints() or self.cfg.default_setpoints()
+            # learn the wake-window ramp from grogginess (the wake end of the trajectory)
+            base = replace(base, wake_ramp_f=learn_wake_ramp(self.repo, self.cfg, base.wake_ramp_f))
             prof, arm = apply_experiment_arm(self.repo, datetime.now().date().isoformat(), base)
             controller.set_setpoints(prof)
             self.active_experiment = arm
@@ -252,6 +261,28 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._log(f"precompensation refresh skipped: {exc}")
 
+    def _read_frame(self):
+        """Read the Pod frame and fuse a fresh wearable sample over it (if a wearable is
+        attached) — sub-minute HR/movement onto the ~60s Pod data, controller-transparent."""
+        frame = self.client.read_frame()
+        if self.wearable is not None:
+            try:
+                from sleepctl.adapters.wearable import fuse_sample
+                fuse_sample(frame, self.wearable.read_sample())
+            except Exception as exc:
+                self._log(f"wearable fusion skipped: {exc}")
+        return frame
+
+    def _refresh_shift_plan(self) -> None:
+        """Advisory cross-shift sleep-debt plan (calendar-fed shifts are a follow-up; debt +
+        strategy come from recent nights now)."""
+        try:
+            from sleepctl.shift_manager import plan_shift_sleep
+            self.shift_plan = plan_shift_sleep(self.repo.recent_nights(14), [],
+                                               datetime.now()).to_dict()
+        except Exception as exc:
+            self._log(f"shift plan skipped: {exc}")
+
     def _safe_device_status(self) -> dict:
         fn = getattr(self.client, "device_status", None)
         try:
@@ -297,6 +328,7 @@ class LiveDashboardDaemon:
                       "precompensation": self.precomp,
                       "device": self._safe_device_status(),
                       "experiment": self.active_experiment,
+                      "shift_plan": self.shift_plan,
                       "device_error": error,
                       "data_age_s": round(frame.data_age_seconds, 1)
                       if frame is not None and frame.data_age_seconds is not None else None,
@@ -311,10 +343,11 @@ class LiveDashboardDaemon:
         if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
             self._end_session()
         await self.client.update()
-        frame = self.client.read_frame()
+        frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
         self._refresh_precomp(now)
+        self._refresh_shift_plan()
         decision = None
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
@@ -339,7 +372,7 @@ class LiveDashboardDaemon:
         if not await self._apply_commands():
             return False
         await self.client.update()
-        frame = self.client.read_frame()
+        frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
         decision = None
@@ -358,7 +391,7 @@ class LiveDashboardDaemon:
         decision. Keeps the dashboard's sensor data under ``live_telemetry_seconds`` old
         without changing control cadence or sending any device command."""
         await self.client.update(device=False)
-        frame = self.client.read_frame()
+        frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
         bridge.write_runtime_state(self.repo.conn, self._snapshot(self._last_decision, frame))
