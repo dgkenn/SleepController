@@ -51,11 +51,18 @@ class ThermalController:
         self.response_lag_min: float = cfg.tunables.thermal_response_lag_min
         self._last_cmd_time = None
         self._last_cmd_water = None
+        # Feed-forward environmental pre-compensation bias (°F), set from the overnight forecast.
+        self.ambient_bias_f: float = 0.0
 
     def set_response_lag(self, minutes: float) -> None:
         """Update the learned actuation latency the control loop anticipates."""
         if minutes and minutes > 0:
             self.response_lag_min = float(minutes)
+
+    def set_ambient_bias(self, bias_f: float) -> None:
+        """Set the forecast-driven feed-forward bias, clamped to the configured cap."""
+        cap = self.cfg.tunables.precomp_max_bias_f
+        self.ambient_bias_f = max(-cap, min(cap, float(bias_f or 0.0)))
 
     # -- composite (effective) temperature ---------------------------------------
     # Effective comfort = a blend of what the COVERED body feels (the Pod's bed-surface
@@ -96,7 +103,7 @@ class ThermalController:
         """
         t = self.cfg.tunables
         p = self.profile
-        bias = t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0
+        bias = (t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0) + self.ambient_bias_f
         neutral = p.neutral_f + bias
 
         if intent is ThermalIntent.WIND_DOWN:

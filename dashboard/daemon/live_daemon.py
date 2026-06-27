@@ -22,6 +22,7 @@ from sleepctl.config import AppConfig
 from sleepctl.controller.controller import SleepController
 from sleepctl.controller.thermal_health import ThermalResponseMonitor
 from sleepctl.loop.cycle import ControlCycle
+from sleepctl.precompensation import compute_precompensation
 from sleepctl.loop.nightly import NightlyUpdater
 from sleepctl.models import ContextRecord, ControllerState
 
@@ -32,12 +33,17 @@ TEMP_MIN_F, TEMP_MAX_F = 55.0, 110.0
 
 class LiveDashboardDaemon:
     def __init__(self, cfg: AppConfig, client, repo, dry_run: bool = False,
-                 verbose: bool = True) -> None:
+                 verbose: bool = True, weather=None) -> None:
         self.cfg = cfg
         self.client = client
         self.repo = repo
         self.dry_run = dry_run
         self.verbose = verbose
+        # Optional WeatherSource for environmental pre-compensation (None -> feature off,
+        # keeps the simulator/test path network-free).
+        self.weather = weather
+        self.precomp = compute_precompensation(None, cfg)
+        self._precomp_checked = 0.0
         controller = SleepController(cfg, setpoints=repo.latest_setpoints())
         self._attach_profiles(controller)
         self.cycle = ControlCycle(cfg, repo, controller)
@@ -213,6 +219,22 @@ class LiveDashboardDaemon:
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
 
+    def _refresh_precomp(self, now) -> None:
+        """Refresh the forecast-driven feed-forward bias (~every 30 min). No-op without a
+        weather source. The bias is applied to the thermal controller and surfaced."""
+        if self.weather is None:
+            return
+        loop_now = asyncio.get_event_loop().time()
+        if self.precomp.get("trend") is not None and (loop_now - self._precomp_checked) < 1800:
+            return
+        self._precomp_checked = loop_now
+        try:
+            fc = self.weather.overnight_forecast(from_dt=now)
+            self.precomp = compute_precompensation(fc, self.cfg)
+            self.cycle.controller.thermal.set_ambient_bias(self.precomp.get("bias_f", 0.0))
+        except Exception as exc:
+            self._log(f"precompensation refresh skipped: {exc}")
+
     def _record_thermal(self, frame, now) -> None:
         """Track the Hub's water-side device level vs target; warn when it stalls."""
         self.thermal.record(now, frame.target_level, frame.device_level)
@@ -247,7 +269,8 @@ class LiveDashboardDaemon:
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
                       "thermal_health": self.thermal.status().to_dict(),
-                      "preemption": self.cycle.controller.preemption_summary()},
+                      "preemption": self.cycle.controller.preemption_summary(),
+                      "precompensation": self.precomp},
         }
 
     # ------------------------------------------------------------------ cycles
@@ -259,6 +282,7 @@ class LiveDashboardDaemon:
         frame = self.client.read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
+        self._refresh_precomp(now)
         decision = None
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)

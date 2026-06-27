@@ -91,6 +91,12 @@ class Tunables:
     precursor_bed_warm_slope: float = 0.15     # °F/min bed warming trend
     precursor_resp_cv_rise: float = 0.08       # breathing-rate CV => losing regularity
     precursor_preempt_threshold: float = 0.40  # combined score that triggers a pre-empt
+    # Environmental pre-compensation: feed-forward bed bias from tonight's outdoor forecast so
+    # the bed is ahead of an overnight heat soak (hot sleeper) instead of chasing it.
+    precomp_hot_threshold_f: float = 62.0      # overnight mean outdoor above this => cool bias
+    precomp_cold_threshold_f: float = 40.0     # below this => warm bias
+    precomp_f_per_deg: float = 8.0             # °F outdoor per 1°F of bed bias
+    precomp_max_bias_f: float = 2.0            # cap the feed-forward bias
     # Accurate sleep-onset detection (asleep vs lying in bed awake). Onset is only declared
     # after a *persistent* run of multi-signal sleep evidence; onset is back-dated to its
     # start so latency reflects when you actually fell asleep.
