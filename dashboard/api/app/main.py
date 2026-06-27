@@ -127,6 +127,12 @@ def perfect_weights(repo=Depends(repo_dep), user: str = AuthDep):
     return services.perfect_weights_view(repo)
 
 
+@app.get("/wake/catalog")
+def wake_catalog(repo=Depends(repo_dep), user: str = AuthDep):
+    """Recent mid-sleep awakenings with the converging-signal vector that flagged each."""
+    return services.wake_catalog(repo)
+
+
 @app.get("/stream/status")
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie
