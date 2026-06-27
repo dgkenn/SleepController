@@ -498,10 +498,30 @@ def morning_readiness_summary(repo) -> dict:
     mode = current_mode(repo)
     hrvs = sorted(n.avg_hrv for n in nights[:-1] if n.avg_hrv is not None)
     baseline = hrvs[len(hrvs) // 2] if hrvs else None
-    out = morning_readiness(last, nights, mode, baseline_hrv=baseline).to_dict()
+    # Score against the user's revealed-preference personalized weights (evidence prior when thin).
+    from sleepctl.learning.perfect_weights import personalized_targets
+    tgt = personalized_targets(repo, mode)
+    out = morning_readiness(last, nights, mode, baseline_hrv=baseline, targets=tgt).to_dict()
     out["available"] = True
     out["date"] = last.date
     out["mode"] = mode.value
+    return out
+
+
+def perfect_weights_view(repo) -> dict:
+    """The user's personalized perfect-sleep weights vs the evidence prior, per mode — so the
+    objective the controller optimizes toward is visible and explainable."""
+    from sleepctl.benchmarks import NightMode, targets_for
+    from sleepctl.learning.perfect_weights import learn_perfect_weights
+    out = {}
+    for mode in NightMode:
+        prior = targets_for(mode).weights
+        learned = learn_perfect_weights(repo, mode)
+        out[mode.value] = {
+            "prior": {k: round(v, 4) for k, v in prior.items()},
+            "personalized": learned,
+            "is_personalized": learned != prior,
+        }
     return out
 
 

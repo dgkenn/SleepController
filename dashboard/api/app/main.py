@@ -121,6 +121,12 @@ def report_nightly(repo=Depends(repo_dep), user: str = AuthDep):
     return build_night_report(repo)
 
 
+@app.get("/perfect-weights")
+def perfect_weights(repo=Depends(repo_dep), user: str = AuthDep):
+    """The user's personalized perfect-sleep weights vs the evidence prior (per mode)."""
+    return services.perfect_weights_view(repo)
+
+
 @app.get("/stream/status")
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie
