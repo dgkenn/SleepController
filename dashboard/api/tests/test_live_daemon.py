@@ -118,6 +118,23 @@ def test_live_daemon_survives_transient_device_errors():
     assert rt["daemon_alive"] is True      # daemon stayed alive through the errors
 
 
+def test_live_telemetry_tick_refreshes_snapshot_without_actuating():
+    d, client, repo = _daemon()
+
+    n_before = client.level_set_count  # 0 at init (set() not called yet)
+
+    async def go():
+        await client.connect()
+        await d.telemetry_tick()        # fast refresh in isolation: no device writes
+    _run(go())
+
+    assert client.level_set_count == n_before  # telemetry tick sends nothing to the bed
+    rt = bridge.read_runtime_state(repo.conn)
+    assert rt["daemon_alive"] is True
+    assert rt["bed_temp_f"] is not None            # fresh sensor frame published
+    assert "data_age_s" in rt["extra"]             # freshness surfaced for the UI
+
+
 def test_live_control_tick_writes_real_frame():
     d, client, repo = _daemon()
 

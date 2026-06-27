@@ -358,6 +358,8 @@ def main() -> None:
                     help="control-cycle cadence (manual overrides apply faster)")
     ap.add_argument("--command-poll-seconds", type=float, default=1.0,
                     help="override-queue poll cadence (realtime temp control)")
+    ap.add_argument("--telemetry-seconds", type=float, default=15.0,
+                    help="fast decoupled sensor-telemetry refresh cadence (live mode)")
     ap.add_argument("--max-ticks", type=int, default=None)
     args = ap.parse_args()
 
@@ -407,6 +409,7 @@ def main() -> None:
                                  weather=weather)
     asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
                            command_poll_seconds=args.command_poll_seconds,
+                           telemetry_seconds=args.telemetry_seconds,
                            max_ticks=args.max_ticks))
 
 

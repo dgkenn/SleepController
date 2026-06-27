@@ -75,6 +75,15 @@ class Tunables:
     nap_inertia_buffer_min: int = 20 # advise this buffer before anything critical post-nap
     stale_data_seconds: int = 420  # ~7 min; refuse to act on data older than this
     wake_recovery_minutes: int = 20
+    # Live telemetry cadence. The dashboard snapshot (sensor + device health) is refreshed
+    # on a fast, decoupled tick so the UI never shows data older than this — independent of
+    # the slower control-decision cadence. Kept under the Eight Sleep cloud's own ~30s
+    # user-data update floor; polling faster catches each new cloud value sooner (the
+    # diminishing-returns floor is the cloud itself — true sub-30s telemetry needs Tier 1
+    # raw capture). The heavier device-data poll (water/online/priming) stays slower.
+    live_telemetry_seconds: float = 15.0
+    live_device_refresh_seconds: float = 60.0
+    telemetry_stale_seconds: float = 30.0  # flag the snapshot if sensor data exceeds this age
     # Thermal-response health check: confirm the bed is ACTUALLY heating/cooling using the
     # Hub's own water-derived `device_level` (NOT cover-side bed temp, which tracks ambient).
     # Verified live: under max cool the device level fell ~5 levels/min; under heat it climbed
