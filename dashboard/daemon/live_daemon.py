@@ -246,7 +246,8 @@ class LiveDashboardDaemon:
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
-                      "thermal_health": self.thermal.status().to_dict()},
+                      "thermal_health": self.thermal.status().to_dict(),
+                      "preemption": self.cycle.controller.preemption_summary()},
         }
 
     # ------------------------------------------------------------------ cycles

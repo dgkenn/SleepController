@@ -82,6 +82,15 @@ class Tunables:
     thermal_at_target_margin: int = 8       # |target-device| <= this => at setpoint (healthy)
     thermal_response_window_min: int = 8     # window over which to judge progress toward target
     thermal_min_progress_levels: int = 5     # min level movement toward target to count responsive
+    # Predictive awakening pre-emption: detect the slow pre-arousal DRIFT (trends over a short
+    # window) before a full awakening, to buy lead time for a gentle SETTLE_COOL nudge.
+    precursor_window_min: float = 4.0          # rolling window for trend fits
+    precursor_hr_creep_slope: float = 0.6      # bpm/min rise => autonomic arousal building
+    precursor_hrv_decay_slope: float = -0.8    # ms/min fall => sympathetic shift
+    precursor_move_rise_slope: float = 0.02    # /min rise in micro-movement => restlessness
+    precursor_bed_warm_slope: float = 0.15     # °F/min bed warming trend
+    precursor_resp_cv_rise: float = 0.08       # breathing-rate CV => losing regularity
+    precursor_preempt_threshold: float = 0.40  # combined score that triggers a pre-empt
     # Accurate sleep-onset detection (asleep vs lying in bed awake). Onset is only declared
     # after a *persistent* run of multi-signal sleep evidence; onset is back-dated to its
     # start so latency reflects when you actually fell asleep.
