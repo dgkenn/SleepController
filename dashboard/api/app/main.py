@@ -483,6 +483,17 @@ def experiment_create(body: ExperimentBody, repo=Depends(repo_dep), user: str = 
     return services.experiment_create(repo, body.model_dump())
 
 
+@app.get("/experiments/templates")
+def experiment_templates(repo=Depends(repo_dep), user: str = AuthDep):
+    """Curated one-tap n-of-1 templates, each with an a-priori power estimate."""
+    return services.experiment_templates(repo)
+
+
+@app.post("/experiments/from-template/{key}")
+def experiment_from_template(key: str, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.experiment_from_template(repo, key)
+
+
 @app.get("/experiments/{exp_id}/analyze")
 def experiment_analyze(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep):
     return services.experiment_analyze(repo, exp_id)
