@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS experiments (
     arm_b TEXT,
     metric TEXT,
     min_nights_per_arm INTEGER DEFAULT 5,
+    washout_nights INTEGER DEFAULT 1,
     status TEXT DEFAULT 'active',
     created TEXT,
     assignments TEXT,

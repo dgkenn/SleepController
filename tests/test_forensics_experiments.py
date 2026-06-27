@@ -6,7 +6,7 @@ import pytest
 
 from sleepctl.experiments import (analyze_experiment, assign_arm, create_experiment,
                                   get_experiment, list_experiments, stop_experiment)
-from sleepctl.forensics import awakening_forensics, forensics_summary
+from sleepctl.forensics import awakening_forensics, forensics_summary, suggest_experiment
 from sleepctl.models import ContextRecord
 from sleepctl.storage.repository import Repository
 
@@ -58,39 +58,77 @@ def test_forensics_empty(repo):
     assert awakening_forensics(repo) == []
 
 
+def test_hyperarousal_cause_without_thermal_trigger(repo):
+    # HR surge, cool bed/room, no context -> physiological hyperarousal (behavioral target).
+    for i in range(4):
+        _wake(repo, f"2026-06-25T23:{10+i:02d}:00", "2026-06-25", bed=66, room=66, hr=58)
+    _wake(repo, "2026-06-26T03:30:00", "2026-06-25", bed=66, room=66, hr=80)
+    events = awakening_forensics(repo, limit=10)
+    factors = {c["factor"] for c in events[0]["likely_causes"]}
+    assert "hyperarousal" in factors and "warm_bed" not in factors
+
+
+def test_suggest_experiment_from_warm_bed():
+    summary = {"n_awakenings": 5, "top_factors": [{"factor": "warm_bed", "count": 4},
+                                                  {"factor": "circadian", "count": 2}]}
+    spec = suggest_experiment(summary)
+    assert spec and spec["metric"] == "wake_events" and "neutral_f" in spec["arm_b"]["params"]
+    assert spec["washout_nights"] == 1
+
+
+def test_suggest_experiment_none_for_behavioral():
+    summary = {"n_awakenings": 3, "top_factors": [{"factor": "alcohol", "count": 3}]}
+    assert suggest_experiment(summary) is None
+
+
 # ---- n-of-1 experiments ---------------------------------------------------
-def test_create_and_balanced_assignment(repo):
+def test_schedule_has_washout_and_counterbalance(repo):
     exp = create_experiment(repo, {
-        "name": "cooler neutral", "metric": "wake_events", "min_nights_per_arm": 2,
+        "name": "cooler neutral", "metric": "wake_events", "min_nights_per_arm": 1,
+        "washout_nights": 1,
         "arm_a": {"label": "70F", "params": {"neutral_f": 70}},
         "arm_b": {"label": "68F", "params": {"neutral_f": 68}},
     })
-    arms = [assign_arm(repo, exp["id"], f"2026-06-{20+i:02d}") for i in range(4)]
-    assert arms.count("a") == 2 and arms.count("b") == 2   # balanced
-    # re-assigning the same date is idempotent
-    assert assign_arm(repo, exp["id"], "2026-06-20") == arms[0]
+    arms = [assign_arm(repo, exp["id"], f"2026-06-{20+i:02d}") for i in range(8)]
+    # one cycle = A, washout, B, washout; next cycle counterbalances (B first)
+    assert arms[:4] == ["a", "washout", "b", "washout"]
+    assert arms[4:8] == ["b", "washout", "a", "washout"]
+    assert assign_arm(repo, exp["id"], "2026-06-20") == "a"   # idempotent
 
 
-def test_analyze_picks_lower_wake_arm(repo):
+def test_paired_analysis_picks_lower_wake_arm(repo):
     exp = create_experiment(repo, {
-        "metric": "wake_events", "min_nights_per_arm": 2,
+        "metric": "wake_events", "min_nights_per_arm": 1, "washout_nights": 1,
         "arm_a": {"label": "control", "params": {}},
         "arm_b": {"label": "cooler", "params": {}},
     })
-    dates = [f"2026-06-{20+i:02d}" for i in range(6)]
+    dates = [f"2026-06-{20+i:02d}" for i in range(8)]   # 2 cycles
     for d in dates:
         assign_arm(repo, exp["id"], d)
     a = get_experiment(repo, exp["id"])["assignments"]
-    # control arm = 3 wakes/night, cooler arm = 0 wakes/night
-    for d, arm in a.items():
-        _night_metric(repo, d, wake_events=3 if arm == "a" else 0)
+    for d, slot in a.items():
+        if slot in ("a", "b"):
+            _night_metric(repo, d, wake_events=3 if slot == "a" else 0)
     res = analyze_experiment(repo, exp["id"])
-    assert res["enough_data"] is True
+    assert res["n_cycles"] == 2 and res["enough_data"] is True
     assert res["winner"] == "cooler" and res["diff"] < 0
+    assert res["ci"] is not None and res["ci"][1] < 0   # interval excludes zero
+    assert res["washout_nights"] == 1
 
     finished = stop_experiment(repo, exp["id"])
     assert finished["status"] == "complete" and finished["result"]["winner"] == "cooler"
     assert list_experiments(repo, status="complete")
+
+
+def test_one_cycle_is_not_enough(repo):
+    exp = create_experiment(repo, {"metric": "wake_events", "min_nights_per_arm": 1,
+                                   "washout_nights": 1})
+    for i in range(4):   # only one cycle
+        d = f"2026-07-{1+i:02d}"
+        slot = assign_arm(repo, exp["id"], d)
+        if slot in ("a", "b"):
+            _night_metric(repo, d, wake_events=2)
+    assert analyze_experiment(repo, exp["id"])["enough_data"] is False
 
 
 def test_unknown_metric_rejected(repo):

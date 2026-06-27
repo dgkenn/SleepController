@@ -526,7 +526,7 @@ def weather_forecast(repo) -> dict:
 
 
 def awakening_forensics_summary(repo, limit: int = 20) -> dict:
-    from sleepctl.forensics import awakening_forensics, forensics_summary
+    from sleepctl.forensics import awakening_forensics, forensics_summary, suggest_experiment
     profile = None
     try:
         from sleepctl.ml.wake_profile import build_wake_profile
@@ -534,7 +534,9 @@ def awakening_forensics_summary(repo, limit: int = 20) -> dict:
     except Exception:
         pass
     events = awakening_forensics(repo, limit=limit, profile=profile)
-    return {"events": events, "summary": forensics_summary(events)}
+    summary = forensics_summary(events)
+    return {"events": events, "summary": summary,
+            "suggested_experiment": suggest_experiment(summary)}
 
 
 def experiments_list(repo) -> dict:

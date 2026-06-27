@@ -65,10 +65,18 @@ def _causes(ev, ctx, bed_median, warm_threshold) -> List[dict]:
     if ts is not None and (3 * 60) <= (ts.hour * 60 + ts.minute) <= (5 * 60 + 30):
         causes.append({"factor": "circadian", "weight": 0.5,
                        "detail": "In the 3:00–5:30am circadian vulnerability window."})
+    # Second half of the night = after ~02:00 (rough; alcohol's rebound disruption lands here).
+    second_half = ts is not None and 2 <= ts.hour <= 7
     if ctx is not None:
         if getattr(ctx, "alcohol", None):
-            causes.append({"factor": "alcohol", "weight": 0.7,
-                           "detail": "Alcohol that evening — fragments second-half sleep."})
+            # Alcohol boosts SWS early then DISRUPTS the second half with increased WASO and
+            # no REM rebound (Chan 2013, DOI 10.1111/acer.12141) -> weight higher late.
+            if second_half:
+                causes.append({"factor": "alcohol", "weight": 0.95,
+                               "detail": "Alcohol — second-half rebound disruption (its strongest effect)."})
+            else:
+                causes.append({"factor": "alcohol", "weight": 0.55,
+                               "detail": "Alcohol that evening — fragments later sleep."})
         if getattr(ctx, "caffeine", None):
             causes.append({"factor": "caffeine", "weight": 0.5, "detail": "Caffeine logged."})
         stress = getattr(ctx, "stress", None)
@@ -77,12 +85,54 @@ def _causes(ev, ctx, bed_median, warm_threshold) -> List[dict]:
         if getattr(ctx, "late_night_work", None):
             causes.append({"factor": "late_work", "weight": 0.4,
                            "detail": "Late-night work before bed."})
+    # Physiological hyperarousal: an HR surge with NO environmental cause points at the
+    # hyperarousal mechanism of sleep-maintenance insomnia (Kaplan 2022,
+    # DOI 10.1016/j.brainresbull.2022.05.006) -> a behavioral (CBT-i) target, not thermal.
     hr = ev["heart_rate"]
+    thermal_cause = any(c["factor"] in ("warm_bed", "hot_room") for c in causes)
     if hr is not None and hr >= 70:
-        causes.append({"factor": "hr_surge", "weight": 0.4,
-                       "detail": f"Elevated heart rate ({hr:.0f} bpm) at the awakening."})
+        if not thermal_cause:
+            causes.append({"factor": "hyperarousal", "weight": 0.55,
+                           "detail": f"HR surge ({hr:.0f} bpm) without a thermal trigger — "
+                                     f"physiological hyperarousal; a CBT-i / wind-down target."})
+        else:
+            causes.append({"factor": "hr_surge", "weight": 0.4,
+                           "detail": f"Elevated heart rate ({hr:.0f} bpm) at the awakening."})
     causes.sort(key=lambda c: c["weight"], reverse=True)
     return causes
+
+
+# Map the dominant awakening cause to a one-click n-of-1 experiment (closes the loop:
+# forensics finding -> causal test -> feature-1 setpoint/settle direction).
+_EXPERIMENT_FOR = {
+    "warm_bed": {"name": "Cooler neutral for maintenance", "variable": "neutral_f",
+                 "metric": "wake_events", "arm_a": {"label": "70°F", "params": {"neutral_f": 70}},
+                 "arm_b": {"label": "68°F", "params": {"neutral_f": 68}},
+                 "hypothesis": "A cooler neutral reduces awakenings."},
+    "hot_room": {"name": "Stronger pre-compensation on warm nights", "variable": "precomp",
+                 "metric": "wake_events",
+                 "arm_a": {"label": "default", "params": {}},
+                 "arm_b": {"label": "+1°F cooler bias", "params": {"precomp_bias_f": -1}},
+                 "hypothesis": "Pre-cooling ahead of a warm room reduces awakenings."},
+    "circadian": {"name": "Earlier pre-cool lead in the nadir window", "variable": "lead_time",
+                  "metric": "wake_events",
+                  "arm_a": {"label": "default lead", "params": {}},
+                  "arm_b": {"label": "+4 min lead", "params": {"circadian_lead_bonus_min": 4}},
+                  "hypothesis": "Pre-cooling earlier before 3-5am reduces awakenings."},
+}
+
+
+def suggest_experiment(summary: dict) -> Optional[dict]:
+    """Propose an n-of-1 experiment from the dominant awakening cause, or None if the top
+    cause is behavioral (alcohol/stress/hyperarousal -> not a thermal A/B)."""
+    factors = summary.get("top_factors") or []
+    for f in factors:
+        spec = _EXPERIMENT_FOR.get(f["factor"])
+        if spec:
+            return {**spec, "min_nights_per_arm": 3, "washout_nights": 1,
+                    "reason": f"Your most common awakening cause is '{f['factor']}' "
+                              f"({f['count']}x) — test a fix."}
+    return None
 
 
 def awakening_forensics(repo, limit: int = 20, profile=None) -> List[dict]:
