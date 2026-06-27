@@ -51,11 +51,12 @@ class Readiness:
 
 
 def morning_readiness(last_night, recent_nights, mode: NightMode = NightMode.NORMAL,
-                      baseline_hrv: Optional[float] = None) -> Readiness:
+                      baseline_hrv: Optional[float] = None, targets=None) -> Readiness:
     debt = sleep_debt_min(recent_nights)
-    # Score the night against DEBT-AWARE benchmarks: when in debt a good recovery night is
-    # deep-heavy + long, so deep/total are rewarded more and onset/efficiency judged tighter.
-    psi = perfect_sleep_index(last_night, mode, debt_min=debt)
+    # Score the night against DEBT-AWARE benchmarks (and optionally the user's revealed-preference
+    # personalized weights via ``targets``): in debt a good recovery night is deep-heavy + long,
+    # so deep/total are rewarded more and onset judged tighter.
+    psi = perfect_sleep_index(last_night, mode, targets=targets, debt_min=debt)
     quality = float(psi["score"])
 
     tst = float(getattr(last_night, "total_sleep_min", 0) or 0)
