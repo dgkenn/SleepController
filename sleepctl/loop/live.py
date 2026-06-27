@@ -225,6 +225,11 @@ class SimulatedLiveClient:
             return base + self._timedelta(minutes=self._extra)
         return base
 
+    def device_status(self) -> dict:
+        # Simulator is always "healthy" — flagged so the UI can label it as simulated.
+        return {"online": True, "has_water": True, "priming": False,
+                "needs_priming": False, "temp_available": True, "simulated": True}
+
     @property
     def finished(self) -> bool:
         return self.source.exhausted and self._extra >= self._trailing

@@ -237,6 +237,13 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._log(f"precompensation refresh skipped: {exc}")
 
+    def _safe_device_status(self) -> dict:
+        fn = getattr(self.client, "device_status", None)
+        try:
+            return fn() if fn else {}
+        except Exception:
+            return {}
+
     def _record_thermal(self, frame, now) -> None:
         """Track the Hub's water-side device level vs target; warn when it stalls."""
         self.thermal.record(now, frame.target_level, frame.device_level)
@@ -272,7 +279,8 @@ class LiveDashboardDaemon:
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
                       "thermal_health": self.thermal.status().to_dict(),
                       "preemption": self.cycle.controller.preemption_summary(),
-                      "precompensation": self.precomp},
+                      "precompensation": self.precomp,
+                      "device": self._safe_device_status()},
         }
 
     # ------------------------------------------------------------------ cycles

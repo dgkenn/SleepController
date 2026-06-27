@@ -113,6 +113,24 @@ export interface NapPlan {
   advice: string;
 }
 
+export interface DeviceStatus {
+  online?: boolean | null;
+  has_water?: boolean | null;
+  priming?: boolean | null;
+  needs_priming?: boolean | null;
+  temp_available?: boolean | null;
+  simulated?: boolean;
+}
+
+export interface ThermalHealth {
+  state: 'ok' | 'ramping' | 'stalled' | 'unknown';
+  responding: boolean;
+  reason: string;
+  device_level: number | null;
+  target_level: number | null;
+  gap: number | null;
+}
+
 export interface TonightResponse {
   mode: 'auto' | 'manual' | 'view' | 'paused' | 'away';
   state: string;
@@ -123,6 +141,10 @@ export interface TonightResponse {
   session_mode: 'night' | 'induce' | 'nap';
   nap: NapPlan | null;
   nap_deadline: string | null;
+  device?: DeviceStatus | null;
+  thermal_health?: ThermalHealth | null;
+  stale?: boolean;
+  daemon_alive?: boolean;
   schedule: Schedule | null;
   recommendation: Recommendation;
   setpoint: SetpointInfo | null;

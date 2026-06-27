@@ -11,6 +11,7 @@ import SleepSessionCard from '@/components/SleepSessionCard';
 import SleepPlanCard from '@/components/SleepPlanCard';
 import WeatherCard from '@/components/WeatherCard';
 import PreemptionCard from '@/components/PreemptionCard';
+import DeviceStatusCard from '@/components/DeviceStatusCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
 import useSWR from 'swr';
@@ -198,6 +199,9 @@ function TonightContent() {
 
           {/* Predictive pre-emption — live awakening avoidance */}
           <PreemptionCard />
+
+          {/* Live device health (power / link / water / thermal-response) */}
+          {data && <DeviceStatusCard data={data} />}
 
           {/* Power / Away / Prime */}
           <PowerControls

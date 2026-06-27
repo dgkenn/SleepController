@@ -254,6 +254,14 @@ class DashboardDaemon:
                 "session_mode": self.session_mode,
                 "nap": self.nap_plan,
                 "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
+                # device health + the high-leverage feature state (simulator values here;
+                # the live daemon supplies real device readings).
+                "device": {"online": True, "has_water": True, "priming": False,
+                           "needs_priming": False, "temp_available": True, "simulated": True},
+                "thermal_health": {"state": "ok", "responding": True,
+                                   "reason": "simulator", "device_level": None,
+                                   "target_level": None, "gap": None},
+                "preemption": self.cycle.controller.preemption_summary(),
             },
         }
 
