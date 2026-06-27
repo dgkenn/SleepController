@@ -283,6 +283,12 @@ class SleepController:
         """Apply the learned signed maintenance settle nudge to the thermal controller."""
         self.thermal.set_settle_nudge(nudge_f)
 
+    def set_setpoints(self, profile) -> None:
+        """Swap the active SetpointProfile for the night (e.g. an experiment arm applied on top
+        of the learned setpoint). No-op on None so callers can pass through safely."""
+        if profile is not None:
+            self.thermal.profile = profile
+
     def set_wake_profile(self, profile=None, lead_profile=None) -> None:
         """Attach the learned per-user awakening phenotype + cooling lead-times to the
         wake-risk assessor (proactive sleep maintenance)."""

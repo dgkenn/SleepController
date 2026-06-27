@@ -68,6 +68,7 @@ class LiveDashboardDaemon:
         self._saw_sleep = False
         self._consec_errors = 0
         self._last_decision = None  # reused by the fast telemetry tick between control ticks
+        self.active_experiment = None  # tonight's applied n-of-1 arm, if any
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
@@ -121,6 +122,18 @@ class LiveDashboardDaemon:
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
         except Exception as exc:
             self._log(f"profile load skipped: {exc}")
+        # Apply tonight's active experiment arm on top of the learned setpoint (closes the
+        # n-of-1 loop: the assigned arm now actually drives the controller).
+        try:
+            from sleepctl.experiments import apply_experiment_arm
+            base = self.repo.latest_setpoints() or self.cfg.default_setpoints()
+            prof, arm = apply_experiment_arm(self.repo, datetime.now().date().isoformat(), base)
+            controller.set_setpoints(prof)
+            self.active_experiment = arm
+            if arm and arm.get("applied"):
+                self._log(f"experiment '{arm.get('name')}' arm {arm.get('arm')} applied tonight")
+        except Exception as exc:
+            self._log(f"experiment-arm apply skipped: {exc}")
 
     def _apply_night_type(self, hint: str) -> None:
         try:
@@ -283,6 +296,7 @@ class LiveDashboardDaemon:
                       "preemption": self.cycle.controller.preemption_summary(),
                       "precompensation": self.precomp,
                       "device": self._safe_device_status(),
+                      "experiment": self.active_experiment,
                       "device_error": error,
                       "data_age_s": round(frame.data_age_seconds, 1)
                       if frame is not None and frame.data_age_seconds is not None else None,

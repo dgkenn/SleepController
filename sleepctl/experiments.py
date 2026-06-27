@@ -190,6 +190,50 @@ def analyze_experiment(repo, exp_id: int) -> Optional[dict]:
             "washout_nights": washout, "recommendation": rec}
 
 
+# Arm params that map to a learnable SetpointProfile knob (additive °F deltas). These are the
+# thermal-trajectory experiments the controller can actually run live. Behavioral params
+# (variability_cap_f, induction_minutes_delta, am_warm_nudge_f, anchor_bedtime) are scheduled +
+# analyzed but their application needs controller-config support (a follow-up).
+_ARM_SETPOINT_DELTAS = {
+    "deep_bias_delta_f": "deep_bias_f",
+    "neutral_delta_f": "neutral_f",
+    "rem_warm_offset_delta_f": "rem_warm_offset_f",
+    "wake_ramp_delta_f": "wake_ramp_f",
+}
+
+
+def apply_experiment_arm(repo, date: str, profile):
+    """Apply the active experiment's assigned arm to tonight's SetpointProfile (CLOSES the n-of-1
+    loop: arms were scheduled but never applied). Returns ``(profile_for_tonight, arm_info)``.
+
+    The arm delta rides on top of the current learned setpoint and is NOT persisted as a new
+    version — it's a transient per-night override so A vs B is compared against the same base.
+    On washout / no active experiment, the profile is returned unchanged.
+    """
+    if profile is None:
+        return profile, None
+    active = list_experiments(repo, status="active")
+    if not active:
+        return profile, None
+    exp = active[0]  # one active thermal experiment at a time
+    arm = assign_arm(repo, exp["id"], date)
+    info = {"exp_id": exp["id"], "name": exp.get("name"), "arm": arm, "applied": False}
+    if arm not in ("a", "b"):
+        return profile, info
+    armspec = exp["arm_a"] if arm == "a" else exp["arm_b"]
+    params = (armspec or {}).get("params", {}) or {}
+    from dataclasses import replace
+
+    from sleepctl.ml.actions import KNOB_BOUNDS, _clamp
+    knobs = {}
+    for pkey, knob in _ARM_SETPOINT_DELTAS.items():
+        if pkey in params:
+            lo, hi = KNOB_BOUNDS[knob]
+            knobs[knob] = _clamp(getattr(profile, knob) + float(params[pkey]), lo, hi)
+    info.update({"label": (armspec or {}).get("label"), "applied": bool(knobs), "params": params})
+    return (replace(profile, **knobs) if knobs else profile), info
+
+
 def stop_experiment(repo, exp_id: int, complete: bool = True) -> Optional[dict]:
     exp = get_experiment(repo, exp_id)
     if not exp:
