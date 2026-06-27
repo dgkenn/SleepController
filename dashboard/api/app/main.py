@@ -428,3 +428,54 @@ def ack_alert(alert_id: int, repo=Depends(repo_dep), user: str = AuthDep):
     repo.conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
     repo.conn.commit()
     return {"ok": True}
+
+
+# ---- High-leverage features: pre-emption, readiness, weather, forensics, n-of-1 ----
+@app.get("/predictive/preemption")
+def predictive_preemption(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.preemption_status(repo)
+
+
+@app.get("/morning/readiness")
+def morning_readiness(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.morning_readiness_summary(repo)
+
+
+@app.get("/weather/forecast")
+def weather_forecast(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.weather_forecast(repo)
+
+
+@app.get("/forensics/awakenings")
+def forensics_awakenings(limit: int = 20, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.awakening_forensics_summary(repo, limit)
+
+
+class ExperimentBody(BaseModel):
+    name: str = "experiment"
+    hypothesis: str = ""
+    variable: str = ""
+    metric: str = "wake_events"
+    min_nights_per_arm: int = 5
+    arm_a: dict = {"label": "control", "params": {}}
+    arm_b: dict = {"label": "treatment", "params": {}}
+
+
+@app.get("/experiments")
+def experiments_list(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.experiments_list(repo)
+
+
+@app.post("/experiments")
+def experiment_create(body: ExperimentBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.experiment_create(repo, body.model_dump())
+
+
+@app.get("/experiments/{exp_id}/analyze")
+def experiment_analyze(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.experiment_analyze(repo, exp_id)
+
+
+@app.post("/experiments/{exp_id}/stop")
+def experiment_stop(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.experiment_stop(repo, exp_id)

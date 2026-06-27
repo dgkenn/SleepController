@@ -128,3 +128,31 @@ def test_checkin_status_and_submit(auth_client):
     assert "perfect_sleep" in body and "objective" in body and "insights" in body
     # after submitting, the check-in is no longer due
     assert auth_client.get("/checkin/status").json()["due"] is False
+
+
+def test_predictive_readiness_forensics_experiments(auth_client):
+    assert "preempting" in auth_client.get("/predictive/preemption").json()
+    assert "available" in auth_client.get("/morning/readiness").json()
+    f = auth_client.get("/forensics/awakenings").json()
+    assert "events" in f and "summary" in f
+    # n-of-1 lifecycle
+    created = auth_client.post("/experiments", json={
+        "name": "cooler", "metric": "wake_events", "min_nights_per_arm": 1,
+        "arm_a": {"label": "70F", "params": {}}, "arm_b": {"label": "68F", "params": {}}}).json()
+    eid = created["id"]
+    assert auth_client.get("/experiments").json()["experiments"]
+    assert "analysis" in auth_client.get(f"/experiments/{eid}/analyze").json()
+    assert auth_client.post(f"/experiments/{eid}/stop").json()["status"] == "complete"
+
+
+def test_weather_forecast_uses_daemon_state(auth_client):
+    from app import bridge
+    from app.db import get_repo
+    repo = get_repo()
+    try:
+        bridge.write_runtime_state(repo.conn, {"state": "IDLE", "extra": {"precompensation": {
+            "bias_f": -1.0, "trend": "warming", "pre_cool": True, "reason": "warm night"}}})
+    finally:
+        repo.close()
+    w = auth_client.get("/weather/forecast").json()
+    assert w["bias_f"] == -1.0 and w["source"] == "daemon"

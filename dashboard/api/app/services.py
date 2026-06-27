@@ -449,3 +449,113 @@ def data_health(repo) -> dict:
         "pending_commands": repo.conn.execute(
             "SELECT COUNT(*) c FROM commands WHERE status='pending'").fetchone()["c"],
     }
+
+
+# ======================================================================================
+# High-leverage features: predictive pre-emption, readiness, weather pre-comp, forensics,
+# n-of-1 experiments. Each reads engine logic + the daemon runtime_state.
+# ======================================================================================
+
+def _hhmm_min(m: int) -> str:
+    return f"{int(m) // 60:02d}:{int(m) % 60:02d}"
+
+
+def preemption_status(repo) -> dict:
+    """Live predictive-pre-emption state for the Tonight page."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    pre = extra.get("preemption") or {}
+    recurring = []
+    efficacy = {}
+    try:
+        from sleepctl.ml.wake_profile import build_wake_profile
+        recurring = [_hhmm_min(m) for m in build_wake_profile(repo).awakening_minutes]
+    except Exception:
+        pass
+    try:
+        efficacy = repo.precool_efficacy()
+    except Exception:
+        pass
+    return {
+        "preempting": bool(pre.get("preempting", False)),
+        "wake_risk": pre.get("wake_risk"),
+        "risk_reasons": pre.get("risk_reasons", []),
+        "precursor_score": pre.get("precursor_score"),
+        "precursor_reasons": pre.get("precursor_reasons", []),
+        "recurring_wake_times": recurring,
+        "precool_efficacy": efficacy,
+        "stale": rt.get("stale", True),
+    }
+
+
+def morning_readiness_summary(repo) -> dict:
+    """Composite morning readiness / clinical-safety score for the Home page."""
+    from sleepctl.readiness import morning_readiness
+    nights = repo.recent_nights(14)
+    if not nights:
+        return {"available": False}
+    last = nights[-1]
+    mode = current_mode(repo)
+    hrvs = sorted(n.avg_hrv for n in nights[:-1] if n.avg_hrv is not None)
+    baseline = hrvs[len(hrvs) // 2] if hrvs else None
+    out = morning_readiness(last, nights, mode, baseline_hrv=baseline).to_dict()
+    out["available"] = True
+    out["date"] = last.date
+    out["mode"] = mode.value
+    return out
+
+
+def weather_forecast(repo) -> dict:
+    """Environmental pre-compensation: overnight forecast + feed-forward bias."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    pc = (rt.get("extra") or {}).get("precompensation")
+    if pc and pc.get("trend") is not None:
+        return {"source": "daemon", **pc}
+    try:
+        from sleepctl.adapters.weather import OpenMeteoWeather
+        from sleepctl.precompensation import compute_precompensation
+        w = OpenMeteoWeather()
+        fc = w.overnight_forecast()
+        out = compute_precompensation(fc, CFG)
+        out["forecast"] = fc
+        out["source"] = "on_demand"
+        return out
+    except Exception:
+        return {"bias_f": 0.0, "pre_cool": False, "trend": None,
+                "reason": "forecast unavailable", "source": "error"}
+
+
+def awakening_forensics_summary(repo, limit: int = 20) -> dict:
+    from sleepctl.forensics import awakening_forensics, forensics_summary
+    profile = None
+    try:
+        from sleepctl.ml.wake_profile import build_wake_profile
+        profile = build_wake_profile(repo)
+    except Exception:
+        pass
+    events = awakening_forensics(repo, limit=limit, profile=profile)
+    return {"events": events, "summary": forensics_summary(events)}
+
+
+def experiments_list(repo) -> dict:
+    from sleepctl.experiments import list_experiments
+    return {"experiments": list_experiments(repo)}
+
+
+def experiment_create(repo, spec: dict) -> dict:
+    from sleepctl.experiments import create_experiment
+    return create_experiment(repo, spec)
+
+
+def experiment_analyze(repo, exp_id: int) -> dict:
+    from sleepctl.experiments import analyze_experiment, get_experiment
+    exp = get_experiment(repo, exp_id)
+    if exp is None:
+        return {"error": "not found"}
+    return {"experiment": exp, "analysis": analyze_experiment(repo, exp_id)}
+
+
+def experiment_stop(repo, exp_id: int) -> dict:
+    from sleepctl.experiments import stop_experiment
+    out = stop_experiment(repo, exp_id)
+    return out or {"error": "not found"}
