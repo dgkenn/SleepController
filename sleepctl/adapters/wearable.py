@@ -60,6 +60,26 @@ class SimulatedWearableSource(RealtimeWearableSource):
         return self._fixed
 
 
+def fuse_sample(frame: SensorFrame, sample, max_age_s: float = 30.0) -> bool:
+    """Overlay a fresh wearable ``sample`` onto ``frame`` in place (HR / movement / HRV +
+    freshness). Returns True if the overlay happened. Shared by ``FusedPodSensorSource`` and the
+    live daemon so both fuse identically. Unknown/stale sample -> no change, returns False."""
+    if sample is None:
+        return False
+    age = getattr(sample, "age_seconds", None)
+    if age is None or age > max_age_s:  # only trust a sample we know is fresh enough
+        return False
+    if sample.heart_rate is not None:
+        frame.heart_rate = sample.heart_rate
+    if sample.movement is not None:
+        frame.movement = sample.movement
+    if sample.hrv is not None:
+        frame.hrv = sample.hrv
+    prior = frame.data_age_seconds
+    frame.data_age_seconds = age if prior is None else min(prior, age)
+    return True
+
+
 class FusedPodSensorSource(PodSensorSource):
     """Drop-in ``PodSensorSource`` that overlays a fresher wearable sample onto the Pod frame.
 
@@ -76,28 +96,11 @@ class FusedPodSensorSource(PodSensorSource):
 
     def read_frame(self) -> SensorFrame:
         frame = self.pod.read_frame()
-        self.last_fused = False
-        sample = None
         try:
             sample = self.wearable.read_sample()
         except Exception:
             sample = None
-        if sample is None:
-            return frame
-        age = sample.age_seconds
-        # Only trust a sample we know is fresh enough; unknown age -> don't override.
-        if age is None or age > self.max_sample_age_s:
-            return frame
-        if sample.heart_rate is not None:
-            frame.heart_rate = sample.heart_rate
-        if sample.movement is not None:
-            frame.movement = sample.movement
-        if sample.hrv is not None:
-            frame.hrv = sample.hrv
-        # The fused physiology is as fresh as the wearable (sub-minute), not the ~60s Pod data.
-        prior = frame.data_age_seconds
-        frame.data_age_seconds = age if prior is None else min(prior, age)
-        self.last_fused = True
+        self.last_fused = fuse_sample(frame, sample, self.max_sample_age_s)
         return frame
 
     # Non-frame reads delegate to the wrapped Pod source (it owns night summaries + caps).
