@@ -456,7 +456,8 @@ class ExperimentBody(BaseModel):
     hypothesis: str = ""
     variable: str = ""
     metric: str = "wake_events"
-    min_nights_per_arm: int = 5
+    min_nights_per_arm: int = 3
+    washout_nights: int = 1
     arm_a: dict = {"label": "control", "params": {}}
     arm_b: dict = {"label": "treatment", "params": {}}
 

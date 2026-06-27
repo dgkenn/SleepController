@@ -1,7 +1,8 @@
 'use client';
 
+import { useState } from 'react';
 import useSWR from 'swr';
-import { ForensicsResponse, fetcher } from '@/lib/api';
+import { ForensicsResponse, api, fetcher } from '@/lib/api';
 
 function fmtTemp(f: number | null | undefined): string {
   return f != null ? `${f.toFixed(1)}°F` : '—';
@@ -12,10 +13,35 @@ export default function ForensicsCard() {
   const { data } = useSWR<ForensicsResponse>('/api/forensics/awakenings', fetcher, {
     refreshInterval: 120000,
   });
+  const [created, setCreated] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   if (!data) return null;
 
   const { events, summary } = data;
+  const suggestion = data.suggested_experiment;
+
+  const createSuggested = async () => {
+    if (!suggestion) return;
+    setBusy(true);
+    try {
+      await api.createExperiment({
+        name: suggestion.name,
+        hypothesis: suggestion.hypothesis,
+        variable: suggestion.variable,
+        metric: suggestion.metric,
+        min_nights_per_arm: suggestion.min_nights_per_arm,
+        washout_nights: suggestion.washout_nights,
+        arm_a: suggestion.arm_a,
+        arm_b: suggestion.arm_b,
+      });
+      setCreated(true);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
 
   return (
     <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
@@ -42,6 +68,22 @@ export default function ForensicsCard() {
               </span>
             ))}
           </div>
+        </div>
+      )}
+
+      {suggestion && (
+        <div className="bg-brand/10 border border-brand/30 rounded-xl p-3 space-y-2">
+          <p className="text-[11px] text-gray-300 leading-relaxed">
+            <span className="text-brand font-medium">Suggested test:</span> {suggestion.reason}{' '}
+            {suggestion.arm_a.label} vs {suggestion.arm_b.label} on {suggestion.metric}.
+          </p>
+          <button
+            onClick={createSuggested}
+            disabled={busy || created}
+            className="text-xs px-3 py-1.5 rounded-lg bg-brand text-white font-medium disabled:opacity-50"
+          >
+            {created ? 'Experiment created ✓' : busy ? 'Creating…' : 'Run as n-of-1 experiment'}
+          </button>
         </div>
       )}
 

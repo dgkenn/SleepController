@@ -345,12 +345,25 @@ export interface AwakeningEvent {
   top_cause: string;
 }
 
+export interface SuggestedExperiment {
+  name: string;
+  hypothesis: string;
+  variable: string;
+  metric: string;
+  min_nights_per_arm: number;
+  washout_nights: number;
+  arm_a: { label: string; params: Record<string, unknown> };
+  arm_b: { label: string; params: Record<string, unknown> };
+  reason: string;
+}
+
 export interface ForensicsResponse {
   events: AwakeningEvent[];
   summary: {
     n_awakenings: number;
     top_factors: Array<{ factor: string; count: number }>;
   };
+  suggested_experiment?: SuggestedExperiment | null;
 }
 
 export interface Analysis {
@@ -362,6 +375,11 @@ export interface Analysis {
   effect_size: number | null;
   winner: string | null;
   enough_data: boolean;
+  // paired multi-cycle analysis (optional; older results may omit)
+  n_cycles?: number;
+  cycle_diffs?: number[];
+  ci?: [number, number] | null;
+  washout_nights?: number;
   recommendation: string;
 }
 
@@ -386,6 +404,7 @@ export interface CreateExperimentBody {
   variable: string;
   metric: string;
   min_nights_per_arm: number;
+  washout_nights?: number;
   arm_a: { label: string; params: Record<string, unknown> };
   arm_b: { label: string; params: Record<string, unknown> };
 }
