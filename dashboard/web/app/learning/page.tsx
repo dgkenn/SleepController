@@ -7,6 +7,7 @@ import RecommendationCard from '@/components/RecommendationCard';
 import MaintenanceCard from '@/components/MaintenanceCard';
 import ForensicsCard from '@/components/ForensicsCard';
 import ExperimentsCard from '@/components/ExperimentsCard';
+import TargetsCard from '@/components/TargetsCard';
 import useSWR from 'swr';
 import { MLOverview, fetcher } from '@/lib/api';
 
@@ -48,6 +49,9 @@ function LearningContent() {
         </div>
 
         <div className="px-4 space-y-4">
+          {/* What "perfect sleep" means tonight — targets to hit + personalized weights */}
+          <TargetsCard />
+
           {/* Sleep maintenance: prevent + handle awakenings */}
           <MaintenanceCard />
 
