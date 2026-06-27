@@ -5,6 +5,8 @@ import BottomNav from '@/components/BottomNav';
 import ConfidenceMeter from '@/components/ConfidenceMeter';
 import RecommendationCard from '@/components/RecommendationCard';
 import MaintenanceCard from '@/components/MaintenanceCard';
+import ForensicsCard from '@/components/ForensicsCard';
+import ExperimentsCard from '@/components/ExperimentsCard';
 import useSWR from 'swr';
 import { MLOverview, fetcher } from '@/lib/api';
 
@@ -48,6 +50,12 @@ function LearningContent() {
         <div className="px-4 space-y-4">
           {/* Sleep maintenance: prevent + handle awakenings */}
           <MaintenanceCard />
+
+          {/* Awakening forensics: root-cause attribution */}
+          <ForensicsCard />
+
+          {/* Self-experiments: A/B testing sleep levers */}
+          <ExperimentsCard />
 
           {/* Model confidence */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">
