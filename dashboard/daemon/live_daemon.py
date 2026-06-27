@@ -112,9 +112,11 @@ class LiveDashboardDaemon:
     def _attach_profiles(self, controller: SleepController) -> None:
         try:
             from sleepctl.learning.lead_time import build_lead_time_profile
+            from sleepctl.learning.settle import learn_settle_nudge
             from sleepctl.ml.wake_profile import build_wake_profile
             controller.set_wake_profile(build_wake_profile(self.repo),
                                         lead_profile=build_lead_time_profile(self.repo))
+            controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
         except Exception as exc:
             self._log(f"profile load skipped: {exc}")
 

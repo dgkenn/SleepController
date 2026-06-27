@@ -279,6 +279,10 @@ class SleepController:
             "precursor_signals": pre.signals if pre else {},
         }
 
+    def set_settle_nudge(self, nudge_f: float) -> None:
+        """Apply the learned signed maintenance settle nudge to the thermal controller."""
+        self.thermal.set_settle_nudge(nudge_f)
+
     def set_wake_profile(self, profile=None, lead_profile=None) -> None:
         """Attach the learned per-user awakening phenotype + cooling lead-times to the
         wake-risk assessor (proactive sleep maintenance)."""

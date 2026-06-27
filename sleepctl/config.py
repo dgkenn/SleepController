@@ -91,6 +91,24 @@ class Tunables:
     precursor_bed_warm_slope: float = 0.15     # °F/min bed warming trend
     precursor_resp_cv_rise: float = 0.08       # breathing-rate CV => losing regularity
     precursor_preempt_threshold: float = 0.40  # combined score that triggers a pre-empt
+    # Evidence (Busek 2005, PMID 16163654): a rise in HRV spectral energy is the EARLIEST,
+    # strongest precursor of cortical arousal -> weight HRV decay highest, HR/movement next.
+    precursor_w_hrv: float = 0.26
+    precursor_w_hr: float = 0.18
+    precursor_w_move: float = 0.20
+    precursor_w_bed: float = 0.16
+    precursor_w_resp: float = 0.10
+    # Sleep-instability (CAP-rate proxy): density of micro-movement bursts in the window.
+    # In unstable windows (Zucconi 1995, PMID 7797629) awakenings cluster, so pre-empt sooner.
+    precursor_instability_move: float = 0.25   # movement above this = a burst
+    precursor_instability_gain: float = 0.12   # lower the pre-empt threshold by up to this
+    # Maintenance "settle" nudge: a SMALL, comfort-bounded thermal move at a vulnerable moment.
+    # SIGNED + learnable per phenotype: cutaneous warming can suppress awakenings (Raymann 2008,
+    # DOI 10.1093/brain/awm315) yet over-cooling drives alertness (Fronczek 2008,
+    # DOI 10.1093/sleep/31.2.233) -> the controller learns the sign/magnitude that prevents
+    # THIS user's awakenings. Default cool (hot sleeper), bounded by the cap.
+    maintenance_settle_nudge_f: float = -1.0   # <0 cooler, >0 warmer (relative to neutral)
+    maintenance_settle_cap_f: float = 2.0
     # Environmental pre-compensation: feed-forward bed bias from tonight's outdoor forecast so
     # the bed is ahead of an overnight heat soak (hot sleeper) instead of chasing it.
     precomp_hot_threshold_f: float = 62.0      # overnight mean outdoor above this => cool bias

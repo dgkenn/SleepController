@@ -75,6 +75,14 @@ class PrecursorDetector:
         self.resp_cv_rise = getattr(t, "precursor_resp_cv_rise", 0.08)        # CV threshold
         self.move_unreliable = getattr(t, "onset_movement_unreliable", 0.45)
         self.preempt_threshold = getattr(t, "precursor_preempt_threshold", 0.40)
+        # evidence-weighted signal contributions (HRV is the earliest/strongest precursor)
+        self.w_hrv = getattr(t, "precursor_w_hrv", 0.26)
+        self.w_hr = getattr(t, "precursor_w_hr", 0.18)
+        self.w_move = getattr(t, "precursor_w_move", 0.20)
+        self.w_bed = getattr(t, "precursor_w_bed", 0.16)
+        self.w_resp = getattr(t, "precursor_w_resp", 0.10)
+        self.instability_move = getattr(t, "precursor_instability_move", 0.25)
+        self.instability_gain = getattr(t, "precursor_instability_gain", 0.12)
 
     def detect(
         self,
@@ -97,32 +105,32 @@ class PrecursorDetector:
         cur_move = frame.movement if frame.movement is not None else 0.0
         autonomic_ok = cur_move < self.move_unreliable
 
+        hrv_slope = _slope_per_min(window, "hrv")
+        if autonomic_ok and hrv_slope is not None:
+            signals["hrv_slope_ms_min"] = round(hrv_slope, 2)
+            if hrv_slope <= self.hrv_decay_slope:        # earliest/strongest precursor
+                score += self.w_hrv
+                reasons.append("hrv_decay")
+
         hr_slope = _slope_per_min(window, "heart_rate")
         if autonomic_ok and hr_slope is not None:
             signals["hr_slope_bpm_min"] = round(hr_slope, 2)
             if hr_slope >= self.hr_creep_slope:
-                score += 0.22
+                score += self.w_hr
                 reasons.append("hr_creep")
-
-        hrv_slope = _slope_per_min(window, "hrv")
-        if autonomic_ok and hrv_slope is not None:
-            signals["hrv_slope_ms_min"] = round(hrv_slope, 2)
-            if hrv_slope <= self.hrv_decay_slope:
-                score += 0.18
-                reasons.append("hrv_decay")
 
         move_slope = _slope_per_min(window, "movement")
         if move_slope is not None:
             signals["move_slope_per_min"] = round(move_slope, 3)
             if move_slope >= self.move_rise_slope:
-                score += 0.22
+                score += self.w_move
                 reasons.append("restlessness_building")
 
         bed_slope = _slope_per_min(window, "bed_temp_f")
         if bed_slope is not None:
             signals["bed_slope_f_min"] = round(bed_slope, 3)
             if bed_slope >= self.bed_warm_slope:
-                score += 0.16
+                score += self.w_bed
                 reasons.append("bed_warming")
 
         if autonomic_ok:
@@ -130,11 +138,20 @@ class PrecursorDetector:
             if rr_cv is not None:
                 signals["resp_cv"] = round(rr_cv, 3)
                 if rr_cv >= self.resp_cv_rise:
-                    score += 0.12
+                    score += self.w_resp
                     reasons.append("resp_irregular")
+
+        # Sleep-instability index (CAP-rate proxy): fraction of recent frames that are
+        # movement bursts. In unstable windows awakenings cluster, so lower the pre-empt
+        # threshold (pre-empt sooner).
+        moves = [f.movement for f in window if f.movement is not None]
+        instability = (sum(1 for m in moves if m >= self.instability_move) / len(moves)
+                       if moves else 0.0)
+        signals["instability"] = round(instability, 2)
+        threshold = self.preempt_threshold - self.instability_gain * instability
 
         score = min(1.0, score)
         # Never pre-empt out of deep sleep (protect slow-wave); require real evidence.
-        should = score >= self.preempt_threshold and frame.stage is not SleepStage.DEEP
+        should = score >= threshold and frame.stage is not SleepStage.DEEP
         return PrecursorAssessment(score=score, should_preempt=should,
                                    reasons=reasons, signals=signals)
