@@ -325,6 +325,18 @@ class EightSleepClient:
     def get_current_level(self) -> int:  # pragma: no cover - requires live device
         return int(getattr(self._user, "heating_level", 0) or 0)
 
+    def device_status(self) -> dict:  # pragma: no cover - requires live device
+        """Live device health for the dashboard (online, water, priming state)."""
+        d = _safe(lambda: self._eight.device_data, {}) or {}
+        return {
+            "online": d.get("online"),
+            "has_water": d.get("hasWater"),
+            "priming": d.get("priming"),
+            "needs_priming": d.get("needsPriming"),
+            "temp_available": d.get("isTemperatureAvailable"),
+            "simulated": False,
+        }
+
     # ----------------------------------------------------- Eight Sleep app parity
     # These mirror the controls exposed by the official Eight Sleep app so the
     # dashboard offers the same functionality (power, away, prime, fine adjust).
