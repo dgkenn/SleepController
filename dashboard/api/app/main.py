@@ -114,6 +114,13 @@ def status(repo=Depends(repo_dep), user: str = AuthDep):
     return services.build_status(repo)
 
 
+@app.get("/report/nightly")
+def report_nightly(repo=Depends(repo_dep), user: str = AuthDep):
+    """Explainable nightly intelligence report (what happened / what I did + why / learned)."""
+    from sleepctl.night_report import build_night_report
+    return build_night_report(repo)
+
+
 @app.get("/stream/status")
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie
