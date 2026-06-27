@@ -164,13 +164,20 @@ class EightSleepClient:
             raise RuntimeError("No Eight Sleep user/side available")
         return eight.users[uid]
 
-    async def update(self) -> None:  # pragma: no cover - requires live device
+    async def update(self, user: bool = True, device: bool = True) -> None:  # pragma: no cover
         # Device data MUST refresh before user data: pyEight's update_user_data() reads
         # device_data (e.g. target_heating_level), so a stale/empty device payload makes it
         # raise IndexError. Refreshing the device first (and tolerating a transient miss)
         # keeps the live daemon from dying on a single bad cloud response.
-        await self._eight.update_device_data()
-        await self._eight.update_user_data()
+        #
+        # Fast telemetry path: the daemon refreshes user data (HR/HRV/stage/level) every
+        # ~15s but the heavier device-data poll (water/online/priming) only ~60s. A user-only
+        # refresh reuses the cached device_data — but if it was never fetched yet we must pull
+        # it once or update_user_data() raises.
+        if device or not (self._eight.device_data or None):
+            await self._eight.update_device_data()
+        if user:
+            await self._eight.update_user_data()
         self._last_update = datetime.now()
 
     async def close(self) -> None:  # pragma: no cover - requires live device

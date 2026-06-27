@@ -67,6 +67,7 @@ class LiveDashboardDaemon:
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
         self._consec_errors = 0
+        self._last_decision = None  # reused by the fast telemetry tick between control ticks
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
@@ -282,7 +283,12 @@ class LiveDashboardDaemon:
                       "preemption": self.cycle.controller.preemption_summary(),
                       "precompensation": self.precomp,
                       "device": self._safe_device_status(),
-                      "device_error": error},
+                      "device_error": error,
+                      "data_age_s": round(frame.data_age_seconds, 1)
+                      if frame is not None and frame.data_age_seconds is not None else None,
+                      "telemetry_stale": bool(
+                          frame is not None and frame.data_age_seconds is not None
+                          and frame.data_age_seconds > self.cfg.tunables.telemetry_stale_seconds)},
         }
 
     # ------------------------------------------------------------------ cycles
@@ -310,12 +316,14 @@ class LiveDashboardDaemon:
             self.cycle.log(frame, decision, now)
             await self._maybe_close_out(decision, now)
             self._prev_state = decision.state
+        self._last_decision = decision
         bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
 
-    async def command_tick(self) -> None:
-        """Fast path for realtime control: apply queued overrides and snapshot now."""
+    async def command_tick(self) -> bool:
+        """Fast path for realtime control: apply queued overrides and snapshot now.
+        Returns True if a command was applied (the loop then resets its telemetry timer)."""
         if not await self._apply_commands():
-            return
+            return False
         await self.client.update()
         frame = self.client.read_frame()
         now = self.client.now()
@@ -325,7 +333,21 @@ class LiveDashboardDaemon:
             decision = self.cycle.decide(frame, self.context, now)
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
+        self._last_decision = decision
         bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
+        return True
+
+    async def telemetry_tick(self) -> None:
+        """Fast, read-only telemetry refresh decoupled from control decisions: pulls fresh
+        user data (HR/HRV/stage/level — the cloud's ~30s floor) WITHOUT the heavier device
+        poll or any actuation, and re-publishes the snapshot reusing the last control
+        decision. Keeps the dashboard's sensor data under ``live_telemetry_seconds`` old
+        without changing control cadence or sending any device command."""
+        await self.client.update(device=False)
+        frame = self.client.read_frame()
+        now = self.client.now()
+        self._record_thermal(frame, now)
+        bridge.write_runtime_state(self.repo.conn, self._snapshot(self._last_decision, frame))
 
     async def _maybe_close_out(self, decision, now) -> None:
         if decision.state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY,
@@ -346,25 +368,37 @@ class LiveDashboardDaemon:
             self._saw_sleep = False
 
     async def run(self, poll_seconds: float = 60.0, command_poll_seconds: float = 2.0,
+                  telemetry_seconds: Optional[float] = None,
                   dry_run: Optional[bool] = None, max_ticks: Optional[int] = None,
                   shutdown_event: Optional[asyncio.Event] = None) -> None:
         if dry_run is not None:
             self.dry_run = dry_run
+        if telemetry_seconds is None:
+            telemetry_seconds = self.cfg.tunables.live_telemetry_seconds
         await self.client.connect()
-        self._log(f"sleepctl dashboard LIVE daemon started (dry_run={self.dry_run})."
+        self._log(f"sleepctl dashboard LIVE daemon started (dry_run={self.dry_run}, "
+                  f"control={poll_seconds:g}s, telemetry={telemetry_seconds:g}s)."
                   + ("  [READ-ONLY: no device commands]" if self.dry_run else ""))
         ticks = 0
         last_control = 0.0
+        last_telem = 0.0
         try:
             while True:
                 loop_now = asyncio.get_event_loop().time()
                 due = loop_now - last_control >= poll_seconds
+                telem_due = loop_now - last_telem >= telemetry_seconds
                 try:
                     if due:
                         await self.control_tick()
                         ticks += 1
-                    else:
-                        await self.command_tick()
+                        last_telem = loop_now
+                    elif await self.command_tick():
+                        last_telem = loop_now
+                    elif telem_due:
+                        # fast, decoupled telemetry refresh so the dashboard never shows
+                        # sensor data older than telemetry_seconds
+                        await self.telemetry_tick()
+                        last_telem = loop_now
                     self._consec_errors = 0
                 except Exception as exc:
                     # A transient device/cloud error (timeout, token refresh, 5xx) must NOT
