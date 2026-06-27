@@ -91,6 +91,33 @@ def test_live_away_and_prime_call_device():
     assert client.prime_count == 1
 
 
+class _FlakyClient(SimulatedLiveClient):
+    """Simulated client whose update() raises a few times, then recovers."""
+    def __init__(self, *a, fails: int = 2, **k):
+        super().__init__(*a, **k)
+        self._fails = fails
+
+    async def update(self):
+        if self._fails > 0:
+            self._fails -= 1
+            raise RuntimeError("transient cloud error")
+        return await super().update()
+
+
+def test_live_daemon_survives_transient_device_errors():
+    repo = get_repo()
+    repo.conn.execute("UPDATE commands SET status='applied' WHERE status='pending'")
+    repo.conn.commit()
+    client = _FlakyClient(scenario="normal", seed=3, fails=2)
+    d = LiveDashboardDaemon(AppConfig.default(), client, repo, verbose=False)
+    # poll_seconds=0 -> every iteration is a control tick; the first two raise and must be
+    # swallowed, after which two real ticks complete (max_ticks=2) without the loop dying.
+    _run(d.run(poll_seconds=0, command_poll_seconds=0, max_ticks=2))
+    assert d._consec_errors == 0           # recovered after the transient failures
+    rt = bridge.read_runtime_state(repo.conn)
+    assert rt["daemon_alive"] is True      # daemon stayed alive through the errors
+
+
 def test_live_control_tick_writes_real_frame():
     d, client, repo = _daemon()
 
