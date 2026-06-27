@@ -66,6 +66,7 @@ class LiveDashboardDaemon:
         self.nap_deadline = None
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
+        self._consec_errors = 0
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
@@ -254,7 +255,7 @@ class LiveDashboardDaemon:
             self._thermal_state = th.state
 
     # ------------------------------------------------------------------ snapshot
-    def _snapshot(self, decision, frame) -> dict:
+    def _snapshot(self, decision, frame, error: Optional[str] = None) -> dict:
         target = decision.target_temp_f if decision else None
         if self.mode == "manual" and self.manual_target_f is not None:
             target = self.manual_target_f
@@ -280,7 +281,8 @@ class LiveDashboardDaemon:
                       "thermal_health": self.thermal.status().to_dict(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "precompensation": self.precomp,
-                      "device": self._safe_device_status()},
+                      "device": self._safe_device_status(),
+                      "device_error": error},
         }
 
     # ------------------------------------------------------------------ cycles
@@ -356,12 +358,30 @@ class LiveDashboardDaemon:
         try:
             while True:
                 loop_now = asyncio.get_event_loop().time()
-                if loop_now - last_control >= poll_seconds:
-                    await self.control_tick()
-                    last_control = loop_now
-                    ticks += 1
-                else:
-                    await self.command_tick()
+                due = loop_now - last_control >= poll_seconds
+                try:
+                    if due:
+                        await self.control_tick()
+                        ticks += 1
+                    else:
+                        await self.command_tick()
+                    self._consec_errors = 0
+                except Exception as exc:
+                    # A transient device/cloud error (timeout, token refresh, 5xx) must NOT
+                    # kill the 24/7 loop. Log, surface a degraded snapshot so the dashboard
+                    # shows the problem, hold (the device keeps its last safe command), and
+                    # back off so we don't hammer a failing API.
+                    self._consec_errors += 1
+                    self._log(f"tick error #{self._consec_errors}: {exc!r}; holding")
+                    try:
+                        bridge.write_runtime_state(
+                            self.repo.conn, self._snapshot(None, None, error=repr(exc)))
+                    except Exception:
+                        pass
+                    await asyncio.sleep(min(30.0, command_poll_seconds * min(self._consec_errors, 8)))
+                finally:
+                    if due:
+                        last_control = loop_now
                 if max_ticks is not None and ticks >= max_ticks:
                     break
                 if shutdown_event is not None and shutdown_event.is_set():
