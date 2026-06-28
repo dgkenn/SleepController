@@ -743,6 +743,74 @@ def gym_advice(repo) -> dict:
     return out
 
 
+def _get_hue_config(repo) -> dict:
+    import json as _json
+    row = repo.conn.execute("SELECT value FROM settings_kv WHERE key='hue_config'").fetchone()
+    d = _json.loads(row["value"]) if row else {}
+    ids = d.get("target_ids")
+    if ids is None and d.get("target_id"):     # migrate the old single-target shape
+        ids = [d["target_id"]]
+    return {"enabled": bool(d.get("enabled", False)), "bridge_ip": d.get("bridge_ip"),
+            "token": d.get("token"), "target_ids": ids or [],
+            "kind": d.get("kind", "lights")}
+
+
+def hue_config_view(repo) -> dict:
+    c = _get_hue_config(repo)
+    return {"enabled": c["enabled"], "bridge_ip": c["bridge_ip"], "target_ids": c["target_ids"],
+            "kind": c["kind"], "paired": bool(c["token"])}     # token never returned to the client
+
+
+def hue_config_update(repo, values: dict) -> dict:
+    import json as _json
+    cur = _get_hue_config(repo)
+    for k in ("enabled", "bridge_ip", "target_ids", "kind", "token"):
+        if k in values and values[k] is not None:
+            cur[k] = values[k]
+    repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES ('hue_config', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_json.dumps(cur),))
+    repo.conn.commit()
+    return hue_config_view(repo)
+
+
+def hue_discover() -> dict:
+    from sleepctl.adapters import hue
+    return {"bridges": hue.discover_bridges()}
+
+
+def hue_pair(repo, bridge_ip: str | None = None) -> dict:
+    """Press-the-link-button pairing. Stores the token (server-side only) on success."""
+    from sleepctl.adapters import hue
+    if not bridge_ip:
+        bridges = hue.discover_bridges()
+        bridge_ip = bridges[0]["internalipaddress"] if bridges else None
+    if not bridge_ip:
+        return {"ok": False, "error": "no Hue bridge found on the network"}
+    try:
+        token = hue.create_token(bridge_ip)
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "bridge_ip": bridge_ip}
+    hue_config_update(repo, {"bridge_ip": bridge_ip, "token": token})
+    return {"ok": True, "bridge_ip": bridge_ip, "paired": True}
+
+
+def hue_lights(repo) -> dict:
+    from sleepctl.adapters import hue
+    c = _get_hue_config(repo)
+    if not (c["bridge_ip"] and c["token"]):
+        return {"error": "not paired"}
+    return hue.list_targets(c["bridge_ip"], c["token"])
+
+
+def hue_test(repo, level: float = 0.8) -> dict:
+    from sleepctl.adapters import hue
+    c = _get_hue_config(repo)
+    if not (c["bridge_ip"] and c["token"] and c["target_ids"]):
+        return {"ok": False, "error": "set a bridge, pair, and pick your light(s) first"}
+    ok = hue.apply(c["bridge_ip"], c["token"], c["target_ids"], level, c["kind"])
+    return {"ok": ok}
+
+
 def gym_effective_wake(repo, normal_wake):
     """The deadline the daemon should actually arm given the gym advisor: earlier on a GO call,
     otherwise the user's set wake time. Safe no-op (returns normal_wake) when gym is off."""

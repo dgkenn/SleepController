@@ -534,10 +534,30 @@ export interface WakePlan {
   live: { phase: string; vibration_power: number; reason: string } | null;
 }
 
+export interface HueConfig {
+  enabled: boolean;
+  bridge_ip: string | null;
+  target_ids: string[];
+  kind: string;
+  paired: boolean;
+}
+
 export const api = {
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
   wakePlan: () => apiFetch<WakePlan>('/api/wake/plan'),
+
+  // Hue dawn light
+  hueConfig: () => apiFetch<HueConfig>('/api/wake/light/config'),
+  hueConfigUpdate: (values: Partial<Omit<HueConfig, 'paired'>>) =>
+    apiFetch<HueConfig>('/api/wake/light/config', { method: 'PUT', body: JSON.stringify(values) }),
+  huePair: (bridge_ip?: string) =>
+    apiFetch<{ ok: boolean; error?: string; bridge_ip?: string; paired?: boolean }>(
+      '/api/wake/light/pair',
+      { method: 'POST', body: JSON.stringify({ bridge_ip: bridge_ip ?? null }) }
+    ),
+  hueLights: () => apiFetch<{ lights?: Record<string, string>; groups?: Record<string, string>; error?: string }>('/api/wake/light/lights'),
+  hueTest: () => apiFetch<{ ok: boolean; error?: string }>('/api/wake/light/test', { method: 'POST' }),
   gymConfig: () => apiFetch<{ config: GymConfig }>('/api/gym/config'),
   gymConfigUpdate: (values: Partial<GymConfig>) =>
     apiFetch<{ config: GymConfig }>('/api/gym/config', {

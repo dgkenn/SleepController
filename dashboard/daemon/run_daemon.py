@@ -83,6 +83,7 @@ class DashboardDaemon:
         # the simulator path can demonstrate the phone feed end-to-end.
         self.wearable = None
         self._phone_fused = False
+        self.hue_driver = None             # Philips Hue dawn-light driver (best-effort)
         if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
             try:
                 from sleepctl.adapters.bcg import BridgeWearableSource
@@ -319,6 +320,7 @@ class DashboardDaemon:
     def control_tick(self) -> None:
         """Full sense->decide->act cycle plus a fresh snapshot."""
         self._apply_commands()
+        self._refresh_hue()
         # A nap ends once its deadline has passed (the smart wake has fired by then).
         if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
             self._end_session()
@@ -341,6 +343,7 @@ class DashboardDaemon:
             # learned wake + lead-time profiles so prevention improves night over night.
             if decision is not None and decision.state.value.lower() == "idle":
                 self._refresh_profiles()
+        self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
         bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
 
     def _refresh_profiles(self) -> None:
@@ -354,6 +357,36 @@ class DashboardDaemon:
             self.cycle.controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
+
+    def _refresh_hue(self) -> None:
+        """(Re)build the Hue dawn driver from the stored config and toggle the orchestrator's
+        light ramp accordingly. Cheap; rebuilds only when the config actually changes."""
+        try:
+            from app import services
+            c = services._get_hue_config(self.repo)
+            sig = (c["enabled"], c["bridge_ip"], c["token"], tuple(c["target_ids"]), c["kind"])
+            if sig == getattr(self, "_hue_sig", None):
+                return
+            self._hue_sig = sig
+            ready = c["enabled"] and c["bridge_ip"] and c["token"] and c["target_ids"]
+            if ready:
+                from sleepctl.adapters.hue import HueDawnDriver
+                self.hue_driver = HueDawnDriver(c["bridge_ip"], c["token"], c["target_ids"], c["kind"])
+            else:
+                self.hue_driver = None
+            self.cycle.controller.wake_orch.cfg.light_enabled = bool(ready)
+        except Exception as exc:
+            print(f"hue refresh skipped: {exc}", flush=True)
+
+    def _drive_dawn(self, decision) -> None:
+        if not self.hue_driver or decision is None:
+            return
+        la = (decision.log_payload or {}).get("wake_action")
+        if la is not None:
+            try:
+                self.hue_driver.set_level(float(la.get("light_level", 0.0)))
+            except Exception as exc:
+                print(f"hue drive skipped: {exc}", flush=True)
 
     def command_tick(self) -> None:
         """Fast path: apply queued overrides and, when one lands, actuate + snapshot now so

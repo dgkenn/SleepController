@@ -12,6 +12,7 @@ import SleepPlanCard from '@/components/SleepPlanCard';
 import WeatherCard from '@/components/WeatherCard';
 import PreemptionCard from '@/components/PreemptionCard';
 import GymCard from '@/components/GymCard';
+import HueCard from '@/components/HueCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
@@ -228,6 +229,9 @@ function TonightContent() {
 
           {/* Gym vs. sleep morning call */}
           <GymCard />
+
+          {/* Philips Hue silent-sunrise dawn light */}
+          <HueCard />
 
           {/* Overnight weather feed-forward */}
           <WeatherCard />
