@@ -121,6 +121,24 @@ def test_ingest_sensor_logger_native_payload_filters_to_accelerometer(auth_clien
     assert body["ok"] is True and body["ingested"] == 600
 
 
+def test_bcg_ingest_open_mode_allows_tokenless(client):
+    """BCG_INGEST_OPEN drops auth on the phone endpoints only (trusted-LAN mode)."""
+    from fastapi.testclient import TestClient
+    from app.config import settings as app_settings
+    from app.main import app
+    fresh = TestClient(app)  # no login cookie, no token
+    assert fresh.post("/bcg/ingest", json={"mag": [1.0]}).status_code == 401  # default: locked
+    app_settings.bcg_ingest_open = True
+    try:
+        r = fresh.post("/bcg/ingest", json={"fs": 50, "mag": [1.0] * 60})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        assert fresh.get("/bcg/should-record").status_code == 200
+        # other endpoints stay locked even in open mode
+        assert fresh.get("/status").status_code == 401
+    finally:
+        app_settings.bcg_ingest_open = False
+
+
 def test_fs_auto_detected_from_sensor_logger_timestamps(auth_client):
     """No ?fs= given: the rate is inferred from the per-sample UTC-ns timestamps."""
     import math
