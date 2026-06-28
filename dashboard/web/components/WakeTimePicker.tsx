@@ -103,6 +103,7 @@ export default function WakeTimePicker({
               min-h-[52px]
             "
           >
+            <option value={0}>Auto</option>
             <option value={10}>10 min</option>
             <option value={15}>15 min</option>
             <option value={20}>20 min</option>
@@ -135,7 +136,14 @@ export default function WakeTimePicker({
 
       <p className="text-xs text-gray-600 leading-relaxed">
         Wakes you with warmth{vibration > 0 ? ' + gentle vibration' : ''} during your lightest
-        sleep in the {windowMin}-minute window before this time. Audio stays off.
+        sleep in the{' '}
+        {windowMin > 0
+          ? `${windowMin}-minute window`
+          : 'window chosen for you'}{' '}
+        before this time
+        {windowMin === 0 &&
+          ' — wider when you’re rested, narrower on short/work nights, in sleep debt, or when the gym call moves it earlier'}
+        . Audio stays off.
       </p>
     </div>
   );
