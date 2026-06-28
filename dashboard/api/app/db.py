@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS live_sensor (
 CREATE TABLE IF NOT EXISTS wake_log (
     date TEXT PRIMARY KEY,
     woke_from_stage TEXT, minutes_early REAL, window_min INTEGER,
-    forced INTEGER, p_wake REAL, created TEXT
+    forced INTEGER, p_wake REAL, wake_thermal_f REAL, created TEXT
 );
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

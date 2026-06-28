@@ -538,6 +538,13 @@ export interface WakePlan {
     n: number;
     is_personalized: boolean;
     rationale: string;
+    thermal?: {
+      wake_f: number;
+      direction: string;
+      n: number;
+      is_personalized: boolean;
+      rationale: string;
+    };
   };
 }
 

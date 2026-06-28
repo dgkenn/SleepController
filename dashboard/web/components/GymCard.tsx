@@ -135,6 +135,11 @@ export default function GymCard() {
                       </span>
                     </p>
                   )}
+                  {plan.learned?.thermal?.is_personalized && (
+                    <p className="text-[10px] mt-0.5 text-success">
+                      🌡 {plan.learned.thermal.rationale}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

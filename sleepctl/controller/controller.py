@@ -308,6 +308,11 @@ class SleepController:
         """The time selector sets the per-night smart-wake window ceiling (choose_wake_window)."""
         self.wake_orch.cfg.window_min = max(1, int(minutes))
 
+    def set_wake_ramp_f(self, wake_f: float) -> None:
+        """Apply the learned per-person thermal wake maneuver (the WAKE_RAMP target temperature)."""
+        from dataclasses import replace
+        self.thermal.profile = replace(self.thermal.profile, wake_ramp_f=float(wake_f))
+
     def set_setpoints(self, profile) -> None:
         """Swap the active SetpointProfile for the night (e.g. an experiment arm applied on top
         of the learned setpoint). No-op on None so callers can pass through safely."""

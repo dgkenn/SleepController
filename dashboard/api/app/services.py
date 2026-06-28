@@ -835,12 +835,16 @@ def gym_effective_wake(repo, normal_wake):
 
 
 def wake_tuning_view(repo) -> dict:
-    """The alarm's learned-to-you settings (window + lift bar) from your grogginess check-ins."""
+    """The alarm's learned-to-you settings (window + lift bar + thermal maneuver) from your
+    grogginess check-ins."""
     from sleepctl.config import AppConfig
+    from sleepctl.learning.thermal_wake import learn_thermal_wake, thermal_wake_records
     from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
-    base = AppConfig.default().tunables.wake_window_min
-    t = learn_wake_tuning(wake_tuning_records(repo), base_window=base)
-    return t.to_dict()
+    cfg = AppConfig.default()
+    out = learn_wake_tuning(wake_tuning_records(repo), base_window=cfg.tunables.wake_window_min).to_dict()
+    out["thermal"] = learn_thermal_wake(thermal_wake_records(repo),
+                                        base_f=cfg.tunables.wake_ramp_temp_f).to_dict()
+    return out
 
 
 def wake_plan(repo) -> dict:
