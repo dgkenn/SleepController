@@ -778,14 +778,17 @@ def wake_plan(repo) -> dict:
     effective = (adv.get("early_wake_time") if adv.get("recommend") == "go"
                  and adv.get("early_wake_time") else normal)
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
-    live = (rt.get("extra") or {}).get("wake_action")
+    extra = rt.get("extra") or {}
+    live = extra.get("wake_action")
+    # Prefer the per-night window the daemon actually chose (context-adaptive); else the default.
+    chosen_window = ((extra.get("wake") or {}).get("window_min")) or wc.window_min
     return {
         "gym_enabled": cfg.enabled,
         "recommend": adv.get("recommend"),
         "normal_wake": normal,
         "effective_wake": effective,
         "moved_earlier": bool(effective and normal and effective != normal),
-        "smart_window_min": wc.window_min,
+        "smart_window_min": chosen_window,
         "thermal_dawn_min": wc.thermal_dawn_min,
         "silent_only": wc.silent_only,
         "vibration_ladder": [wc.gentle_vibration, wc.strong_vibration, wc.max_vibration],

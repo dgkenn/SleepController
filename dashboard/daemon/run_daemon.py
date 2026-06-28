@@ -184,6 +184,7 @@ class DashboardDaemon:
                 if wake <= datetime.now():
                     wake += timedelta(days=1)
                 # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
+                normal_wake = wake
                 try:
                     from app import services
                     wake = services.gym_effective_wake(self.repo, wake)
@@ -192,6 +193,22 @@ class DashboardDaemon:
                 self.context.required_wake_time = wake
                 # Drive the controller objective from the night mode (work/recovery/auto).
                 self._apply_night_type(p.get("night_type") or "auto")
+                # Choose an appropriate smart-wake window for this night (wide when rested,
+                # narrow when sleep is scarce) and feed it to the orchestrator.
+                try:
+                    from sleepctl.controller.wake_orchestrator import choose_wake_window
+                    explicit = p.get("window_min")
+                    if explicit and int(explicit) > 0:       # user override from the picker
+                        win = int(explicit)
+                    else:                                      # Auto: choose for this night
+                        win = choose_wake_window(self.context.night_type,
+                                                 self.cycle.controller.wake_debt_min,
+                                                 gym_go=wake < normal_wake,
+                                                 base=self.cfg.tunables.wake_window_min)
+                    self.cycle.controller.set_wake_window(win)
+                    self.wake["window_min"] = win
+                except Exception as exc:
+                    print(f"wake window selection skipped: {exc}", flush=True)
             elif t == "clear_wake":
                 self.wake = None
                 self.context.required_wake_time = None
@@ -333,6 +350,8 @@ class DashboardDaemon:
             self.cycle.controller.set_wake_profile(
                 build_wake_profile(self.repo),
                 lead_profile=build_lead_time_profile(self.repo))
+            from sleepctl.benchmarks import sleep_debt_min
+            self.cycle.controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
 

@@ -125,6 +125,8 @@ class LiveDashboardDaemon:
             controller.set_wake_profile(build_wake_profile(self.repo),
                                         lead_profile=build_lead_time_profile(self.repo))
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
+            from sleepctl.benchmarks import sleep_debt_min
+            controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
         except Exception as exc:
             self._log(f"profile load skipped: {exc}")
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the
@@ -229,6 +231,7 @@ class LiveDashboardDaemon:
                     if wk <= datetime.now():
                         wk += timedelta(days=1)
                     # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
+                    normal_wk = wk
                     try:
                         from app import services
                         wk = services.gym_effective_wake(self.repo, wk)
@@ -236,6 +239,22 @@ class LiveDashboardDaemon:
                         self._log(f"gym wake adjust skipped: {exc}")
                     self.context.required_wake_time = wk
                     self._apply_night_type(p.get("night_type") or "auto")
+                    # Choose an appropriate smart-wake window for THIS night and feed it to the
+                    # orchestrator (wide when rested, narrow when sleep is scarce).
+                    try:
+                        from sleepctl.controller.wake_orchestrator import choose_wake_window
+                        explicit = p.get("window_min")
+                        if explicit and int(explicit) > 0:   # user override from the picker
+                            win = int(explicit)
+                        else:                                  # Auto: choose for this night
+                            win = choose_wake_window(self.context.night_type,
+                                                     self.cycle.controller.wake_debt_min,
+                                                     gym_go=wk < normal_wk,
+                                                     base=self.cfg.tunables.wake_window_min)
+                        self.cycle.controller.set_wake_window(win)
+                        self.wake["window_min"] = win
+                    except Exception as exc:
+                        self._log(f"wake window selection skipped: {exc}")
                 elif t == "clear_wake":
                     self.wake = None
                     self.context.required_wake_time = None

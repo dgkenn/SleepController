@@ -29,7 +29,7 @@ function TonightContent() {
   const [mode, setMode] = useState<'auto' | 'manual' | 'view'>('auto');
   const [targetTemp, setTargetTemp] = useState(70);
   const [wakeTime, setWakeTime] = useState('07:00');
-  const [windowMin, setWindowMin] = useState(30);
+  const [windowMin, setWindowMin] = useState(0); // 0 = Auto (system chooses an appropriate window)
   const [vibration, setVibration] = useState(50);
   const [nightType, setNightType] = useState('auto');
   const [loading, setLoading] = useState<string | null>(null);

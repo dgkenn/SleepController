@@ -55,6 +55,7 @@ class SleepController:
         self.wake_orch = WakeOrchestrator(WakeConfig.from_tunables(cfg.tunables),
                                           classifier=SleepWakeClassifier(cfg))
         self.last_wake_action = None        # exposed for telemetry/dashboard
+        self.wake_debt_min = 0.0            # cumulative sleep debt -> debt-adaptive wake strategy
         # The learnable setpoint profile (updated nightly by the learning loop / ML).
         self.thermal = ThermalController(cfg, profile=setpoints)
 
@@ -221,7 +222,8 @@ class SleepController:
                      and frame.data_age_seconds > self.cfg.tunables.telemetry_stale_seconds)
             action = self.wake_orch.evaluate(
                 now, frame, recent, required_wake,
-                hr_base=sleep_hr_base, hrv_base=sleep_hrv_base, data_stale=stale)
+                hr_base=sleep_hr_base, hrv_base=sleep_hrv_base, data_stale=stale,
+                debt_min=self.wake_debt_min)
             self.last_wake_action = action
             intent, self.should_wake = action.thermal_intent, action.should_wake
             # Program the device's native vibration+heat smart alarm as the hardware backstop.
@@ -301,6 +303,10 @@ class SleepController:
     def set_settle_nudge(self, nudge_f: float) -> None:
         """Apply the learned signed maintenance settle nudge to the thermal controller."""
         self.thermal.set_settle_nudge(nudge_f)
+
+    def set_wake_window(self, minutes: int) -> None:
+        """The time selector sets the per-night smart-wake window ceiling (choose_wake_window)."""
+        self.wake_orch.cfg.window_min = max(1, int(minutes))
 
     def set_setpoints(self, profile) -> None:
         """Swap the active SetpointProfile for the night (e.g. an experiment arm applied on top
