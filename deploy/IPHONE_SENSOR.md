@@ -51,30 +51,36 @@ after logging into the web app.)
 
 ### 2. Configure Sensor Logger to stream to the endpoint
 
-Sensor Logger's HTTP Push **can't set custom headers**, so the auth token goes in the **URL**
-as `?token=` (same trick the dashboard's live stream uses).
+Sensor Logger's **Settings → HTTP Push** screen (the one with **Push URL** + **Auth Header**):
 
-In **Sensor Logger**:
 1. On the **Logger** page, enable only the **Accelerometer** (turn the rest off to save
-   battery). A rate of **~50 Hz** is plenty.
-2. Tap the **gear icon** on the Logger page → enable **HTTP Push** ("push live data via HTTP").
-3. Set the URL to your ingest endpoint **with the token and rate in the query string**:
+   battery). The default rate is fine — the server auto-detects it.
+2. **Enable HTTP Push.**
+3. **Push URL** — point it at the ingest endpoint:
+   - Over the internet (HTTPS via the dashboard): `https://YOUR-DASHBOARD/api/bcg/ingest`
+   - On your home WiFi straight to the API box (what the screenshot shows):
+     `http://YOUR-SERVER-IP:8000/bcg/ingest`  ← note the **path is `/bcg/ingest`**, and there's
+     **no `/api`** when you hit the API directly on port 8000 (`/api` is only the web proxy's
+     prefix).
+4. **Auth Header** — paste your token here as:
    ```
-   https://YOUR-DASHBOARD/api/bcg/ingest?token=<THE_TOKEN_FROM_STEP_1>&fs=50&source=iphone
+   Bearer <THE_TOKEN_FROM_STEP_1>
    ```
-4. Set the push period to a few seconds (e.g. every 2–5 s).
+   (Sensor Logger sends this as the `Authorization` header, which the endpoint accepts. If your
+   app build doesn't have an Auth Header field, instead append `?token=<TOKEN>` to the Push URL —
+   that works too.)
+5. **Batch Period** — **1 s is perfect** (don't pay for 100/200 ms; the server keeps a rolling
+   window, so 1-second batches are plenty). Leave **Skip Writing** off, **Send Images** off.
+6. Hit **Test Push** — you want a `200` with `{"ok": true, "ingested": …, "fs_source": "detected"}`.
 
-That's it — Sensor Logger POSTs its native JSON (`{messageId, sessionId, deviceId, payload:[…]}`),
-and the endpoint reads the accelerometer entries straight out of it (other sensors, if any, are
-ignored). If you ever build your own poster instead, these body shapes also work:
+That's it — Sensor Logger POSTs its native JSON (`{messageId, sessionId, deviceId, payload:[…]}`);
+the endpoint pulls the accelerometer entries out, **auto-detects the sample rate** from their
+timestamps (no `fs` to set), and ignores any other sensors. Custom posters can also send
+`{"fs":50,"ax":[…],"ay":[…],"az":[…]}` or `{"fs":50,"mag":[…]}`.
 
-```jsonc
-{ "fs": 50, "ax": [...], "ay": [...], "az": [...] }     // 3-axis batch in g
-{ "fs": 50, "mag": [...] }                              // pre-collapsed magnitude
-```
-
-> The token is a normal 30-day dashboard session token. Because it's in the URL, keep the URL
-> private (it's your HTTPS endpoint); rotate by logging in again to mint a fresh one.
+> The token is a normal 30-day dashboard session token — treat it like your password; rotate by
+> logging in again to mint a fresh one. On a home-WiFi `http://…:8000` URL the token rides the
+> local network only; over the internet always use the `https://` dashboard URL.
 
 ### 3. Start streaming and confirm it's working
 
@@ -169,7 +175,7 @@ night window) and the controller fuses the movement only while you're actually i
 
 ```
 iPhone accelerometer (≈50 Hz)
-   │  Sensor Logger → HTTP push (?token= in URL)
+   │  Sensor Logger → HTTP push (Auth Header: Bearer <token>, or ?token=)
    ▼
 POST /api/bcg/ingest ──▶ BCGProcessor (rolling window)
    │   accel magnitude → detrend gravity → movement (+best-effort HR/HRV)
