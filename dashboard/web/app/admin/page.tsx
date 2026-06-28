@@ -1,11 +1,74 @@
 'use client';
 
+import { useState } from 'react';
 import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import DataHealthList from '@/components/DataHealthList';
 import useSWR from 'swr';
-import { AdminHealth, LogEntry, fetcher } from '@/lib/api';
+import { AdminHealth, Backtest, LogEntry, fetcher, api } from '@/lib/api';
 import Link from 'next/link';
+
+function ValidateCard() {
+  const [bt, setBt] = useState<Backtest | null>(null);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    try {
+      setBt(await api.runBacktest());
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500 uppercase tracking-wider">Validate controller</p>
+        <button
+          onClick={run}
+          disabled={busy}
+          className="text-xs px-3 py-1.5 rounded-lg bg-brand text-white font-medium disabled:opacity-50"
+        >
+          {busy ? 'Running…' : 'Run backtest'}
+        </button>
+      </div>
+      <p className="text-[11px] text-gray-500 leading-relaxed">
+        Runs whole simulated nights through the real controller vs. leaving the bed uncontrolled,
+        on a model where temperature actually moves sleep — and checks every safety limit.
+      </p>
+      {bt && (
+        <div className="space-y-1.5">
+          <p className={`text-sm font-semibold ${bt.improved ? 'text-success' : 'text-danger'}`}>
+            {bt.improved ? '✓ Closed loop improves your night' : '✗ No improvement'}
+          </p>
+          {[
+            ['Awakenings', 'wake_events'],
+            ['Deep (min)', 'deep_min'],
+            ['Efficiency', 'efficiency'],
+            ['Grogginess', 'grogginess'],
+          ].map(([label, key]) => (
+            <div key={key} className="flex items-center justify-between text-xs">
+              <span className="text-gray-400">{label}</span>
+              <span className="text-gray-300">
+                {bt.controller[key]} <span className="text-gray-600">vs</span> {bt.baseline[key]}
+                <span className={bt.delta[key] === 0 ? 'text-gray-500' : 'text-success'}>
+                  {' '}
+                  ({bt.delta[key] > 0 ? '+' : ''}
+                  {bt.delta[key]})
+                </span>
+              </span>
+            </div>
+          ))}
+          <p className="text-[10px] text-gray-500 pt-1">
+            Safety: max step {bt.safety.max_step_f}°F (limit {bt.safety.max_step_limit}) ·{' '}
+            {bt.safety.out_of_bounds_ticks} out-of-bounds ticks
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function AdminContent() {
   const { data: health } = useSWR<AdminHealth>('/api/admin/health', fetcher, {
@@ -98,6 +161,9 @@ function AdminContent() {
               <p className="text-sm text-gray-600 text-center py-2">Loading…</p>
             )}
           </div>
+
+          {/* Controller validation backtest */}
+          <ValidateCard />
 
           {/* Phone sensor (iPhone accelerometer fusion) */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">

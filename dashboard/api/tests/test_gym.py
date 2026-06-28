@@ -48,6 +48,15 @@ def test_hue_config_get_set_hides_token(auth_client):
     assert "token" not in cfg2                 # secret never returned to the client
 
 
+def test_admin_backtest_validates_controller(auth_client):
+    r = auth_client.post("/admin/backtest")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["improved"] is True                 # closed loop beats no-control
+    assert body["delta"]["wake_events"] < 0
+    assert body["safety"]["out_of_bounds_ticks"] == 0
+
+
 def test_wake_tuning_endpoint(auth_client):
     t = auth_client.get("/wake/tuning").json()
     assert "window_min" in t and "p_wake_liftable" in t and "n" in t

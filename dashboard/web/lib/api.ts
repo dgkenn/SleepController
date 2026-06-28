@@ -556,7 +556,19 @@ export interface HueConfig {
   paired: boolean;
 }
 
+export interface Backtest {
+  nights: number;
+  controller: Record<string, number>;
+  baseline: Record<string, number>;
+  delta: Record<string, number>;
+  safety: { max_step_f: number; max_step_limit: number; out_of_bounds_ticks: number };
+  improved: boolean;
+}
+
 export const api = {
+  // Validation backtest
+  runBacktest: () => apiFetch<Backtest>('/api/admin/backtest', { method: 'POST' }),
+
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
   wakePlan: () => apiFetch<WakePlan>('/api/wake/plan'),
