@@ -10,14 +10,17 @@ services:
     environment:
       SLEEPCTL_DB: /data/sleepctl.db
       PYTHONPATH: /app:/app/dashboard/api
+      # Token-less phone-sensor ingest on the LAN (the two /bcg/* endpoints only).
+      # Defaults ON for this single-user home setup; set BCG_INGEST_OPEN=0 in .env
+      # to re-lock (e.g. if you ever expose the API to the internet).
+      BCG_INGEST_OPEN: "${BCG_INGEST_OPEN:-1}"
     volumes:
       - sleepdata:/data
     restart: unless-stopped
-    # No ports exposed directly; Caddy is the only public ingress.
-    # To let an iPhone stream straight to the API on your LAN (http://<ip>:8000),
-    # uncomment the line below (pair it with BCG_INGEST_OPEN=1 — see .env.example).
-    # ports:
-    #   - "8000:8000"
+    # Published so an iPhone can stream straight to the API at http://<server-ip>:8000.
+    # (Caddy still fronts the dashboard on 80/443; this is the LAN ingest path.)
+    ports:
+      - "8000:8000"
     healthcheck:
       test: ["CMD", "python3", "-c",
              "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
