@@ -84,6 +84,9 @@ class DashboardDaemon:
         self.wearable = None
         self._phone_fused = False
         self.hue_driver = None             # Philips Hue dawn-light driver (best-effort)
+        self._pending_wake = None          # captured wake conditions, flushed to wake_log at close
+        self._wake_last_stage = None
+        self._wake_base_window = self.cfg.tunables.wake_window_min  # learned per-user window base
         if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
             try:
                 from sleepctl.adapters.bcg import BridgeWearableSource
@@ -205,7 +208,7 @@ class DashboardDaemon:
                         win = choose_wake_window(self.context.night_type,
                                                  self.cycle.controller.wake_debt_min,
                                                  gym_go=wake < normal_wake,
-                                                 base=self.cfg.tunables.wake_window_min)
+                                                 base=self._wake_base_window)
                     self.cycle.controller.set_wake_window(win)
                     self.wake["window_min"] = win
                 except Exception as exc:
@@ -341,12 +344,14 @@ class DashboardDaemon:
             self.cycle.log(frame, decision, now)
             # When a night ends (back to IDLE), resolve pre-cool efficacy and refresh the
             # learned wake + lead-time profiles so prevention improves night over night.
+            self._capture_wake(decision, frame, now)
             if decision is not None and decision.state.value.lower() == "idle":
                 self._refresh_profiles()
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
         bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
 
     def _refresh_profiles(self) -> None:
+        self._flush_wake_log()            # persist last night's wake conditions first
         try:
             from sleepctl.learning.lead_time import build_lead_time_profile
             from sleepctl.ml.wake_profile import build_wake_profile
@@ -355,6 +360,12 @@ class DashboardDaemon:
                 lead_profile=build_lead_time_profile(self.repo))
             from sleepctl.benchmarks import sleep_debt_min
             self.cycle.controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
+            # Personalize the alarm to YOUR grogginess curve (window + lift bar).
+            from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
+            tuning = learn_wake_tuning(wake_tuning_records(self.repo),
+                                       base_window=self.cfg.tunables.wake_window_min)
+            self.cycle.controller.wake_orch.cfg.p_wake_liftable = tuning.p_wake_liftable
+            self._wake_base_window = tuning.window_min
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
 
@@ -387,6 +398,46 @@ class DashboardDaemon:
                 self.hue_driver.set_level(float(la.get("light_level", 0.0)))
             except Exception as exc:
                 print(f"hue drive skipped: {exc}", flush=True)
+
+    def _capture_wake(self, decision, frame, now) -> None:
+        """Record how the user was woken (stage, how early, forced) for the grogginess learner."""
+        if decision is None or frame is None:
+            return
+        la = (decision.log_payload or {}).get("wake_action")
+        if not la:
+            return
+        st = frame.stage.value if getattr(frame, "stage", None) else None
+        if st and st.lower() not in ("awake", "unknown"):
+            self._wake_last_stage = st                         # last sleep stage before surfacing
+        if la.get("phase") == "done" and self._pending_wake is None:
+            mins_early, forced = None, False
+            dl = la.get("target_time")
+            if dl:
+                try:
+                    deadline = datetime.fromisoformat(dl)
+                    mins_early = max(0.0, (deadline - now).total_seconds() / 60.0)
+                    forced = now >= deadline
+                except Exception:
+                    pass
+            if (self._wake_last_stage or "").lower() == "deep":
+                forced = True
+            self._pending_wake = {
+                "woke_from_stage": self._wake_last_stage,
+                "minutes_early": round(mins_early, 1) if mins_early is not None else None,
+                "window_min": (self.wake or {}).get("window_min"),
+                "forced": forced, "p_wake": la.get("p_wake")}
+
+    def _flush_wake_log(self) -> None:
+        if not self._pending_wake:
+            return
+        try:
+            nights = self.repo.recent_nights(1)
+            date = nights[-1].date if nights else datetime.now().date().isoformat()
+            bridge.write_wake_log(self.repo.conn, {"date": date, **self._pending_wake})
+        except Exception as exc:
+            print(f"wake log skipped: {exc}", flush=True)
+        finally:
+            self._pending_wake, self._wake_last_stage = None, None
 
     def command_tick(self) -> None:
         """Fast path: apply queued overrides and, when one lands, actuate + snapshot now so

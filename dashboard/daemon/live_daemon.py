@@ -75,6 +75,9 @@ class LiveDashboardDaemon:
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
+        self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
+        self._wake_last_stage = None
+        self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
@@ -128,6 +131,13 @@ class LiveDashboardDaemon:
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
             from sleepctl.benchmarks import sleep_debt_min
             controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
+            self._flush_wake_log()        # persist last night's wake conditions
+            # Personalize the alarm to YOUR grogginess curve (window + lift bar).
+            from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
+            tuning = learn_wake_tuning(wake_tuning_records(self.repo),
+                                       base_window=self.cfg.tunables.wake_window_min)
+            controller.wake_orch.cfg.p_wake_liftable = tuning.p_wake_liftable
+            self._wake_base_window = tuning.window_min
         except Exception as exc:
             self._log(f"profile load skipped: {exc}")
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the
@@ -251,7 +261,7 @@ class LiveDashboardDaemon:
                             win = choose_wake_window(self.context.night_type,
                                                      self.cycle.controller.wake_debt_min,
                                                      gym_go=wk < normal_wk,
-                                                     base=self.cfg.tunables.wake_window_min)
+                                                     base=self._wake_base_window)
                         self.cycle.controller.set_wake_window(win)
                         self.wake["window_min"] = win
                     except Exception as exc:
@@ -406,6 +416,46 @@ class LiveDashboardDaemon:
             except Exception as exc:
                 self._log(f"hue drive skipped: {exc}")
 
+    def _capture_wake(self, decision, frame, now) -> None:
+        """Record how the user was woken (stage, how early, forced) for the grogginess learner."""
+        if decision is None or frame is None:
+            return
+        la = (decision.log_payload or {}).get("wake_action")
+        if not la:
+            return
+        st = frame.stage.value if getattr(frame, "stage", None) else None
+        if st and st.lower() not in ("awake", "unknown"):
+            self._wake_last_stage = st
+        if la.get("phase") == "done" and self._pending_wake is None:
+            mins_early, forced = None, False
+            dl = la.get("target_time")
+            if dl:
+                try:
+                    deadline = datetime.fromisoformat(dl)
+                    mins_early = max(0.0, (deadline - now).total_seconds() / 60.0)
+                    forced = now >= deadline
+                except Exception:
+                    pass
+            if (self._wake_last_stage or "").lower() == "deep":
+                forced = True
+            self._pending_wake = {
+                "woke_from_stage": self._wake_last_stage,
+                "minutes_early": round(mins_early, 1) if mins_early is not None else None,
+                "window_min": (self.wake or {}).get("window_min"),
+                "forced": forced, "p_wake": la.get("p_wake")}
+
+    def _flush_wake_log(self) -> None:
+        if not self._pending_wake:
+            return
+        try:
+            nights = self.repo.recent_nights(1)
+            date = nights[-1].date if nights else datetime.now().date().isoformat()
+            bridge.write_wake_log(self.repo.conn, {"date": date, **self._pending_wake})
+        except Exception as exc:
+            self._log(f"wake log skipped: {exc}")
+        finally:
+            self._pending_wake, self._wake_last_stage = None, None
+
     # ------------------------------------------------------------------ cycles
     async def control_tick(self) -> None:
         await self._apply_commands()
@@ -431,6 +481,7 @@ class LiveDashboardDaemon:
                 if alarm is not None and not self.dry_run:
                     await self.client.set_wake_alarm(alarm)
             self.cycle.log(frame, decision, now)
+            self._capture_wake(decision, frame, now)
             await self._maybe_close_out(decision, now)
             self._prev_state = decision.state
         self._last_decision = decision

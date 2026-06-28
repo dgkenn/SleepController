@@ -95,6 +95,26 @@ def write_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
     conn.commit()
 
 
+def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:
+    """Record how the user was woken on ``row['date']`` (one row/night; last write wins). Joined
+    with the morning grogginess check-in to personalize the wake tuning."""
+    conn.execute(
+        """INSERT INTO wake_log (date, woke_from_stage, minutes_early, window_min, forced,
+            p_wake, created) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(date) DO UPDATE SET
+         woke_from_stage=excluded.woke_from_stage, minutes_early=excluded.minutes_early,
+         window_min=excluded.window_min, forced=excluded.forced, p_wake=excluded.p_wake,
+         created=excluded.created""",
+        (row.get("date"), row.get("woke_from_stage"), row.get("minutes_early"),
+         row.get("window_min"), 1 if row.get("forced") else 0, row.get("p_wake"), _now()))
+    conn.commit()
+
+
+def read_wake_logs(conn: sqlite3.Connection, limit: int = 30) -> list:
+    rows = conn.execute("SELECT * FROM wake_log ORDER BY date DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
 def read_sensor_sample(conn: sqlite3.Connection) -> dict | None:
     """Latest phone/sensor sample with a computed ``age_seconds``, or None if never written."""
     row = conn.execute("SELECT * FROM live_sensor WHERE id = 1").fetchone()

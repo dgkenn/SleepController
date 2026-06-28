@@ -532,6 +532,13 @@ export interface WakePlan {
   vibration_ladder: number[];
   headline: string | null;
   live: { phase: string; vibration_power: number; reason: string } | null;
+  learned?: {
+    window_min: number;
+    p_wake_liftable: number;
+    n: number;
+    is_personalized: boolean;
+    rationale: string;
+  };
 }
 
 export interface HueConfig {

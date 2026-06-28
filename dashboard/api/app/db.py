@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS live_sensor (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     updated TEXT, hr REAL, hrv REAL, movement REAL, source TEXT
 );
+-- One row per night recording HOW you were woken (stage, how early, window, forced), joined
+-- with the morning check-in grogginess to personalize the wake tuning.
+CREATE TABLE IF NOT EXISTS wake_log (
+    date TEXT PRIMARY KEY,
+    woke_from_stage TEXT, minutes_early REAL, window_min INTEGER,
+    forced INTEGER, p_wake REAL, created TEXT
+);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint TEXT UNIQUE, p256dh TEXT, auth TEXT, created TEXT
