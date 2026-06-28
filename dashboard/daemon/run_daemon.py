@@ -250,6 +250,7 @@ class DashboardDaemon:
                 "manual_target_f": self.manual_target_f,
                 "power_on": self.power_on,
                 "away": self.away,
+                "bed_presence": frame.presence if frame else None,
                 "wake": self.wake,
                 "session_mode": self.session_mode,
                 "nap": self.nap_plan,

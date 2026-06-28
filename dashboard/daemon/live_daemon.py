@@ -73,6 +73,7 @@ class LiveDashboardDaemon:
         self._consec_errors = 0
         self._last_decision = None  # reused by the fast telemetry tick between control ticks
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
+        self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
@@ -263,12 +264,18 @@ class LiveDashboardDaemon:
 
     def _read_frame(self):
         """Read the Pod frame and fuse a fresh wearable sample over it (if a wearable is
-        attached) — sub-minute HR/movement onto the ~60s Pod data, controller-transparent."""
+        attached) — sub-minute HR/movement onto the ~60s Pod data, controller-transparent.
+
+        Presence-gated: the phone is only fused while the Pod senses you in bed. The moment
+        bed presence drops (you got up), the phone feed is ignored — so it auto-engages on
+        bed-in and disengages on bed-out with no phone-side action. (Unknown presence still
+        fuses, so we never lose data to a missing reading.)"""
         frame = self.client.read_frame()
-        if self.wearable is not None:
+        self._phone_fused = False
+        if self.wearable is not None and frame.presence is not False:
             try:
                 from sleepctl.adapters.wearable import fuse_sample
-                fuse_sample(frame, self.wearable.read_sample())
+                self._phone_fused = fuse_sample(frame, self.wearable.read_sample())
             except Exception as exc:
                 self._log(f"wearable fusion skipped: {exc}")
         return frame
@@ -334,7 +341,11 @@ class LiveDashboardDaemon:
                       if frame is not None and frame.data_age_seconds is not None else None,
                       "telemetry_stale": bool(
                           frame is not None and frame.data_age_seconds is not None
-                          and frame.data_age_seconds > self.cfg.tunables.telemetry_stale_seconds)},
+                          and frame.data_age_seconds > self.cfg.tunables.telemetry_stale_seconds),
+                      # Bed presence drives the phone supplement: in_bed -> the phone feed is
+                      # fused; out of bed -> it's ignored automatically.
+                      "bed_presence": frame.presence if frame is not None else None,
+                      "phone_fused": self._phone_fused},
         }
 
     # ------------------------------------------------------------------ cycles

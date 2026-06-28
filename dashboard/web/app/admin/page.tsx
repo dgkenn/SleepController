@@ -152,6 +152,14 @@ function AdminContent() {
                       : '—'}
                   </span>
                 </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Bed presence</span>
+                  <span className="text-sm text-gray-400">
+                    {health.phone_sensor.in_bed
+                      ? 'In bed — fused'
+                      : 'Out of bed — ignored'}
+                  </span>
+                </div>
               </div>
             )}
           </div>

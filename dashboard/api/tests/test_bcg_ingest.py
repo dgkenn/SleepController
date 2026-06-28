@@ -73,3 +73,23 @@ def test_mag_form_is_accepted(auth_client):
 def test_empty_batch_is_rejected_cleanly(auth_client):
     r = auth_client.post("/bcg/ingest", json={"fs": 50.0, "ax": [], "ay": [], "az": []})
     assert r.status_code == 200 and r.json()["ok"] is False
+
+
+def _write_presence(presence):
+    """Stamp a fresh runtime_state with a given bed presence (drives should-record)."""
+    from app import bridge
+    from app.db import get_repo
+    repo = get_repo()
+    bridge.write_runtime_state(repo.conn, {
+        "state": "MAINTENANCE", "daemon_alive": True,
+        "extra": {"power_on": True, "bed_presence": presence},
+    })
+    repo.close()
+
+
+def test_should_record_follows_bed_presence(auth_client):
+    _write_presence(True)
+    assert auth_client.get("/bcg/should-record").json()["record"] is True
+    _write_presence(False)
+    body = auth_client.get("/bcg/should-record").json()
+    assert body["record"] is False and body["presence"] is False

@@ -99,17 +99,51 @@ curl -s -X POST https://YOUR-DASHBOARD/api/bcg/ingest \
 # -> {"ok": true, "ingested": 4, "buffered": 4, ...}
 ```
 
-## Nightly routine
+## Start/stop automatically (no remembering)
 
-1. Plug the phone in (streaming all night uses battery — keep it charging).
-2. Put it where it normally sits in bed (on the mattress / under the pillow couples motion
-   best; on a nightstand still helps but sees less).
-3. Open Sensor Logger, hit record. That's it — the controller fuses the fast movement
-   automatically.
-4. In the morning, stop the recording.
+You asked: *can it just start when the mattress senses I'm in bed and stop when I get up?*
 
-> Tip: Sensor Logger can auto-start a recording; check its automation/shortcut options so you
-> don't have to remember.
+**The honest limit:** iOS sandboxes apps, so neither the mattress nor this server can reach into
+your iPhone and launch a third-party app's recording. That part has to be triggered on the phone
+itself. But the behavior splits into two pieces, and the important one is fully automatic:
+
+### Piece 1 — using the phone is already presence-driven (automatic, server-side)
+
+The daemon **only fuses the phone feed while the Pod senses you in bed.** The moment bed presence
+drops (you got up), the phone data is ignored — and it re-engages the instant you're back in bed.
+You don't configure anything: Admin → Phone Sensor shows `In bed — fused` / `Out of bed —
+ignored`. So even if the phone records 24/7, the controller only *acts* on it when you're in bed.
+
+### Piece 2 — starting/stopping the recording itself (pick one, all automatic, no tap)
+
+Because the server can't start the app, tie Sensor Logger's start/stop to an automatic iOS
+trigger. Sensor Logger exposes **Shortcuts actions** ("Start Recording" / "Stop Recording"), and
+iOS **Personal Automations** can run them with no confirmation (toggle *Ask Before Running* off):
+
+- **Charger (simplest, recommended).** You charge the phone at the bed anyway.
+  - *Automation:* When **iPhone is connected to power** → Start Sensor Logger recording.
+  - *Automation:* When **iPhone is disconnected from power** → Stop recording.
+  - Plug in at bedtime → records all night; unplug in the morning → stops. Mid-night bathroom
+    trips don't matter (Piece 1 gates them out server-side).
+
+- **Sleep Focus (tracks your schedule).**
+  - *Automation:* When **Sleep Focus turns on** → Start recording; **turns off** → Stop.
+  - Lines up with your wind-down/wake schedule automatically.
+
+- **Optional power-user: poll real bed presence.** The API exposes
+  `GET /api/bcg/should-record` → `{"record": true|false}` driven by the Pod's actual presence.
+  A Shortcuts automation can *Get Contents of URL* (with the `Authorization: Bearer <token>`
+  header) and start/stop on the flag. This is the closest to literal "mattress senses me," but
+  iOS only runs background automations on a loose schedule, so the charger/Sleep Focus triggers
+  are more reliable for the start/stop itself.
+
+> Net: set up a charger (or Sleep Focus) automation once, and from then on the phone records
+> across the night while the controller uses it only when you're actually in bed.
+
+## Nightly routine (with automation set up)
+
+Nothing — plug in at bed, unplug in the morning. The recording starts/stops itself and the
+controller fuses the movement only while you're in bed.
 
 ## How it flows through the system
 

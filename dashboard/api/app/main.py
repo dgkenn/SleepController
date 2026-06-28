@@ -143,6 +143,13 @@ class BCGBody(BaseModel):
     source: str | None = None
 
 
+@app.get("/bcg/should-record")
+def bcg_should_record(repo=Depends(repo_dep), user: str = AuthDep):
+    """Bed-presence-driven record flag for an optional iOS Shortcuts automation that starts/stops
+    the phone recording on bed-in/out. {"record": true|false, "presence": ...}."""
+    return services.bcg_should_record(repo)
+
+
 @app.post("/bcg/ingest")
 def bcg_ingest(body: BCGBody, repo=Depends(repo_dep), user: str = AuthDep):
     """Ingest a raw accelerometer batch from the phone (e.g. an iPhone in bed) → sub-minute

@@ -445,12 +445,16 @@ def data_health(repo) -> dict:
     phone = bridge.read_sensor_sample(repo.conn)
     if phone is not None:
         age = phone.get("age_seconds")
+        in_bed = (extra.get("bed_presence") is True)
+        fresh = bool(age is not None and age < 90)
         phone = {"updated": phone.get("updated"), "source": phone.get("source"),
                  "age_seconds": round(age, 1) if age is not None else None,
                  "movement": phone.get("movement"), "hr": phone.get("hr"),
                  "hrv": phone.get("hrv"),
                  "streaming": bool(age is not None and age < 120),
-                 "fusing": bool(age is not None and age < 90)}
+                 # actually fused = fresh AND the Pod senses you in bed (presence-gated).
+                 "fusing": bool(extra.get("phone_fused")) or (fresh and in_bed),
+                 "in_bed": in_bed}
     return {
         "daemon": {"alive": rt.get("daemon_alive", False), "updated": rt.get("updated"),
                    "stale": rt.get("stale", True),
@@ -650,6 +654,26 @@ def _bcg_processor(fs: float):
         st["proc"] = BCGProcessor(fs=fs)
         st["fs"] = fs
     return st["proc"]
+
+
+def bcg_should_record(repo) -> dict:
+    """Whether the phone should be recording right now, driven by the Pod's bed presence (so an
+    optional iOS Shortcuts automation can poll this and start/stop Sensor Logger on bed-in/out).
+
+    record=True while the Pod senses you in bed (or presence is unknown but the daemon is live
+    and powered — fail-open so we never miss data); False once you've left the bed."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    presence = extra.get("bed_presence")
+    powered = bool(extra.get("power_on", True)) and not rt.get("stale", True)
+    if presence is True:
+        record = True
+    elif presence is False:
+        record = False
+    else:  # unknown presence: record while the daemon is live + powered
+        record = powered
+    return {"record": bool(record), "presence": presence,
+            "daemon_alive": rt.get("daemon_alive", False), "stale": rt.get("stale", True)}
 
 
 def ingest_bcg(repo, payload: dict) -> dict:
