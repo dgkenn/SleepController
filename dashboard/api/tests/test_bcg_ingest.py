@@ -121,6 +121,23 @@ def test_ingest_sensor_logger_native_payload_filters_to_accelerometer(auth_clien
     assert body["ok"] is True and body["ingested"] == 600
 
 
+def test_fs_auto_detected_from_sensor_logger_timestamps(auth_client):
+    """No ?fs= given: the rate is inferred from the per-sample UTC-ns timestamps."""
+    import math
+    fs_true = 50.0
+    samples = []
+    for i in range(300):
+        t_ns = int(i / fs_true * 1e9)            # 50 Hz spacing in nanoseconds
+        a = 0.03 * (math.sin(2 * math.pi * 1.0 * (i / fs_true)) ** 7)
+        samples.append({"name": "accelerometer", "time": t_ns,
+                        "values": {"x": a, "y": 0.0, "z": 1.0 + a}})
+    r = auth_client.post("/bcg/ingest", json={"payload": samples})  # note: NO fs
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True and body["fs_source"] == "detected"
+    assert abs(body["fs"] - 50.0) <= 2.0       # recovered the true rate
+
+
 def test_should_record_follows_bed_presence(auth_client):
     _write_presence(True)
     assert auth_client.get("/bcg/should-record").json()["record"] is True

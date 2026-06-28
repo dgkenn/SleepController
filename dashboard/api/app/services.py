@@ -647,13 +647,28 @@ _BCG_STATE: dict = {"proc": None, "fs": None}
 
 def _bcg_processor(fs: float):
     """Lazily build/rebuild the rolling processor; rebuild only if the sample rate changes
-    (the window length is fs-dependent), so the buffer survives across batches."""
+    meaningfully (>5%) — the window length is fs-dependent, but small jitter in an auto-detected
+    rate shouldn't keep clearing the accumulated buffer."""
     from sleepctl.adapters.bcg import BCGProcessor
     st = _BCG_STATE
-    if st["proc"] is None or st["fs"] != fs:
+    cur = st["fs"]
+    if st["proc"] is None or cur is None or abs(fs - cur) / cur > 0.05:
         st["proc"] = BCGProcessor(fs=fs)
         st["fs"] = fs
     return st["proc"]
+
+
+def _fs_from_times(times_ns: list) -> "float | None":
+    """Estimate the sample rate (Hz) from a batch of per-sample UTC-epoch-nanosecond timestamps
+    (Sensor Logger's ``time`` field), so the user never has to hand-match it. None if unusable."""
+    ts = sorted(float(t) for t in times_ns if t is not None)
+    if len(ts) < 2:
+        return None
+    span_s = (ts[-1] - ts[0]) / 1e9
+    if span_s <= 0:
+        return None
+    fs = (len(ts) - 1) / span_s
+    return fs if 1.0 <= fs <= 1000.0 else None
 
 
 def bcg_should_record(repo) -> dict:
@@ -689,10 +704,11 @@ def ingest_bcg(repo, payload: dict) -> dict:
     enough, and are advisory (the Pod cloud HR stays the cardiac source of record)."""
     from sleepctl.adapters.bcg import accel_magnitude
 
-    fs = float(payload.get("fs") or 50.0)
+    explicit_fs = payload.get("fs")
     source = payload.get("source") or "phone"
 
     samples: list = []
+    times: list = []
     if isinstance(payload.get("mag"), list):
         for v in payload["mag"]:
             try:
@@ -718,10 +734,16 @@ def ingest_bcg(repo, payload: dict) -> dict:
                 ax.append(float(vals["x"])); ay.append(float(vals["y"])); az.append(float(vals["z"]))
             except (KeyError, TypeError, ValueError):
                 continue
+            if s.get("time") is not None:
+                times.append(s["time"])
         samples = accel_magnitude(ax, ay, az)
 
     if not samples:
         return {"ok": False, "error": "no usable samples", "ingested": 0}
+
+    # Sample rate: explicit ?fs= wins; else auto-detect from the per-sample timestamps Sensor
+    # Logger sends (so the user never has to match it); else a sane 50 Hz default.
+    fs = float(explicit_fs) if explicit_fs else (_fs_from_times(times) or 50.0)
 
     with _BCG_LOCK:
         proc = _bcg_processor(fs)
@@ -737,4 +759,6 @@ def ingest_bcg(repo, payload: dict) -> dict:
         })
 
     return {"ok": True, "ingested": len(samples), "buffered": buffered,
-            "fs": fs, "source": source, "vitals": v}
+            "fs": round(fs, 1), "fs_source": "explicit" if explicit_fs else (
+                "detected" if times else "default"),
+            "source": source, "vitals": v}
