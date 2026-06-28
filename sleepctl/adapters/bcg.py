@@ -75,6 +75,40 @@ class BCGWearableSource(RealtimeWearableSource):
                               movement=v["movement"], age_seconds=0.0)
 
 
+def accel_magnitude(ax, ay, az) -> List[float]:
+    """Collapse a 3-axis accelerometer batch (e.g. an iPhone on the mattress, in g) to a 1-D
+    signal for the BCG processor. The magnitude keeps motion from any orientation; the
+    processor's detrend removes the ~1 g gravity baseline, leaving heartbeat + movement."""
+    out = []
+    for x, y, z in zip(ax, ay, az):
+        try:
+            out.append(math.sqrt(float(x) ** 2 + float(y) ** 2 + float(z) ** 2))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+class BridgeWearableSource(RealtimeWearableSource):
+    """Reads the latest phone/sensor-derived sample the API wrote to the bridge (``live_sensor``),
+    so an iPhone streaming to the dashboard fuses into the daemon with no direct coupling."""
+
+    def __init__(self, repo, max_age_s: float = 90.0) -> None:
+        self.repo = repo
+        self.max_age_s = max_age_s
+
+    def read_sample(self) -> Optional[WearableSample]:
+        try:
+            from app import bridge
+            s = bridge.read_sensor_sample(self.repo.conn)
+        except Exception:
+            return None
+        if not s:
+            return None
+        return WearableSample(timestamp=datetime.now(), heart_rate=s.get("hr"),
+                              hrv=s.get("hrv"), movement=s.get("movement"),
+                              age_seconds=s.get("age_seconds"))
+
+
 def synthesize_bcg(fs: float = 100.0, secs: float = 20.0, bpm: float = 60.0,
                    move_window=None) -> List[float]:
     """Fabricate a plausible BCG for tests/demo: peaky heartbeat + slow respiration + optional

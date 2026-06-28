@@ -78,6 +78,39 @@ def mark_applied(conn: sqlite3.Connection, command_id: int) -> None:
     conn.commit()
 
 
+# ---- phone/independent-sensor sample (iPhone accelerometer → BCG) ------------
+def write_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
+    """Persist the latest phone/sensor-derived sample (singleton). Written by the API's
+    /bcg/ingest after the BCG processor turns a raw accel batch into HR/HRV/movement; read
+    by the daemon's ``BridgeWearableSource`` to fuse sub-minute movement onto the Pod frame."""
+    conn.execute(
+        """INSERT INTO live_sensor (id, updated, hr, hrv, movement, source)
+        VALUES (1,?,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+         updated=excluded.updated, hr=excluded.hr, hrv=excluded.hrv,
+         movement=excluded.movement, source=excluded.source""",
+        (_now(), sample.get("hr"), sample.get("hrv"),
+         sample.get("movement"), sample.get("source", "phone")),
+    )
+    conn.commit()
+
+
+def read_sensor_sample(conn: sqlite3.Connection) -> dict | None:
+    """Latest phone/sensor sample with a computed ``age_seconds``, or None if never written."""
+    row = conn.execute("SELECT * FROM live_sensor WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    age = None
+    if d.get("updated"):
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(d["updated"])).total_seconds()
+        except Exception:
+            age = None
+    d["age_seconds"] = age
+    return d
+
+
 def write_runtime_state(conn: sqlite3.Connection, snapshot: dict) -> None:
     conn.execute(
         """INSERT INTO runtime_state

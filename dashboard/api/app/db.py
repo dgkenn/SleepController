@@ -65,6 +65,12 @@ CREATE TABLE IF NOT EXISTS data_sync (
     source TEXT PRIMARY KEY,
     last_sync TEXT, status TEXT, message TEXT
 );
+-- Singleton: latest phone/independent-sensor sample (iPhone accelerometer → BCG-derived
+-- HR/HRV/movement). API writes it from /bcg/ingest; the daemon's BridgeWearableSource reads it.
+CREATE TABLE IF NOT EXISTS live_sensor (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    updated TEXT, hr REAL, hrv REAL, movement REAL, source TEXT
+);
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint TEXT UNIQUE, p256dh TEXT, auth TEXT, created TEXT
