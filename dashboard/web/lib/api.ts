@@ -247,6 +247,7 @@ export interface PhoneSensor {
   hrv?: number | null;
   streaming: boolean;
   fusing: boolean;
+  in_bed?: boolean;
 }
 
 export interface AdminHealth {

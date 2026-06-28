@@ -167,3 +167,29 @@ def test_live_daemon_fuses_wearable_when_attached():
         out["f"] = d._read_frame()        # fast wearable overlays the Pod frame
     _run(go())
     assert out["f"].heart_rate == 71.0 and out["f"].movement == 0.5
+
+
+def test_live_daemon_phone_fusion_is_presence_gated():
+    """Out of bed (presence False) -> the phone feed is ignored automatically; in bed -> fused."""
+    from datetime import datetime as _dt
+
+    from sleepctl.adapters.wearable import SimulatedWearableSource, WearableSample
+    repo = get_repo()
+    repo.conn.execute("UPDATE commands SET status='applied' WHERE status='pending'")
+    repo.conn.commit()
+    client = SimulatedLiveClient(scenario="normal", seed=7)
+    wear = SimulatedWearableSource(fixed=WearableSample(
+        timestamp=_dt(2026, 6, 27, 3, 0), heart_rate=71.0, movement=0.5, age_seconds=2.0))
+    d = LiveDashboardDaemon(AppConfig.default(), client, repo, verbose=False, wearable=wear)
+    out = {}
+
+    async def go():
+        await client.connect()
+        base = client.read_frame()
+        base.presence = False              # got out of bed
+        client.read_frame = lambda: base   # type: ignore[assignment]
+        out["frame"] = d._read_frame()
+    _run(go())
+    # the wearable's HR/movement did NOT overlay; the daemon flags it as not fused
+    assert out["frame"].heart_rate != 71.0
+    assert d._phone_fused is False
