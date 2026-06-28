@@ -405,8 +405,18 @@ def main() -> None:
             weather = OpenMeteoWeather(latitude=lat, longitude=lon)
         except Exception as exc:
             print(f"[daemon] weather pre-compensation disabled: {exc}", flush=True)
-    daemon = LiveDashboardDaemon(AppConfig.default(), client, get_repo(), dry_run=dry_run,
-                                 weather=weather)
+    # Phone/independent-sensor fusion: the API writes the latest iPhone-accelerometer-derived
+    # sample to the bridge; the daemon overlays its sub-minute movement onto the Pod frame.
+    repo = get_repo()
+    wearable = None
+    if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
+        try:
+            from sleepctl.adapters.bcg import BridgeWearableSource
+            wearable = BridgeWearableSource(repo)
+        except Exception as exc:
+            print(f"[daemon] phone-sensor fusion disabled: {exc}", flush=True)
+    daemon = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=dry_run,
+                                 weather=weather, wearable=wearable)
     asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
                            command_poll_seconds=args.command_poll_seconds,
                            telemetry_seconds=args.telemetry_seconds,

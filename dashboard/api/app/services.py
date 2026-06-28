@@ -440,12 +440,24 @@ def data_health(repo) -> dict:
     rows = repo.conn.execute("SELECT * FROM data_sync").fetchall()
     sources = {r["source"]: dict(r) for r in rows}
     extra = rt.get("extra") or {}
+    # Phone/independent-sensor freshness, so the user can confirm their iPhone is streaming and
+    # being fused (movement is the trustworthy phone signal; HR/HRV are best-effort).
+    phone = bridge.read_sensor_sample(repo.conn)
+    if phone is not None:
+        age = phone.get("age_seconds")
+        phone = {"updated": phone.get("updated"), "source": phone.get("source"),
+                 "age_seconds": round(age, 1) if age is not None else None,
+                 "movement": phone.get("movement"), "hr": phone.get("hr"),
+                 "hrv": phone.get("hrv"),
+                 "streaming": bool(age is not None and age < 120),
+                 "fusing": bool(age is not None and age < 90)}
     return {
         "daemon": {"alive": rt.get("daemon_alive", False), "updated": rt.get("updated"),
                    "stale": rt.get("stale", True),
                    "live": bool(extra.get("live", False)),
                    "dry_run": bool(extra.get("dry_run", False))},
         "sources": sources,
+        "phone_sensor": phone,
         "pending_commands": repo.conn.execute(
             "SELECT COUNT(*) c FROM commands WHERE status='pending'").fetchone()["c"],
     }
@@ -617,3 +629,80 @@ def experiment_stop(repo, exp_id: int) -> dict:
     from sleepctl.experiments import stop_experiment
     out = stop_experiment(repo, exp_id)
     return out or {"error": "not found"}
+
+
+# ------------------------------------------------------------------ phone/iPhone BCG ingest
+import threading  # noqa: E402
+
+# A rolling BCG processor fed by the phone's accelerometer stream. Module-level so batches
+# POSTed every few seconds accumulate into a window long enough for HRV; guarded by a lock
+# because FastAPI dispatches sync handlers across threadpool threads. (Single-worker deploy.)
+_BCG_LOCK = threading.Lock()
+_BCG_STATE: dict = {"proc": None, "fs": None}
+
+
+def _bcg_processor(fs: float):
+    """Lazily build/rebuild the rolling processor; rebuild only if the sample rate changes
+    (the window length is fs-dependent), so the buffer survives across batches."""
+    from sleepctl.adapters.bcg import BCGProcessor
+    st = _BCG_STATE
+    if st["proc"] is None or st["fs"] != fs:
+        st["proc"] = BCGProcessor(fs=fs)
+        st["fs"] = fs
+    return st["proc"]
+
+
+def ingest_bcg(repo, payload: dict) -> dict:
+    """Ingest a raw accelerometer batch from the phone (kept in bed), derive sub-minute
+    movement (+ best-effort HR/HRV from the ballistocardiogram), and publish it to the bridge
+    so the daemon fuses it onto the Pod frame. Zero device risk — the phone never touches the Pod.
+
+    Accepted batch shapes (all in native units; ``fs`` = sample rate in Hz):
+      {"fs": 50, "ax": [...], "ay": [...], "az": [...]}   3-axis accel (collapsed to magnitude)
+      {"fs": 50, "mag": [...]}                            pre-computed 1-D magnitude / single axis
+      {"fs": 50, "payload": [{"x":..,"y":..,"z":..}, ...]} list of samples (Sensor Logger style)
+    Movement is the trustworthy phone signal; HR/HRV are returned only when the BCG is clean
+    enough, and are advisory (the Pod cloud HR stays the cardiac source of record)."""
+    from sleepctl.adapters.bcg import accel_magnitude
+
+    fs = float(payload.get("fs") or 50.0)
+    source = payload.get("source") or "phone"
+
+    samples: list = []
+    if isinstance(payload.get("mag"), list):
+        for v in payload["mag"]:
+            try:
+                samples.append(float(v))
+            except (TypeError, ValueError):
+                continue
+    elif isinstance(payload.get("ax"), list):
+        samples = accel_magnitude(payload.get("ax") or [], payload.get("ay") or [],
+                                  payload.get("az") or [])
+    elif isinstance(payload.get("payload"), list):
+        ax, ay, az = [], [], []
+        for s in payload["payload"]:
+            vals = s.get("values", s) if isinstance(s, dict) else {}
+            try:
+                ax.append(float(vals["x"])); ay.append(float(vals["y"])); az.append(float(vals["z"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        samples = accel_magnitude(ax, ay, az)
+
+    if not samples:
+        return {"ok": False, "error": "no usable samples", "ingested": 0}
+
+    with _BCG_LOCK:
+        proc = _bcg_processor(fs)
+        proc.ingest(samples)
+        v = proc.vitals()
+        buffered = len(proc._buf)
+
+    if v is not None:
+        # Movement always published; HR/HRV only when the waveform yielded them.
+        bridge.write_sensor_sample(repo.conn, {
+            "hr": v.get("hr"), "hrv": v.get("hrv"),
+            "movement": v.get("movement"), "source": source,
+        })
+
+    return {"ok": True, "ingested": len(samples), "buffered": buffered,
+            "fs": fs, "source": source, "vitals": v}

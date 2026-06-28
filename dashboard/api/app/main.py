@@ -133,6 +133,24 @@ def wake_catalog(repo=Depends(repo_dep), user: str = AuthDep):
     return services.wake_catalog(repo)
 
 
+class BCGBody(BaseModel):
+    fs: float | None = None
+    ax: list[float] | None = None
+    ay: list[float] | None = None
+    az: list[float] | None = None
+    mag: list[float] | None = None
+    payload: list[dict] | None = None
+    source: str | None = None
+
+
+@app.post("/bcg/ingest")
+def bcg_ingest(body: BCGBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Ingest a raw accelerometer batch from the phone (e.g. an iPhone in bed) → sub-minute
+    movement (+ best-effort HR/HRV) published to the daemon. Auth via the same Bearer token as
+    the dashboard (30-day TTL), so a background sensor-logger app can stream to it."""
+    return services.ingest_bcg(repo, body.model_dump(exclude_none=True))
+
+
 @app.get("/stream/status")
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie

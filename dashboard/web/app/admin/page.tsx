@@ -99,6 +99,63 @@ function AdminContent() {
             )}
           </div>
 
+          {/* Phone sensor (iPhone accelerometer fusion) */}
+          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Phone Sensor</p>
+            {!health ? (
+              <p className="text-sm text-gray-600 text-center py-2">Loading…</p>
+            ) : !health.phone_sensor ? (
+              <p className="text-sm text-gray-500 py-1">
+                Not streaming. See <span className="text-brand">IPHONE_SENSOR.md</span> to stream
+                your iPhone&apos;s accelerometer as a fast in-bed motion sensor.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Status</span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        health.phone_sensor.fusing
+                          ? 'bg-success'
+                          : health.phone_sensor.streaming
+                          ? 'bg-warning'
+                          : 'bg-danger'
+                      }`}
+                    />
+                    <span className="text-sm font-semibold text-white">
+                      {health.phone_sensor.fusing
+                        ? 'Fusing'
+                        : health.phone_sensor.streaming
+                        ? 'Streaming (stale)'
+                        : 'Idle'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Source</span>
+                  <span className="text-sm text-gray-400">{health.phone_sensor.source}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Last sample</span>
+                  <span className="text-sm text-gray-400">
+                    {health.phone_sensor.age_seconds != null
+                      ? `${health.phone_sensor.age_seconds}s ago`
+                      : 'N/A'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Movement</span>
+                  <span className="text-sm text-white font-medium">
+                    {health.phone_sensor.movement != null
+                      ? health.phone_sensor.movement.toFixed(3)
+                      : '—'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Quick nav */}
           <div className="grid grid-cols-2 gap-3">
             {[
