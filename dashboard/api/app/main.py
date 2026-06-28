@@ -155,6 +155,48 @@ def wake_plan(repo=Depends(repo_dep), user: str = AuthDep):
     return services.wake_plan(repo)
 
 
+class HueConfigBody(BaseModel):
+    enabled: bool | None = None
+    bridge_ip: str | None = None
+    target_ids: list[str] | None = None
+    kind: str | None = None
+
+
+class HuePairBody(BaseModel):
+    bridge_ip: str | None = None
+
+
+@app.get("/wake/light/config")
+def hue_config(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.hue_config_view(repo)
+
+
+@app.put("/wake/light/config")
+def hue_config_update(body: HueConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.hue_config_update(repo, body.model_dump(exclude_none=True))
+
+
+@app.get("/wake/light/discover")
+def hue_discover(user: str = AuthDep):
+    return services.hue_discover()
+
+
+@app.post("/wake/light/pair")
+def hue_pair(body: HuePairBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Press the Hue bridge link button first, then call this to create + store a token."""
+    return services.hue_pair(repo, body.bridge_ip)
+
+
+@app.get("/wake/light/lights")
+def hue_lights(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.hue_lights(repo)
+
+
+@app.post("/wake/light/test")
+def hue_test(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.hue_test(repo)
+
+
 @app.get("/gym/config")
 def gym_config(repo=Depends(repo_dep), user: str = AuthDep):
     return services.gym_config_view(repo)

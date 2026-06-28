@@ -36,6 +36,18 @@ def test_gym_advice_off_when_disabled(auth_client):
     assert a["recommend"] == "off"
 
 
+def test_hue_config_get_set_hides_token(auth_client):
+    cfg = auth_client.get("/wake/light/config").json()
+    assert cfg["paired"] is False and "token" not in cfg
+    r = auth_client.put("/wake/light/config", json={"enabled": True, "bridge_ip": "192.168.1.50",
+                                                    "target_ids": ["1", "2"], "kind": "lights"})
+    assert r.status_code == 200
+    cfg2 = r.json()
+    assert cfg2["enabled"] is True and cfg2["bridge_ip"] == "192.168.1.50"
+    assert cfg2["target_ids"] == ["1", "2"]    # both bulbs
+    assert "token" not in cfg2                 # secret never returned to the client
+
+
 def test_wake_plan_unifies_gym_and_smart_alarm(auth_client):
     auth_client.put("/gym/config", json={"enabled": True, "early_offset_min": 75})
     p = auth_client.get("/wake/plan").json()
