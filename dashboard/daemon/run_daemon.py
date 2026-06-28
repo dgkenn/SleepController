@@ -183,6 +183,12 @@ class DashboardDaemon:
                 wake = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
                 if wake <= datetime.now():
                     wake += timedelta(days=1)
+                # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
+                try:
+                    from app import services
+                    wake = services.gym_effective_wake(self.repo, wake)
+                except Exception as exc:
+                    print(f"gym wake adjust skipped: {exc}", flush=True)
                 self.context.required_wake_time = wake
                 # Drive the controller objective from the night mode (work/recovery/auto).
                 self._apply_night_type(p.get("night_type") or "auto")
@@ -263,6 +269,7 @@ class DashboardDaemon:
                 "away": self.away,
                 "bed_presence": frame.presence if frame else None,
                 "phone_fused": self._phone_fused,
+                "wake_action": (decision.log_payload or {}).get("wake_action") if decision else None,
                 "wake": self.wake,
                 "session_mode": self.session_mode,
                 "nap": self.nap_plan,

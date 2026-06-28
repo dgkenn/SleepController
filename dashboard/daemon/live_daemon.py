@@ -228,6 +228,12 @@ class LiveDashboardDaemon:
                     wk = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
                     if wk <= datetime.now():
                         wk += timedelta(days=1)
+                    # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
+                    try:
+                        from app import services
+                        wk = services.gym_effective_wake(self.repo, wk)
+                    except Exception as exc:
+                        self._log(f"gym wake adjust skipped: {exc}")
                     self.context.required_wake_time = wk
                     self._apply_night_type(p.get("night_type") or "auto")
                 elif t == "clear_wake":
@@ -345,7 +351,9 @@ class LiveDashboardDaemon:
                       # Bed presence drives the phone supplement: in_bed -> the phone feed is
                       # fused; out of bed -> it's ignored automatically.
                       "bed_presence": frame.presence if frame is not None else None,
-                      "phone_fused": self._phone_fused},
+                      "phone_fused": self._phone_fused,
+                      "wake_action": (decision.log_payload or {}).get("wake_action")
+                      if decision else None},
         }
 
     # ------------------------------------------------------------------ cycles

@@ -104,6 +104,15 @@ def _hhmm(dt: Optional[datetime]) -> Optional[str]:
     return dt.strftime("%H:%M") if dt else None
 
 
+def wake_target_from_decision(decision: "GymDecision", normal_wake: datetime,
+                              early_offset_min: int) -> datetime:
+    """The deadline the smart alarm should aim for, given the gym call: the early gym time when
+    GO, the normal wake time otherwise. This is how the advisor drives the alarm."""
+    if decision.recommend == "go":
+        return normal_wake - timedelta(minutes=early_offset_min)
+    return normal_wake
+
+
 def gym_decision(now: datetime, normal_wake: Optional[datetime], recent_nights,
                  *, cfg: GymConfig = GymConfig(), sleep_onset: Optional[datetime] = None,
                  planned_bedtime: Optional[datetime] = None, last_night=None,

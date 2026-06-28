@@ -34,3 +34,13 @@ def test_gym_advice_off_when_disabled(auth_client):
     auth_client.put("/gym/config", json={"enabled": False})
     a = auth_client.get("/gym/advice").json()
     assert a["recommend"] == "off"
+
+
+def test_wake_plan_unifies_gym_and_smart_alarm(auth_client):
+    auth_client.put("/gym/config", json={"enabled": True, "early_offset_min": 75})
+    p = auth_client.get("/wake/plan").json()
+    assert p["gym_enabled"] is True
+    assert "effective_wake" in p and "normal_wake" in p
+    assert p["smart_window_min"] >= 1
+    assert isinstance(p["vibration_ladder"], list) and len(p["vibration_ladder"]) == 3
+    assert p["silent_only"] is True
