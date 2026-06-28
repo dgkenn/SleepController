@@ -87,6 +87,40 @@ def _write_presence(presence):
     repo.close()
 
 
+def test_ingest_accepts_query_token_without_cookie(client):
+    """Sensor Logger's HTTP push can't set headers, so a ?token= must authenticate."""
+    from fastapi.testclient import TestClient
+    from app.main import app
+    from app.security import create_token
+    fresh = TestClient(app)  # no login cookie
+    tok = create_token("owner")
+    r = fresh.post(f"/bcg/ingest?token={tok}&fs=50&source=iphone",
+                   json={"mag": [1.0] * 60})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    # a bad token is rejected
+    assert fresh.post("/bcg/ingest?token=garbage", json={"mag": [1.0]}).status_code == 401
+
+
+def test_ingest_sensor_logger_native_payload_filters_to_accelerometer(auth_client):
+    """The native payload streams every enabled sensor; only accelerometer entries are used."""
+    import math
+    samples = []
+    for i in range(600):
+        t = i / 50.0
+        a = 0.03 * (math.sin(2 * math.pi * 1.0 * t) ** 7)
+        samples.append({"name": "accelerometer", "time": i,
+                        "values": {"x": a, "y": 0.0, "z": 1.0 + a}})
+        # a gyroscope entry that must be ignored (huge values would wreck the magnitude)
+        samples.append({"name": "gyroscope", "time": i,
+                        "values": {"x": 9.0, "y": 9.0, "z": 9.0}})
+    r = auth_client.post("/bcg/ingest?fs=50", json={"messageId": 1, "sessionId": "s",
+                                                    "deviceId": "d", "payload": samples})
+    assert r.status_code == 200
+    body = r.json()
+    # only the 600 accelerometer samples were ingested, not the 600 gyro ones
+    assert body["ok"] is True and body["ingested"] == 600
+
+
 def test_should_record_follows_bed_presence(auth_client):
     _write_presence(True)
     assert auth_client.get("/bcg/should-record").json()["record"] is True

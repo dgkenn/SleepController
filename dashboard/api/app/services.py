@@ -703,9 +703,17 @@ def ingest_bcg(repo, payload: dict) -> dict:
         samples = accel_magnitude(payload.get("ax") or [], payload.get("ay") or [],
                                   payload.get("az") or [])
     elif isinstance(payload.get("payload"), list):
+        # Sensor Logger streams every enabled sensor in one list, each tagged by "name"; keep
+        # only accelerometer-family entries (gyro/magnetometer also carry x/y/z and would
+        # corrupt the magnitude). Entries with no "name" (our simple format) are all accepted.
         ax, ay, az = [], [], []
         for s in payload["payload"]:
-            vals = s.get("values", s) if isinstance(s, dict) else {}
+            if not isinstance(s, dict):
+                continue
+            name = str(s.get("name", "")).lower()
+            if name and "celerati" not in name and "celerometer" not in name:
+                continue  # not accelerometer / userAcceleration
+            vals = s.get("values", s)
             try:
                 ax.append(float(vals["x"])); ay.append(float(vals["y"])); az.append(float(vals["z"]))
             except (KeyError, TypeError, ValueError):
