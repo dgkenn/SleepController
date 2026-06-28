@@ -489,7 +489,25 @@ def build_parser() -> argparse.ArgumentParser:
     p_recal = sub.add_parser("recalibrate", help="Monthly: re-anchor + report ML status")
     p_recal.add_argument("--db", default="sleepctl.db")
     p_recal.set_defaults(func=_cmd_recalibrate)
+
+    p_bt = sub.add_parser("backtest",
+                          help="Prove the closed loop beats no-control on a response-aware model")
+    p_bt.add_argument("--nights", type=int, default=12)
+    p_bt.add_argument("--scenario", default="normal")
+    p_bt.add_argument("--seed", type=int, default=7)
+    p_bt.set_defaults(func=_cmd_backtest)
     return parser
+
+
+def _cmd_backtest(args) -> int:
+    from sleepctl.eval.backtest import backtest, format_report
+    rep = backtest(nights=args.nights, scenario=args.scenario, seed=args.seed)
+    print(format_report(rep))
+    d = rep["delta"]
+    improved = d["wake_events"] < 0 and d["outcome_score"] > 0
+    print("\n" + ("✓ closed loop improves the night vs no control"
+                  if improved else "✗ no improvement — investigate"))
+    return 0 if improved else 1
 
 
 def main(argv=None) -> int:

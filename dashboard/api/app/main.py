@@ -556,6 +556,13 @@ def admin_health(repo=Depends(repo_dep), user: str = AuthDep):
     return services.data_health(repo)
 
 
+@app.post("/admin/backtest")
+def admin_backtest(user: str = AuthDep):
+    """On-demand validation: does the closed loop beat no-control (and stay safe) on the
+    response-aware model? Reassurance before trusting it overnight."""
+    return services.backtest_summary()
+
+
 @app.get("/admin/logs")
 def admin_logs(limit: int = 50, repo=Depends(repo_dep), user: str = AuthDep):
     rows = repo.conn.execute(

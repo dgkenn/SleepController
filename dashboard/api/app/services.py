@@ -834,6 +834,16 @@ def gym_effective_wake(repo, normal_wake):
     return wake_target_from_decision(d, normal_wake, cfg.early_offset_min)
 
 
+def backtest_summary(nights: int = 8, scenario: str = "normal") -> dict:
+    """Run the validation backtest on demand (controller vs no-control on the response-aware
+    model) so the dashboard can show the closed loop is working + safe before trusting it live."""
+    from sleepctl.eval.backtest import backtest
+    rep = backtest(nights=nights, scenario=scenario)
+    d = rep["delta"]
+    rep["improved"] = bool(d["wake_events"] < 0 and d["outcome_score"] > 0)
+    return rep
+
+
 def wake_tuning_view(repo) -> dict:
     """The alarm's learned-to-you settings (window + lift bar + thermal maneuver) from your
     grogginess check-ins."""
