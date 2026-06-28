@@ -834,6 +834,15 @@ def gym_effective_wake(repo, normal_wake):
     return wake_target_from_decision(d, normal_wake, cfg.early_offset_min)
 
 
+def wake_tuning_view(repo) -> dict:
+    """The alarm's learned-to-you settings (window + lift bar) from your grogginess check-ins."""
+    from sleepctl.config import AppConfig
+    from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
+    base = AppConfig.default().tunables.wake_window_min
+    t = learn_wake_tuning(wake_tuning_records(repo), base_window=base)
+    return t.to_dict()
+
+
 def wake_plan(repo) -> dict:
     """The unified smart-alarm plan: the gym-aware effective wake time + the smart-wake window
     and silent escalation ladder, plus the live wake-action if the daemon is mid-wake. This is
@@ -862,6 +871,7 @@ def wake_plan(repo) -> dict:
         "vibration_ladder": [wc.gentle_vibration, wc.strong_vibration, wc.max_vibration],
         "headline": adv.get("headline") if cfg.enabled else None,
         "live": live,
+        "learned": wake_tuning_view(repo),    # personalized window + lift bar from your grogginess
     }
 
 

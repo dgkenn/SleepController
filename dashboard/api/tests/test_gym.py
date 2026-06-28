@@ -48,6 +48,12 @@ def test_hue_config_get_set_hides_token(auth_client):
     assert "token" not in cfg2                 # secret never returned to the client
 
 
+def test_wake_tuning_endpoint(auth_client):
+    t = auth_client.get("/wake/tuning").json()
+    assert "window_min" in t and "p_wake_liftable" in t and "n" in t
+    assert "is_personalized" in t and "rationale" in t
+
+
 def test_wake_plan_unifies_gym_and_smart_alarm(auth_client):
     auth_client.put("/gym/config", json={"enabled": True, "early_offset_min": 75})
     p = auth_client.get("/wake/plan").json()

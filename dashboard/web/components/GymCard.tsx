@@ -122,6 +122,19 @@ export default function GymCard() {
                       ● {plan.live.phase}: {plan.live.reason}
                     </p>
                   )}
+                  {plan.learned && (
+                    <p className="text-[10px] mt-0.5">
+                      <span
+                        className={
+                          plan.learned.is_personalized ? 'text-success' : 'text-gray-500'
+                        }
+                      >
+                        {plan.learned.is_personalized
+                          ? `tuned to you: ${plan.learned.rationale}`
+                          : plan.learned.rationale}
+                      </span>
+                    </p>
+                  )}
                 </div>
               )}
             </div>

@@ -155,6 +155,12 @@ def wake_plan(repo=Depends(repo_dep), user: str = AuthDep):
     return services.wake_plan(repo)
 
 
+@app.get("/wake/tuning")
+def wake_tuning(repo=Depends(repo_dep), user: str = AuthDep):
+    """The alarm's learned-to-you window + lift bar, from your morning grogginess check-ins."""
+    return services.wake_tuning_view(repo)
+
+
 class HueConfigBody(BaseModel):
     enabled: bool | None = None
     bridge_ip: str | None = None
