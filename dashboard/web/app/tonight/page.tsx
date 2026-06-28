@@ -11,6 +11,7 @@ import SleepSessionCard from '@/components/SleepSessionCard';
 import SleepPlanCard from '@/components/SleepPlanCard';
 import WeatherCard from '@/components/WeatherCard';
 import PreemptionCard from '@/components/PreemptionCard';
+import GymCard from '@/components/GymCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
@@ -224,6 +225,9 @@ function TonightContent() {
 
           {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
           {plan && <SleepPlanCard plan={plan} />}
+
+          {/* Gym vs. sleep morning call */}
+          <GymCard />
 
           {/* Overnight weather feed-forward */}
           <WeatherCard />

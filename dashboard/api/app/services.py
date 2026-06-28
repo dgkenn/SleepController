@@ -671,6 +671,78 @@ def _fs_from_times(times_ns: list) -> "float | None":
     return fs if 1.0 <= fs <= 1000.0 else None
 
 
+def _get_gym_config(repo):
+    from sleepctl.gym_advisor import GymConfig
+    row = repo.conn.execute("SELECT value FROM settings_kv WHERE key='gym_config'").fetchone()
+    import json as _json
+    return GymConfig.from_dict(_json.loads(row["value"]) if row else None)
+
+
+def gym_config_view(repo) -> dict:
+    return {"config": _get_gym_config(repo).to_dict()}
+
+
+def gym_config_update(repo, values: dict) -> dict:
+    import json as _json
+    from sleepctl.gym_advisor import GymConfig
+    merged = {**_get_gym_config(repo).to_dict(), **(values or {})}
+    cfg = GymConfig.from_dict(merged)            # validates/clamps (e.g. lean)
+    repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES ('gym_config', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (_json.dumps(cfg.to_dict()),))
+    repo.conn.commit()
+    return {"config": cfg.to_dict()}
+
+
+def gym_advice(repo) -> dict:
+    """Tonight/this-morning's GO-train vs SLEEP-IN call, from the stored gym config + the user's
+    own recent sleep (debt, recovery) and typical bedtime. Uses live in-bed onset when the daemon
+    has it; otherwise plans from the median recent bedtime."""
+    from datetime import datetime, timedelta
+
+    from sleepctl.gym_advisor import gym_decision
+    cfg = _get_gym_config(repo)
+    now = datetime.now()
+    recent = repo.recent_nights(14)
+    last_night = recent[0] if recent else None
+
+    # normal wake time: the stored wake setting, else 07:00 tomorrow.
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    wake_hhmm = ((rt.get("extra") or {}).get("wake") or {}).get("wake_time") or "07:00"
+    try:
+        hh, mm = (int(x) for x in wake_hhmm.split(":"))
+    except Exception:
+        hh, mm = 7, 0
+    normal_wake = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+    if normal_wake <= now:
+        normal_wake += timedelta(days=1)
+
+    # planned bedtime: median recent bedtime-of-day, projected onto tonight.
+    planned_bed = None
+    beds = [n.bedtime for n in recent if getattr(n, "bedtime", None)]
+    if beds:
+        mins = sorted((b.hour * 60 + b.minute) for b in beds)
+        med = mins[len(mins) // 2]
+        planned_bed = now.replace(hour=med // 60, minute=med % 60, second=0, microsecond=0)
+        if planned_bed > normal_wake:
+            planned_bed -= timedelta(days=1)
+
+    baseline_hrv = None
+    hrvs = sorted(float(n.avg_hrv) for n in recent if getattr(n, "avg_hrv", None))
+    if hrvs:
+        baseline_hrv = hrvs[len(hrvs) // 2]
+
+    day_demanding = bool((rt.get("extra") or {}).get("shift_plan", {}) and
+                         (rt.get("extra") or {}).get("is_short_sleep_day"))
+
+    d = gym_decision(now, normal_wake, recent, cfg=cfg, planned_bedtime=planned_bed,
+                     last_night=last_night, baseline_hrv=baseline_hrv,
+                     day_demanding=day_demanding)
+    out = d.to_dict()
+    out["enabled"] = cfg.enabled
+    return out
+
+
 def bcg_should_record(repo) -> dict:
     """Whether the phone should be recording right now, driven by the Pod's bed presence (so an
     optional iOS Shortcuts automation can poll this and start/stop Sensor Logger on bed-in/out).

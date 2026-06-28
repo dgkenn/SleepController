@@ -133,6 +133,32 @@ def wake_catalog(repo=Depends(repo_dep), user: str = AuthDep):
     return services.wake_catalog(repo)
 
 
+class GymConfigBody(BaseModel):
+    enabled: bool | None = None
+    early_offset_min: int | None = None
+    sufficient_sleep_h: float | None = None
+    min_safe_sleep_h: float | None = None
+    opportunity_value: float | None = None
+    lean: str | None = None
+    gym_days: list[int] | None = None
+
+
+@app.get("/gym/advice")
+def gym_advice(repo=Depends(repo_dep), user: str = AuthDep):
+    """GO-train vs SLEEP-IN call for this morning, from your config + recent sleep."""
+    return services.gym_advice(repo)
+
+
+@app.get("/gym/config")
+def gym_config(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.gym_config_view(repo)
+
+
+@app.put("/gym/config")
+def gym_config_update(body: GymConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.gym_config_update(repo, body.model_dump(exclude_none=True))
+
+
 class BCGBody(BaseModel):
     fs: float | None = None
     ax: list[float] | None = None

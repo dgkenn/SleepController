@@ -497,7 +497,39 @@ async function apiFetch<T>(
 // API methods
 // ---------------------------------------------------------------------------
 
+export interface GymConfig {
+  enabled: boolean;
+  early_offset_min: number;
+  sufficient_sleep_h: number;
+  min_safe_sleep_h: number;
+  opportunity_value: number;
+  lean: 'protect' | 'balanced' | 'push';
+  gym_days: number[] | null;
+}
+
+export interface GymAdvice {
+  recommend: 'go' | 'sleep_in' | 'off' | 'rest_day';
+  go_score: number;
+  confidence: number;
+  headline: string;
+  early_wake_time: string | null;
+  normal_wake_time: string | null;
+  projected_gym_sleep_h: number | null;
+  projected_sleepin_sleep_h: number | null;
+  reasons: string[];
+  enabled: boolean;
+}
+
 export const api = {
+  // Gym advisor
+  gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
+  gymConfig: () => apiFetch<{ config: GymConfig }>('/api/gym/config'),
+  gymConfigUpdate: (values: Partial<GymConfig>) =>
+    apiFetch<{ config: GymConfig }>('/api/gym/config', {
+      method: 'PUT',
+      body: JSON.stringify(values),
+    }),
+
   // Auth
   login: (username: string, password: string) =>
     apiFetch<{ token: string; user: AuthUser }>('/api/auth/login', {
