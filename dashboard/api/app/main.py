@@ -144,8 +144,11 @@ class BCGBody(BaseModel):
 
 
 def _bcg_auth(request: Request, token: str | None) -> None:
-    """Phone-friendly auth: Sensor Logger's HTTP push can't set headers, so accept the dashboard
-    token as a ?token= query param (same trick as the SSE stream), or the usual header/cookie."""
+    """Phone-friendly auth: accept the dashboard token as a ?token= query param (same trick as
+    the SSE stream) or the usual header/cookie. When ``BCG_INGEST_OPEN`` is set, auth is dropped
+    on the phone endpoints only — for a header-less device on a trusted LAN."""
+    if settings.bcg_ingest_open:
+        return
     from app.security import _token_from_request, decode_token
     decode_token(token or _token_from_request(request) or "")  # raises 401 if invalid
 

@@ -34,10 +34,23 @@ which is exactly the endpoint this dashboard exposes. No coding, no jailbreak.
 
 ## One-time setup (~5 minutes)
 
-### 1. Get a long-lived token from your dashboard
+### 1. Auth: token-less on your LAN (easiest), or a token
 
-The phone authenticates with the **same login** as the dashboard (the token lasts 30 days).
-From any machine that can reach your API, log in and copy the token:
+**Token-less (recommended for a home setup).** Because the phone streams to the API on your own
+network, you can drop auth on **just the two phone endpoints** — no token to juggle on the phone
+keyboard. In `deploy/.env` set:
+
+```
+BCG_INGEST_OPEN=1
+```
+
+…and (to reach the API directly at `http://<server-ip>:8000`) publish the port: uncomment the
+`ports: ["8000:8000"]` line on the `api` service in `docker-compose.yml`, then `make up` (or
+`docker compose up -d`). Now you can **leave the Auth Header blank.** Every other endpoint stays
+login-protected; only enable this when the API isn't exposed to the open internet.
+
+**Or use a token** (needed if you stream over the internet via the dashboard URL). The phone
+authenticates with the same login as the dashboard (token lasts 30 days):
 
 ```bash
 curl -s -X POST https://YOUR-DASHBOARD/api/auth/login \
@@ -46,8 +59,7 @@ curl -s -X POST https://YOUR-DASHBOARD/api/auth/login \
 # -> {"token":"eyJhbGciOi...","..."}
 ```
 
-Copy the `token` value. (You can also grab it from Safari's dev tools cookie/`Authorization`
-after logging into the web app.)
+Copy the `token` value and use it in step 2's Auth Header.
 
 ### 2. Configure Sensor Logger to stream to the endpoint
 
@@ -62,13 +74,11 @@ Sensor Logger's **Settings → HTTP Push** screen (the one with **Push URL** + *
      `http://YOUR-SERVER-IP:8000/bcg/ingest`  ← note the **path is `/bcg/ingest`**, and there's
      **no `/api`** when you hit the API directly on port 8000 (`/api` is only the web proxy's
      prefix).
-4. **Auth Header** — paste your token here as:
-   ```
-   Bearer <THE_TOKEN_FROM_STEP_1>
-   ```
-   (Sensor Logger sends this as the `Authorization` header, which the endpoint accepts. If your
-   app build doesn't have an Auth Header field, instead append `?token=<TOKEN>` to the Push URL —
-   that works too.)
+4. **Auth Header**:
+   - If you set `BCG_INGEST_OPEN=1` (token-less LAN) — **leave it blank.**
+   - Otherwise paste your token as `Bearer <THE_TOKEN_FROM_STEP_1>` (Sensor Logger sends it as
+     the `Authorization` header; the `Bearer ` prefix is required). If your app build lacks the
+     field, append `?token=<TOKEN>` to the Push URL instead.
 5. **Batch Period** — **1 s is perfect** (don't pay for 100/200 ms; the server keeps a rolling
    window, so 1-second batches are plenty). Leave **Skip Writing** off, **Send Images** off.
 6. Hit **Test Push** — you want a `200` with `{"ok": true, "ingested": …, "fs_source": "detected"}`.

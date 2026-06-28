@@ -25,6 +25,12 @@ class Settings:
         default_factory=lambda: os.environ.get("CORS_ORIGINS", "*").split(",")
     )
     runtime_stale_seconds: int = 180  # daemon snapshot older than this -> STALE
+    # Drop auth on the phone-sensor endpoints (/bcg/ingest, /bcg/should-record) ONLY, so a
+    # header-less device on a trusted LAN can stream without a token. Off by default; everything
+    # else stays token-protected. Only enable when the API isn't exposed to the open internet.
+    bcg_ingest_open: bool = field(
+        default_factory=lambda: os.environ.get("BCG_INGEST_OPEN", "").strip().lower()
+        in ("1", "true", "yes", "on"))
 
 
 settings = Settings()
