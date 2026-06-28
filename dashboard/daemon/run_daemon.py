@@ -87,6 +87,7 @@ class DashboardDaemon:
         self._pending_wake = None          # captured wake conditions, flushed to wake_log at close
         self._wake_last_stage = None
         self._wake_base_window = self.cfg.tunables.wake_window_min  # learned per-user window base
+        self._wake_thermal_f = self.cfg.tunables.wake_ramp_temp_f   # tonight's wake-ramp temp
         if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
             try:
                 from sleepctl.adapters.bcg import BridgeWearableSource
@@ -366,6 +367,13 @@ class DashboardDaemon:
                                        base_window=self.cfg.tunables.wake_window_min)
             self.cycle.controller.wake_orch.cfg.p_wake_liftable = tuning.p_wake_liftable
             self._wake_base_window = tuning.window_min
+            # Personalized THERMAL wake maneuver (warm vs cool) + tonight's exploration jitter.
+            from sleepctl.learning.thermal_wake import (
+                learn_thermal_wake, next_wake_f, thermal_wake_records)
+            tw = learn_thermal_wake(thermal_wake_records(self.repo),
+                                    base_f=self.cfg.tunables.wake_ramp_temp_f)
+            self._wake_thermal_f = next_wake_f(tw.wake_f, datetime.now().timetuple().tm_yday)
+            self.cycle.controller.set_wake_ramp_f(self._wake_thermal_f)
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
 
@@ -425,7 +433,8 @@ class DashboardDaemon:
                 "woke_from_stage": self._wake_last_stage,
                 "minutes_early": round(mins_early, 1) if mins_early is not None else None,
                 "window_min": (self.wake or {}).get("window_min"),
-                "forced": forced, "p_wake": la.get("p_wake")}
+                "forced": forced, "p_wake": la.get("p_wake"),
+                "wake_thermal_f": self._wake_thermal_f}
 
     def _flush_wake_log(self) -> None:
         if not self._pending_wake:

@@ -78,6 +78,7 @@ class LiveDashboardDaemon:
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
         self._wake_last_stage = None
         self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
+        self._wake_thermal_f = cfg.tunables.wake_ramp_temp_f   # tonight's wake-ramp temperature
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
@@ -146,10 +147,15 @@ class LiveDashboardDaemon:
             from dataclasses import replace
 
             from sleepctl.experiments import apply_experiment_arm
-            from sleepctl.learning.wake_ramp import learn_wake_ramp
+            from sleepctl.learning.thermal_wake import (
+                learn_thermal_wake, next_wake_f, thermal_wake_records)
             base = self.repo.latest_setpoints() or self.cfg.default_setpoints()
-            # learn the wake-window ramp from grogginess (the wake end of the trajectory)
-            base = replace(base, wake_ramp_f=learn_wake_ramp(self.repo, self.cfg, base.wake_ramp_f))
+            # Learn the per-person THERMAL wake maneuver (warm vs cool, magnitude) from grogginess,
+            # with active exploration so the curve gets sampled. Sets tonight's wake-ramp temp.
+            tw = learn_thermal_wake(thermal_wake_records(self.repo),
+                                    base_f=self.cfg.tunables.wake_ramp_temp_f)
+            self._wake_thermal_f = next_wake_f(tw.wake_f, datetime.now().timetuple().tm_yday)
+            base = replace(base, wake_ramp_f=self._wake_thermal_f)
             prof, arm = apply_experiment_arm(self.repo, datetime.now().date().isoformat(), base)
             controller.set_setpoints(prof)
             self.active_experiment = arm
@@ -442,7 +448,8 @@ class LiveDashboardDaemon:
                 "woke_from_stage": self._wake_last_stage,
                 "minutes_early": round(mins_early, 1) if mins_early is not None else None,
                 "window_min": (self.wake or {}).get("window_min"),
-                "forced": forced, "p_wake": la.get("p_wake")}
+                "forced": forced, "p_wake": la.get("p_wake"),
+                "wake_thermal_f": self._wake_thermal_f}
 
     def _flush_wake_log(self) -> None:
         if not self._pending_wake:

@@ -100,13 +100,14 @@ def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:
     with the morning grogginess check-in to personalize the wake tuning."""
     conn.execute(
         """INSERT INTO wake_log (date, woke_from_stage, minutes_early, window_min, forced,
-            p_wake, created) VALUES (?,?,?,?,?,?,?)
+            p_wake, wake_thermal_f, created) VALUES (?,?,?,?,?,?,?,?)
         ON CONFLICT(date) DO UPDATE SET
          woke_from_stage=excluded.woke_from_stage, minutes_early=excluded.minutes_early,
          window_min=excluded.window_min, forced=excluded.forced, p_wake=excluded.p_wake,
-         created=excluded.created""",
+         wake_thermal_f=excluded.wake_thermal_f, created=excluded.created""",
         (row.get("date"), row.get("woke_from_stage"), row.get("minutes_early"),
-         row.get("window_min"), 1 if row.get("forced") else 0, row.get("p_wake"), _now()))
+         row.get("window_min"), 1 if row.get("forced") else 0, row.get("p_wake"),
+         row.get("wake_thermal_f"), _now()))
     conn.commit()
 
 
