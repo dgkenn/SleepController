@@ -1,7 +1,7 @@
 'use client';
 
 import useSWR from 'swr';
-import { api, fetcher, GymAdvice, GymConfig } from '@/lib/api';
+import { api, fetcher, GymAdvice, GymConfig, WakePlan } from '@/lib/api';
 
 const LEANS: Array<GymConfig['lean']> = ['protect', 'balanced', 'push'];
 
@@ -17,6 +17,9 @@ export default function GymCard() {
   const { data: advice, mutate: mutateAdvice } = useSWR<GymAdvice>('/api/gym/advice', fetcher, {
     refreshInterval: 60000,
   });
+  const { data: plan, mutate: mutatePlan } = useSWR<WakePlan>('/api/wake/plan', fetcher, {
+    refreshInterval: 60000,
+  });
   const cfg = cfgWrap?.config;
   if (!cfg) return null;
 
@@ -24,6 +27,7 @@ export default function GymCard() {
     await api.gymConfigUpdate(values);
     mutateCfg();
     mutateAdvice();
+    mutatePlan();
   };
 
   const go = advice?.recommend === 'go';
@@ -97,6 +101,28 @@ export default function GymCard() {
                     </li>
                   ))}
                 </ul>
+              )}
+
+              {/* Smart alarm wiring: the effective alarm + how it wakes you */}
+              {plan && plan.effective_wake && advice.recommend !== 'rest_day' && (
+                <div className="mt-2 pt-2 border-t border-surface-border/60">
+                  <p className="text-[11px] text-gray-300">
+                    ⏰ Smart alarm <span className="font-semibold text-white">{plan.effective_wake}</span>
+                    {plan.moved_earlier && (
+                      <span className="text-success"> · moved earlier for the gym</span>
+                    )}
+                  </p>
+                  <p className="text-[10px] text-gray-500 mt-0.5">
+                    Catches light sleep in a {plan.smart_window_min}-min window ·{' '}
+                    {plan.silent_only ? 'silent (warmth + vibration)' : 'with sound'} · escalates only
+                    if needed, guaranteed by {plan.normal_wake && plan.recommend === 'sleep_in' ? plan.normal_wake : plan.effective_wake}
+                  </p>
+                  {plan.live && plan.live.phase !== 'idle' && plan.live.phase !== 'hold' && (
+                    <p className="text-[10px] text-brand mt-0.5 capitalize">
+                      ● {plan.live.phase}: {plan.live.reason}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           )}

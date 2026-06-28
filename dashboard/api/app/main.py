@@ -149,6 +149,12 @@ def gym_advice(repo=Depends(repo_dep), user: str = AuthDep):
     return services.gym_advice(repo)
 
 
+@app.get("/wake/plan")
+def wake_plan(repo=Depends(repo_dep), user: str = AuthDep):
+    """Unified smart-alarm plan: gym-aware effective wake time + smart window + silent ladder."""
+    return services.wake_plan(repo)
+
+
 @app.get("/gym/config")
 def gym_config(repo=Depends(repo_dep), user: str = AuthDep):
     return services.gym_config_view(repo)

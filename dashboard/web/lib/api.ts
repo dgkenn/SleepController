@@ -520,9 +520,24 @@ export interface GymAdvice {
   enabled: boolean;
 }
 
+export interface WakePlan {
+  gym_enabled: boolean;
+  recommend: 'go' | 'sleep_in' | 'off' | 'rest_day';
+  normal_wake: string | null;
+  effective_wake: string | null;
+  moved_earlier: boolean;
+  smart_window_min: number;
+  thermal_dawn_min: number;
+  silent_only: boolean;
+  vibration_ladder: number[];
+  headline: string | null;
+  live: { phase: string; vibration_power: number; reason: string } | null;
+}
+
 export const api = {
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
+  wakePlan: () => apiFetch<WakePlan>('/api/wake/plan'),
   gymConfig: () => apiFetch<{ config: GymConfig }>('/api/gym/config'),
   gymConfigUpdate: (values: Partial<GymConfig>) =>
     apiFetch<{ config: GymConfig }>('/api/gym/config', {

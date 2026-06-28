@@ -48,6 +48,13 @@ class SleepController:
         self.maintenance = MaintenanceRoutine(cfg)
         self.wake_recovery = WakeRecoveryRoutine(cfg)
         self.smart_wake = SmartWakeRoutine(cfg)
+        # Multi-signal, escalating, inertia-minimizing wake orchestrator (uses the calibrated
+        # sleep/wake classifier + the fused fast movement; never oversleeps the deadline).
+        from sleepctl.controller.sleep_wake import SleepWakeClassifier
+        from sleepctl.controller.wake_orchestrator import WakeConfig, WakeOrchestrator
+        self.wake_orch = WakeOrchestrator(WakeConfig.from_tunables(cfg.tunables),
+                                          classifier=SleepWakeClassifier(cfg))
+        self.last_wake_action = None        # exposed for telemetry/dashboard
         # The learnable setpoint profile (updated nightly by the learning loop / ML).
         self.thermal = ThermalController(cfg, profile=setpoints)
 
@@ -196,6 +203,7 @@ class SleepController:
                 self._bed_entry_time = None
                 self._sleep_onset_time = None
                 self.onset_detector.reset()
+                self.wake_orch.reset()
             intent = ThermalIntent.NEUTRAL
         elif state is ControllerState.INDUCTION:
             intent = self.induction.step(frame, objective, minutes_in_bed)
@@ -206,9 +214,20 @@ class SleepController:
         elif state is ControllerState.WAKE_RECOVERY:
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
-            intent, self.should_wake = self.smart_wake.step(frame, now, required_wake)
-            # Program a heat + gentle-vibration smart alarm for the optimal light-sleep wake.
+            # Multi-signal orchestrator: fuse the calibrated P(wake) with stage to catch a real
+            # light-sleep moment early, run the thermal dawn, escalate vibration silently, and
+            # guarantee the deadline. Falls back to stage-only when data is stale.
+            stale = (frame.data_age_seconds is not None
+                     and frame.data_age_seconds > self.cfg.tunables.telemetry_stale_seconds)
+            action = self.wake_orch.evaluate(
+                now, frame, recent, required_wake,
+                hr_base=sleep_hr_base, hrv_base=sleep_hrv_base, data_stale=stale)
+            self.last_wake_action = action
+            intent, self.should_wake = action.thermal_intent, action.should_wake
+            # Program the device's native vibration+heat smart alarm as the hardware backstop.
             self.pending_wake_alarm = self.smart_wake.alarm_spec(now, required_wake)
+            if self.pending_wake_alarm is not None and action.vibration_power:
+                self.pending_wake_alarm.vibration_power = action.vibration_power
         else:
             intent = ThermalIntent.NEUTRAL
 
@@ -361,6 +380,7 @@ class SleepController:
             "data_age_seconds": frame.data_age_seconds,
             "wake_signals": wake_signals,
             "should_wake": self.should_wake,
+            "wake_action": self.last_wake_action.to_dict() if self.last_wake_action else None,
             "minutes_in_bed": round(minutes_in_bed, 1),
         }
         return Decision(

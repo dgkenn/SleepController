@@ -743,6 +743,57 @@ def gym_advice(repo) -> dict:
     return out
 
 
+def gym_effective_wake(repo, normal_wake):
+    """The deadline the daemon should actually arm given the gym advisor: earlier on a GO call,
+    otherwise the user's set wake time. Safe no-op (returns normal_wake) when gym is off."""
+    from datetime import datetime, timedelta
+
+    from sleepctl.gym_advisor import gym_decision, wake_target_from_decision
+    cfg = _get_gym_config(repo)
+    if not cfg.enabled:
+        return normal_wake
+    recent = repo.recent_nights(14)
+    beds = [n.bedtime for n in recent if getattr(n, "bedtime", None)]
+    planned = None
+    if beds:
+        mins = sorted(b.hour * 60 + b.minute for b in beds)
+        med = mins[len(mins) // 2]
+        planned = normal_wake.replace(hour=med // 60, minute=med % 60, second=0, microsecond=0)
+        if planned > normal_wake:
+            planned -= timedelta(days=1)
+    d = gym_decision(datetime.now(), normal_wake, recent, cfg=cfg, planned_bedtime=planned,
+                     last_night=recent[0] if recent else None)
+    return wake_target_from_decision(d, normal_wake, cfg.early_offset_min)
+
+
+def wake_plan(repo) -> dict:
+    """The unified smart-alarm plan: the gym-aware effective wake time + the smart-wake window
+    and silent escalation ladder, plus the live wake-action if the daemon is mid-wake. This is
+    where the gym advisor and the smart alarm meet — GO moves the alarm earlier."""
+    from sleepctl.controller.wake_orchestrator import WakeConfig
+    cfg = _get_gym_config(repo)
+    adv = gym_advice(repo)
+    wc = WakeConfig.from_tunables(CFG.tunables)
+    normal = adv.get("normal_wake_time")
+    effective = (adv.get("early_wake_time") if adv.get("recommend") == "go"
+                 and adv.get("early_wake_time") else normal)
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    live = (rt.get("extra") or {}).get("wake_action")
+    return {
+        "gym_enabled": cfg.enabled,
+        "recommend": adv.get("recommend"),
+        "normal_wake": normal,
+        "effective_wake": effective,
+        "moved_earlier": bool(effective and normal and effective != normal),
+        "smart_window_min": wc.window_min,
+        "thermal_dawn_min": wc.thermal_dawn_min,
+        "silent_only": wc.silent_only,
+        "vibration_ladder": [wc.gentle_vibration, wc.strong_vibration, wc.max_vibration],
+        "headline": adv.get("headline") if cfg.enabled else None,
+        "live": live,
+    }
+
+
 def bcg_should_record(repo) -> dict:
     """Whether the phone should be recording right now, driven by the Pod's bed presence (so an
     optional iOS Shortcuts automation can poll this and start/stop Sensor Logger on bed-in/out).
