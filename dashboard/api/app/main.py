@@ -143,19 +143,35 @@ class BCGBody(BaseModel):
     source: str | None = None
 
 
+def _bcg_auth(request: Request, token: str | None) -> None:
+    """Phone-friendly auth: Sensor Logger's HTTP push can't set headers, so accept the dashboard
+    token as a ?token= query param (same trick as the SSE stream), or the usual header/cookie."""
+    from app.security import _token_from_request, decode_token
+    decode_token(token or _token_from_request(request) or "")  # raises 401 if invalid
+
+
 @app.get("/bcg/should-record")
-def bcg_should_record(repo=Depends(repo_dep), user: str = AuthDep):
+def bcg_should_record(request: Request, token: str | None = None, repo=Depends(repo_dep)):
     """Bed-presence-driven record flag for an optional iOS Shortcuts automation that starts/stops
     the phone recording on bed-in/out. {"record": true|false, "presence": ...}."""
+    _bcg_auth(request, token)
     return services.bcg_should_record(repo)
 
 
 @app.post("/bcg/ingest")
-def bcg_ingest(body: BCGBody, repo=Depends(repo_dep), user: str = AuthDep):
+def bcg_ingest(body: BCGBody, request: Request, token: str | None = None,
+               fs: float | None = None, source: str | None = None, repo=Depends(repo_dep)):
     """Ingest a raw accelerometer batch from the phone (e.g. an iPhone in bed) → sub-minute
-    movement (+ best-effort HR/HRV) published to the daemon. Auth via the same Bearer token as
-    the dashboard (30-day TTL), so a background sensor-logger app can stream to it."""
-    return services.ingest_bcg(repo, body.model_dump(exclude_none=True))
+    movement (+ best-effort HR/HRV) published to the daemon. ``fs``/``source``/``token`` come
+    from the query string so Sensor Logger's header-less HTTP push works:
+    ``POST /bcg/ingest?token=<JWT>&fs=50`` with the app's native JSON body."""
+    _bcg_auth(request, token)
+    payload = body.model_dump(exclude_none=True)
+    if fs is not None:
+        payload["fs"] = fs
+    if source is not None:
+        payload["source"] = source
+    return services.ingest_bcg(repo, payload)
 
 
 @app.get("/stream/status")

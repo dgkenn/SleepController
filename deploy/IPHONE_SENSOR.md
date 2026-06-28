@@ -51,31 +51,30 @@ after logging into the web app.)
 
 ### 2. Configure Sensor Logger to stream to the endpoint
 
-In **Sensor Logger**:
-1. Enable only the **Accelerometer** (turn the rest off to save battery). A rate of
-   **~50 Hz** is plenty.
-2. Open **Settings → Data Streaming → HTTP Push** (a.k.a. "Push to server").
-3. Set the URL to your ingest endpoint:
-   ```
-   https://YOUR-DASHBOARD/api/bcg/ingest
-   ```
-4. Add a custom **header**:
-   ```
-   Authorization: Bearer <the token from step 1>
-   ```
-5. Set the push interval to a few seconds (e.g. every 2–5 s).
+Sensor Logger's HTTP Push **can't set custom headers**, so the auth token goes in the **URL**
+as `?token=` (same trick the dashboard's live stream uses).
 
-Sensor Logger posts JSON in its native shape; the endpoint understands it directly. If your
-app version lets you choose the body format, any of these work:
+In **Sensor Logger**:
+1. On the **Logger** page, enable only the **Accelerometer** (turn the rest off to save
+   battery). A rate of **~50 Hz** is plenty.
+2. Tap the **gear icon** on the Logger page → enable **HTTP Push** ("push live data via HTTP").
+3. Set the URL to your ingest endpoint **with the token and rate in the query string**:
+   ```
+   https://YOUR-DASHBOARD/api/bcg/ingest?token=<THE_TOKEN_FROM_STEP_1>&fs=50&source=iphone
+   ```
+4. Set the push period to a few seconds (e.g. every 2–5 s).
+
+That's it — Sensor Logger POSTs its native JSON (`{messageId, sessionId, deviceId, payload:[…]}`),
+and the endpoint reads the accelerometer entries straight out of it (other sensors, if any, are
+ignored). If you ever build your own poster instead, these body shapes also work:
 
 ```jsonc
-// Native Sensor Logger payload (list of samples) — handled automatically:
-{ "payload": [ { "name": "accelerometer", "values": {"x":0.01,"y":0.00,"z":1.00} }, ... ] }
-
-// Or the simple explicit form, if you build your own poster:
 { "fs": 50, "ax": [...], "ay": [...], "az": [...] }     // 3-axis batch in g
 { "fs": 50, "mag": [...] }                              // pre-collapsed magnitude
 ```
+
+> The token is a normal 30-day dashboard session token. Because it's in the URL, keep the URL
+> private (it's your HTTPS endpoint); rotate by logging in again to mint a fresh one.
 
 ### 3. Start streaming and confirm it's working
 
@@ -93,9 +92,8 @@ see a **phone sensor** block:
 You can also confirm a single batch from the command line:
 
 ```bash
-curl -s -X POST https://YOUR-DASHBOARD/api/bcg/ingest \
-  -H "Authorization: Bearer <token>" -H 'Content-Type: application/json' \
-  -d '{"fs":50,"mag":[1,1,1,1]}'
+curl -s -X POST "https://YOUR-DASHBOARD/api/bcg/ingest?token=<token>&fs=50" \
+  -H 'Content-Type: application/json' -d '{"mag":[1,1,1,1]}'
 # -> {"ok": true, "ingested": 4, "buffered": 4, ...}
 ```
 
@@ -114,42 +112,64 @@ drops (you got up), the phone data is ignored — and it re-engages the instant 
 You don't configure anything: Admin → Phone Sensor shows `In bed — fused` / `Out of bed —
 ignored`. So even if the phone records 24/7, the controller only *acts* on it when you're in bed.
 
-### Piece 2 — starting/stopping the recording itself (pick one, all automatic, no tap)
+### Piece 2 — the smart charger automation (set up once, then never touch it)
 
-Because the server can't start the app, tie Sensor Logger's start/stop to an automatic iOS
-trigger. Sensor Logger exposes **Shortcuts actions** ("Start Recording" / "Stop Recording"), and
-iOS **Personal Automations** can run them with no confirmation (toggle *Ask Before Running* off):
+Because the server can't start the app, you trigger it on the phone with two iOS **Personal
+Automations** that fire on plugging/unplugging the charger. Sensor Logger exposes start/stop
+**deep links** so a Shortcut can drive it:
 
-- **Charger (simplest, recommended).** You charge the phone at the bed anyway.
-  - *Automation:* When **iPhone is connected to power** → Start Sensor Logger recording.
-  - *Automation:* When **iPhone is disconnected from power** → Stop recording.
-  - Plug in at bedtime → records all night; unplug in the morning → stops. Mid-night bathroom
-    trips don't matter (Piece 1 gates them out server-side).
+```
+sensorlogger://start     # start a recording
+sensorlogger://stop      # stop the recording
+```
 
-- **Sleep Focus (tracks your schedule).**
-  - *Automation:* When **Sleep Focus turns on** → Start recording; **turns off** → Stop.
-  - Lines up with your wind-down/wake schedule automatically.
+**"Smart" part:** a bare charger trigger would also start recording during a daytime top-up. So
+the start automation includes a **time-of-day guard** — it only records during your sleep
+window. Daytime charging does nothing.
 
-- **Optional power-user: poll real bed presence.** The API exposes
-  `GET /api/bcg/should-record` → `{"record": true|false}` driven by the Pod's actual presence.
-  A Shortcuts automation can *Get Contents of URL* (with the `Authorization: Bearer <token>`
-  header) and start/stop on the flag. This is the closest to literal "mattress senses me," but
-  iOS only runs background automations on a loose schedule, so the charger/Sleep Focus triggers
-  are more reliable for the start/stop itself.
+#### Automation A — start recording when you plug in at night
 
-> Net: set up a charger (or Sleep Focus) automation once, and from then on the phone records
-> across the night while the controller uses it only when you're actually in bed.
+1. **Shortcuts** app → **Automation** tab → **+** → **Create Personal Automation**.
+2. Trigger: **Charger** → **Is Connected** → **Next**.
+3. Add action **If** (search "If"). For the condition, tap to build:
+   *If* **Time** *is between* **9:00 PM** and **9:00 AM** (set to your real sleep window).
+   - To get "Current Time" as the If input, add a **Get Current Date** action above the If and
+     compare its time, or use the **"Time of Day"** condition if your iOS version offers it.
+4. Inside the **If** (the true branch), add **Open URLs** → set it to `sensorlogger://start`.
+5. **Next** → turn **Ask Before Running** **OFF** (so it runs silently) → **Done**.
 
-## Nightly routine (with automation set up)
+#### Automation B — stop recording when you unplug in the morning
 
-Nothing — plug in at bed, unplug in the morning. The recording starts/stops itself and the
-controller fuses the movement only while you're in bed.
+1. New Personal Automation → Trigger: **Charger** → **Is Disconnected** → **Next**.
+2. Action: **Open URLs** → `sensorlogger://stop`.
+3. **Next** → **Ask Before Running OFF** → **Done**.
+
+That's the whole thing: **plug in at bed → it records (only in your night window); unplug in the
+morning → it stops.** Mid-night bathroom trips don't matter — the recording keeps running and the
+server (Piece 1) simply ignores the phone while you're out of bed.
+
+> **Even simpler alternative (no Shortcuts):** Sensor Logger has a built-in **Rule Engine**
+> (gear icon → Rules) that can **start/stop on time of day** directly — e.g. start at 21:00,
+> stop at 09:00. That covers the "only at night" part without the charger at all; use it if you
+> don't always charge in bed. (Battery: streaming all night is fine on the charger; on battery,
+> the time-bounded rule keeps it to your sleep window.)
+
+> **Optional power-user — poll real bed presence.** `GET /api/bcg/should-record?token=<token>`
+> returns `{"record": true|false}` from the Pod's actual presence. A periodic Shortcut can fetch
+> it and start/stop on the flag — the closest to literal "mattress senses me" — but iOS runs
+> background automations on a loose schedule, so the charger trigger is more reliable for the
+> actual start/stop.
+
+## Nightly routine (with the charger automation set up)
+
+Nothing — plug in at bed, unplug in the morning. The recording starts/stops itself (only in your
+night window) and the controller fuses the movement only while you're actually in bed.
 
 ## How it flows through the system
 
 ```
 iPhone accelerometer (≈50 Hz)
-   │  Sensor Logger → HTTP push (Bearer token)
+   │  Sensor Logger → HTTP push (?token= in URL)
    ▼
 POST /api/bcg/ingest ──▶ BCGProcessor (rolling window)
    │   accel magnitude → detrend gravity → movement (+best-effort HR/HRV)
