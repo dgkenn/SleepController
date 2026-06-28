@@ -78,6 +78,17 @@ class DashboardDaemon:
             self.source = SimulatorSource("normal", seed=7,
                                           start=datetime.now() - timedelta(minutes=1))
             self.actuator = SimulatorActuator(self.source)
+        # Phone/independent-sensor fusion (same as the live daemon): the API writes the latest
+        # iPhone-accelerometer sample to the bridge; overlay its sub-minute movement here too, so
+        # the simulator path can demonstrate the phone feed end-to-end.
+        self.wearable = None
+        self._phone_fused = False
+        if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
+            try:
+                from sleepctl.adapters.bcg import BridgeWearableSource
+                self.wearable = BridgeWearableSource(self.repo)
+            except Exception as exc:
+                print(f"phone-sensor fusion disabled: {exc}", flush=True)
         self.context = ContextRecord(date=datetime.now().date().isoformat())
 
     # ---------------------------------------------------------------- commands
@@ -251,6 +262,7 @@ class DashboardDaemon:
                 "power_on": self.power_on,
                 "away": self.away,
                 "bed_presence": frame.presence if frame else None,
+                "phone_fused": self._phone_fused,
                 "wake": self.wake,
                 "session_mode": self.session_mode,
                 "nap": self.nap_plan,
@@ -270,6 +282,14 @@ class DashboardDaemon:
     def _read(self):
         frame = self.source.read_frame()
         now = self.source.now()
+        # Presence-gated phone fusion: overlay the iPhone's sub-minute movement while in bed.
+        self._phone_fused = False
+        if self.wearable is not None and frame.presence is not False:
+            try:
+                from sleepctl.adapters.wearable import fuse_sample
+                self._phone_fused = fuse_sample(frame, self.wearable.read_sample())
+            except Exception as exc:
+                print(f"wearable fusion skipped: {exc}", flush=True)
         return frame, now
 
     def control_tick(self) -> None:
