@@ -15,6 +15,18 @@ $py = Join-Path $Root ".venv\Scripts\python.exe"
 $run = Join-Path $Root ".run"
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 
+# Allow the phone in: open port 3000 on the Private network (best-effort; needs admin).
+try {
+    if (-not (Get-NetFirewallRule -DisplayName "SleepController 3000" -ErrorAction SilentlyContinue)) {
+        New-NetFirewallRule -DisplayName "SleepController 3000" -Direction Inbound `
+            -LocalPort 3000 -Protocol TCP -Action Allow -Profile Private -ErrorAction Stop | Out-Null
+        Write-Host "==> Added firewall rule for port 3000." -ForegroundColor Cyan
+    }
+} catch {
+    Write-Host "    (Couldn't add the firewall rule automatically -- if the phone can't connect," -ForegroundColor Yellow
+    Write-Host "     run this script from an Administrator PowerShell once, or allow Node when prompted.)" -ForegroundColor Yellow
+}
+
 # --- init DB + ensure the login user exists ---
 Write-Host "==> Preparing database + login user..." -ForegroundColor Cyan
 & $py -c "from app.db import connect; from app.security import ensure_bootstrap_user; connect(); ensure_bootstrap_user(); print('ready')"
@@ -37,7 +49,7 @@ Write-Host "==> Starting web (:3000)..." -ForegroundColor Cyan
 $env:API_URL = "http://localhost:8000"
 $env:PORT = "3000"
 Start-Process -FilePath "npm.cmd" -WindowStyle Hidden -WorkingDirectory (Join-Path $Root "dashboard\web") `
-    -ArgumentList @("run","dev") -RedirectStandardOutput "$run\web.log" -RedirectStandardError "$run\web.err"
+    -ArgumentList @("run","dev","--","-H","0.0.0.0") -RedirectStandardOutput "$run\web.log" -RedirectStandardError "$run\web.err"
 
 # --- find the LAN IP for the iPhone URL ---
 $ip = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
