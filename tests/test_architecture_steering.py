@@ -220,7 +220,8 @@ def test_steer_event_ledger_resolves_stage_response():
         n = repo.resolve_steer_events()
         assert n == 1
         eff = repo.steer_efficacy()
-        assert eff["deepen"]["n"] == 1 and eff["deepen"]["deepened"] == 1
-        assert eff["deepen"]["woke"] == 0
+        # efficacy is split into the actuated arm vs the shadow/control arm
+        assert eff["deepen"]["act"]["n"] == 1 and eff["deepen"]["act"]["deepened"] == 1
+        assert eff["deepen"]["act"]["woke"] == 0
     finally:
         os.remove(path)

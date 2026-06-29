@@ -164,7 +164,11 @@ CREATE TABLE IF NOT EXISTS steer_events (
     deep_deficit_min REAL,
     frac_of_night REAL,
     horizon_min REAL,
+    applied INTEGER DEFAULT 1, -- 1 = the maneuver was ACTUATED, 0 = shadow/control (the steerer
+                               -- would have acted but didn't) — the n-of-1 control arm
     deepened INTEGER,         -- 1 = reached DEEP within horizon, 0 = not, NULL = unresolved
+    succeeded INTEGER,        -- reached the maneuver's TARGET stage (deep for deepen, REM for
+                              -- rem_warm) within horizon — generic success for either direction
     caused_wake INTEGER,      -- 1 = wake event within horizon, 0 = none, NULL = unresolved
     resolved INTEGER DEFAULT 0
 );
@@ -195,9 +199,28 @@ CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status);
 """
 
 
+# Idempotent column additions for tables that predate a field (CREATE TABLE IF NOT EXISTS won't
+# add a column to an existing table). Each entry: (table, column, DDL type/default).
+_MIGRATIONS = [
+    ("steer_events", "applied", "INTEGER DEFAULT 1"),
+    ("steer_events", "succeeded", "INTEGER"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _MIGRATIONS:
+        try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        except sqlite3.Error:
+            continue
+        if cols and column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create all tables/indexes if they do not exist."""
+    """Create all tables/indexes if they do not exist, then apply additive column migrations."""
     conn.executescript(_DDL)
+    _apply_migrations(conn)
     conn.commit()
 
 
