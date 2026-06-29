@@ -11,6 +11,7 @@ import EmergencyStop from '@/components/EmergencyStop';
 import QuickTemp from '@/components/QuickTemp';
 import CheckInCard from '@/components/CheckInCard';
 import ReadinessCard from '@/components/ReadinessCard';
+import ShiftCard from '@/components/ShiftCard';
 import { useStatusStream } from '@/lib/useStatusStream';
 import useSWR from 'swr';
 import { CheckInStatus, fetcher } from '@/lib/api';
@@ -81,6 +82,9 @@ function HomeContent() {
 
           {/* Morning readiness — daytime performance forecast */}
           <ReadinessCard />
+
+          {/* Cross-shift sleep strategy: debt, banking, naps, anchor */}
+          <ShiftCard />
 
           {/* Hero temps */}
           <StatusHero data={data} />

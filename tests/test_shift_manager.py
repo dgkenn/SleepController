@@ -53,3 +53,27 @@ def test_quiet_schedule_just_maintains():
     assert plan.debt_band in ("none", "mild")
     assert plan.naps == [] or all(n.type == "anchor" for n in plan.naps)
     assert "Maintain" in plan.strategy or "Repay" in plan.strategy
+
+
+def test_banking_before_a_night_block_days_out():
+    # A night shift ~2 days away (past the immediate prophylactic-nap window) -> bank sleep now:
+    # extend tonight toward ~9.5 h and surface the Rupp banking prescription.
+    shifts = [Shift(start=NOW + timedelta(hours=48), end=NOW + timedelta(hours=60), kind="night")]
+    plan = plan_shift_sleep(_nights(3, 460), shifts, NOW)
+    assert plan.banking is not None and "extend" in plan.banking.lower()
+    assert plan.tonight_target_min >= 570          # raised toward the banking goal
+    assert "Bank" in plan.strategy
+
+
+def test_no_banking_inside_prophylactic_window():
+    # Within 16 h of the night shift it's a nap, not a banking-night recommendation.
+    shifts = [Shift(start=NOW + timedelta(hours=7), end=NOW + timedelta(hours=19), kind="night")]
+    plan = plan_shift_sleep(_nights(3, 460), shifts, NOW)
+    assert plan.banking is None
+    assert any(n.type == "prophylactic" for n in plan.naps)
+
+
+def test_no_banking_for_a_day_shift():
+    shifts = [Shift(start=NOW + timedelta(hours=48), end=NOW + timedelta(hours=60), kind="day")]
+    plan = plan_shift_sleep(_nights(3, 460), shifts, NOW)
+    assert plan.banking is None

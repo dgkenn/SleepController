@@ -592,6 +592,36 @@ export interface Backtest {
   improved: boolean;
 }
 
+export interface ShiftNap {
+  type: string;
+  when: string;
+  duration_min: number;
+  reason: string;
+}
+
+export interface ShiftPlan {
+  debt_min: number;
+  debt_h: number;
+  debt_band: 'none' | 'mild' | 'moderate' | 'severe';
+  tonight_target_min: number;
+  tonight_target_h: number;
+  naps: ShiftNap[];
+  anchor_window: string | null;
+  warnings: string[];
+  strategy: string;
+  rationale: string;
+  banking: string | null;
+  shift_enabled: boolean;
+  next_shift: string | null;
+  next_shift_kind: string;
+}
+
+export interface ShiftConfig {
+  enabled: boolean;
+  next_shift: string | null;
+  kind: string;
+}
+
 export const api = {
   // Validation backtest
   runBacktest: () => apiFetch<Backtest>('/api/admin/backtest', { method: 'POST' }),
@@ -599,6 +629,11 @@ export const api = {
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
   wakePlan: () => apiFetch<WakePlan>('/api/wake/plan'),
+
+  // Cross-shift sleep plan (debt, banking, naps, anchor)
+  shiftPlan: () => apiFetch<ShiftPlan>('/api/shift/plan'),
+  shiftConfigUpdate: (values: Partial<ShiftConfig>) =>
+    apiFetch<ShiftConfig>('/api/shift/config', { method: 'PUT', body: JSON.stringify(values) }),
 
   // Hue dawn light
   hueConfig: () => apiFetch<HueConfig>('/api/wake/light/config'),
