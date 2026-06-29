@@ -97,23 +97,48 @@ def apply(bridge_ip: str, token: str, targets, level: float,
     return ok
 
 
+def set_power(bridge_ip: str, token: str, ids, on: bool) -> bool:
+    """Turn one or more lights/PLUGS on or off (just ``{"on": ...}`` — a smart plug can't dim, so
+    a bright therapy lamp plugged into it is purely binary). Returns True if any succeeded."""
+    ok = False
+    for tid in _as_list(ids):
+        try:
+            _req("PUT", f"http://{bridge_ip}/api/{token}/lights/{tid}/state", {"on": bool(on)})
+            ok = True
+        except Exception:
+            continue
+    return ok
+
+
 class HueDawnDriver:
-    """Throttled, best-effort driver the daemon calls each tick with the orchestrator's
-    light_level. Drives one room/group or several individual bulbs; only pushes when the level
-    moves enough to matter, so the bridge isn't spammed."""
+    """Throttled, best-effort driver the daemon calls each tick. Drives TWO roles:
+      • the sunrise bulbs (room/group or individual) via a 0..1 ramp (``set_level``)
+      • an optional therapy PLUG (a 10k-lux lamp) that snaps ON at the wake moment (``set_therapy``)
+    Only pushes on a meaningful change so the bridge isn't spammed."""
 
     def __init__(self, bridge_ip: str, token: str, targets, kind: str = "group",
-                 min_delta: float = 0.05) -> None:
+                 therapy_ids=None, min_delta: float = 0.05) -> None:
         self.bridge_ip = bridge_ip
         self.token = token
         self.targets = _as_list(targets)
         self.kind = kind
+        self.therapy_ids = _as_list(therapy_ids)
         self.min_delta = min_delta
         self._last: Optional[float] = None
+        self._therapy_on: Optional[bool] = None
 
     def set_level(self, level: float) -> None:
+        if not self.targets:
+            return
         if self._last is not None and abs(level - self._last) < self.min_delta and not (
                 level == 0.0 and self._last != 0.0):
             return
         if apply(self.bridge_ip, self.token, self.targets, level, self.kind):
             self._last = level
+
+    def set_therapy(self, on: bool) -> None:
+        """Turn the bright therapy lamp on/off (only on a state change)."""
+        if not self.therapy_ids or on == self._therapy_on:
+            return
+        if set_power(self.bridge_ip, self.token, self.therapy_ids, on):
+            self._therapy_on = on

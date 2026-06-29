@@ -58,6 +58,12 @@ export default function HueCard() {
 
   const pickGroup = (id: string) => save({ target_ids: [id], kind: 'group' });
 
+  const toggleTherapy = (id: string) => {
+    const set = new Set(cfg.therapy_ids ?? []);
+    set.has(id) ? set.delete(id) : set.add(id);
+    save({ therapy_ids: Array.from(set) });
+  };
+
   const test = async () => {
     setBusy(true);
     setMsg('Flashing your light(s)…');
@@ -150,6 +156,34 @@ export default function HueCard() {
                 className={`text-[11px] px-2 py-1 rounded-lg ${
                   cfg.kind === 'lights' && cfg.target_ids.includes(id)
                     ? 'bg-brand text-white'
+                    : 'bg-surface-raised text-gray-300 border border-surface-border'
+                }`}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Therapy lamp on a smart plug — snaps full-bright at the wake moment (binary, can't dim) */}
+      {lights && Object.keys(lights).length > 0 && (
+        <div>
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+            Therapy lamp (smart plug)
+          </p>
+          <p className="text-[10px] text-gray-500 leading-relaxed mb-1.5">
+            A bright 10k-lux lamp on a Hue plug — turns full-on the instant the alarm wakes you (not
+            during the gentle ramp) for a strong circadian kick.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(lights).map(([id, name]) => (
+              <button
+                key={id}
+                onClick={() => toggleTherapy(id)}
+                className={`text-[11px] px-2 py-1 rounded-lg ${
+                  (cfg.therapy_ids ?? []).includes(id)
+                    ? 'bg-amber-500 text-black'
                     : 'bg-surface-raised text-gray-300 border border-surface-border'
                 }`}
               >

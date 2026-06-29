@@ -156,3 +156,18 @@ def test_weather_forecast_uses_daemon_state(auth_client):
         repo.close()
     w = auth_client.get("/weather/forecast").json()
     assert w["bias_f"] == -1.0 and w["source"] == "daemon"
+
+
+def test_hue_config_therapy_roundtrip_and_in_wake_plan(auth_client):
+    # Configure a sunrise bulb + a therapy plug; both should persist and the unified wake plan
+    # should report the lights as part of the alarm (the token is never echoed back).
+    r = auth_client.put("/wake/light/config", json={
+        "enabled": True, "bridge_ip": "1.2.3.4", "target_ids": ["1"],
+        "therapy_ids": ["9", "11"], "kind": "lights"})
+    assert r.status_code == 200
+    cfg = auth_client.get("/wake/light/config").json()
+    assert cfg["target_ids"] == ["1"] and cfg["therapy_ids"] == ["9", "11"]
+    assert "token" not in cfg
+    plan = auth_client.get("/wake/plan").json()
+    assert plan["dawn_light"]["enabled"] is True
+    assert plan["dawn_light"]["sunrise"] is True and plan["dawn_light"]["therapy"] is True

@@ -34,3 +34,32 @@ def test_apply_drives_multiple_lights(monkeypatch):
     assert hue.apply("1.2.3.4", "tok", ["3", "7"], 0.5, kind="lights") is True
     assert any("/lights/3/state" in u for u in seen)
     assert any("/lights/7/state" in u for u in seen)    # both bulbs driven
+
+
+def test_set_power_drives_multiple_plugs(monkeypatch):
+    seen = []
+    monkeypatch.setattr(hue, "_req",
+                        lambda method, url, body=None, timeout=4.0: seen.append((url, body)))
+    assert hue.set_power("1.2.3.4", "tok", ["9", "11"], True) is True
+    assert any("/lights/9/state" in u and b == {"on": True} for u, b in seen)
+    assert any("/lights/11/state" in u and b == {"on": True} for u, b in seen)  # both plugs on
+
+
+def test_set_therapy_only_fires_on_change(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hue, "set_power", lambda ip, tok, ids, on: (calls.append(on) or True))
+    d = hue.HueDawnDriver("1.2.3.4", "tok", [], "lights", therapy_ids=["9"])
+    d.set_therapy(False)         # no-op: already implicitly off (None != False -> one push)
+    d.set_therapy(False)         # unchanged -> skipped
+    d.set_therapy(True)          # change -> push
+    d.set_therapy(True)          # unchanged -> skipped
+    d.set_therapy(False)         # change -> push
+    assert calls == [False, True, False]
+
+
+def test_set_level_noop_without_sunrise_targets(monkeypatch):
+    calls = []
+    monkeypatch.setattr(hue, "apply", lambda *a, **k: (calls.append(a) or True))
+    d = hue.HueDawnDriver("1.2.3.4", "tok", [], "lights", therapy_ids=["9"])
+    d.set_level(0.5)             # therapy-only config -> sunrise ramp must not call the bridge
+    assert calls == []
