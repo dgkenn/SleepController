@@ -957,6 +957,15 @@ def wake_plan(repo) -> dict:
             "dawn_ramp_min": wc.thermal_dawn_min,
             "post_wake_hold_min": wc.post_wake_light_min,   # bright dose held this long past wake
         },
+        # Opt-in post-wake cool snap: surfaced as an available option but NOT yet active (the
+        # cooling maneuver isn't wired). `active` stays False until implemented even if enabled.
+        "cold_snap": {
+            "available": True,
+            "enabled": bool(wc.cold_snap_enabled),
+            "active": False,
+            "note": "Planned: a brief cool drop right after wake to shake off sleepiness "
+                    "(suits a hot sleeper). Not wired up yet — toggle is a placeholder.",
+        },
         # Post-wake readiness: inertia buffer + caffeine timing, grounded in the literature.
         "readiness": wake_readiness(repo, normal, effective),
         "learned": wake_tuning_view(repo),    # personalized window + lift bar from your grogginess

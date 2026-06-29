@@ -179,3 +179,5 @@ def test_wake_plan_has_readiness_and_caffeine(auth_client):
     r = plan["readiness"]
     assert r["buffer_min"] >= 15 and "note" in r        # always at least a typical inertia buffer
     assert r["caffeine"]["dose_mg"] == 100 and "onset" in r["caffeine"]
+    cs = plan["cold_snap"]                                # surfaced as an option, not yet active
+    assert cs["available"] is True and cs["active"] is False

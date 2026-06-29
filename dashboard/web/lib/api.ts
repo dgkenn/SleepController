@@ -539,6 +539,12 @@ export interface WakePlan {
     dawn_ramp_min: number;
     post_wake_hold_min: number;
   };
+  cold_snap?: {
+    available: boolean;
+    enabled: boolean;
+    active: boolean;
+    note: string;
+  };
   readiness?: {
     buffer_min: number;
     minutes_earlier_than_usual: number;
