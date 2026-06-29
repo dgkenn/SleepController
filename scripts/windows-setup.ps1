@@ -1,4 +1,4 @@
-# SleepController — Windows one-time setup.
+# SleepController -- Windows one-time setup.
 # Run AFTER installing Python 3.11, Git, and Node LTS (see deploy\WINDOWS_HOME_SERVER.md Step 0),
 # in a freshly-opened PowerShell. Clones the repo, vendors pyEight, builds the Python venv +
 # engine, installs the web app, and generates the dashboard login.
@@ -39,20 +39,21 @@ $envPath = Join-Path $Root "deploy\.env"
 function RandHex([int]$n) { -join ((1..$n) | ForEach-Object { '{0:x2}' -f (Get-Random -Maximum 256) }) }
 if (-not (Test-Path $envPath)) {
     $pw = RandHex 4
-    @"
-SLEEPCTL_DB=$Root\sleepctl.db
-JWT_SECRET=$(RandHex 32)
-DASHBOARD_USER=admin
-DASHBOARD_PASSWORD=$pw
-BCG_INGEST_OPEN=1
-SLEEPCTL_LIVE=1
-SLEEPCTL_DRY_RUN=1
-"@ | Set-Content -Encoding ASCII $envPath
+    $lines = @(
+        "SLEEPCTL_DB=$Root\sleepctl.db",
+        "JWT_SECRET=$(RandHex 32)",
+        "DASHBOARD_USER=admin",
+        "DASHBOARD_PASSWORD=$pw",
+        "BCG_INGEST_OPEN=1",
+        "SLEEPCTL_LIVE=1",
+        "SLEEPCTL_DRY_RUN=1"
+    )
+    Set-Content -Path $envPath -Value $lines -Encoding ASCII
     Write-Host ""
     Write-Host "  Dashboard login:  admin  /  $pw" -ForegroundColor Green
     Write-Host "  (also saved in deploy\.env)" -ForegroundColor Green
 } else {
-    Write-Host "  deploy\.env already exists — leaving it as is." -ForegroundColor Yellow
+    Write-Host "  deploy\.env already exists -- leaving it as is." -ForegroundColor Yellow
 }
 
 Write-Host ""

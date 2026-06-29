@@ -1,4 +1,4 @@
-# SleepController — launch the home server on Windows (API + control daemon + web PWA).
+# SleepController -- launch the home server on Windows (API + control daemon + web PWA).
 # Reads deploy\.env, ensures the login user, and starts the three services in the background.
 $ErrorActionPreference = "Stop"
 $Root = Join-Path $HOME "SleepController"
@@ -6,7 +6,7 @@ Set-Location $Root
 
 # --- load deploy\.env into the environment ---
 $envPath = Join-Path $Root "deploy\.env"
-if (-not (Test-Path $envPath)) { Write-Host "deploy\.env missing — run windows-setup.ps1 first." -ForegroundColor Red; exit 1 }
+if (-not (Test-Path $envPath)) { Write-Host "deploy\.env missing -- run windows-setup.ps1 first." -ForegroundColor Red; exit 1 }
 Get-Content $envPath | ForEach-Object {
     if ($_ -match '^\s*([^#=]+)=(.*)$') { Set-Item -Path ("env:" + $matches[1].Trim()) -Value $matches[2].Trim() }
 }
