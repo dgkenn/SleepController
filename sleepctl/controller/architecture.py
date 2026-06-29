@@ -117,6 +117,12 @@ class ArchitectureSteering:
             rem_back_q=_f(t.steer_rem_back_q, 1.6),
         )
 
+    def prewake_standoff_min(self) -> float:
+        """How long before the wake deadline the steerer stops deepening and yields to the wake-up
+        trajectory: the smart-wake window plus a guard (~a cycle)."""
+        t = self.cfg.tunables
+        return _f(t.wake_window_min, 30.0) + _f(t.steer_prewake_guard_min, 45.0)
+
     def evaluate(
         self,
         *,
@@ -127,9 +133,20 @@ class ArchitectureSteering:
         current_stage: Optional[SleepStage],
         targets,
         risk_low: bool,
+        minutes_to_wake: Optional[float] = None,
     ) -> SteerDecision:
         """Decide whether to nudge deeper (the workhorse), warm for a late REM-unblock (optional,
-        off by default), or hold. Maintenance-first: a non-low risk always yields ``hold``."""
+        off by default), or hold. This is the in-night thermal arbiter, with a strict precedence
+        that RECONCILES steering against the other two sleep maneuvers:
+
+          1. wake-PREVENTION wins — a non-low ``risk_low`` (the controller folds in rising
+             wake-risk + the leading-edge precursor + a micro-arousal) always yields ``hold`` so
+             maintenance (the #1 priority) owns the bed; the settle nudge runs instead of deepening.
+          2. wake-UP handoff — within ``prewake_standoff_min`` of the deadline we stop deepening so
+             the smart-wake ramp can lift you out of light sleep; deepening you here would just add
+             sleep-inertia to the wake.
+          3. only then DEEPEN (or the off-by-default REM-unblock); else hold.
+        """
         t = self.cfg.tunables
         traj = self.build_trajectory(targets, est_sleep_min)
         mso = max(0.0, _f(minutes_since_onset, 0.0))
@@ -142,11 +159,22 @@ class ArchitectureSteering:
             return SteerDecision("hold", deep_def, rem_def, frac, on_curve, risk_low,
                                  "in-night steering disabled")
         if not risk_low:
-            # Maintenance is the top priority: never deepen while a disturbance is brewing.
+            # (1) Maintenance is the top priority: never deepen while a disturbance is brewing —
+            # the wake-prevention settle nudge owns the bed instead.
             return SteerDecision("hold", deep_def, rem_def, frac, on_curve, risk_low,
-                                 "awakening-risk not low -> hold (maintenance first)")
+                                 "awakening-risk not low -> hold (wake-prevention owns the bed)")
 
-        # --- DEEPEN: the workhorse. Light-but-should-be-deep, early, with a real deficit. -------
+        # (2) Wake-up handoff: stand down as the deadline approaches so the wake-up trajectory can
+        # surface you from LIGHT sleep — never deepen you into pre-wake inertia.
+        near_wake = (minutes_to_wake is not None
+                     and minutes_to_wake <= self.prewake_standoff_min())
+        if near_wake:
+            return SteerDecision(
+                "hold", deep_def, rem_def, frac, on_curve, risk_low,
+                f"within {self.prewake_standoff_min():.0f} min of wake -> stand down for the "
+                f"wake-up ramp (avoid deep-sleep inertia)")
+
+        # --- (3a) ACQUIRE: the deepen workhorse. Light-but-should-be-deep, early, real deficit. -
         if (current_stage in _LIGHTISH
                 and frac <= _f(t.steer_deepen_max_fraction, 0.6)
                 and deep_def >= _f(t.steer_deepen_min_deficit_min, 8.0)):
@@ -155,15 +183,32 @@ class ArchitectureSteering:
                 f"deep {deep_def:.0f} min behind the ideal curve at "
                 f"{frac:.0%} of the night, in light sleep -> cool toward deep")
 
+        # --- (3b) DEFEND the favorable state you're already IN. The complement of acquiring a
+        # better one: when you're in DEEP (the recovery-critical state), hold the cool, stable
+        # setpoint to PROLONG the bout and never trade it away — the bed's job is to keep you here,
+        # not pull you out. (The thermal action matches what maintenance already does for DEEP; the
+        # explicit verdict unifies the reasoning and guards the REM-unblock below.) ---------------
+        if current_stage is SleepStage.DEEP:
+            return SteerDecision(
+                "defend_deep", deep_def, rem_def, frac, on_curve, risk_low,
+                "in deep sleep -> hold cool + stable to keep you here (defend the favorable state)")
+
         # --- REM-unblock (the "nudge lighter" corollary): back-third only, deep already met, REM
-        # behind. OFF by default; only ships per person once A/B proves it helps. Never reduces
-        # deep below its floor (we only fire when deep is on/above its curve). -------------------
+        # behind, in LIGHT (never mid-deep — defend_deep above guards that). OFF by default; only
+        # ships per person once A/B proves it helps. Never reduces deep below its floor. ----------
         if (t.steer_rem_unblock_enabled and frac >= 0.66 and on_curve
                 and current_stage is SleepStage.LIGHT
                 and rem_def >= _f(t.steer_deepen_min_deficit_min, 8.0)):
             return SteerDecision(
                 "rem_warm", deep_def, rem_def, frac, on_curve, risk_low,
                 f"back third, deep on-curve, REM {rem_def:.0f} min behind -> small warm bias")
+
+        # --- DEFEND REM in the back half (favorable there): hold the gentle warm, don't cool-
+        # disturb it. Again matches maintenance's REM behaviour; the verdict makes it explicit. ---
+        if current_stage is SleepStage.REM and frac >= 0.5:
+            return SteerDecision(
+                "defend_rem", deep_def, rem_def, frac, on_curve, risk_low,
+                "in back-half REM -> hold steady to keep you here (defend the favorable state)")
 
         return SteerDecision("hold", deep_def, rem_def, frac, on_curve, risk_low,
                              "on/near the ideal curve or not steerable now -> hold")

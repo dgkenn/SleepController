@@ -522,7 +522,8 @@ def preemption_status(repo) -> dict:
         # In-night architecture steering ("nudge me deeper"): live maneuver + how far off the
         # ideal deep curve we are, plus the learned per-maneuver deepen/wake rates.
         "steering": {
-            "active": bool(steer.get("active", False)),
+            "active": bool(steer.get("active", False)),       # nudging deeper (acquire)
+            "defending": bool(steer.get("defending", False)),  # holding a favorable state
             "maneuver": steer.get("maneuver", "hold"),
             "deep_deficit_min": steer.get("deep_deficit_min"),
             "deep_min_so_far": steer.get("deep_min_so_far"),
