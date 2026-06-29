@@ -77,9 +77,16 @@ def learn_perfect_weights(repo, mode: NightMode = NightMode.NORMAL, min_nights: 
 
 def personalized_targets(repo, mode: NightMode = NightMode.NORMAL,
                          total_sleep_target_min: Optional[int] = None):
-    """``targets_for(mode)`` with the user's revealed-preference weights applied (evidence prior
-    when data is thin). Pass to ``perfect_sleep_index(..., targets=...)`` / ``morning_readiness``."""
+    """``targets_for(mode)`` made personal: the user's revealed-preference WEIGHTS *and* the LEARNED
+    ideal architecture LEVELS (deep/REM %), both from the heavily-weighted morning subjective survey
+    and shrunk to the evidence prior when data is thin. This is "what perfect means for YOU."
+    Pass to ``perfect_sleep_index(..., targets=...)`` / ``morning_readiness``."""
     from dataclasses import replace
+
+    from sleepctl.learning.ideal_architecture import learn_ideal_architecture
     base = targets_for(mode) if total_sleep_target_min is None \
         else targets_for(mode, total_sleep_target_min)
-    return replace(base, weights=learn_perfect_weights(repo, mode))
+    lvl = learn_ideal_architecture(repo, mode)
+    return replace(base, weights=learn_perfect_weights(repo, mode),
+                   deep_pct_ideal=lvl["deep_pct_ideal"], deep_pct_min=lvl["deep_pct_min"],
+                   rem_pct_ideal=lvl["rem_pct_ideal"], rem_pct_min=lvl["rem_pct_min"])

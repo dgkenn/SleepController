@@ -16,6 +16,17 @@ matters most in that situation:
 | **Constrained** (short, early wake) | **18–22 %** (protect the homeostatically-defended, front-loaded deep) | 16–20 % (de-emphasized) | ≥ 92 % | **continuity** (WASO + awakenings) + efficiency; duration de-weighted |
 | **Recovery** (off day / debt) | 18–23 % | **22–26 %** (REM rebound) | ≥ 86 % | **total sleep** + REM + autonomic (HRV) recovery |
 
+**Learning the ideal itself (not just how to hit it).** The targets above are the *evidence prior*.
+Two learners then personalize what "perfect" means for *you*, both driven by the **morning
+subjective survey** (how rested / how groggy / expected daytime energy) — the heavily-weighted
+ground truth of recovery:
+- `perfect_weights` learns *which metrics matter most* for your felt recovery (revealed preference).
+- `ideal_architecture` learns *the target levels themselves* — the deep%/REM% present on the nights
+  you rated best becomes your personal ideal, **shrunk to and bounded within ±4 points of the
+  evidence prior** (continuity/maintenance never moved). `personalized_targets()` applies both, so
+  the index the controller is judged against, and the "what good looks like" shown on the dashboard,
+  converge over weeks to *your* optimum without ever drifting from the literature.
+
 The starting **temperature priors** are on the device's 55–110 °F water scale and follow the Eight
 Sleep Autopilot-RCT direction (cooler → deep, warmer → REM):
 

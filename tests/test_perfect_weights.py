@@ -56,4 +56,7 @@ def test_personalized_targets_wraps_weights(repo):
     _seed_deep_drives_quality(repo)
     t = personalized_targets(repo, NightMode.NORMAL)
     assert t.weights == learn_perfect_weights(repo, NightMode.NORMAL)
-    assert t.deep_pct_ideal == targets_for(NightMode.NORMAL).deep_pct_ideal  # only weights change
+    # personalized_targets now also learns the ideal LEVELS from the morning survey: this seed has
+    # deep driving felt quality, so the personal deep ideal moves up (bounded near evidence).
+    base = targets_for(NightMode.NORMAL).deep_pct_ideal
+    assert base <= t.deep_pct_ideal <= base + 0.045
