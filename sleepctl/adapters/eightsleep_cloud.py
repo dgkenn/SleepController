@@ -333,7 +333,8 @@ class EightSleepClient:
         return int(getattr(self._user, "heating_level", 0) or 0)
 
     def device_status(self) -> dict:  # pragma: no cover - requires live device
-        """Live device health for the dashboard (online, water, priming state)."""
+        """Live device health for the dashboard (online, water, priming state) + the device's own
+        first alarm (so the dashboard can verify a smart-wake actually landed on the Pod)."""
         d = _safe(lambda: self._eight.device_data, {}) or {}
         return {
             "online": d.get("online"),
@@ -341,8 +342,20 @@ class EightSleepClient:
             "priming": d.get("priming"),
             "needs_priming": d.get("needsPriming"),
             "temp_available": d.get("isTemperatureAvailable"),
+            "alarm": self._alarm_readback(),
             "simulated": False,
         }
+
+    def _alarm_readback(self) -> dict | None:  # pragma: no cover - requires live device
+        """Best-effort: the Pod's own first alarm slot {enabled, time}, for round-trip verification
+        of set_wake. Returns None if the device doesn't surface alarms in this firmware/shape."""
+        alarms = _safe(lambda: self._user.alarms, None)
+        if not alarms:
+            return None
+        a = alarms[0]
+        if not isinstance(a, dict):
+            return None
+        return {"enabled": a.get("enabled"), "time": a.get("time") or a.get("nextTimestamp")}
 
     # ----------------------------------------------------- Eight Sleep app parity
     # These mirror the controls exposed by the official Eight Sleep app so the

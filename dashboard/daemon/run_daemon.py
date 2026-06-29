@@ -282,6 +282,17 @@ class DashboardDaemon:
         self.cycle.controller.set_session("night", keep_light=False)
 
     # ---------------------------------------------------------------- snapshot
+    def _sim_device_level(self, target_f):
+        """Simulated device readback: the level the sim 'device' accepted (0 when powered off)."""
+        if not self.power_on:
+            return 0
+        if target_f is None:
+            return None
+        try:
+            return self.cycle.controller.thermal.to_level(float(target_f))
+        except Exception:
+            return None
+
     def _snapshot(self, decision, frame) -> dict:
         target = decision.target_temp_f if decision else None
         if self.mode == "manual" and self.manual_target_f is not None:
@@ -313,10 +324,18 @@ class DashboardDaemon:
                 "session_mode": self.session_mode,
                 "nap": self.nap_plan,
                 "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
+                # Simulated device readback (the sim "device" instantly accepts the commanded
+                # level; the LIVE daemon supplies the Pod's real readings). Lets the round-trip
+                # verifier exercise its full flow against the simulator.
+                "live": False,
+                "device_level": self._sim_device_level(target),
+                "device_target_level": self._sim_device_level(target),
                 # device health + the high-leverage feature state (simulator values here;
                 # the live daemon supplies real device readings).
                 "device": {"online": True, "has_water": True, "priming": False,
-                           "needs_priming": False, "temp_available": True, "simulated": True},
+                           "needs_priming": False, "temp_available": True, "simulated": True,
+                           "alarm": ({"enabled": True, "time": (self.wake or {}).get("wake_time")}
+                                     if self.wake else {"enabled": False, "time": None})},
                 "thermal_health": {"state": "ok", "responding": True,
                                    "reason": "simulator", "device_level": None,
                                    "target_level": None, "gap": None},
