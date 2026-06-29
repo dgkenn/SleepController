@@ -3,6 +3,12 @@
 **Goal:** prevent nocturnal awakenings (the user's #1 problem) using only the data available
 **without rooting the device**, and be honest about what that data can and cannot do.
 
+> **Now personalized.** The fixed precursor thresholds described here are tuned per-person by a
+> learner that mines the sensor trajectory before *your* awakenings (HR/HRV drift, breathing
+> irregularity, **tossing/turning bursts**, bed warming) vs matched control windows — see
+> `awakening_precursor_profile` + `PrecursorDetector.personalize` in
+> [SELF_LEARNING.md](SELF_LEARNING.md) §7 and [CONTROL_LAW.md](CONTROL_LAW.md) §5.
+
 ## The hard constraint: ~60 s is the floor everywhere
 
 Investigation of the Eight Sleep API surface and the community local-API projects established:

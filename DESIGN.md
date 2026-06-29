@@ -230,6 +230,15 @@ input**, not just an outcome metric.
 
 Conservative, explainable, and resistant to overfitting (`sleepctl/learning/`).
 
+> **Current detail lives in focused docs** (this section is the original v1 foundation; the system
+> has grown two timescales and an in-night layer on top of it):
+> - **[docs/CONTROL_LAW.md](docs/CONTROL_LAW.md)** — the one coherent per-night ideal architecture
+>   (mode + debt + learned levels + stress), conflict reconciliation, and the deviation→°F law.
+> - **[docs/ARCHITECTURE_STEERING.md](docs/ARCHITECTURE_STEERING.md)** — the in-night favorable-state
+>   controller (acquire deeper / defend the good state), reconciled with wake-prevention + wake-up.
+> - **[docs/SELF_LEARNING.md](docs/SELF_LEARNING.md)** — the per-phase learners, the causal n-of-1
+>   deepening/lightening A/B, the wake-causation audit, and the personalized awakening-precursor model.
+
 - **Rolling baselines** (`BaselineEngine`): 7- and 14-day **median + MAD** (not
   mean/stdev) for total sleep, deep, REM, efficiency, wake events, WASO, HRV, HR, onset
   latency. Median+MAD means a single bad night barely moves the baseline. Tolerates short
