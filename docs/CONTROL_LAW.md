@@ -111,11 +111,34 @@ efficiency +0.10, HRV +0.05 — so the ML and rule paths agree on what "better" 
 in opposite directions. Below the confidence/data gate it falls back to the conservative rule
 policy (do-no-harm).
 
-## 5. In-night steering: deviation from the ideal *curve* → a real-time deepen nudge
+## 5. In-night steering: a single favorable-state controller (acquire · defend · reconcile)
 
 §4 is the **slow loop** (cross-night setpoint learning). On top of it runs a **fast loop** inside
 Maintenance (`controller/architecture.py`) that acts *within the night*, within bounds the slow loop
-set. It answers "I'm lighter than I should be right now — steer me deeper":
+set. It is **one** controller with a single job — **keep you in the most favorable state you can be
+in right now** — expressed as two complementary moves and reconciled against the other two in-night
+maneuvers by a strict precedence:
+
+- **ACQUIRE a better state** — "I'm lighter than I should be → steer me deeper."
+- **DEFEND the good state I'm in** — "I'm in deep / back-half REM → hold cool + stable to keep me
+  here and not let me slip out to something worse." (The thermal action matches what Maintenance
+  already does per stage; the explicit verdict unifies the reasoning and guards against trading a
+  live deep bout away.)
+
+**The precedence (how steering, wake-prevention, and wake-up reconcile — one arbiter, pinned by
+tests):**
+
+```
+1. wake-PREVENTION  (rising risk / precursor / micro-arousal)  → settle; never deepen into it
+2. wake-UP handoff  (within wake_window + ~a cycle of the deadline) → stand down for the ramp
+3. favorable-state  → ACQUIRE deeper (if behind, light, early) or DEFEND deep/REM (if in it)
+4. else hold
+```
+
+So maintenance (#1 priority) always outranks deepening; the steerer hands the bed to the wake-up
+trajectory before the deadline so it never deepens you into sleep-inertia; and only with a clear
+runway does it acquire/defend. All three share the thermal channel through this one ordering, so they
+never fight. The "acquire deeper" details:
 
 - **The ideal curve.** From tonight's personalized targets it builds the ideal *cumulative* deep and
   REM minutes vs time-since-onset: **deep front-loaded** (most SWS in the first cycles — exponent
@@ -142,4 +165,7 @@ The state machine picks one intent → one evidence-grounded target; biases laye
 warming maneuvers bypass the cool bias; each learner owns its own knob; and when architecture
 drifts, a single maintenance-first priority maps the deviation to a bounded, held, revert-guarded
 ±1 °F change — with the rule and ML paths sharing the same maintenance-dominant objective so they
-never conflict.
+never conflict. Inside the night, one favorable-state controller acquires a deeper state when you're
+behind and defends the deep/REM state you're in — reconciled with wake-prevention and the wake-up
+ramp by a strict precedence (prevention > wake-up handoff > acquire/defend), so the three never
+fight over the bed.

@@ -71,10 +71,48 @@ def test_no_deepen_late_in_the_night():
 def test_never_pulls_out_of_rem_or_deep_to_chase_deep():
     s = _steer()
     tgt = targets_for(NightMode.NORMAL)
-    for stage in (SleepStage.REM, SleepStage.DEEP):
-        d = s.evaluate(minutes_since_onset=30, est_sleep_min=420, deep_min_so_far=2.0,
-                       rem_min_so_far=4.0, current_stage=stage, targets=tgt, risk_low=True)
-        assert d.maneuver == "hold"
+    # In DEEP early we DEFEND (hold), never acquire; in REM early we just hold (REM defend is
+    # back-half). Either way we never emit a 'deepen' that would pull you out of a good state.
+    deep = s.evaluate(minutes_since_onset=30, est_sleep_min=420, deep_min_so_far=2.0,
+                      rem_min_so_far=4.0, current_stage=SleepStage.DEEP, targets=tgt, risk_low=True)
+    assert deep.maneuver == "defend_deep" and deep.deepen is False
+    rem = s.evaluate(minutes_since_onset=30, est_sleep_min=420, deep_min_so_far=2.0,
+                     rem_min_so_far=4.0, current_stage=SleepStage.REM, targets=tgt, risk_low=True)
+    assert rem.deepen is False
+
+
+def test_stands_down_for_the_wakeup_trajectory_near_the_deadline():
+    s = _steer()
+    tgt = targets_for(NightMode.NORMAL)
+    # Same deep deficit + light + risk low, but the wake deadline is close -> DO NOT deepen; hand
+    # off to the wake-up ramp so we don't wake you out of freshly-induced deep sleep (inertia).
+    near = s.evaluate(minutes_since_onset=30, est_sleep_min=420, deep_min_so_far=2.0,
+                      rem_min_so_far=4.0, current_stage=SleepStage.LIGHT, targets=tgt,
+                      risk_low=True, minutes_to_wake=40)
+    assert near.maneuver == "hold" and "wake" in near.reason
+    # plenty of time left -> deepen normally
+    far = s.evaluate(minutes_since_onset=30, est_sleep_min=420, deep_min_so_far=2.0,
+                     rem_min_so_far=4.0, current_stage=SleepStage.LIGHT, targets=tgt,
+                     risk_low=True, minutes_to_wake=300)
+    assert far.maneuver == "deepen"
+
+
+def test_defends_the_favorable_state_you_are_in():
+    s = _steer()
+    tgt = targets_for(NightMode.NORMAL)
+    # In deep -> defend_deep (keep you here).
+    deep = s.evaluate(minutes_since_onset=60, est_sleep_min=420, deep_min_so_far=40.0,
+                      rem_min_so_far=10.0, current_stage=SleepStage.DEEP, targets=tgt, risk_low=True)
+    assert deep.maneuver == "defend_deep"
+    # In back-half REM -> defend_rem.
+    rem = s.evaluate(minutes_since_onset=300, est_sleep_min=420, deep_min_so_far=80.0,
+                     rem_min_so_far=40.0, current_stage=SleepStage.REM, targets=tgt, risk_low=True)
+    assert rem.maneuver == "defend_rem"
+    # But wake-prevention still outranks defending: a brewing arousal -> hold (settle owns it).
+    risky = s.evaluate(minutes_since_onset=60, est_sleep_min=420, deep_min_so_far=40.0,
+                       rem_min_so_far=10.0, current_stage=SleepStage.DEEP, targets=tgt,
+                       risk_low=False)
+    assert risky.maneuver == "hold"
 
 
 def test_rem_unblock_is_off_by_default_and_gated_on():
@@ -115,6 +153,10 @@ def test_maintenance_deepen_drives_the_deep_bias_cool():
     # a power nap must NEVER be deepened (keep it light to avoid grogginess)
     assert m.step(_frame(t0, SleepStage.LIGHT), NightObjective.OPTIMIZE, deepen=True,
                   keep_light=True) is ThermalIntent.STABILIZE
+    # PRECEDENCE: wake-prevention outranks deepening — if both fire, settle (don't deepen into a
+    # brewing disturbance). Defense-in-depth: the routine enforces it even if a caller passes both.
+    assert m.step(_frame(t0, SleepStage.LIGHT), NightObjective.OPTIMIZE, deepen=True,
+                  preempt_cool=True) is ThermalIntent.SETTLE_COOL
 
 
 # ---- controller accrual + veto + edge-triggered logging --------------------

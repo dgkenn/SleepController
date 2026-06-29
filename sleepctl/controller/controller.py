@@ -232,8 +232,10 @@ class SleepController:
             intent = self.induction.step(frame, objective, minutes_in_bed)
         elif state is ControllerState.MAINTENANCE:
             # In-night architecture steering: compare the realized deep/REM curve to tonight's
-            # personalized ideal and, when behind on deep + light + wake-risk LOW, nudge deeper.
-            deepen = self._evaluate_steering(now, frame, wake_detected, minutes_in_bed)
+            # personalized ideal and, when behind on deep + light + wake-risk LOW, nudge deeper —
+            # reconciled with the wake-up trajectory (stands down near the deadline).
+            deepen = self._evaluate_steering(now, frame, wake_detected, minutes_in_bed,
+                                             required_wake)
             intent = self.maintenance.step(frame, objective,
                                            preempt_cool=getattr(self, "_preempt_cool", False),
                                            keep_light=self.session_keep_light, deepen=deepen)
@@ -334,12 +336,18 @@ class SleepController:
         if est_sleep_min is not None:
             self.est_sleep_min = float(est_sleep_min)
 
-    def _evaluate_steering(self, now, frame, wake_detected, minutes_in_bed) -> bool:
+    def _evaluate_steering(self, now, frame, wake_detected, minutes_in_bed,
+                           required_wake=None) -> bool:
         """Run the in-night steerer (MAINTENANCE only). Returns True to nudge deeper this tick.
 
-        Awakening-risk is the veto: ``risk_low`` requires no detected awakening AND no active
-        pre-empt (which already folds in rising wake-risk, the leading-edge precursor, and a
-        micro-arousal) — so the steerer NEVER fights a brewing disturbance (maintenance first).
+        This is where the three in-night thermal maneuvers RECONCILE, by a strict precedence:
+          1. wake-PREVENTION wins — ``risk_low`` requires no detected awakening AND no active
+             pre-empt (which folds in rising wake-risk, the leading-edge precursor, and a
+             micro-arousal), so the steerer never fights a brewing disturbance (maintenance first);
+          2. wake-UP handoff — within the pre-wake standoff of the deadline the steerer stands
+             down so the smart-wake ramp owns the bed (no deepening into sleep inertia);
+          3. then the favorable-state controller acts: ACQUIRE deeper when behind, or DEFEND the
+             deep/REM state you're already in.
         """
         cfg = self.cfg
         if self.night_targets is None or not cfg.tunables.inight_steering_enabled \
@@ -350,10 +358,13 @@ class SleepController:
                if self._sleep_onset_time is not None else minutes_in_bed)
         est = self.est_sleep_min or getattr(self.night_targets, "total_sleep_target_min", 0) or 0.0
         risk_low = (not wake_detected) and (not getattr(self, "_preempt_cool", False))
+        mins_to_wake = ((required_wake - now).total_seconds() / 60.0
+                        if required_wake is not None else None)
         steer = self.steering.evaluate(
             minutes_since_onset=mso, est_sleep_min=est,
             deep_min_so_far=self._arch_deep_min, rem_min_so_far=self._arch_rem_min,
-            current_stage=frame.stage, targets=self.night_targets, risk_low=risk_low)
+            current_stage=frame.stage, targets=self.night_targets, risk_low=risk_low,
+            minutes_to_wake=mins_to_wake)
         self.last_steer = steer
         deepen = steer.deepen
         # Edge-trigger the steer-event ledger when a deepen maneuver FIRST starts, so the
@@ -394,9 +405,11 @@ class SleepController:
         """Live in-night steering state for the dashboard: are we actively nudging deeper, and how
         far off the ideal deep/REM curve are we right now."""
         s = self.last_steer
+        maneuver = s.maneuver if s else "hold"
         return {
-            "active": bool(self._deepen_active),
-            "maneuver": s.maneuver if s else "hold",
+            "active": bool(self._deepen_active),                 # actively nudging deeper (acquire)
+            "defending": maneuver in ("defend_deep", "defend_rem"),  # holding a favorable state
+            "maneuver": maneuver,
             "deep_deficit_min": round(s.deep_deficit_min, 1) if s else None,
             "rem_deficit_min": round(s.rem_deficit_min, 1) if s else None,
             "frac_of_night": round(s.frac_of_night, 3) if s else None,

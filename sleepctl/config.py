@@ -162,6 +162,11 @@ class Tunables:
     steer_deep_front_p: float = 0.6          # deep cumulative-ideal exponent (<1 = front-loaded)
     steer_rem_back_q: float = 1.6            # REM cumulative-ideal exponent (>1 = back-loaded)
     steer_rem_unblock_enabled: bool = False  # the off-by-default "nudge lighter" REM-unblock
+    # Reconciliation with the WAKE-UP trajectory: stop deepening this many minutes (on top of the
+    # smart-wake window) before the deadline, so the steerer hands the bed cleanly to the wake-up
+    # ramp and never drives you into deep sleep right before you need to surface (deep-sleep wake =
+    # grogginess/inertia — Brooks & Lack 2006). Standoff = wake_window_min + this guard (~a cycle).
+    steer_prewake_guard_min: float = 45.0
     alarm_vibration_enabled: bool = False  # silence during sleep: no audio alarms
     # Smart wake: heat + gentle VIBRATION at the optimal (light-sleep) moment. Vibration is
     # tactile, not audio, so "silence" is preserved. Audio is never used.

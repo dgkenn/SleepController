@@ -227,6 +227,17 @@ a separate (silent-incompatible) hardware path.
      the supervised signal for the Phase-2 deepening-response learner + n-of-1 A/B. The asymmetric
      "nudge lighter" corollary is config-gated **off** (`steer_rem_unblock_enabled`), exactly as
      designed. Surfaced live on Tonight via the `steering` block of `/predictive/preemption`.
+  4. ✅ **SHIPPED — reconciliation into one favorable-state controller.** The deepen maneuver is
+     now one move of a single in-night controller whose job is to **keep you in the most favorable
+     state available**: it **ACQUIRES** a deeper state when you're behind the curve, and **DEFENDS**
+     the deep / back-half-REM state you're already in (hold cool + stable, never trade a live deep
+     bout away). It is reconciled with the other two in-night thermal maneuvers by a strict,
+     test-pinned precedence so they never fight over the bed:
+     **(1) wake-prevention** (rising risk / precursor / micro-arousal → settle; never deepen into
+     a brewing disturbance) **> (2) wake-up handoff** (within the smart-wake window + ~a cycle of
+     the deadline the steerer stands down so the wake-up ramp can lift you from light sleep — no
+     deepening into sleep-inertia) **> (3) acquire/defend** the favorable state **> (4) hold**.
+     Pinned by `tests/test_architecture_steering.py`; see `docs/CONTROL_LAW.md` §5.
 - **Phase 2:** the per-phase models (onset, awakening-risk, deepening-response, grogginess) on the
   expanded features; uncertainty-gated; n-of-1 for each maneuver.
 - **Phase 3 (research / optional hardware):** Tier-1 raw capture for finer arousal/micro-event
