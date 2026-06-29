@@ -198,7 +198,7 @@ class LiveDashboardDaemon:
             from sleepctl.benchmarks import NightMode
             from sleepctl.controller.sleep_plan import plan_night
             plan = plan_night(datetime.now(), self.context.required_wake_time,
-                              self.repo.recent_nights(14), hint=hint)
+                              self.repo.recent_nights(14), hint=hint, repo=self.repo)
             self.context.night_type = plan.mode.value
             self.context.is_short_sleep_day = plan.mode == NightMode.CONSTRAINED
             self.context.sleep_opportunity_min = plan.sleep_opportunity_min

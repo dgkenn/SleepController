@@ -51,7 +51,8 @@ def current_plan(repo):
     hint = wake.get("night_type") or "auto"
     window = wake.get("window_min") or 30
     recent = repo.recent_nights(14)
-    return plan_night(datetime.now(), wake_dt, recent, hint=hint, base_window_min=window)
+    return plan_night(datetime.now(), wake_dt, recent, hint=hint, base_window_min=window,
+                      repo=repo)
 
 
 def sleep_plan(repo) -> dict:
@@ -59,7 +60,9 @@ def sleep_plan(repo) -> dict:
     nights = repo.recent_nights(1)
     last_index = None
     if nights:
-        last_index = perfect_sleep_index(nights[-1], plan.mode)
+        # Score against the night's PERSONALIZED ideal (the same targets the plan/controller
+        # chase), so the displayed score and the objective are one and the same.
+        last_index = perfect_sleep_index(nights[-1], plan.mode, targets=plan.targets)
     d = plan.to_dict()
     d["last_night_index"] = last_index
     return d
