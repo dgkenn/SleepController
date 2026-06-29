@@ -333,12 +333,11 @@ class LiveDashboardDaemon:
         return frame
 
     def _refresh_shift_plan(self) -> None:
-        """Advisory cross-shift sleep-debt plan (calendar-fed shifts are a follow-up; debt +
-        strategy come from recent nights now)."""
+        """Advisory cross-shift sleep-debt plan: debt + strategy from recent nights, plus banking /
+        prophylactic-nap logic when a manual next-shift hint is set (calendar feed is a follow-up)."""
         try:
-            from sleepctl.shift_manager import plan_shift_sleep
-            self.shift_plan = plan_shift_sleep(self.repo.recent_nights(14), [],
-                                               datetime.now()).to_dict()
+            from app import services
+            self.shift_plan = services.shift_plan_view(self.repo)
         except Exception as exc:
             self._log(f"shift plan skipped: {exc}")
 

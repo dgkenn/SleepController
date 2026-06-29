@@ -161,6 +161,29 @@ def wake_tuning(repo=Depends(repo_dep), user: str = AuthDep):
     return services.wake_tuning_view(repo)
 
 
+class ShiftConfigBody(BaseModel):
+    enabled: bool | None = None
+    next_shift: str | None = None   # ISO datetime of the next shift start (null to clear)
+    kind: str | None = None         # 'night' | 'call' | 'day'
+
+
+@app.get("/shift/plan")
+def shift_plan(repo=Depends(repo_dep), user: str = AuthDep):
+    """Strategic cross-shift sleep plan: debt, tonight's target, banking, naps, anchor, warnings."""
+    return services.shift_plan_view(repo)
+
+
+@app.get("/shift/config")
+def shift_config(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.shift_config_view(repo)
+
+
+@app.put("/shift/config")
+def shift_config_update(body: ShiftConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    # exclude_unset so an explicit null next_shift (clear the shift) is honored.
+    return services.shift_config_update(repo, body.model_dump(exclude_unset=True))
+
+
 class HueConfigBody(BaseModel):
     enabled: bool | None = None
     bridge_ip: str | None = None

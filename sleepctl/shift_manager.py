@@ -59,13 +59,15 @@ class ShiftPlan:
     warnings: List[str] = field(default_factory=list)
     strategy: str = ""
     rationale: str = ""
+    banking: Optional[str] = None        # proactive "extend sleep now" prescription before a block
 
     def to_dict(self) -> dict:
         return {"debt_min": round(self.debt_min), "debt_h": round(self.debt_min / 60, 1),
                 "debt_band": self.debt_band, "tonight_target_min": self.tonight_target_min,
                 "tonight_target_h": round(self.tonight_target_min / 60, 1),
                 "naps": [n.to_dict() for n in self.naps], "anchor_window": self.anchor_window,
-                "warnings": self.warnings, "strategy": self.strategy, "rationale": self.rationale}
+                "warnings": self.warnings, "strategy": self.strategy, "rationale": self.rationale,
+                "banking": self.banking}
 
 
 def _debt_band(debt: float) -> str:
@@ -142,6 +144,24 @@ def plan_shift_sleep(recent_nights, upcoming_shifts: List[Shift], now: datetime,
         else:
             strategy = "Maintain: hold a consistent, full night."
 
+    # --- proactive sleep banking before a known night block (Rupp 2009) ---
+    # The day-of prophylactic nap (above) is the last-mile; banking is the days-ahead play.
+    # Extending nightly time-in-bed to ~9–10 h in the days before sleep restriction cut on-shift
+    # PVT lapses AND made post-restriction recovery faster (Rupp/Wesensten/Balkin 2009,
+    # doi:10.1093/sleep/32.3.311). Fires when a night shift is on the horizon but past the
+    # immediate prophylactic-nap window (i.e. you have whole nights to bank first).
+    BANK_TIB_MIN = 570   # ~9.5 h, midpoint of the 10 h banking arm
+    banking = None
+    if nxt is not None and nxt.is_night and hrs_to_next is not None and 16 < hrs_to_next <= 72:
+        nights_to_bank = max(1, int(round(hrs_to_next / 24.0)))
+        banking = (f"Bank sleep now: extend to ~9–10 h in bed for the next "
+                   f"{nights_to_bank} night{'s' if nights_to_bank > 1 else ''} before your night "
+                   "block. Banked sleep cuts on-shift lapses and speeds your recovery afterward "
+                   "(Rupp 2009).")
+        # Raise tonight's target toward the banking goal (a whole night away, so no same-day cap).
+        tonight_target = max(tonight_target, BANK_TIB_MIN)
+        strategy = "Bank: extend sleep ahead of the night block so you start it rested."
+
     # --- anchor sleep for rotating schedules (circadian stability) ---
     anchor = None
     if _schedule_is_variable(upcoming_shifts):
@@ -167,4 +187,4 @@ def plan_shift_sleep(recent_nights, upcoming_shifts: List[Shift], now: datetime,
                  + f"target tonight ≈ {round(tonight_target/60,1)} h.")
     return ShiftPlan(debt_min=debt, debt_band=band, tonight_target_min=tonight_target,
                      naps=naps, anchor_window=anchor, warnings=warnings,
-                     strategy=strategy, rationale=rationale)
+                     strategy=strategy, rationale=rationale, banking=banking)

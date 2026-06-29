@@ -181,3 +181,19 @@ def test_wake_plan_has_readiness_and_caffeine(auth_client):
     assert r["caffeine"]["dose_mg"] == 100 and "onset" in r["caffeine"]
     cs = plan["cold_snap"]                                # surfaced as an option, not yet active
     assert cs["available"] is True and cs["active"] is False
+
+
+def test_shift_plan_and_banking_roundtrip(auth_client):
+    base = auth_client.get("/shift/plan").json()
+    assert "debt_band" in base and "tonight_target_h" in base
+    # Set a night shift ~2 days out -> banking prescription appears in the plan.
+    from datetime import datetime, timedelta
+    when = (datetime.now() + timedelta(hours=48)).replace(microsecond=0).isoformat()
+    r = auth_client.put("/shift/config", json={"enabled": True, "next_shift": when, "kind": "night"})
+    assert r.status_code == 200 and r.json()["enabled"] is True
+    plan = auth_client.get("/shift/plan").json()
+    assert plan["banking"] and "extend" in plan["banking"].lower()
+    assert plan["tonight_target_min"] >= 570
+    # Clearing disables the shift-aware path.
+    auth_client.put("/shift/config", json={"enabled": False, "next_shift": None})
+    assert auth_client.get("/shift/plan").json()["banking"] is None

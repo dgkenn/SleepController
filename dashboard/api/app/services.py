@@ -694,6 +694,55 @@ def gym_config_update(repo, values: dict) -> dict:
     return {"config": cfg.to_dict()}
 
 
+def _get_shift_config(repo) -> dict:
+    """Manual next-shift hint (until a calendar feed lands), stored in settings_kv."""
+    import json as _json
+    row = repo.conn.execute("SELECT value FROM settings_kv WHERE key='shift_config'").fetchone()
+    d = _json.loads(row["value"]) if row else {}
+    return {"enabled": bool(d.get("enabled", False)),
+            "next_shift": d.get("next_shift"),               # ISO datetime of the shift start
+            "kind": d.get("kind", "night")}                  # 'night' | 'call' | 'day'
+
+
+def shift_config_view(repo) -> dict:
+    return _get_shift_config(repo)
+
+
+def shift_config_update(repo, values: dict) -> dict:
+    import json as _json
+    merged = {**_get_shift_config(repo), **(values or {})}
+    if merged.get("kind") not in ("night", "call", "day"):
+        merged["kind"] = "night"
+    repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES ('shift_config', ?) "
+                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                      (_json.dumps(merged),))
+    repo.conn.commit()
+    return merged
+
+
+def shift_plan_view(repo) -> dict:
+    """The strategic cross-shift sleep plan: live debt, tonight's target, banking before a night
+    block, prophylactic/recovery/anchor naps, and safety warnings. Computed on demand from the
+    user's recent nights + the manual next-shift hint."""
+    from datetime import datetime, timedelta
+
+    from sleepctl.shift_manager import Shift, plan_shift_sleep
+    cfg = _get_shift_config(repo)
+    shifts = []
+    if cfg["enabled"] and cfg["next_shift"]:
+        try:
+            start = datetime.fromisoformat(cfg["next_shift"])
+            shifts = [Shift(start=start, end=start + timedelta(hours=12), kind=cfg["kind"])]
+        except Exception:
+            shifts = []
+    plan = plan_shift_sleep(repo.recent_nights(14), shifts, datetime.now())
+    out = plan.to_dict()
+    out["shift_enabled"] = cfg["enabled"]
+    out["next_shift"] = cfg["next_shift"] if cfg["enabled"] else None
+    out["next_shift_kind"] = cfg["kind"]
+    return out
+
+
 def gym_advice(repo) -> dict:
     """Tonight/this-morning's GO-train vs SLEEP-IN call, from the stored gym config + the user's
     own recent sleep (debt, recovery) and typical bedtime. Uses live in-bed onset when the daemon
