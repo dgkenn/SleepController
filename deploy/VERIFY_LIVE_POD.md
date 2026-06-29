@@ -11,17 +11,29 @@ Pod via the Eight Sleep cloud. We already prove (in CI) that *the UI hits the ri
 *the daemon maps each command to the right device call*. The one thing only a plugged-in Pod can
 confirm is that **the bed itself accepted and acted on it**. So the verifier compares:
 
-| Control | Device-reported signal it checks |
+The verifier exercises **every device-affecting control** and checks each against the Pod's own
+readback where the cloud exposes one:
+
+| Control (`--checks` name) | Device-reported signal it checks |
 |---|---|
-| **Set temperature** | `device_target_level` — the level the **Pod accepted**, read back from the cloud (compared to the level the commanded °F maps to) + the measured `bed_temp_f` moving |
-| **Nudge temperature** | `device_target_level` changes from its prior value |
-| **Emergency Stop / power-off** | state goes `OFF` / `device_level` drops toward 0 / bed temp drifts to ambient |
-| **Power on** | side reports active again |
-| **Prime** | the Pod's `priming` flag flips on |
-| **Away on/off** | commanded (the cloud's away read-back is limited, so this is reported as COMMANDED, not DEVICE-CONFIRMED) |
+| **Set temperature** (`temp`) | `device_target_level` — the level the **Pod accepted** (vs the level the commanded °F maps to) + `bed_temp_f` moving. Tests 66 / 72 / 69 °F. |
+| **Nudge temperature** (`nudge`) | `device_target_level` changes up and down |
+| **Mode** auto/manual/view (`mode`) | `/status` mode + that **manual actually holds** the commanded level on the Pod |
+| **Emergency Stop / power** (`power`) | side goes `OFF` (`state=OFF` / `power_on=False`, set only after a successful `turn_off_side`) and the Pod's level returns to 0; then power back on |
+| **Away on/off** (`away`) | commanded (the cloud's away read-back is limited → reported COMMANDED, not DEVICE-CONFIRMED) |
+| **Prime** (`prime`) | the Pod's `priming` flag flips on |
+| **Smart wake** set/clear (`wake`) | the Pod's **own alarm slot** (`enabled` / `time`) changes; falls back to "daemon armed it" if the firmware doesn't surface alarms |
+| **Sessions** induce / nap / end (`sessions`) | the session drives the Pod (warm→cool level move) + the session state |
+| **Safe default** (`safe`) | power on + auto mode |
+| **Hue dawn light** (`hue`) | the test flash returns ok (LAN bridge; only if Hue is configured) |
 
 Each result is labelled **✅ DEVICE-CONFIRMED** (the bed's own readback matched), **🟡 COMMANDED**
-(sent + accepted but the device didn't surface a confirming signal), or **❌ FAILED**.
+(sent + accepted but the device didn't surface a confirming signal — e.g. away), or **❌ FAILED**.
+
+> **Already validated end-to-end against the simulator** (21 checks, 0 failures), so the flow,
+> polling, and confirmation logic are proven — only the *real device readings* are pending the Pod.
+> Against the real Pod, `prime` should additionally become DEVICE-CONFIRMED (the simulator doesn't
+> model priming).
 
 ## What you do when the Pod is plugged in
 

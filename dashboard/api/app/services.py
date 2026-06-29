@@ -268,6 +268,9 @@ def build_status(repo) -> dict:
         "device_level": extra.get("device_level"),                 # bed's reported actual level
         "device_target_level": extra.get("device_target_level"),   # level the bed accepted
         "bed_presence": extra.get("bed_presence"),
+        "device": extra.get("device"),                             # online/water/priming/alarm
+        "session_mode": extra.get("session_mode"),
+        "device_error": extra.get("device_error"),
         "live": extra.get("live", False),
         "daemon_alive": rt.get("daemon_alive", False),
         "stale": rt.get("stale", True),
