@@ -384,7 +384,7 @@ class SleepController:
         ambient_temp_f=None,
     ) -> Decision:
         log_payload = {
-            "stage": frame.stage.value,
+            "stage": frame.stage.value if frame.stage is not None else None,
             "stage_confidence": frame.stage_confidence,
             "heart_rate": frame.heart_rate,
             "hrv": frame.hrv,
