@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from sleepctl.benchmarks import NightMode, sleep_debt_min
+from sleepctl.benchmarks import NightMode, chronic_shortfall, sleep_debt_min
 from sleepctl.readiness import morning_readiness
 
 _LEAN_THRESHOLD = {"protect": 0.58, "balanced": 0.50, "push": 0.42}
@@ -163,6 +163,13 @@ def gym_decision(now: datetime, normal_wake: Optional[datetime], recent_nights,
 
     debt_term = -_clamp(debt / 360.0, 0.0, 1.0)            # ~6 h debt -> full negative
     signals["debt"] = round(debt_term, 2)
+    # Chronic structural shortfall: averaging well under need night after night (the everyday
+    # early-wake regime) is distinct from acute debt — a gentle extra lean toward protecting sleep,
+    # kept small so it never vetoes the now-or-never workout on its own.
+    chronic = chronic_shortfall(recent_nights) if recent_nights else {"is_chronic": False}
+    chronic_term = -0.5 if chronic.get("is_chronic") else 0.0
+    if chronic.get("is_chronic"):
+        signals["chronic_short"] = chronic_term
     rec_term = _clamp((recovery - 60.0) / 40.0) if recovery is not None else 0.0
     cont_term = _clamp((continuity - 60.0) / 40.0) if continuity is not None else 0.0
     if recovery is not None:
@@ -175,7 +182,7 @@ def gym_decision(now: datetime, normal_wake: Optional[datetime], recent_nights,
 
     # --- weighted fusion ----------------------------------------------------------------
     net = (opportunity + 1.0 * suff + 0.8 * debt_term + 0.7 * rec_term
-           + 0.5 * cont_term + 0.7 * demand_term)
+           + 0.5 * cont_term + 0.7 * demand_term + 0.4 * chronic_term)
     if floor_breach:
         net -= 1.6                                          # too short to be safe -> protect sleep
     go_score = 1.0 / (1.0 + math.exp(-1.3 * net))

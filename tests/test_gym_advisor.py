@@ -91,3 +91,14 @@ def test_higher_projection_scores_higher():
 def test_config_roundtrip():
     cfg = GymConfig(enabled=True, early_offset_min=75, lean="protect", gym_days=[0, 2, 4])
     assert GymConfig.from_dict(cfg.to_dict()).to_dict() == cfg.to_dict()
+
+
+def test_chronic_short_sleep_leans_toward_sleep_in():
+    # Same projected gym sleep; chronically short recent nights should lower the GO score and
+    # surface a chronic_short signal (a gentle lean, not a veto).
+    cfg = GymConfig(enabled=True, lean="balanced")
+    onset = _onset_for(6.5)
+    rested = gym_decision(NOW, WAKE, _nights(7, 470), cfg=cfg, sleep_onset=onset)
+    chronic = gym_decision(NOW, WAKE, _nights(7, 330), cfg=cfg, sleep_onset=onset)
+    assert chronic.go_score < rested.go_score
+    assert chronic.signals.get("chronic_short") is not None

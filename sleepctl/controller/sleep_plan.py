@@ -26,6 +26,7 @@ from sleepctl.benchmarks import (
     SLEEP_NEED_MIN,
     NightMode,
     Targets,
+    chronic_shortfall,
     sleep_debt_min,
     targets_for,
 )
@@ -64,6 +65,7 @@ class SleepPlan:
     deep_bias_delta_f: float = 0.0
     rem_warm_delta_f: float = 0.0
     strategy: str = ""
+    bedtime: Optional["BedtimeGuidance"] = None   # when to be asleep + structural shortfall
 
     def to_dict(self) -> dict:
         return {
@@ -96,6 +98,7 @@ class SleepPlan:
                 "rationale": self.targets.rationale,
             },
             "strategy": self.strategy,
+            "bedtime": self.bedtime.to_dict() if self.bedtime else None,
         }
 
 
@@ -235,7 +238,112 @@ def plan_night(
         deep_bias_delta_f=deep_bias_delta,
         rem_warm_delta_f=rem_warm_delta,
         strategy=strategy,
+        bedtime=bedtime_guidance(required_wake_time, recent_summaries, need_min, onset),
     )
+
+
+def _clock_min(dt) -> int:
+    """Minutes past midnight for a datetime/time."""
+    return int(dt.hour) * 60 + int(dt.minute)
+
+
+def _fmt_clock(minutes) -> str:
+    minutes = int(round(minutes)) % 1440
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def median_bedtime_clock(recent_summaries) -> Optional[int]:
+    """Your habitual lights-out as minutes-past-midnight, robust across the midnight wrap
+    (late bedtimes like 00:30 are folded so the median doesn't jump to noon). None if unknown."""
+    vals = []
+    for s in (recent_summaries or []):
+        bt = getattr(s, "bedtime", None)
+        if bt is None:
+            continue
+        m = _clock_min(bt)
+        if m < 720:          # after-midnight bedtime -> treat as 24:xx for a stable evening median
+            m += 1440
+        vals.append(m)
+    if not vals:
+        return None
+    vals.sort()
+    n = len(vals)
+    med = vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) // 2
+    return med % 1440
+
+
+@dataclass
+class BedtimeGuidance:
+    """The inverse of the wake time: when to be ASLEEP to hit your need, and — for fixed early
+    wakes — how structurally short your habitual bedtime leaves you. Earlier bedtime is the only
+    lever when you can't wake later."""
+    recommended_lights_out: str                  # be ASLEEP by this clock time to hit need
+    target_in_bed: str                           # ...so be IN BED by here (allowing onset)
+    need_min: int
+    est_onset_latency_min: float
+    habitual_bedtime: Optional[str] = None
+    achievable_sleep_min: Optional[float] = None
+    structural_shortfall_min: Optional[float] = None
+    go_earlier_min: Optional[int] = None         # how much earlier than habitual to hit need
+    avg_tst_min: Optional[float] = None
+    is_chronic_short: bool = False
+    message: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "recommended_lights_out": self.recommended_lights_out,
+            "target_in_bed": self.target_in_bed,
+            "need_min": self.need_min, "need_h": round(self.need_min / 60, 1),
+            "est_onset_latency_min": round(self.est_onset_latency_min, 1),
+            "habitual_bedtime": self.habitual_bedtime,
+            "achievable_sleep_min": round(self.achievable_sleep_min)
+            if self.achievable_sleep_min is not None else None,
+            "structural_shortfall_min": round(self.structural_shortfall_min)
+            if self.structural_shortfall_min is not None else None,
+            "go_earlier_min": self.go_earlier_min,
+            "avg_tst_min": self.avg_tst_min, "is_chronic_short": self.is_chronic_short,
+            "message": self.message,
+        }
+
+
+def bedtime_guidance(required_wake_time: Optional[datetime], recent_summaries=None,
+                     need_min: int = SLEEP_NEED_MIN,
+                     onset_min: Optional[float] = None) -> Optional[BedtimeGuidance]:
+    """Compute when to be asleep/in bed to hit ``need_min`` before ``required_wake_time``, and the
+    structural shortfall your habitual bedtime leaves on the table. None without a wake time."""
+    if required_wake_time is None:
+        return None
+    onset = onset_min if onset_min is not None else median_onset_latency(recent_summaries or [])
+    wake_clock = _clock_min(required_wake_time)
+    asleep_by = (wake_clock - need_min) % 1440          # be ASLEEP by here to bank the full need
+    in_bed_by = (wake_clock - need_min - onset) % 1440  # ...get in bed earlier to allow onset
+
+    chronic = chronic_shortfall(recent_summaries or [], need_min=need_min)
+    habitual = median_bedtime_clock(recent_summaries or [])
+    achievable = shortfall = go_earlier = hab_str = None
+    if habitual is not None:
+        in_bed = (wake_clock - habitual) % 1440         # time in bed at your usual bedtime
+        achievable = max(0.0, in_bed - onset)
+        shortfall = max(0.0, need_min - achievable)
+        gap = (habitual - in_bed_by) % 1440             # how much later than ideal you turn in
+        go_earlier = int(gap) if gap <= 720 else 0      # >12 h -> you're already earlier than ideal
+        hab_str = _fmt_clock(habitual)
+
+    if shortfall and shortfall >= 45:
+        msg = (f"To get your {round(need_min/60,1)} h before {_fmt_clock(wake_clock)}, be asleep by "
+               f"{_fmt_clock(asleep_by)} (in bed ~{_fmt_clock(in_bed_by)}). At your usual "
+               f"{hab_str} you only get ~{round(achievable/60,1)} h — about {round(shortfall/60,1)} h "
+               f"short. Moving lights-out ~{go_earlier} min earlier is the highest-leverage fix.")
+    else:
+        msg = (f"Be asleep by {_fmt_clock(asleep_by)} (in bed ~{_fmt_clock(in_bed_by)}) to bank your "
+               f"{round(need_min/60,1)} h before {_fmt_clock(wake_clock)}.")
+
+    return BedtimeGuidance(
+        recommended_lights_out=_fmt_clock(asleep_by), target_in_bed=_fmt_clock(in_bed_by),
+        need_min=need_min, est_onset_latency_min=onset, habitual_bedtime=hab_str,
+        achievable_sleep_min=achievable, structural_shortfall_min=shortfall,
+        go_earlier_min=go_earlier, avg_tst_min=chronic["avg_tst_min"],
+        is_chronic_short=chronic["is_chronic"], message=msg)
 
 
 def median_onset_latency(recent_summaries, default_min: float = 15.0,

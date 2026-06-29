@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import List, Optional
 
-from sleepctl.benchmarks import SLEEP_NEED_MIN, sleep_debt_min
+from sleepctl.benchmarks import SLEEP_NEED_MIN, chronic_shortfall, sleep_debt_min
 
 
 @dataclass
@@ -180,6 +180,18 @@ def plan_shift_sleep(recent_nights, upcoming_shifts: List[Shift], now: datetime,
     if nxt is not None and nxt.is_night and band in ("moderate", "severe") and not post:
         warnings.append("High debt going into a night shift — the prophylactic nap is important, "
                         "not optional.")
+
+    # --- catch-up nap for CHRONIC short sleep (the everyday early-wake regime, no shift needed) ---
+    # If you're structurally short night after night (can't wake later, can't always move bedtime),
+    # a short daytime nap recovers alertness without the SWS-inertia trap. Only add it when nothing
+    # else already prescribed a nap for today, so the card isn't noisy.
+    chronic = chronic_shortfall(recent_nights)
+    if chronic["is_chronic"] and not post and not any(
+            n.type in ("prophylactic", "recovery") for n in naps):
+        naps.append(NapRec("catch_up", "early-mid afternoon (not after ~16:00)", 20,
+                           f"You're averaging ~{round((chronic['avg_tst_min'] or 0)/60,1)} h — "
+                           "chronically short. A 20-min power nap recovers alertness without "
+                           "grogginess; keep it before late afternoon so it doesn't erode tonight."))
 
     rationale = (f"Debt {round(debt/60,1)} h ({band}); "
                  + (f"next shift {nxt.kind} in {round(hrs_to_next,1)} h; " if nxt else "no upcoming shift; ")

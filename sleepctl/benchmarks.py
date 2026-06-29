@@ -264,6 +264,36 @@ def perfect_sleep_index(summary, mode: NightMode = NightMode.NORMAL,
     }
 
 
+def chronic_shortfall(recent_summaries, need_min: int = SLEEP_NEED_MIN,
+                      horizon_nights: int = 14) -> dict:
+    """Is the user *structurally* short — averaging well under their need night after night —
+    as opposed to carrying acute debt from one or two bad nights?
+
+    For someone with fixed very-early wakes this is the dominant regime: the only real fix is an
+    earlier bedtime (Rupp 2009 banking aside, you can't wake later). Recovery from chronic
+    restriction also spans multiple nights, so a sustained deficit matters more than its day-to-day
+    swings (Van Dongen 2003, doi:10.1093/sleep/26.2.117; Rupp 2009, doi:10.1093/sleep/32.3.311).
+
+    Returns the trailing-average total sleep, the mean nightly shortfall vs need, the fraction of
+    short nights, and an ``is_chronic`` flag (averaging >~1 h under need across enough nights).
+    """
+    nights = [s for s in list(recent_summaries)[-horizon_nights:]
+              if getattr(s, "total_sleep_min", None)]
+    n = len(nights)
+    if n == 0:
+        return {"avg_tst_min": None, "mean_shortfall_min": 0.0, "short_nights_frac": 0.0,
+                "n_nights": 0, "is_chronic": False}
+    tsts = [float(s.total_sleep_min) for s in nights]
+    avg = sum(tsts) / n
+    mean_short = max(0.0, need_min - avg)
+    short_frac = sum(1 for t in tsts if t < need_min - 30) / n
+    # Chronic = a real sustained deficit (>1 h under need on average) over a few nights, not a blip.
+    is_chronic = bool(n >= 3 and mean_short >= 60 and short_frac >= 0.5)
+    return {"avg_tst_min": round(avg), "mean_shortfall_min": round(mean_short),
+            "short_nights_frac": round(short_frac, 2), "n_nights": n,
+            "is_chronic": is_chronic}
+
+
 def sleep_debt_min(recent_summaries, need_min: int = SLEEP_NEED_MIN,
                    horizon_nights: int = 14, cap_min: int = 600) -> float:
     """Rolling cumulative sleep debt over the last ``horizon_nights`` (capped).
