@@ -215,9 +215,18 @@ a separate (silent-incompatible) hardware path.
 - **Phase 1 (buildable now, data already available):**
   1. Expand the nightly `FeatureRow` (circadian timing, thermal-trajectory shape, action features).
   2. Add the **per-cycle segment layer** + the architecture-adherence features.
-  3. Ship the **in-night DEEPEN maneuver** as a bounded thermal action (cool-bias when
-     light-but-should-be-deep **and** awakening-risk low), logged with its stage response,
-     learnable + A/B, awakening-risk-vetoed.
+  3. ✅ **SHIPPED — the in-night DEEPEN maneuver.** `controller/architecture.py` builds tonight's
+     ideal cumulative deep/REM curve (front-loaded deep via exponent <1, back-loaded REM via >1)
+     from the **personalized** per-night targets (the unified `plan_night` → `set_night_targets`),
+     compares it to the realized architecture the controller accrues each tick, and — when you're
+     **light-but-behind-the-deep-curve, early in the night, with awakening-risk LOW** — drives the
+     bed to the deep setpoint (`DEEP_BIAS_COOL`) to bias you deeper. Awakening-risk is the veto
+     (it reuses the existing pre-empt signal, so it never fights a brewing arousal); slew /
+     variability / comfort clamps still bound every move. Each maneuver is **edge-logged to the
+     `steer_events` ledger** and resolved (`deepened?` / `caused_wake?` over a 20-min horizon) →
+     the supervised signal for the Phase-2 deepening-response learner + n-of-1 A/B. The asymmetric
+     "nudge lighter" corollary is config-gated **off** (`steer_rem_unblock_enabled`), exactly as
+     designed. Surfaced live on Tonight via the `steering` block of `/predictive/preemption`.
 - **Phase 2:** the per-phase models (onset, awakening-risk, deepening-response, grogginess) on the
   expanded features; uncertainty-gated; n-of-1 for each maneuver.
 - **Phase 3 (research / optional hardware):** Tier-1 raw capture for finer arousal/micro-event

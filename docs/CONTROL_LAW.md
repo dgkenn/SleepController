@@ -27,6 +27,14 @@ ground truth of recovery:
   the index the controller is judged against, and the "what good looks like" shown on the dashboard,
   converge over weeks to *your* optimum without ever drifting from the literature.
 
+**One coherent per-night ideal.** `plan_night()` is the single place tonight's ideal architecture is
+assembled from *all* the inputs — wake time / sleep opportunity (which picks the **mode**), sleep
+**debt** (which picks the mode and extends the duration target), the **learned** felt-recovery levels,
+and **stress** (a stressed night raises the deep floor to *defend* deep when recovery is most at
+risk). It folds `personalized_targets()` into the plan, so the dashboard plan, the morning score, the
+cross-night policy, and the in-night steerer (§5) all chase the *same* numbers. With thin data it
+falls back to the evidence prior.
+
 The starting **temperature priors** are on the device's 55–110 °F water scale and follow the Eight
 Sleep Autopilot-RCT direction (cooler → deep, warmer → REM):
 
@@ -102,6 +110,31 @@ whose weights encode the *same* priority — **wake events −3.0 (dominant)**, 
 efficiency +0.10, HRV +0.05 — so the ML and rule paths agree on what "better" means and can't pull
 in opposite directions. Below the confidence/data gate it falls back to the conservative rule
 policy (do-no-harm).
+
+## 5. In-night steering: deviation from the ideal *curve* → a real-time deepen nudge
+
+§4 is the **slow loop** (cross-night setpoint learning). On top of it runs a **fast loop** inside
+Maintenance (`controller/architecture.py`) that acts *within the night*, within bounds the slow loop
+set. It answers "I'm lighter than I should be right now — steer me deeper":
+
+- **The ideal curve.** From tonight's personalized targets it builds the ideal *cumulative* deep and
+  REM minutes vs time-since-onset: **deep front-loaded** (most SWS in the first cycles — exponent
+  `<1`), **REM back-loaded** (grows in the last third — exponent `>1`). The controller accrues your
+  *realized* minutes-in-stage each tick, so it always knows the **deficit** ("by now you should have
+  ~X min deep; you have Y").
+- **The maneuver (asymmetric, evidence-based).** When you are **in light sleep, behind the deep
+  curve, in the front ~60 % of the night, and awakening-risk is LOW**, it drives the bed to the deep
+  setpoint (`DEEP_BIAS_COOL`; cooler → more deep, Autopilot RCT). Deep is the workhorse and the
+  default; the **"nudge lighter"** corollary is only the pre-wake warm ramp (already shipped) plus an
+  **off-by-default**, back-third-only REM-unblock that never reduces deep below its floor.
+- **Maintenance still wins.** Awakening-risk is the **veto**: the steerer reuses the same pre-empt
+  signal (rising wake-risk + leading-edge precursor + micro-arousal), so it never nudges into a
+  brewing arousal, and an awakening immediately cancels it. Every move still passes the §2 safety
+  chain (slew / variability / clamp), so a deepen nudge can never jolt you.
+- **It learns whether it actually works for you.** Each maneuver is edge-logged to the `steer_events`
+  ledger and resolved over a 20-min horizon (`deepened?` / `caused_wake?`) — the supervised signal a
+  per-person deepening-response model + n-of-1 A/B will use to keep pushing only if it genuinely
+  moves *your* architecture (do-no-harm). Pinned by `tests/test_architecture_steering.py`.
 
 ## In one sentence
 

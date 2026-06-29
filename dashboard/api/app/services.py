@@ -505,6 +505,12 @@ def preemption_status(repo) -> dict:
         efficacy = repo.precool_efficacy()
     except Exception:
         pass
+    steer = extra.get("steering") or {}
+    steer_efficacy = {}
+    try:
+        steer_efficacy = repo.steer_efficacy()
+    except Exception:
+        pass
     return {
         "preempting": bool(pre.get("preempting", False)),
         "wake_risk": pre.get("wake_risk"),
@@ -513,6 +519,17 @@ def preemption_status(repo) -> dict:
         "precursor_reasons": pre.get("precursor_reasons", []),
         "recurring_wake_times": recurring,
         "precool_efficacy": efficacy,
+        # In-night architecture steering ("nudge me deeper"): live maneuver + how far off the
+        # ideal deep curve we are, plus the learned per-maneuver deepen/wake rates.
+        "steering": {
+            "active": bool(steer.get("active", False)),
+            "maneuver": steer.get("maneuver", "hold"),
+            "deep_deficit_min": steer.get("deep_deficit_min"),
+            "deep_min_so_far": steer.get("deep_min_so_far"),
+            "rem_min_so_far": steer.get("rem_min_so_far"),
+            "reason": steer.get("reason"),
+            "efficacy": steer_efficacy,
+        },
         "stale": rt.get("stale", True),
     }
 
