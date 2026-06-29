@@ -45,6 +45,20 @@ NUDGE_STEP_DEFAULT_F = 1.0
 TEMP_MIN_F, TEMP_MAX_F = 55.0, 110.0
 
 
+def _parse_wake_dt(wake_time):
+    """'HH:MM' -> the next datetime it occurs, or None if malformed (so a bad command from the UI
+    degrades gracefully instead of crashing the command loop)."""
+    try:
+        hh, mm = (int(x) for x in str(wake_time).split(":"))
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            return None
+        now = datetime.now()
+        wake = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        return wake + timedelta(days=1) if wake <= now else wake
+    except Exception:
+        return None
+
+
 class DashboardDaemon:
     def __init__(self, simulate: bool = True, poll_seconds: float = 30.0,
                  command_poll_seconds: float = 1.0) -> None:
@@ -184,10 +198,13 @@ class DashboardDaemon:
                     "thermal_level": p.get("thermal_level"),
                     "night_type": p.get("night_type") or "auto",
                 }
-                hh, mm = (int(x) for x in p["wake_time"].split(":"))
-                wake = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
-                if wake <= datetime.now():
-                    wake += timedelta(days=1)
+                wake = _parse_wake_dt(p.get("wake_time"))
+                if wake is None:
+                    # malformed wake time -> ignore this command rather than crash the loop
+                    print(f"set_wake ignored: bad wake_time {p.get('wake_time')!r}", flush=True)
+                    self.wake = None
+                    bridge.mark_applied(self.repo.conn, cmd["id"])
+                    continue
                 # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
                 normal_wake = wake
                 try:
