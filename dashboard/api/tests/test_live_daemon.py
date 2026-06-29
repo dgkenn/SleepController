@@ -77,6 +77,19 @@ def test_live_emergency_stop_turns_off_side():
     assert rt["state"] == "OFF" and rt["extra"]["power_on"] is False
 
 
+def test_live_emergency_stop_works_even_in_dry_run():
+    # Safety override: dry-run blocks every OTHER write, but Emergency Stop must still hard-off.
+    d, client, repo = _daemon(dry_run=True)
+    bridge.enqueue_command(repo.conn, "stop")
+
+    async def go():
+        await client.connect()
+        await d.command_tick()
+    _run(go())
+
+    assert client.off_count == 1  # turned off the side despite dry-run
+
+
 def test_live_away_and_prime_call_device():
     d, client, repo = _daemon()
     bridge.enqueue_command(repo.conn, "away_on")

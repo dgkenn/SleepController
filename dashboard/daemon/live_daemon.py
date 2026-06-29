@@ -192,7 +192,17 @@ class LiveDashboardDaemon:
             t, p = cmd["type"], cmd["payload"]
             changed = True
             try:
-                if t in ("stop", "power_off"):
+                if t == "stop":
+                    # EMERGENCY STOP is a safety override: hard-off the side ALWAYS, even in
+                    # dry-run. A silent no-op emergency stop is exactly what you don't want.
+                    self.power_on = False
+                    self.paused = True
+                    try:
+                        await self.client.turn_off_side()
+                        self._log("EMERGENCY STOP: side turned off")
+                    except Exception as exc:
+                        self._log(f"EMERGENCY STOP turn_off_side failed: {exc}")
+                elif t == "power_off":
                     self.power_on = False
                     self.paused = True
                     if not self.dry_run:
