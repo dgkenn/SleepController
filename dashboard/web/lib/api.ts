@@ -615,6 +615,36 @@ export interface ShiftNap {
   reason: string;
 }
 
+interface PhaseLearned {
+  is_personalized: boolean;
+  n: number;
+  rationale: string;
+  [k: string]: unknown;
+}
+export interface LearningPhases {
+  onset: {
+    label: string;
+    knob: string;
+    n: number;
+    per_mode: Record<string, PhaseLearned>;
+  };
+  maintenance: {
+    label: string;
+    knob: string;
+    settle_nudge_f: number;
+    settle_direction: string;
+    precool_events: number;
+    is_personalized: boolean;
+  };
+  wake: {
+    label: string;
+    knob: string;
+    n: number;
+    window_per_mode: Record<string, PhaseLearned>;
+    thermal_per_mode: Record<string, PhaseLearned>;
+  };
+}
+
 export interface ShiftPlan {
   debt_min: number;
   debt_h: number;
@@ -645,6 +675,7 @@ export const api = {
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
   wakePlan: () => apiFetch<WakePlan>('/api/wake/plan'),
+  learningPhases: () => apiFetch<LearningPhases>('/api/learning/phases'),
 
   // Cross-shift sleep plan (debt, banking, naps, anchor)
   shiftPlan: () => apiFetch<ShiftPlan>('/api/shift/plan'),

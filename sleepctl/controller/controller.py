@@ -305,6 +305,10 @@ class SleepController:
         """Apply the learned signed maintenance settle nudge to the thermal controller."""
         self.thermal.set_settle_nudge(nudge_f)
 
+    def set_onset_warm(self, warm_f: float) -> None:
+        """Apply tonight's learned (per-mode, explored) onset warm nudge to the induction phase."""
+        self.thermal.set_onset_warm(warm_f)
+
     def set_wake_window(self, minutes: int) -> None:
         """The time selector sets the per-night smart-wake window ceiling (choose_wake_window)."""
         self.wake_orch.cfg.window_min = max(1, int(minutes))

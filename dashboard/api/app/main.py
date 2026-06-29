@@ -161,6 +161,12 @@ def wake_tuning(repo=Depends(repo_dep), user: str = AuthDep):
     return services.wake_tuning_view(repo)
 
 
+@app.get("/learning/phases")
+def learning_phases(repo=Depends(repo_dep), user: str = AuthDep):
+    """What's been learned across all three sleep phases (onset / maintenance / wake), per mode."""
+    return services.learning_phases(repo)
+
+
 class ShiftConfigBody(BaseModel):
     enabled: bool | None = None
     next_shift: str | None = None   # ISO datetime of the next shift start (null to clear)

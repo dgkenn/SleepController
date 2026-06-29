@@ -57,11 +57,17 @@ class WakeTuning:
 
 def learn_wake_tuning(records: List[dict], base_window: int = 30, base_liftable: float = 0.45,
                       min_nights: int = 8, max_window_shift: int = 10,
-                      max_lift_shift: float = 0.15) -> WakeTuning:
-    """records: [{'window_min': int, 'grogginess': float, 'forced': bool}, ...] (one per night
-    that has a grogginess check-in). Returns the tuned window + liftable bar for this user."""
-    usable = [r for r in records
-              if r.get("grogginess") is not None and r.get("window_min")]
+                      max_lift_shift: float = 0.15, mode: Optional[str] = None) -> WakeTuning:
+    """records: [{'window_min': int, 'grogginess': float, 'forced': bool, 'night_type': str}, ...]
+    (one per night with a grogginess check-in). Returns the tuned window + liftable bar. When
+    ``mode`` is given and that night-type has enough data, learns for it specifically (a short
+    night may want a different window than a full one); otherwise pools across modes."""
+    pool = [r for r in records
+            if r.get("grogginess") is not None and r.get("window_min")]
+    usable = pool
+    if mode is not None:
+        seg = [r for r in pool if (r.get("night_type") or "normal") == mode]
+        usable = seg if len(seg) >= min_nights else pool
     n = len(usable)
     if n < min_nights:
         return WakeTuning(base_window, base_liftable, n, False,
@@ -112,5 +118,6 @@ def wake_tuning_records(repo, nights: int = 30) -> List[dict]:
         if g is None:
             continue
         out.append({"window_min": row.get("window_min"), "grogginess": g,
-                    "forced": bool(row.get("forced"))})
+                    "forced": bool(row.get("forced")),
+                    "night_type": row.get("night_type") or "normal"})
     return out

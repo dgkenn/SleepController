@@ -8,6 +8,7 @@ import MaintenanceCard from '@/components/MaintenanceCard';
 import ForensicsCard from '@/components/ForensicsCard';
 import ExperimentsCard from '@/components/ExperimentsCard';
 import TargetsCard from '@/components/TargetsCard';
+import LearningPhasesCard from '@/components/LearningPhasesCard';
 import useSWR from 'swr';
 import { MLOverview, fetcher } from '@/lib/api';
 
@@ -51,6 +52,9 @@ function LearningContent() {
         <div className="px-4 space-y-4">
           {/* What "perfect sleep" means tonight — targets to hit + personalized weights */}
           <TargetsCard />
+
+          {/* What's learned across all three phases (onset / maintenance / wake), per night-type */}
+          <LearningPhasesCard />
 
           {/* Sleep maintenance: prevent + handle awakenings */}
           <MaintenanceCard />
