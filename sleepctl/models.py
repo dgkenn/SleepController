@@ -95,6 +95,17 @@ class SensorFrame:
     target_level: Optional[int] = None
     data_age_seconds: Optional[float] = None
 
+    def __post_init__(self) -> None:
+        # Sanitize at the boundary: a bad sensor reading (NaN/Inf) must never enter the engine —
+        # NaN silently corrupts every comparison and Inf crashes statistics. Coerce to None so the
+        # controller treats it as missing data (and holds) rather than acting on garbage.
+        import math as _math
+        for _f in ("stage_confidence", "heart_rate", "hrv", "respiratory_rate", "movement",
+                   "bed_temp_f", "room_temp_f", "data_age_seconds"):
+            v = getattr(self, _f)
+            if isinstance(v, float) and not _math.isfinite(v):
+                setattr(self, _f, None)
+
     def is_stale(self, max_age_seconds: float) -> bool:
         """True when freshness is unknown or older than ``max_age_seconds``."""
         if self.data_age_seconds is None:

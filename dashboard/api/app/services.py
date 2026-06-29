@@ -30,11 +30,13 @@ def _wake_dt(wake_time: str | None):
     if not wake_time:
         return None
     try:
-        hh, mm = (int(x) for x in wake_time.split(":"))
+        hh, mm = (int(x) for x in str(wake_time).split(":"))
+        if not (0 <= hh < 24 and 0 <= mm < 60):       # reject impossible clocks (e.g. "25:99")
+            return None
+        now = datetime.now()
+        w = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     except Exception:
         return None
-    now = datetime.now()
-    w = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
     if w <= now:
         w += timedelta(days=1)
     return w
@@ -759,7 +761,9 @@ def gym_advice(repo) -> dict:
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
     wake_hhmm = ((rt.get("extra") or {}).get("wake") or {}).get("wake_time") or "07:00"
     try:
-        hh, mm = (int(x) for x in wake_hhmm.split(":"))
+        hh, mm = (int(x) for x in str(wake_hhmm).split(":"))
+        if not (0 <= hh < 24 and 0 <= mm < 60):       # reject impossible clocks
+            hh, mm = 7, 0
     except Exception:
         hh, mm = 7, 0
     normal_wake = now.replace(hour=hh, minute=mm, second=0, microsecond=0)

@@ -56,6 +56,7 @@ class NapPlan:
 
 def nap_strategy(window_min: int, now_hour: Optional[int] = None, cfg=None) -> NapPlan:
     """Choose the nap strategy for a given opportunity ``window_min`` (minutes) and clock hour."""
+    window_min = max(0, int(window_min or 0))   # a non-positive window is no nap opportunity
     t = getattr(cfg, "tunables", None)
     power_max = getattr(t, "nap_power_max_min", 25)
     cycle_min = getattr(t, "nap_cycle_min_min", 60)

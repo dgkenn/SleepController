@@ -8,6 +8,7 @@ the detector robust to noisy single-signal blips.
 
 from __future__ import annotations
 
+import math
 import statistics
 from datetime import datetime
 from typing import Optional
@@ -15,13 +16,19 @@ from typing import Optional
 from sleepctl.models import SensorFrame, SleepStage, WakeEvent
 
 
+def _finite(values: list[float]) -> list[float]:
+    """Drop None and non-finite (NaN/Inf) values — a bad sensor reading must not poison the stats
+    (statistics.pstdev raises on Inf, and NaN silently corrupts every downstream comparison)."""
+    return [v for v in values if v is not None and math.isfinite(v)]
+
+
 def _mean(values: list[float]) -> Optional[float]:
-    vals = [v for v in values if v is not None]
+    vals = _finite(values)
     return statistics.fmean(vals) if vals else None
 
 
 def _stdev(values: list[float]) -> float:
-    vals = [v for v in values if v is not None]
+    vals = _finite(values)
     return statistics.pstdev(vals) if len(vals) >= 2 else 0.0
 
 
