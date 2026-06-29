@@ -74,6 +74,7 @@ class WakeConfig:
     silent_only: bool = True
     light_enabled: bool = False     # drive a smart-bulb dawn via the daemon webhook
     post_wake_light_min: int = 20   # hold the bright light dose this long AFTER you've surfaced
+    cold_snap_enabled: bool = False  # OPT-IN post-wake cool snap (plumbed; behavior not yet wired)
     debt_window_shrink: float = 0.4  # high debt shrinks the early window by up to this fraction
     debt_threshold_raise: float = 0.15  # ...and raises the liftable bar by up to this
 
@@ -82,6 +83,7 @@ class WakeConfig:
         c = WakeConfig()
         c.window_min = int(getattr(t, "wake_window_min", c.window_min))
         c.post_wake_light_min = int(getattr(t, "post_wake_light_min", c.post_wake_light_min))
+        c.cold_snap_enabled = bool(getattr(t, "wake_cold_snap_enabled", c.cold_snap_enabled))
         if getattr(t, "wake_vibration_enabled", True):
             c.gentle_vibration = int(getattr(t, "wake_vibration_power", c.gentle_vibration))
         else:
