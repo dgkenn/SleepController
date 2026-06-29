@@ -64,6 +64,10 @@ class SleepController:
         self._deepen_active = False         # edge-trigger for steer-event logging
         self.last_steer = None              # last SteerDecision (telemetry)
         self.pending_steer_event = None     # consumed + logged by the cycle
+        # Deepening-response policy: whether to ACTUATE the deepen nudge tonight. On control
+        # ('observe') nights this is False — the steerer still judges + logs a SHADOW event (the
+        # n-of-1 control arm) but doesn't cool. Set nightly by the daemon from the learner.
+        self.steer_actuate = True
         # Multi-signal, escalating, inertia-minimizing wake orchestrator (uses the calibrated
         # sleep/wake classifier + the fused fast movement; never oversleeps the deadline).
         from sleepctl.controller.sleep_wake import SleepWakeClassifier
@@ -87,6 +91,7 @@ class SleepController:
         self.last_arousal = None          # last ArousalAssessment
         self.last_wake_risk = None        # last WakeRisk
         self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
+        self.last_precursor_profile = None  # learned personalized awakening-precursor trajectory
         self._arousal_started: Optional[datetime] = None  # for re-settling latency
         self.last_resettle_latency_min: Optional[float] = None
         self._anticipatory_active = False
@@ -367,8 +372,12 @@ class SleepController:
             minutes_to_wake=mins_to_wake)
         self.last_steer = steer
         deepen = steer.deepen
-        # Edge-trigger the steer-event ledger when a deepen maneuver FIRST starts, so the
-        # deepening-response learner (Phase 2) can later score stage response + any awakening.
+        # n-of-1 control: ACTUATE only on 'act' nights; on 'observe'/disabled nights the steerer
+        # still judges + logs a SHADOW event (applied=0) but does NOT cool — that's the control arm
+        # the deepening-response learner compares against (does cooling beat the natural base rate?).
+        actuate = deepen and self.steer_actuate
+        # Edge-trigger the steer-event ledger when the deepen VERDICT first starts (either arm), so
+        # the learner scores stage response + any awakening for both actuated and control nights.
         if deepen and not self._deepen_active:
             self.pending_steer_event = {
                 "ts": now,
@@ -377,9 +386,24 @@ class SleepController:
                 "deep_deficit_min": round(steer.deep_deficit_min, 2),
                 "frac_of_night": round(steer.frac_of_night, 3),
                 "horizon_min": cfg.tunables.steer_response_horizon_min,
+                "applied": 1 if actuate else 0,
             }
         self._deepen_active = deepen
-        return deepen
+        return actuate
+
+    def set_precursor_profile(self, profile) -> None:
+        """Apply the learned, personalized awakening-precursor trajectory to the precursor detector,
+        so pre-emption triggers on the drift pattern that actually precedes YOUR awakenings."""
+        self.last_precursor_profile = profile
+        try:
+            self.precursor_detector.personalize(profile)
+        except Exception:
+            pass
+
+    def set_steer_policy(self, actuate: bool) -> None:
+        """Set whether tonight ACTUATES the deepen nudge (learned do-no-harm gate + the n-of-1
+        control schedule). False = a control/observe night: judge + shadow-log, but don't cool."""
+        self.steer_actuate = bool(actuate)
 
     def _reset_architecture(self) -> None:
         self._arch_deep_min = self._arch_rem_min = self._arch_light_min = 0.0
@@ -406,8 +430,10 @@ class SleepController:
         far off the ideal deep/REM curve are we right now."""
         s = self.last_steer
         maneuver = s.maneuver if s else "hold"
+        verdict_deepen = bool(self._deepen_active)
         return {
-            "active": bool(self._deepen_active),                 # actively nudging deeper (acquire)
+            "active": verdict_deepen and self.steer_actuate,     # actually nudging deeper (acquire)
+            "observing": verdict_deepen and not self.steer_actuate,  # control night: judging, not cooling
             "defending": maneuver in ("defend_deep", "defend_rem"),  # holding a favorable state
             "maneuver": maneuver,
             "deep_deficit_min": round(s.deep_deficit_min, 1) if s else None,

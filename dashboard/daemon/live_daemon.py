@@ -168,6 +168,20 @@ class LiveDashboardDaemon:
             self._onset_warm_f = next_onset_warm_f(ons.onset_warm_f,
                                                    datetime.now().timetuple().tm_yday)
             controller.set_onset_warm(self._onset_warm_f)
+            # Deepening-response: gate tonight's deepen actuation on the learned do-no-harm policy
+            # and the n-of-1 control schedule (does cooling actually deepen you, without waking you?).
+            from sleepctl.learning.deepening import (
+                deepening_records, learn_deepening, next_steer_mode)
+            self._deepen_policy = learn_deepening(deepening_records(self.repo), mode=mode)
+            steer_mode = next_steer_mode(self._deepen_policy,
+                                         datetime.now().timetuple().tm_yday)
+            controller.set_steer_policy(
+                actuate=self._deepen_policy.enabled and steer_mode == "act")
+            # Personalized awakening prediction: tune the precursor detector to the trajectory that
+            # precedes YOUR awakenings (earlier, more accurate pre-emption).
+            from sleepctl.learning.wake_causation import awakening_precursor_profile
+            self._precursor_profile = awakening_precursor_profile(self.repo)
+            controller.set_precursor_profile(self._precursor_profile)
         except Exception as exc:
             self._log(f"profile load skipped: {exc}")
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the

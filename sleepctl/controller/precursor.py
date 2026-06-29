@@ -83,6 +83,30 @@ class PrecursorDetector:
         self.w_resp = getattr(t, "precursor_w_resp", 0.10)
         self.instability_move = getattr(t, "precursor_instability_move", 0.25)
         self.instability_gain = getattr(t, "precursor_instability_gain", 0.12)
+        self.personalized = False     # set True once a learned precursor profile is applied
+
+    def personalize(self, profile: Optional[dict]) -> None:
+        """Tune the trigger thresholds to the trajectory that actually precedes THIS user's
+        awakenings (learned by ``wake_causation.awakening_precursor_profile``). We only move the two
+        earliest/strongest precursors — HR creep and HRV decay — and only when the signal is
+        learned-predictive, clamped to a sane band so thin data can't blind or over-sensitize the
+        detector. Everything else keeps its evidence default."""
+        if not profile or not profile.get("is_personalized"):
+            return
+        feats = profile.get("features", {})
+        hr = feats.get("hr_slope", {})
+        if hr.get("predictive") and hr.get("threshold") is not None:
+            self.hr_creep_slope = max(0.2, min(2.0, float(hr["threshold"])))
+            self.personalized = True
+        hrv = feats.get("hrv_slope", {})
+        if hrv.get("predictive") and hrv.get("threshold") is not None:
+            self.hrv_decay_slope = max(-3.0, min(-0.2, float(hrv["threshold"])))
+            self.personalized = True
+        # tossing-and-turning: tune the restlessness-rise trigger to YOUR pre-wake movement build-up
+        mv = feats.get("move_slope", {})
+        if mv.get("predictive") and mv.get("threshold") is not None:
+            self.move_rise_slope = max(0.005, min(0.2, float(mv["threshold"])))
+            self.personalized = True
 
     def detect(
         self,

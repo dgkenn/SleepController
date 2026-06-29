@@ -154,10 +154,17 @@ never fight. The "acquire deeper" details:
   signal (rising wake-risk + leading-edge precursor + micro-arousal), so it never nudges into a
   brewing arousal, and an awakening immediately cancels it. Every move still passes the §2 safety
   chain (slew / variability / clamp), so a deepen nudge can never jolt you.
-- **It learns whether it actually works for you.** Each maneuver is edge-logged to the `steer_events`
-  ledger and resolved over a 20-min horizon (`deepened?` / `caused_wake?`) — the supervised signal a
-  per-person deepening-response model + n-of-1 A/B will use to keep pushing only if it genuinely
-  moves *your* architecture (do-no-harm). Pinned by `tests/test_architecture_steering.py`.
+- **It learns whether it actually works for you (causally).** A true n-of-1 A/B: most nights ACTUATE
+  the nudge; periodic CONTROL nights judge the same situation but don't cool, logging a **shadow**
+  event. The confound-free lift `P(deep|nudged) − P(deep|not nudged)` and the awakening rate decide a
+  **do-no-harm gate** — if cooling doesn't beat your natural base rate, or it raises your awakening
+  rate, the maneuver **disables itself** (`learning/deepening.py`; the lighten maneuver shares the
+  same core). Separately, a **wake-causation audit** checks every adjustment against the night's base
+  wake rate (netting out "you'd have woken anyway") and never blames a confounded reactive maneuver,
+  and a **personalized awakening-precursor** learner mines the sensor trajectory before your
+  awakenings — HR/HRV drift, breathing irregularity, and tossing/turning bursts — to tune the
+  precursor detector to *your* pattern. Pinned by `tests/test_architecture_steering.py` +
+  `tests/test_deepening_audit.py`.
 
 ## In one sentence
 

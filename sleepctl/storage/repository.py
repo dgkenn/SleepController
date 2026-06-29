@@ -343,23 +343,25 @@ class Repository:
     # ---- in-night architecture-steering ledger -------------------------------
     def log_steer_event(self, night_date, ts, maneuver: str, stage_before,
                         deep_deficit_min: float, frac_of_night: float,
-                        horizon_min: float) -> int:
+                        horizon_min: float, applied: int = 1) -> int:
         cur = self.conn.execute(
             "INSERT INTO steer_events (night_date, ts, maneuver, stage_before, "
-            "deep_deficit_min, frac_of_night, horizon_min, deepened, caused_wake, resolved) "
-            "VALUES (?,?,?,?,?,?,?,NULL,NULL,0)",
+            "deep_deficit_min, frac_of_night, horizon_min, applied, deepened, caused_wake, "
+            "resolved) VALUES (?,?,?,?,?,?,?,?,NULL,NULL,0)",
             (night_date, _iso(ts) if not isinstance(ts, str) else ts, maneuver,
-             stage_before, float(deep_deficit_min), float(frac_of_night), float(horizon_min)),
+             stage_before, float(deep_deficit_min), float(frac_of_night), float(horizon_min),
+             1 if applied else 0),
         )
         self.conn.commit()
         return cur.lastrowid
 
     def resolve_steer_events(self) -> int:
-        """Label unresolved steer events whose response horizon has passed: ``deepened`` if any
-        DEEP sample occurred in (ts, ts+horizon]; ``caused_wake`` if any wake-event did. Returns
-        rows resolved. This is the supervised signal for the deepening-response learner."""
+        """Label unresolved steer events whose response horizon has passed: ``deepened`` if any DEEP
+        sample occurred in (ts, ts+horizon]; ``succeeded`` if the maneuver's TARGET stage did (deep
+        for 'deepen', REM for 'rem_warm'); ``caused_wake`` if any wake-event did. Returns rows
+        resolved. The supervised signal for the deepening / lightening response learners."""
         rows = self.conn.execute(
-            "SELECT id, ts, horizon_min FROM steer_events WHERE resolved = 0"
+            "SELECT id, ts, horizon_min, maneuver FROM steer_events WHERE resolved = 0"
         ).fetchall()
         resolved = 0
         for r in rows:
@@ -369,17 +371,23 @@ class Repository:
             end = t0 + timedelta(minutes=float(r["horizon_min"]))
             if datetime.now() < end:
                 continue  # horizon hasn't fully passed yet
+            target_stage = "rem" if r["maneuver"] == "rem_warm" else "deep"
             deepened = self.conn.execute(
                 "SELECT COUNT(*) c FROM raw_samples WHERE stage = 'deep' AND ts > ? AND ts <= ?",
                 (_iso(t0), _iso(end)),
+            ).fetchone()["c"]
+            succeeded = deepened if target_stage == "deep" else self.conn.execute(
+                "SELECT COUNT(*) c FROM raw_samples WHERE stage = ? AND ts > ? AND ts <= ?",
+                (target_stage, _iso(t0), _iso(end)),
             ).fetchone()["c"]
             woke = self.conn.execute(
                 "SELECT COUNT(*) c FROM raw_samples WHERE wake_event = 1 AND ts > ? AND ts <= ?",
                 (_iso(t0), _iso(end)),
             ).fetchone()["c"]
             self.conn.execute(
-                "UPDATE steer_events SET deepened = ?, caused_wake = ?, resolved = 1 WHERE id = ?",
-                (1 if deepened else 0, 1 if woke else 0, r["id"]),
+                "UPDATE steer_events SET deepened = ?, succeeded = ?, caused_wake = ?, "
+                "resolved = 1 WHERE id = ?",
+                (1 if deepened else 0, 1 if succeeded else 0, 1 if woke else 0, r["id"]),
             )
             resolved += 1
         if resolved:
@@ -387,23 +395,54 @@ class Repository:
         return resolved
 
     def steer_efficacy(self) -> dict:
-        """Per-maneuver outcome from resolved steer events: {maneuver: {n, deepened, deepen_rate,
-        woke, wake_rate}} — does cool-to-deepen actually move YOUR architecture, without waking you."""
+        """Per-maneuver outcome from resolved steer events, split into the ACTUATED arm and the
+        SHADOW/CONTROL arm: {maneuver: {act: {...}, control: {...}}}. Comparing the two answers the
+        causal question — does cool-to-deepen actually move YOUR architecture vs leaving it alone,
+        and without waking you."""
         rows = self.conn.execute(
-            "SELECT maneuver, COUNT(*) n, SUM(deepened) deepened, SUM(caused_wake) woke "
-            "FROM steer_events WHERE resolved = 1 GROUP BY maneuver"
+            "SELECT maneuver, applied, COUNT(*) n, SUM(deepened) deepened, SUM(caused_wake) woke "
+            "FROM steer_events WHERE resolved = 1 GROUP BY maneuver, applied"
         ).fetchall()
-        out = {}
+        out: dict = {}
         for r in rows:
             n = r["n"] or 0
             deepened = r["deepened"] or 0
             woke = r["woke"] or 0
-            out[r["maneuver"]] = {
+            arm = "act" if (r["applied"] in (1, None)) else "control"
+            out.setdefault(r["maneuver"], {})[arm] = {
                 "n": n, "deepened": deepened, "woke": woke,
                 "deepen_rate": round(deepened / n, 3) if n else None,
                 "wake_rate": round(woke / n, 3) if n else None,
             }
         return out
+
+    def maneuver_records(self, maneuver: str = "deepen", nights: int = 60) -> list:
+        """Resolved steer events for ``maneuver`` as learner rows: {applied, deepened, succeeded,
+        caused_wake, night_type}. ``succeeded`` is reaching the maneuver's target stage (deep for
+        deepen, REM for rem_warm). Joins each night's mode from context for per-mode learning."""
+        rows = self.conn.execute(
+            "SELECT night_date, applied, deepened, succeeded, caused_wake FROM steer_events "
+            "WHERE resolved = 1 AND maneuver = ? ORDER BY id DESC LIMIT ?",
+            (maneuver, int(nights) * 40),     # several events per night
+        ).fetchall()
+        out = []
+        for r in rows:
+            ctx = self.get_context(r["night_date"]) if hasattr(self, "get_context") else None
+            succeeded = r["succeeded"]
+            if succeeded is None:                       # back-compat: deepen rows pre-`succeeded`
+                succeeded = r["deepened"]
+            out.append({
+                "applied": 1 if r["applied"] in (1, None) else 0,
+                "deepened": int(r["deepened"] or 0),
+                "succeeded": int(succeeded or 0),
+                "caused_wake": int(r["caused_wake"] or 0),
+                "night_type": (getattr(ctx, "night_type", None) or "normal") if ctx else "normal",
+            })
+        return out
+
+    def deepening_records(self, nights: int = 60) -> list:
+        """Resolved 'deepen' steer events as learner rows (see ``maneuver_records``)."""
+        return self.maneuver_records("deepen", nights)
 
     def precool_efficacy(self) -> dict:
         """Per-window prevention rate from resolved events: {window: {n, prevented, rate,

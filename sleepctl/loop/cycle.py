@@ -100,7 +100,8 @@ class ControlCycle:
             try:
                 self.repo.log_steer_event(
                     night_date, steer["ts"], steer["maneuver"], steer["stage_before"],
-                    steer["deep_deficit_min"], steer["frac_of_night"], steer["horizon_min"])
+                    steer["deep_deficit_min"], steer["frac_of_night"], steer["horizon_min"],
+                    applied=steer.get("applied", 1))
             except Exception:
                 pass
             self.controller.pending_steer_event = None

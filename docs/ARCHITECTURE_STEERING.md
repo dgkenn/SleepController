@@ -238,8 +238,30 @@ a separate (silent-incompatible) hardware path.
      the deadline the steerer stands down so the wake-up ramp can lift you from light sleep — no
      deepening into sleep-inertia) **> (3) acquire/defend** the favorable state **> (4) hold**.
      Pinned by `tests/test_architecture_steering.py`; see `docs/CONTROL_LAW.md` §5.
-- **Phase 2:** the per-phase models (onset, awakening-risk, deepening-response, grogginess) on the
-  expanded features; uncertainty-gated; n-of-1 for each maneuver.
+- **Phase 2:** ✅ **SHIPPED — the causal response learners + failure-mode audit + personalized
+  awakening prediction.**
+  1. **Deepening-response learner** (`learning/deepening.py`): a true n-of-1 A/B. Most nights ACTUATE
+     the deepen nudge; periodic CONTROL nights judge the *same* situation but don't cool, logging a
+     **shadow** event (`steer_events.applied=0`). The causal **lift** = `P(deep|nudged) −
+     P(deep|not nudged)` is confound-free. Do-no-harm gate: if the nudge raises your awakening rate,
+     or doesn't beat your natural base rate, it **disables** itself; otherwise it keeps acting. The
+     daemon gates tonight's actuation on the learned policy and schedules the control nights
+     (more often when confidence is low).
+  2. **Lightening-response learner**: the symmetric maneuver (warm → REM) shares the identical causal
+     core (`learn_maneuver_response`), ready the moment the off-by-default REM-unblock is enabled.
+  3. **Wake-causation failure-mode audit** (`learning/wake_causation.py`): every mid-sleep adjustment
+     in the `interventions` ledger is checked for an awakening within a horizon, **controlled for the
+     night's base wake rate** (so "you'd have woken anyway" is netted out). Reactive maneuvers (a
+     settle fires *because* a wake is brewing) are **labelled confounded and never auto-blamed**;
+     only proactive maneuvers with a statistically clear excess are flagged `suspect`. The rigorous
+     causal disable lives in the randomized response learners; this is the broad, honest audit.
+  4. **Personalized awakening-PREDICTION** (`awakening_precursor_profile`): learns the sensor
+     trajectory in the minutes BEFORE your awakenings vs matched control windows — a **comprehensive
+     feature set** (HR creep + level, HRV decay + level, RR rise + irregularity, and a rich movement
+     block: restlessness mean, rising trend, peak, and **tossing/turning burst count**, plus bed
+     warming + level). The signals that actually separate your pre-wake windows tune the precursor
+     detector's HR/HRV/restlessness triggers (`PrecursorDetector.personalize`), so pre-emption fires
+     on *your* drift pattern, earlier and more accurately. Surfaced under `learning_phases`.
 - **Phase 3 (research / optional hardware):** Tier-1 raw capture for finer arousal/micro-event
   detection; EEG-headband acoustic closed-loop SWS enhancement (separate silent-incompatible path).
 

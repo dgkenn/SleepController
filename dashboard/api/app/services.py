@@ -1096,6 +1096,18 @@ def learning_phases(repo) -> dict:
     except Exception:
         precool_n = 0
 
+    # Architecture-steering learners (in-night): the deepen + lighten causal response policies, and
+    # the personalized awakening-precursor trajectory that drives earlier pre-emption.
+    from sleepctl.learning.deepening import (
+        deepening_records, learn_deepening, lightening_records, learn_lightening)
+    from sleepctl.learning.wake_causation import awakening_precursor_profile, wake_causation_audit
+    deepen_pol = {"pooled": learn_deepening(deepening_records(repo)).to_dict()}
+    for m in modes:
+        deepen_pol[m] = learn_deepening(deepening_records(repo), mode=m).to_dict()
+    lighten_pol = learn_lightening(lightening_records(repo)).to_dict()
+    precursor = awakening_precursor_profile(repo)
+    wake_audit = wake_causation_audit(repo)
+
     return {
         "onset": {
             "label": "Going to sleep",
@@ -1110,6 +1122,17 @@ def learning_phases(repo) -> dict:
             "settle_direction": ("cooler" if settle < 0 else "warmer" if settle > 0 else "neutral"),
             "precool_events": precool_n,
             "is_personalized": bool(precool_n >= 6),
+            # the learned trajectory that PREDICTS your awakenings (drives earlier pre-emption)
+            "awakening_precursors": precursor,
+            # the failure-mode audit: which adjustments wake you, base-rate-controlled
+            "wake_causation_audit": wake_audit,
+        },
+        "architecture": {
+            "label": "Right depth (in-night steering)",
+            "knob": "deepen / lighten thermal nudge",
+            # does cool-to-deepen actually move YOUR architecture, learned via the n-of-1 control?
+            "deepening": deepen_pol,
+            "lightening": lighten_pol,
         },
         "wake": {
             "label": "Waking up",

@@ -98,6 +98,7 @@ class DashboardDaemon:
         self.wearable = None
         self._phone_fused = False
         self.hue_driver = None             # Philips Hue dawn-light driver (best-effort)
+        self._deepen_policy = None         # learned deepening-response policy (do-no-harm gate)
         self._pending_wake = None          # captured wake conditions, flushed to wake_log at close
         self._wake_last_stage = None
         self._wake_base_window = self.cfg.tunables.wake_window_min  # learned per-user window base
@@ -427,6 +428,21 @@ class DashboardDaemon:
             self._onset_warm_f = next_onset_warm_f(ons.onset_warm_f,
                                                    datetime.now().timetuple().tm_yday)
             self.cycle.controller.set_onset_warm(self._onset_warm_f)
+            # Deepening-response: learn whether cool-to-deepen actually works for YOU (vs the
+            # natural base rate, via the n-of-1 control nights) and whether it ever wakes you.
+            # Gate tonight's actuation on that, and schedule act/observe so the lift stays fresh.
+            from sleepctl.learning.deepening import (
+                deepening_records, learn_deepening, next_steer_mode)
+            self._deepen_policy = learn_deepening(deepening_records(self.repo), mode=mode)
+            steer_mode = next_steer_mode(self._deepen_policy,
+                                         datetime.now().timetuple().tm_yday)
+            self.cycle.controller.set_steer_policy(
+                actuate=self._deepen_policy.enabled and steer_mode == "act")
+            # Personalized awakening prediction: learn the sensor trajectory that precedes YOUR
+            # awakenings and tune the precursor detector to it (earlier, more accurate pre-emption).
+            from sleepctl.learning.wake_causation import awakening_precursor_profile
+            self._precursor_profile = awakening_precursor_profile(self.repo)
+            self.cycle.controller.set_precursor_profile(self._precursor_profile)
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
 
