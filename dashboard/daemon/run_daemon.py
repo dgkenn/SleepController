@@ -426,7 +426,10 @@ class DashboardDaemon:
         st = frame.stage.value if getattr(frame, "stage", None) else None
         if st and st.lower() not in ("awake", "unknown"):
             self._wake_last_stage = st                         # last sleep stage before surfacing
-        if la.get("phase") == "done" and self._pending_wake is None:
+        # Capture at the moment of confirmation — the first "post_wake" (light dose held) or
+        # "done" tick — NOT after the post-wake hold, so minutes_early/forced reflect the real
+        # wake instant.
+        if la.get("phase") in ("post_wake", "done") and self._pending_wake is None:
             mins_early, forced = None, False
             dl = la.get("target_time")
             if dl:

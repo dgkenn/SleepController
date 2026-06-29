@@ -140,6 +140,24 @@ export default function GymCard() {
                       🌡 {plan.learned.thermal.rationale}
                     </p>
                   )}
+                  {plan.dawn_light?.enabled && (
+                    <p className="text-[10px] mt-0.5 text-amber-400">
+                      ☀️ {plan.dawn_light.sunrise ? 'sunrise ramp' : 'therapy lamp'}
+                      {plan.dawn_light.sunrise && plan.dawn_light.therapy && ' + therapy lamp'} ·
+                      held bright {plan.dawn_light.post_wake_hold_min} min past wake for the
+                      circadian kick
+                    </p>
+                  )}
+                  {plan.readiness && (
+                    <p className="text-[10px] mt-0.5 text-gray-400">
+                      🧠 {plan.readiness.note}
+                      {plan.readiness.caffeine.recommend && (
+                        <span className="text-gray-300">
+                          {' '}☕ {plan.readiness.caffeine.note}
+                        </span>
+                      )}
+                    </p>
+                  )}
                 </div>
               )}
             </div>

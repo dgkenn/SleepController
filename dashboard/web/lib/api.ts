@@ -531,12 +531,26 @@ export interface WakePlan {
   silent_only: boolean;
   vibration_ladder: number[];
   headline: string | null;
-  live: { phase: string; vibration_power: number; reason: string } | null;
+  live: { phase: string; vibration_power: number; reason: string; vibration_pulse?: string } | null;
   dawn_light?: {
     enabled: boolean;
     sunrise: boolean;
     therapy: boolean;
     dawn_ramp_min: number;
+    post_wake_hold_min: number;
+  };
+  readiness?: {
+    buffer_min: number;
+    minutes_earlier_than_usual: number;
+    sleep_debt_min: number;
+    note: string;
+    caffeine: {
+      recommend: boolean;
+      dose_mg: number;
+      onset: string;
+      strength: string;
+      note: string;
+    };
   };
   learned?: {
     window_min: number;

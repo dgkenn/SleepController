@@ -131,6 +131,41 @@ def test_light_ramps_through_the_dawn_window():
     assert late.light_level > early.light_level
 
 
+def test_post_wake_light_dose_holds_then_stands_down():
+    # After confirmed wake, the bright light dose is held for post_wake_light_min, then the
+    # lights stand down. Drives the dawn bulbs + therapy lamp past the wake moment.
+    o = WakeOrchestrator(WakeConfig(window_min=30, light_enabled=True, post_wake_light_min=20,
+                                    confirm_ticks=1))
+    # Surface and confirm at the deadline (presence True, high movement -> signs up).
+    awake = _f(SleepStage.AWAKE, WAKE, movement=0.6)
+    o.evaluate(WAKE, awake, [], WAKE)                      # confirms (confirm_ticks=1)
+    held = o.evaluate(WAKE + timedelta(minutes=10), _f(SleepStage.AWAKE, WAKE, movement=0.6),
+                      [], WAKE)
+    assert held.phase == "post_wake"
+    assert held.light_level == 1.0 and held.should_wake is True   # bright dose + therapy on
+    assert held.thermal_intent.name == "NEUTRAL"                  # stop warming (sleep-permissive)
+    done = o.evaluate(WAKE + timedelta(minutes=25), _f(SleepStage.AWAKE, WAKE, movement=0.6),
+                      [], WAKE)
+    assert done.phase == "done" and done.light_level == 0.0       # dose over -> lights off
+
+
+def test_post_wake_dose_ends_on_bed_exit():
+    o = WakeOrchestrator(WakeConfig(window_min=30, light_enabled=True, post_wake_light_min=20,
+                                    confirm_ticks=1))
+    o.evaluate(WAKE, _f(SleepStage.AWAKE, WAKE, movement=0.6), [], WAKE)       # confirm
+    out = o.evaluate(WAKE + timedelta(minutes=5),
+                     _f(SleepStage.AWAKE, WAKE, presence=False), [], WAKE)     # left the bed
+    assert out.phase == "done" and out.light_level == 0.0     # empty room -> no dose
+
+
+def test_vibration_is_rhythmic_not_a_flat_buzz():
+    o = WakeOrchestrator(WakeConfig(window_min=30))
+    gentle = o.evaluate(WAKE - timedelta(minutes=20), _f(SleepStage.LIGHT, WAKE), [], WAKE)
+    assert gentle.should_wake is True and gentle.vibration_pulse == "slow"
+    fire = o.evaluate(WAKE, _f(SleepStage.LIGHT, WAKE), [], WAKE)
+    assert fire.vibration_pulse == "continuous"
+
+
 def test_controller_set_dawn_light_toggles_the_ramp():
     # The daemon enables the sunrise ramp only when Hue dawn bulbs are configured; verify the
     # controller setter flips the orchestrator flag both ways so the lights ride the wake logic.

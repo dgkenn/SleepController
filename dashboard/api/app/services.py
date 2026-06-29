@@ -859,6 +859,66 @@ def wake_tuning_view(repo) -> dict:
     return out
 
 
+def _hhmm_delta_min(earlier: str, later: str) -> int:
+    """Minutes that ``earlier`` precedes ``later`` (both 'HH:MM'), wrapping a day. Best-effort."""
+    try:
+        eh, em = (int(x) for x in earlier.split(":"))
+        lh, lm = (int(x) for x in later.split(":"))
+        d = (lh * 60 + lm) - (eh * 60 + em)
+        return d if d >= 0 else d + 1440
+    except Exception:
+        return 0
+
+
+def wake_readiness(repo, normal: str | None, effective: str | None) -> dict:
+    """Post-wake guidance grounded in the sleep-inertia literature, tuned to a resident who may
+    do something safety-critical right after waking.
+
+    Inertia is worst waking out of deep sleep and near the core-temperature trough — i.e. when
+    you wake well before your habitual time or deep in sleep debt — and usually clears within
+    ~30 min (Tassi & Muzet 2000, doi:10.1053/smrv.2000.0098). A 100 mg caffeine dose at wake
+    measurably shortens it, kicking in from ~10–20 min (Newman 2013,
+    doi:10.2466/29.22.25.PMS.116.1.280-293)."""
+    from sleepctl.benchmarks import sleep_debt_min
+    debt = 0.0
+    try:
+        debt = float(sleep_debt_min(repo.recent_nights(14)))
+    except Exception:
+        pass
+    early_min = _hhmm_delta_min(effective, normal) if (normal and effective) else 0
+
+    # Readiness buffer before anything critical: a 15-min floor (typical inertia), widened when
+    # waking far before habitual time or in heavy debt (deeper sleep -> stronger inertia).
+    buffer_min = 15
+    reasons = []
+    if early_min >= 45:
+        buffer_min = 30
+        reasons.append(f"~{early_min} min before your usual wake (near your core-temp low)")
+    elif early_min >= 20:
+        buffer_min = 25
+        reasons.append(f"~{early_min} min earlier than usual")
+    if debt >= 240:
+        buffer_min = max(buffer_min, 30)
+        reasons.append(f"~{round(debt / 60, 1)} h sleep debt (deeper sleep, stronger inertia)")
+    note = ("Expect a groggier wake — " + "; ".join(reasons) +
+            f". Allow ~{buffer_min} min before anything safety-critical."
+            if reasons else
+            "Low expected grogginess — a normal-timed, well-rested wake.")
+
+    strong = bool(early_min >= 20 or debt >= 240)
+    caffeine = {
+        "recommend": True,
+        "dose_mg": 100,
+        "onset": "~10–20 min",
+        "strength": "stronger" if strong else "optional",
+        "note": ("100 mg caffeine the moment you're up clears inertia fastest"
+                 + (" — worth it on a short/early wake like this." if strong
+                    else "; skip it if you're heading back to bed soon.")),
+    }
+    return {"buffer_min": buffer_min, "minutes_earlier_than_usual": early_min,
+            "sleep_debt_min": round(debt), "note": note, "caffeine": caffeine}
+
+
 def wake_plan(repo) -> dict:
     """The unified smart-alarm plan: the gym-aware effective wake time + the smart-wake window
     and silent escalation ladder, plus the live wake-action if the daemon is mid-wake. This is
@@ -895,7 +955,10 @@ def wake_plan(repo) -> dict:
             "sunrise": bool(hue["enabled"] and hue["target_ids"]),
             "therapy": bool(hue["enabled"] and hue["therapy_ids"]),
             "dawn_ramp_min": wc.thermal_dawn_min,
+            "post_wake_hold_min": wc.post_wake_light_min,   # bright dose held this long past wake
         },
+        # Post-wake readiness: inertia buffer + caffeine timing, grounded in the literature.
+        "readiness": wake_readiness(repo, normal, effective),
         "learned": wake_tuning_view(repo),    # personalized window + lift bar from your grogginess
     }
 

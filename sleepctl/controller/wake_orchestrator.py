@@ -73,6 +73,7 @@ class WakeConfig:
     escalate_strong_s: int = 240
     silent_only: bool = True
     light_enabled: bool = False     # drive a smart-bulb dawn via the daemon webhook
+    post_wake_light_min: int = 20   # hold the bright light dose this long AFTER you've surfaced
     debt_window_shrink: float = 0.4  # high debt shrinks the early window by up to this fraction
     debt_threshold_raise: float = 0.15  # ...and raises the liftable bar by up to this
 
@@ -80,6 +81,7 @@ class WakeConfig:
     def from_tunables(t) -> "WakeConfig":
         c = WakeConfig()
         c.window_min = int(getattr(t, "wake_window_min", c.window_min))
+        c.post_wake_light_min = int(getattr(t, "post_wake_light_min", c.post_wake_light_min))
         if getattr(t, "wake_vibration_enabled", True):
             c.gentle_vibration = int(getattr(t, "wake_vibration_power", c.gentle_vibration))
         else:
@@ -89,7 +91,7 @@ class WakeConfig:
 
 @dataclass
 class WakeAction:
-    phase: str                      # idle | hold | dawn | wait_cycle | gentle | escalate | fire | done
+    phase: str                      # idle | hold | dawn | wait_cycle | gentle | escalate | fire | post_wake | done
     should_wake: bool
     vibration_power: int            # 0..100 (0 = none; audio always off)
     thermal_intent: ThermalIntent
@@ -98,6 +100,7 @@ class WakeAction:
     light_level: float = 0.0        # 0..1 dawn-light ramp for a smart bulb (if enabled)
     cycle: Optional[dict] = None     # cycle predictor state, for telemetry
     reason: str = ""
+    vibration_pulse: str = "off"    # off | slow | medium | continuous — rhythmic, not a flat buzz
 
     def to_dict(self) -> dict:
         return {"phase": self.phase, "should_wake": self.should_wake,
@@ -106,7 +109,7 @@ class WakeAction:
                 "target_time": self.target_time.isoformat() if self.target_time else None,
                 "p_wake": round(self.p_wake, 3) if self.p_wake is not None else None,
                 "light_level": round(self.light_level, 2), "cycle": self.cycle,
-                "reason": self.reason}
+                "reason": self.reason, "vibration_pulse": self.vibration_pulse}
 
 
 class WakeOrchestrator:
@@ -117,11 +120,13 @@ class WakeOrchestrator:
         self._engaged_at: Optional[datetime] = None
         self._up_streak = 0
         self._confirmed = False
+        self._confirmed_at: Optional[datetime] = None
 
     def reset(self) -> None:
         self._engaged_at = None
         self._up_streak = 0
         self._confirmed = False
+        self._confirmed_at = None
         self.predictor.reset()
 
     # -------------------------------------------------------------- signals
@@ -168,6 +173,13 @@ class WakeOrchestrator:
             return "escalate"
         return "gentle"
 
+    @staticmethod
+    def _pulse_for_phase(phase: str) -> str:
+        """Express vibration as a building rhythm, not a flat buzz. A melodic/rhythmic waking
+        signal eases sleep inertia where a neutral constant one worsens it (McFarlane 2020,
+        doi:10.1371/journal.pone.0215788); the same principle applied to silent haptics."""
+        return {"gentle": "slow", "escalate": "medium", "fire": "continuous"}.get(phase, "off")
+
     def _light(self, now, dawn_start, deadline) -> float:
         if not self.cfg.light_enabled or now < dawn_start:
             return 0.0
@@ -206,14 +218,26 @@ class WakeOrchestrator:
         # Wake confirmation / anti-relapse: only stand down once truly up.
         if not self._confirmed:
             if frame.presence is False:
-                self._confirmed = True
+                self._confirmed, self._confirmed_at = True, now
             elif self._signs_up(frame, p_wake):
                 self._up_streak += 1
                 if self._up_streak >= c.confirm_ticks:
-                    self._confirmed = True
+                    self._confirmed, self._confirmed_at = True, now
             else:
                 self._up_streak = 0
         if self._confirmed:
+            # Post-wake circadian light dose: keep the bulbs bright + the therapy lamp ON for a
+            # short window after you surface to lock in alertness and shift the clock (dawn-sim
+            # trials hold light ~20 min past wake — Gabel 2014, doi:10.1016/j.bbr.2014.12.043),
+            # while the bed stops warming (warm skin is sleep-permissive — Te Lindert & Van
+            # Someren 2018, doi:10.1016/B978-0-444-63912-7.00021-7). In bed only; bed-exit ends it.
+            held = (self._confirmed_at is not None
+                    and (now - self._confirmed_at).total_seconds() < c.post_wake_light_min * 60)
+            if held and frame.presence is not False and c.light_enabled:
+                return WakeAction("post_wake", True, 0, ThermalIntent.NEUTRAL, required_wake,
+                                  p_wake, 1.0, cyc,
+                                  f"awake — bright light dose ({c.post_wake_light_min} min) to "
+                                  "lock in alertness")
             return WakeAction("done", True, 0, ThermalIntent.WAKE_RAMP, required_wake, p_wake,
                               0.0, cyc, "confirmed up — alarm stood down")
 
@@ -223,7 +247,8 @@ class WakeOrchestrator:
                 self._engaged_at = now
             return WakeAction("fire", True, c.max_vibration, ThermalIntent.WAKE_RAMP,
                               required_wake, p_wake, max(light, 1.0 if c.light_enabled else 0.0),
-                              cyc, "deadline reached — guaranteed wake")
+                              cyc, "deadline reached — guaranteed wake",
+                              vibration_pulse=self._pulse_for_phase("fire"))
 
         secs_to_deadline = (required_wake - now).total_seconds()
         liftable = self._is_liftable(frame, p_wake, data_stale, p_liftable)
@@ -259,4 +284,5 @@ class WakeOrchestrator:
         v = self._vibration_for(now, required_wake)
         phase = self._phase_for_vibration(v)
         return WakeAction(phase, True, v, ThermalIntent.WAKE_RAMP, required_wake, p_wake,
-                          max(light, 0.5 if c.light_enabled else 0.0), cyc, reason)
+                          max(light, 0.5 if c.light_enabled else 0.0), cyc, reason,
+                          vibration_pulse=self._pulse_for_phase(phase))

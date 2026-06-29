@@ -60,6 +60,10 @@ class Tunables:
     min_hold_nights: int = 3  # nights before judging an intervention across nights
     variability_cap_f: float = 3.0  # cap total thermal swing within a window
     wake_window_min: int = 30  # smart-wake window before required wake time
+    # Post-wake circadian light dose: hold the dawn bulbs bright + the therapy lamp ON for this
+    # many minutes AFTER you've surfaced, then stand them down. Dawn-simulation trials hold light
+    # for ~20 min past wake to lock in alertness (Gabel 2014; SAD light-box dosing 30–60 min).
+    post_wake_light_min: int = 20
     induction_minutes_normal: int = 30
     induction_minutes_short: int = 15
     # On-demand onset induction: a small WARM nudge speeds sleep onset (cutaneous warming,
