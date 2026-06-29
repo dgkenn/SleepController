@@ -85,3 +85,40 @@ def is_personalized(learned: dict, mode: NightMode = NightMode.NORMAL) -> bool:
     base = targets_for(mode)
     return (abs(learned.get("deep_pct_ideal", base.deep_pct_ideal) - base.deep_pct_ideal) >= 0.005
             or abs(learned.get("rem_pct_ideal", base.rem_pct_ideal) - base.rem_pct_ideal) >= 0.005)
+
+
+def night_stress_level(repo, horizon: int = 7) -> float:
+    """A 0..1 estimate of current stress load, from the heavier of two signals: logged stress
+    (the morning survey / off-night flag, 0–10) and HRV running BELOW the user's baseline (the
+    autonomic fingerprint of stress). 0 when there's no signal. Forward-looking proxy: recent
+    stress + autonomic state predict tonight's recovery need."""
+    nights = repo.recent_nights(14)
+    if not nights:
+        return 0.0
+    logged = 0.0
+    for n in nights[-horizon:]:
+        ctx = repo.get_context(getattr(n, "date", None)) if hasattr(repo, "get_context") else None
+        s = getattr(ctx, "stress", None) if ctx is not None else None
+        if s is not None:
+            logged = max(logged, min(1.0, float(s) / 10.0))
+    hrvs = [n.avg_hrv for n in nights if getattr(n, "avg_hrv", None) is not None]
+    hrv_stress = 0.0
+    if len(hrvs) >= 4:
+        base = statistics.median(hrvs[:-1])
+        last = hrvs[-1]
+        if base and last < base:
+            hrv_stress = min(1.0, ((base - last) / base) * 2.0)   # 50% below baseline -> 1.0
+    return max(logged, hrv_stress)
+
+
+def stress_adjust(levels: dict, stress: float, max_bump: float = 0.02) -> dict:
+    """Fold stress into the night's ideal: a stressed night needs more recovery and its deep sleep
+    is under threat, so DEFEND deep by raising its target/floor a little (bounded). The controller
+    (which triggers on the deep floor) then works harder to protect deep on stressed nights."""
+    if stress <= 0:
+        return levels
+    bump = round(max_bump * max(0.0, min(1.0, stress)), 3)
+    out = dict(levels)
+    out["deep_pct_ideal"] = round(_clamp(levels["deep_pct_ideal"] + bump, *_BAND["deep_pct_ideal"]), 3)
+    out["deep_pct_min"] = round(_clamp(levels["deep_pct_min"] + bump, *_BAND["deep_pct_min"]), 3)
+    return out

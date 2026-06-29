@@ -66,10 +66,21 @@ class TieredPolicy:
         deltas: dict,
         response: dict,
         cfg: Optional[AppConfig] = None,
+        targets=None,
     ) -> dict:
         cfg = cfg or self.cfg
         min_hold = cfg.tunables.min_hold_nights
         max_step = cfg.tunables.max_step_f
+        # Drive toward the user's LEARNED ideal floors when they're given (from
+        # personalized_targets — felt-recovery + stress, bounded near evidence); otherwise FALL
+        # BACK to the evidence floor under uncertainty. This is how the controller chases YOUR ideal
+        # without ever straying from the literature when it doesn't yet know you.
+        deep_floor = getattr(targets, "deep_pct_min", None)
+        rem_floor = getattr(targets, "rem_pct_min", None)
+        if deep_floor is None:
+            deep_floor = cfg.benchmarks.deep_pct_floor
+        if rem_floor is None:
+            rem_floor = cfg.benchmarks.rem_pct_floor
 
         # No active candidate -> start a minimal trial aimed at the top priority.
         if self.candidate is None:
@@ -81,12 +92,12 @@ class TieredPolicy:
             # low-deep / low-REM stage triggers.
             if wake_delta and wake_delta > 0:
                 target, reason = "thermal_stability", "wake events up vs baseline -> " + reason
-            elif deep_pct is not None and deep_pct < cfg.benchmarks.deep_pct_floor:
+            elif deep_pct is not None and deep_pct < deep_floor:
                 target = "deep_bias_cooling"
-                reason = f"deep {deep_pct:.0%} < {cfg.benchmarks.deep_pct_floor:.0%} -> " + reason
-            elif rem_pct is not None and rem_pct < cfg.benchmarks.rem_pct_floor:
+                reason = f"deep {deep_pct:.0%} < {deep_floor:.0%} -> " + reason
+            elif rem_pct is not None and rem_pct < rem_floor:
                 target = "rem_warming"
-                reason = f"REM {rem_pct:.0%} < {cfg.benchmarks.rem_pct_floor:.0%} -> " + reason
+                reason = f"REM {rem_pct:.0%} < {rem_floor:.0%} -> " + reason
             else:
                 target = "deep_bias_cooling"
             self.candidate = _Candidate(target=target, magnitude_f=min(1.0, max_step))

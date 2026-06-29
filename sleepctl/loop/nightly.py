@@ -86,7 +86,15 @@ class NightlyUpdater:
             recommendation = {"action": ml_choice.name, "target": "ml",
                               "reason": ml_choice.reason}
         else:
-            recommendation = self.policy.recommend(baselines, deltas, response, cfg)
+            # Drive the policy toward the user's LEARNED, stress-aware ideal floors (falls back to
+            # the evidence floor inside personalized_targets when the data is thin).
+            try:
+                from sleepctl.benchmarks import NightMode
+                from sleepctl.learning.perfect_weights import personalized_targets
+                tgt = personalized_targets(self.repo, mode or NightMode.NORMAL)
+            except Exception:
+                tgt = None
+            recommendation = self.policy.recommend(baselines, deltas, response, cfg, targets=tgt)
             next_profile = apply_recommendation(active, recommendation, cfg)
             chosen = {
                 "action": recommendation["action"], "source": "fallback",
