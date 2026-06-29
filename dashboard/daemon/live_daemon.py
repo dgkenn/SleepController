@@ -31,6 +31,20 @@ from app import bridge
 TEMP_MIN_F, TEMP_MAX_F = 55.0, 110.0
 
 
+def _parse_wake_dt(wake_time):
+    """'HH:MM' -> the next datetime it occurs, or None if malformed (so a bad UI command degrades
+    gracefully instead of crashing the command loop)."""
+    try:
+        hh, mm = (int(x) for x in str(wake_time).split(":"))
+        if not (0 <= hh < 24 and 0 <= mm < 60):
+            return None
+        now = datetime.now()
+        wake = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+        return wake + timedelta(days=1) if wake <= now else wake
+    except Exception:
+        return None
+
+
 class LiveDashboardDaemon:
     def __init__(self, cfg: AppConfig, client, repo, dry_run: bool = False,
                  verbose: bool = True, weather=None, wearable=None) -> None:
@@ -268,35 +282,37 @@ class LiveDashboardDaemon:
                         "thermal_level": p.get("thermal_level"),
                         "night_type": p.get("night_type") or "auto",
                     }
-                    hh, mm = (int(x) for x in p["wake_time"].split(":"))
-                    wk = datetime.now().replace(hour=hh, minute=mm, second=0, microsecond=0)
-                    if wk <= datetime.now():
-                        wk += timedelta(days=1)
-                    # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
-                    normal_wk = wk
-                    try:
-                        from app import services
-                        wk = services.gym_effective_wake(self.repo, wk)
-                    except Exception as exc:
-                        self._log(f"gym wake adjust skipped: {exc}")
-                    self.context.required_wake_time = wk
-                    self._apply_night_type(p.get("night_type") or "auto")
-                    # Choose an appropriate smart-wake window for THIS night and feed it to the
-                    # orchestrator (wide when rested, narrow when sleep is scarce).
-                    try:
-                        from sleepctl.controller.wake_orchestrator import choose_wake_window
-                        explicit = p.get("window_min")
-                        if explicit and int(explicit) > 0:   # user override from the picker
-                            win = int(explicit)
-                        else:                                  # Auto: choose for this night
-                            win = choose_wake_window(self.context.night_type,
-                                                     self.cycle.controller.wake_debt_min,
-                                                     gym_go=wk < normal_wk,
-                                                     base=self._wake_base_window)
-                        self.cycle.controller.set_wake_window(win)
-                        self.wake["window_min"] = win
-                    except Exception as exc:
-                        self._log(f"wake window selection skipped: {exc}")
+                    wk = _parse_wake_dt(p.get("wake_time"))
+                    if wk is None:
+                        self._log(f"set_wake ignored: bad wake_time {p.get('wake_time')!r}")
+                        self.wake = None
+                        self.context.required_wake_time = None
+                    else:
+                        # Gym advisor wires into the alarm: a GO call moves the deadline earlier.
+                        normal_wk = wk
+                        try:
+                            from app import services
+                            wk = services.gym_effective_wake(self.repo, wk)
+                        except Exception as exc:
+                            self._log(f"gym wake adjust skipped: {exc}")
+                        self.context.required_wake_time = wk
+                        self._apply_night_type(p.get("night_type") or "auto")
+                        # Choose an appropriate smart-wake window for THIS night and feed it to the
+                        # orchestrator (wide when rested, narrow when sleep is scarce).
+                        try:
+                            from sleepctl.controller.wake_orchestrator import choose_wake_window
+                            explicit = p.get("window_min")
+                            if explicit and int(explicit) > 0:   # user override from the picker
+                                win = int(explicit)
+                            else:                                  # Auto: choose for this night
+                                win = choose_wake_window(self.context.night_type,
+                                                         self.cycle.controller.wake_debt_min,
+                                                         gym_go=wk < normal_wk,
+                                                         base=self._wake_base_window)
+                            self.cycle.controller.set_wake_window(win)
+                            self.wake["window_min"] = win
+                        except Exception as exc:
+                            self._log(f"wake window selection skipped: {exc}")
                 elif t == "clear_wake":
                     self.wake = None
                     self.context.required_wake_time = None
