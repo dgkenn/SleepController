@@ -64,6 +64,10 @@ class NightlyUpdater:
         )
         self.repo.save_night_summary(night)
         self.repo.backfill_action_rewards()  # attribute rewards to the actions that earned them
+        try:
+            self.repo.resolve_steer_events()  # label each "nudge deeper" maneuver's stage response
+        except Exception:
+            pass
 
         # --- baselines / response / rule policy ----------------------------------
         history = self.repo.recent_nights(14)

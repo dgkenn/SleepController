@@ -94,6 +94,16 @@ class ControlCycle:
             except Exception:
                 pass
             self.controller.pending_precool_event = None
+        # Record an in-night "nudge deeper" steer event (edge-triggered) for efficacy learning.
+        steer = getattr(self.controller, "pending_steer_event", None)
+        if steer is not None:
+            try:
+                self.repo.log_steer_event(
+                    night_date, steer["ts"], steer["maneuver"], steer["stage_before"],
+                    steer["deep_deficit_min"], steer["frac_of_night"], steer["horizon_min"])
+            except Exception:
+                pass
+            self.controller.pending_steer_event = None
         self.recent.append(frame)
         if len(self.recent) > 60:
             self.recent = self.recent[-60:]

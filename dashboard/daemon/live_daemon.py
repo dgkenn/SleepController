@@ -198,10 +198,12 @@ class LiveDashboardDaemon:
             from sleepctl.benchmarks import NightMode
             from sleepctl.controller.sleep_plan import plan_night
             plan = plan_night(datetime.now(), self.context.required_wake_time,
-                              self.repo.recent_nights(14), hint=hint)
+                              self.repo.recent_nights(14), hint=hint, repo=self.repo)
             self.context.night_type = plan.mode.value
             self.context.is_short_sleep_day = plan.mode == NightMode.CONSTRAINED
             self.context.sleep_opportunity_min = plan.sleep_opportunity_min
+            # Hand tonight's PERSONALIZED ideal architecture to the in-night steerer.
+            self.cycle.controller.set_night_targets(plan.targets, plan.est_sleep_min)
         except Exception as exc:
             self._log(f"night-type planning skipped: {exc}")
 
@@ -420,6 +422,7 @@ class LiveDashboardDaemon:
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
                       "thermal_health": self.thermal.status().to_dict(),
                       "preemption": self.cycle.controller.preemption_summary(),
+                      "steering": self.cycle.controller.steering_summary(),
                       "precompensation": self.precomp,
                       "device": self._safe_device_status(),
                       "experiment": self.active_experiment,

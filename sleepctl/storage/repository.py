@@ -340,6 +340,71 @@ class Repository:
             self.conn.commit()
         return resolved
 
+    # ---- in-night architecture-steering ledger -------------------------------
+    def log_steer_event(self, night_date, ts, maneuver: str, stage_before,
+                        deep_deficit_min: float, frac_of_night: float,
+                        horizon_min: float) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO steer_events (night_date, ts, maneuver, stage_before, "
+            "deep_deficit_min, frac_of_night, horizon_min, deepened, caused_wake, resolved) "
+            "VALUES (?,?,?,?,?,?,?,NULL,NULL,0)",
+            (night_date, _iso(ts) if not isinstance(ts, str) else ts, maneuver,
+             stage_before, float(deep_deficit_min), float(frac_of_night), float(horizon_min)),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def resolve_steer_events(self) -> int:
+        """Label unresolved steer events whose response horizon has passed: ``deepened`` if any
+        DEEP sample occurred in (ts, ts+horizon]; ``caused_wake`` if any wake-event did. Returns
+        rows resolved. This is the supervised signal for the deepening-response learner."""
+        rows = self.conn.execute(
+            "SELECT id, ts, horizon_min FROM steer_events WHERE resolved = 0"
+        ).fetchall()
+        resolved = 0
+        for r in rows:
+            t0 = _dt(r["ts"])
+            if t0 is None:
+                continue
+            end = t0 + timedelta(minutes=float(r["horizon_min"]))
+            if datetime.now() < end:
+                continue  # horizon hasn't fully passed yet
+            deepened = self.conn.execute(
+                "SELECT COUNT(*) c FROM raw_samples WHERE stage = 'deep' AND ts > ? AND ts <= ?",
+                (_iso(t0), _iso(end)),
+            ).fetchone()["c"]
+            woke = self.conn.execute(
+                "SELECT COUNT(*) c FROM raw_samples WHERE wake_event = 1 AND ts > ? AND ts <= ?",
+                (_iso(t0), _iso(end)),
+            ).fetchone()["c"]
+            self.conn.execute(
+                "UPDATE steer_events SET deepened = ?, caused_wake = ?, resolved = 1 WHERE id = ?",
+                (1 if deepened else 0, 1 if woke else 0, r["id"]),
+            )
+            resolved += 1
+        if resolved:
+            self.conn.commit()
+        return resolved
+
+    def steer_efficacy(self) -> dict:
+        """Per-maneuver outcome from resolved steer events: {maneuver: {n, deepened, deepen_rate,
+        woke, wake_rate}} — does cool-to-deepen actually move YOUR architecture, without waking you."""
+        rows = self.conn.execute(
+            "SELECT maneuver, COUNT(*) n, SUM(deepened) deepened, SUM(caused_wake) woke "
+            "FROM steer_events WHERE resolved = 1 GROUP BY maneuver"
+        ).fetchall()
+        out = {}
+        for r in rows:
+            n = r["n"] or 0
+            deepened = r["deepened"] or 0
+            woke = r["woke"] or 0
+            out[r["maneuver"]] = {
+                "n": n, "deepened": deepened, "woke": woke,
+                "deepen_rate": round(deepened / n, 3) if n else None,
+                "wake_rate": round(woke / n, 3) if n else None,
+            }
+        return out
+
     def precool_efficacy(self) -> dict:
         """Per-window prevention rate from resolved events: {window: {n, prevented, rate,
         mean_lead}}."""

@@ -51,7 +51,8 @@ def current_plan(repo):
     hint = wake.get("night_type") or "auto"
     window = wake.get("window_min") or 30
     recent = repo.recent_nights(14)
-    return plan_night(datetime.now(), wake_dt, recent, hint=hint, base_window_min=window)
+    return plan_night(datetime.now(), wake_dt, recent, hint=hint, base_window_min=window,
+                      repo=repo)
 
 
 def sleep_plan(repo) -> dict:
@@ -59,7 +60,9 @@ def sleep_plan(repo) -> dict:
     nights = repo.recent_nights(1)
     last_index = None
     if nights:
-        last_index = perfect_sleep_index(nights[-1], plan.mode)
+        # Score against the night's PERSONALIZED ideal (the same targets the plan/controller
+        # chase), so the displayed score and the objective are one and the same.
+        last_index = perfect_sleep_index(nights[-1], plan.mode, targets=plan.targets)
     d = plan.to_dict()
     d["last_night_index"] = last_index
     return d
@@ -502,6 +505,12 @@ def preemption_status(repo) -> dict:
         efficacy = repo.precool_efficacy()
     except Exception:
         pass
+    steer = extra.get("steering") or {}
+    steer_efficacy = {}
+    try:
+        steer_efficacy = repo.steer_efficacy()
+    except Exception:
+        pass
     return {
         "preempting": bool(pre.get("preempting", False)),
         "wake_risk": pre.get("wake_risk"),
@@ -510,6 +519,17 @@ def preemption_status(repo) -> dict:
         "precursor_reasons": pre.get("precursor_reasons", []),
         "recurring_wake_times": recurring,
         "precool_efficacy": efficacy,
+        # In-night architecture steering ("nudge me deeper"): live maneuver + how far off the
+        # ideal deep curve we are, plus the learned per-maneuver deepen/wake rates.
+        "steering": {
+            "active": bool(steer.get("active", False)),
+            "maneuver": steer.get("maneuver", "hold"),
+            "deep_deficit_min": steer.get("deep_deficit_min"),
+            "deep_min_so_far": steer.get("deep_min_so_far"),
+            "rem_min_so_far": steer.get("rem_min_so_far"),
+            "reason": steer.get("reason"),
+            "efficacy": steer_efficacy,
+        },
         "stale": rt.get("stale", True),
     }
 

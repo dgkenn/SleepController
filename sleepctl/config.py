@@ -147,6 +147,21 @@ class Tunables:
     onset_min_stage_conf: float = 0.4   # ignore low-confidence stage labels
     onset_resp_regular_cv: float = 0.06  # breathing-rate CV at/under this = regular (asleep)
     hot_sleeper_cool_bias_f: float = -1.5
+    # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
+    # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded
+    # ideal AND you're in light sleep AND wake-risk is low, drive the bed toward the deep
+    # setpoint to bias you deeper (Autopilot RCT: cooler -> more deep). Slew/variability/clamp
+    # still bound everything; it never fights an awakening. Asymmetric by design — see
+    # docs/ARCHITECTURE_STEERING.md. The deepen maneuver is the workhorse and ON by default;
+    # the back-third REM-unblock ("nudge lighter") is OFF until A/B proves it per person.
+    inight_steering_enabled: bool = True
+    steer_deepen_max_fraction: float = 0.6   # only deepen in the front ~60% of the night (SWS is
+                                             # front-loaded; deep is barely steerable late)
+    steer_deepen_min_deficit_min: float = 8.0  # require a real deep deficit before nudging
+    steer_response_horizon_min: float = 20.0   # window to score the maneuver's stage response
+    steer_deep_front_p: float = 0.6          # deep cumulative-ideal exponent (<1 = front-loaded)
+    steer_rem_back_q: float = 1.6            # REM cumulative-ideal exponent (>1 = back-loaded)
+    steer_rem_unblock_enabled: bool = False  # the off-by-default "nudge lighter" REM-unblock
     alarm_vibration_enabled: bool = False  # silence during sleep: no audio alarms
     # Smart wake: heat + gentle VIBRATION at the optimal (light-sleep) moment. Vibration is
     # tactile, not audio, so "silence" is preserved. Audio is never used.

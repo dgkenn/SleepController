@@ -122,10 +122,13 @@ class DashboardDaemon:
             from sleepctl.controller.sleep_plan import plan_night
             recent = self.repo.recent_nights(14)
             plan = plan_night(datetime.now(), self.context.required_wake_time, recent,
-                              hint=hint)
+                              hint=hint, repo=self.repo)
             self.context.night_type = plan.mode.value
             self.context.is_short_sleep_day = plan.mode == NightMode.CONSTRAINED
             self.context.sleep_opportunity_min = plan.sleep_opportunity_min
+            # Hand tonight's PERSONALIZED ideal architecture to the in-night steerer so it chases
+            # the same deep/REM curve the plan/dashboard show.
+            self.cycle.controller.set_night_targets(plan.targets, plan.est_sleep_min)
         except Exception as exc:
             print(f"night-type planning skipped: {exc}", flush=True)
 
@@ -340,6 +343,7 @@ class DashboardDaemon:
                                    "reason": "simulator", "device_level": None,
                                    "target_level": None, "gap": None},
                 "preemption": self.cycle.controller.preemption_summary(),
+                "steering": self.cycle.controller.steering_summary(),
             },
         }
 

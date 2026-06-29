@@ -111,6 +111,60 @@ def test_plan_maps_to_objective_and_extends_recovery():
     assert p2.rem_warm_delta_f > 0  # warm bias supports REM rebound
 
 
+class _Repo:
+    """In-memory repo: nights + their morning-survey contexts (mirrors the storage API)."""
+    def __init__(self, rows):
+        self._nights = [n for n, _ in rows]
+        self._ctx = {n.date: c for n, c in rows}
+
+    def recent_nights(self, n):
+        return self._nights[-n:]
+
+    def get_context(self, date):
+        return self._ctx.get(date)
+
+
+def _survey_night(i, deep_pct, felt, tst=420, **ctx_kw):
+    from sleepctl.models import ContextRecord
+    date = f"2026-06-{i+1:02d}"
+    n = NightSummary(date=date, total_sleep_min=tst, deep_min=deep_pct * tst,
+                     rem_min=0.22 * tst, wake_events=1, sleep_efficiency=0.92, avg_hrv=62,
+                     sleep_onset_latency_min=12)
+    c = ContextRecord(date=date)
+    c.subjective_quality = felt
+    for k, v in ctx_kw.items():
+        setattr(c, k, v)
+    return (n, c)
+
+
+def test_plan_folds_personalized_and_stress_into_tonights_ideal():
+    # The user's best-feeling nights had MORE deep -> tonight's ideal should move UP from the
+    # evidence prior, and that personalized ideal must flow into the plan's targets (not just the
+    # cross-night policy). Without a repo, the plan stays on the literature prior.
+    now = datetime(2026, 6, 23, 23, 0)
+    rows = [_survey_night(i, 0.25 if i % 2 == 0 else 0.13, 9 if i % 2 == 0 else 3)
+            for i in range(20)]
+    repo = _Repo(rows)
+    recent = repo.recent_nights(20)
+    prior = targets_for(NightMode.NORMAL)
+
+    plan_prior = plan_night(now, datetime(2026, 6, 24, 7, 30), recent, hint="normal")
+    assert plan_prior.targets.deep_pct_ideal == prior.deep_pct_ideal   # evidence prior, no repo
+
+    plan_me = plan_night(now, datetime(2026, 6, 24, 7, 30), recent, hint="normal", repo=repo)
+    assert plan_me.targets.deep_pct_ideal > prior.deep_pct_ideal       # personalized, in the plan
+    assert plan_me.mode == NightMode.NORMAL
+
+    # A stressed night DEFENDS deep: the plan's deep floor rises vs an otherwise-identical calm night.
+    calm = _Repo([_survey_night(i, 0.18, 6, stress=0) for i in range(8)])
+    stressed = _Repo([_survey_night(i, 0.18, 6, stress=10) for i in range(8)])
+    p_calm = plan_night(now, datetime(2026, 6, 24, 7, 30), calm.recent_nights(8),
+                        hint="normal", repo=calm)
+    p_stress = plan_night(now, datetime(2026, 6, 24, 7, 30), stressed.recent_nights(8),
+                          hint="normal", repo=stressed)
+    assert p_stress.targets.deep_pct_min > p_calm.targets.deep_pct_min
+
+
 def test_reward_mode_changes_objective():
     cfg = AppConfig.default()
     # outcomes: short but high quality

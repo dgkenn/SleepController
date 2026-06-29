@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Optional
 
 from sleepctl.config import AppConfig
+from sleepctl.controller.architecture import ArchitectureSteering
 from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
 from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
@@ -48,6 +49,21 @@ class SleepController:
         self.maintenance = MaintenanceRoutine(cfg)
         self.wake_recovery = WakeRecoveryRoutine(cfg)
         self.smart_wake = SmartWakeRoutine(cfg)
+        # In-night architecture steering ("nudge me deeper"): compares the realized deep/REM curve
+        # to tonight's personalized ideal and biases the bed deeper when behind + risk is low.
+        self.steering = ArchitectureSteering(cfg)
+        # Tonight's personalized ideal architecture (set by the daemon from the SleepPlan); the
+        # steerer targets these. None -> steering holds (no target to chase).
+        self.night_targets = None
+        self.est_sleep_min: Optional[float] = None
+        # Accrued time-in-stage since onset (the realized architecture so far).
+        self._arch_deep_min = 0.0
+        self._arch_rem_min = 0.0
+        self._arch_light_min = 0.0
+        self._arch_last_ts: Optional[datetime] = None
+        self._deepen_active = False         # edge-trigger for steer-event logging
+        self.last_steer = None              # last SteerDecision (telemetry)
+        self.pending_steer_event = None     # consumed + logged by the cycle
         # Multi-signal, escalating, inertia-minimizing wake orchestrator (uses the calibrated
         # sleep/wake classifier + the fused fast movement; never oversleeps the deadline).
         from sleepctl.controller.sleep_wake import SleepWakeClassifier
@@ -196,6 +212,10 @@ class SleepController:
             else 0.0
         )
 
+        # --- accrue the realized architecture (drives in-night steering) -------
+        if self._sleep_onset_time is not None and frame.presence is not False:
+            self._accrue_architecture(now, frame.stage)
+
         # --- pick thermal intent per state -------------------------------------
         self.should_wake = False
         self.last_wake_action = None      # only set inside WAKE_WINDOW (drives lights/therapy)
@@ -206,14 +226,19 @@ class SleepController:
                 self._sleep_onset_time = None
                 self.onset_detector.reset()
                 self.wake_orch.reset()
+                self._reset_architecture()
             intent = ThermalIntent.NEUTRAL
         elif state is ControllerState.INDUCTION:
             intent = self.induction.step(frame, objective, minutes_in_bed)
         elif state is ControllerState.MAINTENANCE:
+            # In-night architecture steering: compare the realized deep/REM curve to tonight's
+            # personalized ideal and, when behind on deep + light + wake-risk LOW, nudge deeper.
+            deepen = self._evaluate_steering(now, frame, wake_detected, minutes_in_bed)
             intent = self.maintenance.step(frame, objective,
                                            preempt_cool=getattr(self, "_preempt_cool", False),
-                                           keep_light=self.session_keep_light)
+                                           keep_light=self.session_keep_light, deepen=deepen)
         elif state is ControllerState.WAKE_RECOVERY:
+            self._deepen_active = False     # an awakening breaks any active deepen maneuver
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
             # Multi-signal orchestrator: fuse the calibrated P(wake) with stage to catch a real
@@ -299,6 +324,85 @@ class SleepController:
             "precursor_score": round(pre.score, 3) if pre else None,
             "precursor_reasons": list(pre.reasons) if pre else [],
             "precursor_signals": pre.signals if pre else {},
+        }
+
+    def set_night_targets(self, targets, est_sleep_min: Optional[float] = None) -> None:
+        """Hand the controller tonight's PERSONALIZED ideal architecture (from the SleepPlan) so the
+        in-night steerer can chase the same deep/REM curve the dashboard shows and the policy
+        learns. ``est_sleep_min`` is the expected sleep duration the trajectory is scaled to."""
+        self.night_targets = targets
+        if est_sleep_min is not None:
+            self.est_sleep_min = float(est_sleep_min)
+
+    def _evaluate_steering(self, now, frame, wake_detected, minutes_in_bed) -> bool:
+        """Run the in-night steerer (MAINTENANCE only). Returns True to nudge deeper this tick.
+
+        Awakening-risk is the veto: ``risk_low`` requires no detected awakening AND no active
+        pre-empt (which already folds in rising wake-risk, the leading-edge precursor, and a
+        micro-arousal) — so the steerer NEVER fights a brewing disturbance (maintenance first).
+        """
+        cfg = self.cfg
+        if self.night_targets is None or not cfg.tunables.inight_steering_enabled \
+                or self.session_keep_light:
+            self._deepen_active = False
+            return False
+        mso = ((now - self._sleep_onset_time).total_seconds() / 60.0
+               if self._sleep_onset_time is not None else minutes_in_bed)
+        est = self.est_sleep_min or getattr(self.night_targets, "total_sleep_target_min", 0) or 0.0
+        risk_low = (not wake_detected) and (not getattr(self, "_preempt_cool", False))
+        steer = self.steering.evaluate(
+            minutes_since_onset=mso, est_sleep_min=est,
+            deep_min_so_far=self._arch_deep_min, rem_min_so_far=self._arch_rem_min,
+            current_stage=frame.stage, targets=self.night_targets, risk_low=risk_low)
+        self.last_steer = steer
+        deepen = steer.deepen
+        # Edge-trigger the steer-event ledger when a deepen maneuver FIRST starts, so the
+        # deepening-response learner (Phase 2) can later score stage response + any awakening.
+        if deepen and not self._deepen_active:
+            self.pending_steer_event = {
+                "ts": now,
+                "maneuver": steer.maneuver,
+                "stage_before": frame.stage.value if frame.stage is not None else None,
+                "deep_deficit_min": round(steer.deep_deficit_min, 2),
+                "frac_of_night": round(steer.frac_of_night, 3),
+                "horizon_min": cfg.tunables.steer_response_horizon_min,
+            }
+        self._deepen_active = deepen
+        return deepen
+
+    def _reset_architecture(self) -> None:
+        self._arch_deep_min = self._arch_rem_min = self._arch_light_min = 0.0
+        self._arch_last_ts = None
+        self._deepen_active = False
+        self.last_steer = None
+
+    def _accrue_architecture(self, now: datetime, stage) -> None:
+        """Accumulate realized time-in-stage since onset (the night's unfolding architecture).
+        Ignores gaps/jumps so a stale tick can't inflate a bucket."""
+        if self._arch_last_ts is not None and stage is not None:
+            dt = (now - self._arch_last_ts).total_seconds() / 60.0
+            if 0.0 < dt <= 10.0:
+                if stage is SleepStage.DEEP:
+                    self._arch_deep_min += dt
+                elif stage is SleepStage.REM:
+                    self._arch_rem_min += dt
+                elif stage is SleepStage.LIGHT:
+                    self._arch_light_min += dt
+        self._arch_last_ts = now
+
+    def steering_summary(self) -> dict:
+        """Live in-night steering state for the dashboard: are we actively nudging deeper, and how
+        far off the ideal deep/REM curve are we right now."""
+        s = self.last_steer
+        return {
+            "active": bool(self._deepen_active),
+            "maneuver": s.maneuver if s else "hold",
+            "deep_deficit_min": round(s.deep_deficit_min, 1) if s else None,
+            "rem_deficit_min": round(s.rem_deficit_min, 1) if s else None,
+            "frac_of_night": round(s.frac_of_night, 3) if s else None,
+            "deep_min_so_far": round(self._arch_deep_min, 1),
+            "rem_min_so_far": round(self._arch_rem_min, 1),
+            "reason": s.reason if s else None,
         }
 
     def set_settle_nudge(self, nudge_f: float) -> None:
@@ -402,6 +506,7 @@ class SleepController:
             ),
             "data_age_seconds": frame.data_age_seconds,
             "wake_signals": wake_signals,
+            "steering": self.steering_summary(),
             "should_wake": self.should_wake,
             "wake_action": self.last_wake_action.to_dict() if self.last_wake_action else None,
             "minutes_in_bed": round(minutes_in_bed, 1),

@@ -86,7 +86,10 @@ def test_full_night_invariants(sc):
         t = decision.target_temp_f
         assert t is None or (55.0 <= t <= 110.0), f"target {t} out of bounds"
         if t is not None and prev is not None:
-            assert abs(t - prev) <= MAX_STEP + 1e-6, f"slew {abs(t-prev)} > {MAX_STEP}"
+            # target_temp_f is rounded to 2 dp; the slew limiter is exact on the unrounded
+            # value, so two rounded endpoints can differ from the true bound by up to one
+            # rounding quantum (0.01). Tolerate that — it is display rounding, not a real jump.
+            assert abs(t - prev) <= MAX_STEP + 0.01 + 1e-6, f"slew {abs(t-prev)} > {MAX_STEP}"
         if t is not None:
             prev = t
         # level must be a valid device level when present

@@ -140,8 +140,19 @@ def plan_night(
     hint: Optional[str] = None,
     need_min: int = SLEEP_NEED_MIN,
     base_window_min: int = 30,
+    repo=None,
 ) -> SleepPlan:
-    """Build tonight's plan. ``bedtime`` defaults to ``now`` (planning at lights-out)."""
+    """Build tonight's plan. ``bedtime`` defaults to ``now`` (planning at lights-out).
+
+    When ``repo`` is given, the night's target ARCHITECTURE (deep/REM ideal + floor %s) is the
+    user's PERSONALIZED, stress-aware ideal — ``personalized_targets`` folds the learned
+    felt-recovery levels and tonight's stress into the mode's evidence prior, on top of the
+    debt-extended duration target. Without a repo (or when the data is thin) it falls back to the
+    literature prior. This is the single place "what perfect looks like for THIS particular night"
+    is assembled from all the inputs — wake time / opportunity (mode), sleep debt (mode + duration),
+    learned recovery levels, and stress — so the dashboard, the scorer, and the controller all
+    chase the same ideal.
+    """
     bedtime = bedtime or now
     opportunity = None
     if required_wake_time is not None:
@@ -160,7 +171,16 @@ def plan_night(
     total_target = need_min
     if mode == NightMode.RECOVERY:
         total_target = int(min(need_min + 120, need_min + debt))
+    # The evidence prior for this mode + duration is the floor we never stray far from.
     targets = targets_for(mode, total_sleep_target_min=total_target)
+    # Personalize the target architecture to YOU when we have a repo: learned felt-recovery
+    # levels + tonight's stress, bounded near the prior. Falls back to the prior on thin data.
+    if repo is not None:
+        try:
+            from sleepctl.learning.perfect_weights import personalized_targets
+            targets = personalized_targets(repo, mode, total_sleep_target_min=total_target)
+        except Exception:
+            pass
 
     est_cycles = round(est_sleep / CYCLE_LEN_MIN, 1) if est_sleep else None
 

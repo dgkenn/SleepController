@@ -151,6 +151,25 @@ CREATE TABLE IF NOT EXISTS precool_events (
 );
 CREATE INDEX IF NOT EXISTS idx_precool_night ON precool_events(night_date);
 
+-- In-night architecture-steering ledger: each time the controller starts a "nudge me deeper"
+-- maneuver (light-but-behind-the-deep-curve, wake-risk low), log it; after the response horizon
+-- passes, label whether the stage actually went DEEP and whether it caused an awakening. The
+-- (Phase 2) deepening-response learner uses this to learn whether cool-to-deepen works for YOU.
+CREATE TABLE IF NOT EXISTS steer_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    night_date TEXT,
+    ts TEXT,
+    maneuver TEXT,            -- 'deepen' | 'rem_warm'
+    stage_before TEXT,
+    deep_deficit_min REAL,
+    frac_of_night REAL,
+    horizon_min REAL,
+    deepened INTEGER,         -- 1 = reached DEEP within horizon, 0 = not, NULL = unresolved
+    caused_wake INTEGER,      -- 1 = wake event within horizon, 0 = none, NULL = unresolved
+    resolved INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_steer_night ON steer_events(night_date);
+
 CREATE INDEX IF NOT EXISTS idx_raw_samples_night ON raw_samples(night_date);
 CREATE INDEX IF NOT EXISTS idx_interventions_night ON interventions(night_date);
 CREATE INDEX IF NOT EXISTS idx_decisions_night ON decisions(night_date);
