@@ -44,11 +44,51 @@ night-mode into the per-night `wake_log` (a new `night_type` column, plus `onset
 
 ### 4. A unified, visible "learning across all phases" surface
 
-`/learning/phases` (service `learning_phases`) reports, for **onset / maintenance / wake**, the
-learned value, whether it's personalized yet, the nights of data, and a plain-language rationale —
-broken out **per mode** for the thermal learners. The Learning page's new **LearningPhasesCard**
-makes the convergence watchable: green = personalized to you, with short/recovery nights learning
-separately.
+`/learning/phases` (service `learning_phases`) reports, for **onset / maintenance / wake /
+architecture**, the learned value, whether it's personalized yet, the nights of data, and a
+plain-language rationale — broken out **per mode** for the thermal learners. The Learning page's
+**LearningPhasesCard** makes the convergence watchable: green = personalized to you, with
+short/recovery nights learning separately.
+
+## The in-night layer: one favorable-state controller, learned causally
+
+On top of the nightly (slow) loop, a **fast loop inside Maintenance** keeps you in the most
+favorable state available — it **acquires** a deeper state when you're behind tonight's personalized
+ideal curve and **defends** the deep / back-half-REM state you're already in. It is reconciled with
+the other two in-night maneuvers by a strict precedence: **wake-prevention** (a brewing arousal →
+settle, never deepen into it) **> wake-up handoff** (stand down near the deadline so the smart-wake
+ramp lifts you from light sleep — no deepening into inertia) **> acquire/defend > hold**. See
+[ARCHITECTURE_STEERING.md](ARCHITECTURE_STEERING.md) and [CONTROL_LAW.md](CONTROL_LAW.md) §5.
+
+### 5. Tonight's ideal is personalized + stress/debt-aware
+
+`plan_night` is the single place tonight's target architecture is designed, folding
+`personalized_targets` (learned felt-recovery deep/REM levels + a stress bump that *defends* deep)
+onto the mode's debt-extended evidence prior. The dashboard plan, the morning score, the cross-night
+policy, and the in-night steerer now chase the *same* numbers.
+
+### 6. Does the deepen nudge actually work for you? — a causal n-of-1 A/B
+
+`learning/deepening.py` answers it rigorously. Most nights ACTUATE the deepen nudge; periodic
+**control** nights judge the same situation but don't cool, logging a **shadow** event
+(`steer_events.applied=0`). The confound-free **lift** = `P(deep|nudged) − P(deep|not nudged)` and
+the awakening rate drive a **do-no-harm gate**: if cooling doesn't beat your natural base rate, or it
+raises your awakening rate, the maneuver **disables itself**. The daemons gate tonight's actuation on
+the policy and schedule the control nights (more when confidence is low). The symmetric **lightening**
+maneuver shares the identical causal core, ready when the off-by-default REM-unblock is enabled.
+
+### 7. Failure-mode audit + personalized awakening prediction
+
+- **Wake-causation audit** (`learning/wake_causation.py`): every mid-sleep adjustment is checked for
+  an awakening within a horizon, **controlled for the night's base wake rate** so "you'd have woken
+  anyway" is netted out. Reactive maneuvers (a settle fires *because* a wake is brewing) are labelled
+  **confounded and never auto-blamed**; only proactive maneuvers with a clear excess are flagged.
+- **Personalized awakening-precursor** (`awakening_precursor_profile`): learns the sensor trajectory
+  in the minutes *before* your awakenings vs matched control windows, across a comprehensive feature
+  set — HR creep + level, HRV decay + level, RR rise + irregularity, a rich movement block
+  (restlessness mean, rising trend, peak, **tossing/turning burst count**), and bed warming + level.
+  The separating signals tune the precursor detector's HR/HRV/restlessness triggers
+  (`PrecursorDetector.personalize`) so pre-emption fires on *your* drift, earlier and more accurately.
 
 ## Data plumbing
 
@@ -71,10 +111,16 @@ the logged nudge with the night summary's measured `sleep_onset_latency_min`.
 
 ## Files
 
-- `sleepctl/learning/onset_tuning.py` (NEW) · `learning/wake_tuning.py`, `learning/thermal_wake.py`
-  (per-mode) · `controller/thermal.py`, `controller/controller.py` (`set_onset_warm`).
-- `dashboard/daemon/{run,live}_daemon.py` (apply onset + settle + per-mode; log `onset_warm_f` /
-  `night_type`).
-- `dashboard/api/app/db.py` (`wake_log` columns + migration) · `bridge.py` (persist) ·
-  `services.py` (`learning_phases`) · `main.py` (`/learning/phases`).
+- Per-phase learners: `sleepctl/learning/onset_tuning.py` · `wake_tuning.py` · `thermal_wake.py`
+  (per-mode) · `settle.py` · `lead_time.py`.
+- Per-night ideal: `learning/perfect_weights.py` + `ideal_architecture.py` ·
+  `controller/sleep_plan.py` (`plan_night(repo=…)`).
+- In-night steering: `controller/architecture.py` (favorable-state controller) ·
+  `controller/maintenance.py`, `controller/controller.py` (steer wiring + shadow logging) ·
+  `learning/deepening.py` (causal A/B for deepen + lighten).
+- Failure-mode + prediction: `learning/wake_causation.py` (audit + `awakening_precursor_profile`) ·
+  `controller/precursor.py` (`personalize`).
+- Plumbing: `storage/schema.py` + `repository.py` (`steer_events` ledger + `_apply_migrations`) ·
+  `dashboard/daemon/{run,live}_daemon.py` (apply all learners nightly) · `dashboard/api/app/db.py`
+  (`wake_log` columns + migration) · `services.py` (`learning_phases`) · `main.py` (`/learning/phases`).
 - `dashboard/web/components/LearningPhasesCard.tsx` + `lib/api.ts` + `app/learning/page.tsx`.

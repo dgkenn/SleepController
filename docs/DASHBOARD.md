@@ -770,7 +770,6 @@ SleepController/
 │   │   ├── features.py          # Rolling engineered features
 │   │   ├── linalg.py            # Ridge regression (pure Python)
 │   │   ├── model.py             # SetpointModel.fit() + confidence()
-│   │   ├── objective.py         # Outcome weighting
 │   │   ├── phenotype.py         # correlate_with_outcome
 │   │   ├── preference.py        # revealed_preference (manual override anchor)
 │   │   ├── recommend.py         # recommend_action pipeline
