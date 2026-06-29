@@ -165,6 +165,7 @@ class HueConfigBody(BaseModel):
     enabled: bool | None = None
     bridge_ip: str | None = None
     target_ids: list[str] | None = None
+    therapy_ids: list[str] | None = None
     kind: str | None = None
 
 

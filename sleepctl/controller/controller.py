@@ -198,6 +198,7 @@ class SleepController:
 
         # --- pick thermal intent per state -------------------------------------
         self.should_wake = False
+        self.last_wake_action = None      # only set inside WAKE_WINDOW (drives lights/therapy)
         if state in (ControllerState.IDLE, ControllerState.CALIBRATION):
             # Night ended / out of bed: reset onset tracking for the next night.
             if frame.presence is False:
@@ -307,6 +308,13 @@ class SleepController:
     def set_wake_window(self, minutes: int) -> None:
         """The time selector sets the per-night smart-wake window ceiling (choose_wake_window)."""
         self.wake_orch.cfg.window_min = max(1, int(minutes))
+
+    def set_dawn_light(self, enabled: bool) -> None:
+        """Tell the orchestrator a smart-bulb sunrise is wired up, so it actually computes a
+        ramping ``light_level`` through the dawn window (otherwise it stays 0 and only the
+        therapy plug — which keys off ``should_wake`` — would fire). The daemon calls this when a
+        Hue dawn driver with sunrise targets is configured."""
+        self.wake_orch.cfg.light_enabled = bool(enabled)
 
     def set_wake_ramp_f(self, wake_f: float) -> None:
         """Apply the learned per-person thermal wake maneuver (the WAKE_RAMP target temperature)."""

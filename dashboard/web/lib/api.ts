@@ -532,6 +532,12 @@ export interface WakePlan {
   vibration_ladder: number[];
   headline: string | null;
   live: { phase: string; vibration_power: number; reason: string } | null;
+  dawn_light?: {
+    enabled: boolean;
+    sunrise: boolean;
+    therapy: boolean;
+    dawn_ramp_min: number;
+  };
   learned?: {
     window_min: number;
     p_wake_liftable: number;
@@ -552,6 +558,7 @@ export interface HueConfig {
   enabled: boolean;
   bridge_ip: string | null;
   target_ids: string[];
+  therapy_ids: string[];
   kind: string;
   paired: boolean;
 }

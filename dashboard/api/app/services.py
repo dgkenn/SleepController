@@ -752,19 +752,21 @@ def _get_hue_config(repo) -> dict:
         ids = [d["target_id"]]
     return {"enabled": bool(d.get("enabled", False)), "bridge_ip": d.get("bridge_ip"),
             "token": d.get("token"), "target_ids": ids or [],
+            "therapy_ids": d.get("therapy_ids") or [],   # smart-plug light ids (10k-lux lamp)
             "kind": d.get("kind", "lights")}
 
 
 def hue_config_view(repo) -> dict:
     c = _get_hue_config(repo)
     return {"enabled": c["enabled"], "bridge_ip": c["bridge_ip"], "target_ids": c["target_ids"],
-            "kind": c["kind"], "paired": bool(c["token"])}     # token never returned to the client
+            "therapy_ids": c["therapy_ids"], "kind": c["kind"],
+            "paired": bool(c["token"])}     # token never returned to the client
 
 
 def hue_config_update(repo, values: dict) -> dict:
     import json as _json
     cur = _get_hue_config(repo)
-    for k in ("enabled", "bridge_ip", "target_ids", "kind", "token"):
+    for k in ("enabled", "bridge_ip", "target_ids", "therapy_ids", "kind", "token"):
         if k in values and values[k] is not None:
             cur[k] = values[k]
     repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES ('hue_config', ?) "
@@ -873,6 +875,7 @@ def wake_plan(repo) -> dict:
     live = extra.get("wake_action")
     # Prefer the per-night window the daemon actually chose (context-adaptive); else the default.
     chosen_window = ((extra.get("wake") or {}).get("window_min")) or wc.window_min
+    hue = _get_hue_config(repo)
     return {
         "gym_enabled": cfg.enabled,
         "recommend": adv.get("recommend"),
@@ -885,6 +888,14 @@ def wake_plan(repo) -> dict:
         "vibration_ladder": [wc.gentle_vibration, wc.strong_vibration, wc.max_vibration],
         "headline": adv.get("headline") if cfg.enabled else None,
         "live": live,
+        # Hue lights ride the same wake logic: a sunrise ramp through the dawn window + a bright
+        # therapy lamp that snaps on at the wake moment (keyed off the orchestrator's should_wake).
+        "dawn_light": {
+            "enabled": bool(hue["enabled"]),
+            "sunrise": bool(hue["enabled"] and hue["target_ids"]),
+            "therapy": bool(hue["enabled"] and hue["therapy_ids"]),
+            "dawn_ramp_min": wc.thermal_dawn_min,
+        },
         "learned": wake_tuning_view(repo),    # personalized window + lift bar from your grogginess
     }
 

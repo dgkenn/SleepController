@@ -131,6 +131,19 @@ def test_light_ramps_through_the_dawn_window():
     assert late.light_level > early.light_level
 
 
+def test_controller_set_dawn_light_toggles_the_ramp():
+    # The daemon enables the sunrise ramp only when Hue dawn bulbs are configured; verify the
+    # controller setter flips the orchestrator flag both ways so the lights ride the wake logic.
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    c = SleepController(AppConfig.default())
+    assert c.wake_orch.cfg.light_enabled is False     # off until a dawn driver is wired
+    c.set_dawn_light(True)
+    assert c.wake_orch.cfg.light_enabled is True
+    c.set_dawn_light(False)
+    assert c.wake_orch.cfg.light_enabled is False
+
+
 def test_window_selection_adapts_to_the_night():
     # rested normal night -> full window; short/work night, gym, or debt -> narrower.
     assert choose_wake_window("normal", debt_min=0, base=30) == 30

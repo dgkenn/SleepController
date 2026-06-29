@@ -408,29 +408,38 @@ class LiveDashboardDaemon:
         try:
             from app import services
             c = services._get_hue_config(self.repo)
-            sig = (c["enabled"], c["bridge_ip"], c["token"], tuple(c["target_ids"]), c["kind"])
+            sig = (c["enabled"], c["bridge_ip"], c["token"], tuple(c["target_ids"]),
+                   tuple(c["therapy_ids"]), c["kind"])
             if sig == getattr(self, "_hue_sig", None):
                 return
             self._hue_sig = sig
-            ready = c["enabled"] and c["bridge_ip"] and c["token"] and c["target_ids"]
+            ready = bool(c["enabled"] and c["bridge_ip"] and c["token"]
+                         and (c["target_ids"] or c["therapy_ids"]))
             if ready:
                 from sleepctl.adapters.hue import HueDawnDriver
-                self.hue_driver = HueDawnDriver(c["bridge_ip"], c["token"], c["target_ids"], c["kind"])
+                self.hue_driver = HueDawnDriver(c["bridge_ip"], c["token"], c["target_ids"],
+                                                c["kind"], therapy_ids=c["therapy_ids"])
             else:
                 self.hue_driver = None
-            self.cycle.controller.wake_orch.cfg.light_enabled = bool(ready)
+            # Sunrise ramp only matters with actual dawn bulbs; the therapy plug fires off
+            # should_wake regardless. Either way the lights now ride the orchestrator's wake logic.
+            self.cycle.controller.set_dawn_light(bool(ready and c["target_ids"]))
         except Exception as exc:
             self._log(f"hue refresh skipped: {exc}")
 
     def _drive_dawn(self, decision) -> None:
-        if not self.hue_driver or decision is None:
+        if not self.hue_driver:
             return
-        la = (decision.log_payload or {}).get("wake_action")
-        if la is not None:
-            try:
-                self.hue_driver.set_level(float(la.get("light_level", 0.0)))
-            except Exception as exc:
-                self._log(f"hue drive skipped: {exc}")
+        la = (decision.log_payload or {}).get("wake_action") if decision else None
+        try:
+            if la is None:                       # outside the wake window -> everything off
+                self.hue_driver.set_level(0.0)
+                self.hue_driver.set_therapy(False)
+            else:
+                self.hue_driver.set_level(float(la.get("light_level", 0.0)))   # sunrise ramp
+                self.hue_driver.set_therapy(bool(la.get("should_wake")))       # therapy at wake
+        except Exception as exc:
+            self._log(f"hue drive skipped: {exc}")
 
     def _capture_wake(self, decision, frame, now) -> None:
         """Record how the user was woken (stage, how early, forced) for the grogginess learner."""
