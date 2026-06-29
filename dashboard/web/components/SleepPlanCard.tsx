@@ -31,6 +31,31 @@ export default function SleepPlanCard({ plan }: { plan: SleepPlan }) {
       {/* Strategy — the "why" */}
       <p className="text-sm text-gray-300 leading-relaxed">{plan.strategy}</p>
 
+      {/* Bedtime guidance — the highest-leverage lever for fixed early wakes */}
+      {plan.bedtime && (
+        <div
+          className={`rounded-xl p-3 border ${
+            plan.bedtime.is_chronic_short
+              ? 'bg-warning/10 border-warning/30'
+              : 'bg-surface-raised border-surface-border'
+          }`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <p className="text-[10px] text-gray-500 uppercase tracking-wider">Be asleep by</p>
+            <span className="text-base font-bold text-white">
+              {plan.bedtime.recommended_lights_out}
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-300 leading-snug">{plan.bedtime.message}</p>
+          {plan.bedtime.is_chronic_short && plan.bedtime.go_earlier_min ? (
+            <p className="text-[11px] text-warning mt-1">
+              ⏰ Move lights-out ~{plan.bedtime.go_earlier_min} min earlier — the one lever that
+              actually fixes a fixed early wake.
+            </p>
+          ) : null}
+        </div>
+      )}
+
       {/* Key numbers */}
       <div className="grid grid-cols-3 gap-2 text-center">
         <div className="bg-surface-raised rounded-xl py-2">

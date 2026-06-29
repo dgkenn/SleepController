@@ -4,12 +4,13 @@ from datetime import datetime
 
 from sleepctl.benchmarks import (
     NightMode,
+    chronic_shortfall,
     perfect_sleep_index,
     sleep_debt_min,
     targets_for,
 )
 from sleepctl.config import AppConfig
-from sleepctl.controller.sleep_plan import decide_mode, plan_night
+from sleepctl.controller.sleep_plan import bedtime_guidance, decide_mode, plan_night
 from sleepctl.ml.reward import reward_from_outcomes
 from sleepctl.models import NightObjective, NightSummary
 
@@ -19,6 +20,31 @@ def _night(**kw):
                 wake_events=1, sleep_efficiency=0.92, avg_hrv=62)
     base.update(kw)
     return NightSummary(**base)
+
+
+def test_chronic_shortfall_flags_sustained_short_sleep():
+    short = [NightSummary(date=f"2026-06-{10+i:02d}", total_sleep_min=330) for i in range(7)]
+    c = chronic_shortfall(short, need_min=480)
+    assert c["is_chronic"] is True and c["avg_tst_min"] == 330
+    assert c["mean_shortfall_min"] == 150 and c["short_nights_frac"] == 1.0
+    # A few good nights -> not chronic.
+    ok = [NightSummary(date=f"2026-06-{10+i:02d}", total_sleep_min=470) for i in range(7)]
+    assert chronic_shortfall(ok, need_min=480)["is_chronic"] is False
+    assert chronic_shortfall([], need_min=480)["is_chronic"] is False   # no data -> safe
+
+
+def test_bedtime_guidance_inverts_the_wake_time_and_finds_the_shortfall():
+    # 04:30 wake, habitual 23:00 bedtime, 12-min onset, 8 h need -> structurally ~2.7 h short.
+    nights = [NightSummary(date=f"2026-06-{10+i:02d}", total_sleep_min=330,
+                           bedtime=datetime(2026, 6, 10 + i, 23, 0),
+                           sleep_onset_latency_min=12) for i in range(7)]
+    g = bedtime_guidance(datetime(2026, 6, 29, 4, 30), nights, need_min=480)
+    assert g.recommended_lights_out == "20:30"          # 04:30 minus 8 h
+    assert g.habitual_bedtime == "23:00"
+    assert g.structural_shortfall_min and g.structural_shortfall_min > 120
+    assert g.go_earlier_min and g.go_earlier_min > 120
+    assert g.is_chronic_short is True
+    assert bedtime_guidance(None, nights) is None       # no wake time -> no guidance
 
 
 def test_perfect_sleep_index_bounds_and_modes():

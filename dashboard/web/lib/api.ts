@@ -64,7 +64,23 @@ export interface SleepPlan {
   thermal_phases: Array<{ name: string; intent: string; note: string }>;
   targets: SleepPlanTargets;
   strategy: string;
+  bedtime: BedtimeGuidance | null;
   last_night_index: PerfectSleep | null;
+}
+
+export interface BedtimeGuidance {
+  recommended_lights_out: string;
+  target_in_bed: string;
+  need_min: number;
+  need_h: number;
+  est_onset_latency_min: number;
+  habitual_bedtime: string | null;
+  achievable_sleep_min: number | null;
+  structural_shortfall_min: number | null;
+  go_earlier_min: number | null;
+  avg_tst_min: number | null;
+  is_chronic_short: boolean;
+  message: string;
 }
 
 export interface Schedule {

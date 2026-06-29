@@ -87,6 +87,21 @@ def test_wake_with_night_type_and_plan(auth_client):
     assert "deep_pct_min" in plan["targets"]
 
 
+def test_tonight_plan_has_bedtime_guidance(auth_client):
+    # The plan reads the wake time from runtime_state; write one so bedtime guidance is computed.
+    from app import bridge
+    from app.db import get_repo
+    repo = get_repo()
+    try:
+        bridge.write_runtime_state(repo.conn, {"state": "IDLE",
+                                               "extra": {"wake": {"wake_time": "04:30"}}})
+    finally:
+        repo.close()
+    plan = auth_client.get("/tonight/plan").json()
+    bt = plan["bedtime"]
+    assert bt and ":" in bt["recommended_lights_out"] and bt["need_h"] >= 1
+
+
 def test_status_has_perfect_sleep_and_mode(auth_client):
     body = auth_client.get("/status").json()
     assert "power_on" in body and "away" in body

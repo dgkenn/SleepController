@@ -77,3 +77,12 @@ def test_no_banking_for_a_day_shift():
     shifts = [Shift(start=NOW + timedelta(hours=48), end=NOW + timedelta(hours=60), kind="day")]
     plan = plan_shift_sleep(_nights(3, 460), shifts, NOW)
     assert plan.banking is None
+
+
+def test_chronic_short_sleep_gets_a_catch_up_nap_without_a_shift():
+    # Structurally short every night (early-wake regime), no shift -> a 20-min catch-up nap.
+    plan = plan_shift_sleep(_nights(7, 330), [], NOW)
+    catch = [n for n in plan.naps if n.type == "catch_up"]
+    assert catch and catch[0].duration_min == 20
+    # Well-rested -> no catch-up nap.
+    assert not any(n.type == "catch_up" for n in plan_shift_sleep(_nights(7, 470), [], NOW).naps)
