@@ -1,0 +1,14 @@
+# Cloud override: run the stack on an always-on Linux VM (e.g. Oracle Always-Free) and expose it
+# over HTTPS via a Cloudflare tunnel -- no Caddy, no open ports, no domain/cert setup, and none
+# of Oracle's security-list / iptables gymnastics (cloudflared connects OUTBOUND).
+#
+#   docker compose -f docker-compose.yml -f docker-compose.cloud.yml up -d api daemon web cloudflared
+#
+# The public URL appears in:  docker compose logs cloudflared | grep trycloudflare
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://web:3000
+    depends_on:
+      - web
