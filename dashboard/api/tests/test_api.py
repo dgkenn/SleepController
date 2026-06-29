@@ -171,3 +171,11 @@ def test_hue_config_therapy_roundtrip_and_in_wake_plan(auth_client):
     plan = auth_client.get("/wake/plan").json()
     assert plan["dawn_light"]["enabled"] is True
     assert plan["dawn_light"]["sunrise"] is True and plan["dawn_light"]["therapy"] is True
+    assert plan["dawn_light"]["post_wake_hold_min"] >= 1
+
+
+def test_wake_plan_has_readiness_and_caffeine(auth_client):
+    plan = auth_client.get("/wake/plan").json()
+    r = plan["readiness"]
+    assert r["buffer_min"] >= 15 and "note" in r        # always at least a typical inertia buffer
+    assert r["caffeine"]["dose_mg"] == 100 and "onset" in r["caffeine"]
