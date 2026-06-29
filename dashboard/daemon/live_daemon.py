@@ -407,8 +407,14 @@ class LiveDashboardDaemon:
             "confidence": decision.confidence if decision else None,
             "target_level": decision.target_level if decision else None,
             "daemon_alive": True,
+            # DEVICE-REPORTED truth read back from the bed (vs the commanded target_level above):
+            # device_level = what the Pod says it's actually doing, device_target_level = the level
+            # the Pod accepted. Round-trip verification compares these against the command.
             "extra": {"manual_target_f": self.manual_target_f, "power_on": self.power_on,
                       "away": self.away, "wake": self.wake, "live": True,
+                      "device_level": frame.device_level if frame else None,
+                      "device_target_level": frame.target_level if frame else None,
+                      "bed_presence": frame.presence if frame else None,
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,

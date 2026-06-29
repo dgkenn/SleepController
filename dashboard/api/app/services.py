@@ -264,6 +264,11 @@ def build_status(repo) -> dict:
         "power_on": extra.get("power_on", True),
         "away": extra.get("away", False),
         "wake": extra.get("wake"),
+        "target_level": rt.get("target_level"),                    # commanded device level
+        "device_level": extra.get("device_level"),                 # bed's reported actual level
+        "device_target_level": extra.get("device_target_level"),   # level the bed accepted
+        "bed_presence": extra.get("bed_presence"),
+        "live": extra.get("live", False),
         "daemon_alive": rt.get("daemon_alive", False),
         "stale": rt.get("stale", True),
         "updated": rt.get("updated"),
