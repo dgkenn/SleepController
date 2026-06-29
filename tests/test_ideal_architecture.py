@@ -71,3 +71,56 @@ def test_personalized_targets_apply_the_learned_levels():
     rows = [_row(i, 0.25 if i % 2 == 0 else 0.13, 0.22, 9 if i % 2 == 0 else 3) for i in range(20)]
     tgt = personalized_targets(_Repo(rows), NightMode.NORMAL)
     assert tgt.deep_pct_ideal > targets_for(NightMode.NORMAL).deep_pct_ideal
+
+
+def _stress_repo(stress):
+    rows = []
+    for i in range(8):
+        n, c = _row(i, 0.18, 0.22, 6)
+        c.stress = stress
+        rows.append((n, c))
+    return _Repo(rows)
+
+
+def test_stress_defends_deep_in_the_nights_ideal():
+    from sleepctl.learning.ideal_architecture import night_stress_level
+    base = targets_for(NightMode.NORMAL)
+    calm = personalized_for(_stress_repo(0))
+    stressed = personalized_for(_stress_repo(10))
+    assert night_stress_level(_stress_repo(10)) > night_stress_level(_stress_repo(0))
+    # a stressed night raises the deep floor (controller will protect deep harder); bounded
+    assert stressed.deep_pct_min > calm.deep_pct_min
+    assert stressed.deep_pct_min <= base.deep_pct_min + 0.025
+
+
+def personalized_for(repo):
+    from sleepctl.learning.perfect_weights import personalized_targets
+    return personalized_targets(repo, NightMode.NORMAL)
+
+
+def test_policy_drives_to_learned_floor_else_evidence_floor():
+    from sleepctl.config import AppConfig
+    from sleepctl.learning.policy import TieredPolicy
+    from sleepctl.models import NightSummary
+    cfg = AppConfig.default()
+    # deep at 17% — ABOVE the 15% evidence floor (no trigger) but BELOW an 18% learned floor.
+    night = NightSummary(date="2026-06-10", total_sleep_min=420, deep_min=0.17 * 420,
+                         rem_min=0.22 * 420, wake_events=1)
+
+    class _T:  # stand-in for a personalized Targets with a higher learned deep floor
+        deep_pct_min = 0.18
+        rem_pct_min = 0.20
+
+    # without learned targets -> uses the evidence floor (0.15) -> deep 17% does NOT trip the
+    # deep trigger; the policy only falls through to a generic minimal trial (no "deep .. <" reason).
+    pol = TieredPolicy(cfg)
+    pol.register_outcome(night)
+    rec1 = pol.recommend(None, {"wake_events_delta": 0.0}, {})
+    assert "deep 17% <" not in rec1["reason"]
+    # with the higher learned floor -> 17% < 18% -> the deep trigger fires explicitly against the
+    # learned ideal floor; the controller is now chasing YOUR ideal, not just the evidence floor.
+    pol2 = TieredPolicy(cfg)
+    pol2.register_outcome(night)
+    rec2 = pol2.recommend(None, {"wake_events_delta": 0.0}, {}, targets=_T())
+    assert rec2["target"] == "deep_bias_cooling"
+    assert "deep 17% < 18%" in rec2["reason"]

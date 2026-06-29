@@ -83,10 +83,12 @@ def personalized_targets(repo, mode: NightMode = NightMode.NORMAL,
     Pass to ``perfect_sleep_index(..., targets=...)`` / ``morning_readiness``."""
     from dataclasses import replace
 
-    from sleepctl.learning.ideal_architecture import learn_ideal_architecture
+    from sleepctl.learning.ideal_architecture import (
+        learn_ideal_architecture, night_stress_level, stress_adjust)
     base = targets_for(mode) if total_sleep_target_min is None \
         else targets_for(mode, total_sleep_target_min)
     lvl = learn_ideal_architecture(repo, mode)
+    lvl = stress_adjust(lvl, night_stress_level(repo))     # stressed night -> defend deep
     return replace(base, weights=learn_perfect_weights(repo, mode),
                    deep_pct_ideal=lvl["deep_pct_ideal"], deep_pct_min=lvl["deep_pct_min"],
                    rem_pct_ideal=lvl["rem_pct_ideal"], rem_pct_min=lvl["rem_pct_min"])
