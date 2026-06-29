@@ -1021,6 +1021,66 @@ def wake_plan(repo) -> dict:
     }
 
 
+def learning_phases(repo) -> dict:
+    """The unified picture of what the controller has learned, per sleep PHASE
+    (onset / maintenance / wake), so the user can watch all three converge over months.
+
+    Each phase reports its learned value, whether it's personalized yet, the nights of data, and a
+    plain-language rationale — and the thermal learners are reported per night-MODE (normal vs short
+    vs recovery) since the optimum differs by constraint."""
+    from sleepctl.config import AppConfig
+    from sleepctl.learning.onset_tuning import learn_onset, onset_records
+    from sleepctl.learning.settle import learn_settle_nudge
+    from sleepctl.learning.thermal_wake import learn_thermal_wake, thermal_wake_records
+    from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
+    cfg = AppConfig.default()
+    t = cfg.tunables
+    modes = ["normal", "constrained", "recovery"]
+
+    onset_recs = onset_records(repo)
+    wake_recs = wake_tuning_records(repo)
+    thermal_recs = thermal_wake_records(repo)
+
+    def per_mode(learn_fn, recs, **kw):
+        out = {"pooled": learn_fn(recs, **kw).to_dict()}
+        for m in modes:
+            out[m] = learn_fn(recs, mode=m, **kw).to_dict()
+        return out
+
+    settle = learn_settle_nudge(repo, cfg)
+    try:
+        eff = repo.precool_efficacy() or {}
+        precool_n = sum(int(v.get("n", 0) or 0) for v in eff.values())
+    except Exception:
+        precool_n = 0
+
+    return {
+        "onset": {
+            "label": "Going to sleep",
+            "knob": "induction warmth",
+            "per_mode": per_mode(learn_onset, onset_recs, base_f=t.onset_warm_nudge_f),
+            "n": len(onset_recs),
+        },
+        "maintenance": {
+            "label": "Staying asleep",
+            "knob": "settle nudge + pre-cool",
+            "settle_nudge_f": round(settle, 2),
+            "settle_direction": ("cooler" if settle < 0 else "warmer" if settle > 0 else "neutral"),
+            "precool_events": precool_n,
+            "is_personalized": bool(precool_n >= 6),
+        },
+        "wake": {
+            "label": "Waking up",
+            "knob": "window + lift bar + wake ramp",
+            "window_per_mode": per_mode(learn_wake_tuning, wake_recs,
+                                        base_window=t.wake_window_min),
+            "thermal_per_mode": per_mode(learn_thermal_wake, thermal_recs,
+                                         base_f=t.wake_ramp_temp_f),
+            "n": len(wake_recs),
+        },
+    }
+
+
 def bcg_should_record(repo) -> dict:
     """Whether the phone should be recording right now, driven by the Pod's bed presence (so an
     optional iOS Shortcuts automation can poll this and start/stop Sensor Logger on bed-in/out).

@@ -87,6 +87,15 @@ def test_wake_with_night_type_and_plan(auth_client):
     assert "deep_pct_min" in plan["targets"]
 
 
+def test_learning_phases_covers_all_three(auth_client):
+    p = auth_client.get("/learning/phases").json()
+    assert set(p) >= {"onset", "maintenance", "wake"}
+    # Onset + wake report per-mode learned values (constraint-aware); maintenance reports settle.
+    assert "per_mode" in p["onset"] and "normal" in p["onset"]["per_mode"]
+    assert "window_per_mode" in p["wake"] and "thermal_per_mode" in p["wake"]
+    assert "settle_direction" in p["maintenance"]
+
+
 def test_tonight_plan_has_bedtime_guidance(auth_client):
     # The plan reads the wake time from runtime_state; write one so bedtime guidance is computed.
     from app import bridge

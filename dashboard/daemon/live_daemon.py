@@ -122,6 +122,12 @@ class LiveDashboardDaemon:
     def _clamp_temp(f) -> float:
         return max(TEMP_MIN_F, min(TEMP_MAX_F, float(f)))
 
+    def _learn_mode(self):
+        """Tonight's night-mode for constraint-aware learning ('constrained'|'recovery'|'normal'),
+        or None to pool across modes when the mode isn't set yet."""
+        nt = (getattr(self.context, "night_type", None) or "").lower()
+        return nt if nt in ("constrained", "recovery", "normal") else None
+
     def _attach_profiles(self, controller: SleepController) -> None:
         try:
             from sleepctl.learning.lead_time import build_lead_time_profile
@@ -133,12 +139,21 @@ class LiveDashboardDaemon:
             from sleepctl.benchmarks import sleep_debt_min
             controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
             self._flush_wake_log()        # persist last night's wake conditions
-            # Personalize the alarm to YOUR grogginess curve (window + lift bar).
+            mode = self._learn_mode()     # constraint-aware: learn for tonight's night-type
+            # Personalize the alarm to YOUR grogginess curve (window + lift bar), per night-type.
             from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
             tuning = learn_wake_tuning(wake_tuning_records(self.repo),
-                                       base_window=self.cfg.tunables.wake_window_min)
+                                       base_window=self.cfg.tunables.wake_window_min, mode=mode)
             controller.wake_orch.cfg.p_wake_liftable = tuning.p_wake_liftable
             self._wake_base_window = tuning.window_min
+            # Personalized ONSET maneuver (warm nudge for fastest onset, per night-type) + explore.
+            from sleepctl.learning.onset_tuning import (
+                learn_onset, next_onset_warm_f, onset_records)
+            ons = learn_onset(onset_records(self.repo),
+                              base_f=self.cfg.tunables.onset_warm_nudge_f, mode=mode)
+            self._onset_warm_f = next_onset_warm_f(ons.onset_warm_f,
+                                                   datetime.now().timetuple().tm_yday)
+            controller.set_onset_warm(self._onset_warm_f)
         except Exception as exc:
             self._log(f"profile load skipped: {exc}")
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the
@@ -469,7 +484,9 @@ class LiveDashboardDaemon:
                 "minutes_early": round(mins_early, 1) if mins_early is not None else None,
                 "window_min": (self.wake or {}).get("window_min"),
                 "forced": forced, "p_wake": la.get("p_wake"),
-                "wake_thermal_f": self._wake_thermal_f}
+                "wake_thermal_f": self._wake_thermal_f,
+                "onset_warm_f": getattr(self, "_onset_warm_f", None),
+                "night_type": getattr(self.context, "night_type", None)}
 
     def _flush_wake_log(self) -> None:
         if not self._pending_wake:

@@ -56,6 +56,14 @@ class ThermalController:
         # Signed maintenance "settle" nudge (°F vs neutral) used by SETTLE_COOL; <0 cools, >0
         # warms. Learnable per phenotype (Raymann warming vs Fronczek cooling — see config).
         self.settle_nudge_f: float = cfg.tunables.maintenance_settle_nudge_f
+        # Learnable onset warm-nudge (°F above neutral during induction). Personalized per-mode by
+        # the onset learner from measured sleep-onset latency; bounded by the comfort cap.
+        self.onset_warm_f: float = cfg.tunables.onset_warm_nudge_f
+
+    def set_onset_warm(self, warm_f: float) -> None:
+        """Set the learned onset warm nudge, clamped to the comfort cap (never overheats)."""
+        cap = self.cfg.tunables.onset_warm_comfort_cap_f
+        self.onset_warm_f = max(0.0, min(cap, float(warm_f or 0.0)))
 
     def set_response_lag(self, minutes: float) -> None:
         """Update the learned actuation latency the control loop anticipates."""
@@ -135,7 +143,7 @@ class ThermalController:
             # Small WARM nudge to induce onset (cutaneous warming speeds sleep onset). Bounded
             # by the comfort cap so a hot sleeper is never overheated; the controller cools
             # again once asleep. The hot-sleeper cool bias is intentionally NOT applied here.
-            nudge = min(t.onset_warm_nudge_f, t.onset_warm_comfort_cap_f)
+            nudge = min(self.onset_warm_f, t.onset_warm_comfort_cap_f)
             target = p.neutral_f + nudge
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)

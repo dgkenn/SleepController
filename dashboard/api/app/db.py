@@ -76,7 +76,8 @@ CREATE TABLE IF NOT EXISTS live_sensor (
 CREATE TABLE IF NOT EXISTS wake_log (
     date TEXT PRIMARY KEY,
     woke_from_stage TEXT, minutes_early REAL, window_min INTEGER,
-    forced INTEGER, p_wake REAL, wake_thermal_f REAL, created TEXT
+    forced INTEGER, p_wake REAL, wake_thermal_f REAL, created TEXT,
+    onset_warm_f REAL, night_type TEXT
 );
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -88,12 +89,32 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
 """
 
 
+# Idempotent column adds for tables that predate a column (CREATE TABLE IF NOT EXISTS won't add
+# columns to an existing table). Each entry: (table, column, type).
+_MIGRATIONS = [
+    ("wake_log", "onset_warm_f", "REAL"),
+    ("wake_log", "night_type", "TEXT"),
+]
+
+
+def _apply_migrations(conn: sqlite3.Connection) -> None:
+    for table, col, typ in _MIGRATIONS:
+        try:
+            cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if col not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+        except Exception:
+            pass  # table may not exist yet on a brand-new DB; the DDL above creates it current
+    conn.commit()
+
+
 def connect(path: str | None = None) -> sqlite3.Connection:
     """Open the shared DB with the engine schema + dashboard tables applied."""
     # check_same_thread=False: FastAPI runs sync dependency setup/teardown across different
     # threadpool threads, and each request uses its own connection (no shared concurrent use).
     conn = engine_schema.connect(path or settings.db_path, check_same_thread=False)
     conn.executescript(_DASHBOARD_DDL)
+    _apply_migrations(conn)
     conn.commit()
     return conn
 
@@ -102,5 +123,6 @@ def get_repo() -> Repository:
     """A sleepctl Repository over the shared DB (ensures dashboard tables exist too)."""
     repo = Repository(settings.db_path, check_same_thread=False)
     repo.conn.executescript(_DASHBOARD_DDL)
+    _apply_migrations(repo.conn)
     repo.conn.commit()
     return repo

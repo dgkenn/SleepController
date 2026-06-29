@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 WAKE_F_BOUNDS = (70.0, 86.0)
 _EXPLORE_PATTERN = (0.0, 1.0, -1.0)     # rotated by night so the curve is sampled around best
@@ -47,11 +47,17 @@ class ThermalWakeManeuver:
 
 
 def learn_thermal_wake(records: List[dict], base_f: float = 74.0, min_nights: int = 8,
-                       min_per_bucket: int = 2, bounds=WAKE_F_BOUNDS) -> ThermalWakeManeuver:
-    """records: [{'wake_thermal_f': float, 'grogginess': float}, ...]. Returns the learned wake
-    temperature that left you least groggy (shrunk toward the default, clamped to safe bounds)."""
-    usable = [r for r in records
-              if r.get("grogginess") is not None and r.get("wake_thermal_f") is not None]
+                       min_per_bucket: int = 2, mode: Optional[str] = None,
+                       bounds=WAKE_F_BOUNDS) -> ThermalWakeManeuver:
+    """records: [{'wake_thermal_f': float, 'grogginess': float, 'night_type': str}, ...]. Returns
+    the learned wake temperature that left you least groggy (shrunk toward the default, clamped).
+    When ``mode`` is given and has enough nights, learns for that night-type; else pools."""
+    pool = [r for r in records
+            if r.get("grogginess") is not None and r.get("wake_thermal_f") is not None]
+    usable = pool
+    if mode is not None:
+        seg = [r for r in pool if (r.get("night_type") or "normal") == mode]
+        usable = seg if len(seg) >= min_nights else pool
     n = len(usable)
     if n < min_nights:
         return ThermalWakeManeuver(base_f, "neutral", n, False,
@@ -95,5 +101,6 @@ def thermal_wake_records(repo, nights: int = 30) -> List[dict]:
         g = getattr(ctx, "grogginess", None) if ctx else None
         if g is None or row.get("wake_thermal_f") is None:
             continue
-        out.append({"wake_thermal_f": row["wake_thermal_f"], "grogginess": g})
+        out.append({"wake_thermal_f": row["wake_thermal_f"], "grogginess": g,
+                    "night_type": row.get("night_type") or "normal"})
     return out

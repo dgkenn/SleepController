@@ -361,21 +361,40 @@ class DashboardDaemon:
                 lead_profile=build_lead_time_profile(self.repo))
             from sleepctl.benchmarks import sleep_debt_min
             self.cycle.controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
-            # Personalize the alarm to YOUR grogginess curve (window + lift bar).
+            # Learned maintenance settle-nudge direction (closes the maintenance loop).
+            from sleepctl.learning.settle import learn_settle_nudge
+            self.cycle.controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
+            mode = self._learn_mode()        # constraint-aware: learn for tonight's night-type
+            # Personalize the alarm to YOUR grogginess curve (window + lift bar), per night-type.
             from sleepctl.learning.wake_tuning import learn_wake_tuning, wake_tuning_records
             tuning = learn_wake_tuning(wake_tuning_records(self.repo),
-                                       base_window=self.cfg.tunables.wake_window_min)
+                                       base_window=self.cfg.tunables.wake_window_min, mode=mode)
             self.cycle.controller.wake_orch.cfg.p_wake_liftable = tuning.p_wake_liftable
             self._wake_base_window = tuning.window_min
             # Personalized THERMAL wake maneuver (warm vs cool) + tonight's exploration jitter.
             from sleepctl.learning.thermal_wake import (
                 learn_thermal_wake, next_wake_f, thermal_wake_records)
             tw = learn_thermal_wake(thermal_wake_records(self.repo),
-                                    base_f=self.cfg.tunables.wake_ramp_temp_f)
+                                    base_f=self.cfg.tunables.wake_ramp_temp_f, mode=mode)
             self._wake_thermal_f = next_wake_f(tw.wake_f, datetime.now().timetuple().tm_yday)
             self.cycle.controller.set_wake_ramp_f(self._wake_thermal_f)
+            # Personalized ONSET maneuver: learn the warm nudge that gets YOU to sleep fastest
+            # (per night-type), with exploration. Closes the going-to-sleep loop.
+            from sleepctl.learning.onset_tuning import (
+                learn_onset, next_onset_warm_f, onset_records)
+            ons = learn_onset(onset_records(self.repo),
+                              base_f=self.cfg.tunables.onset_warm_nudge_f, mode=mode)
+            self._onset_warm_f = next_onset_warm_f(ons.onset_warm_f,
+                                                   datetime.now().timetuple().tm_yday)
+            self.cycle.controller.set_onset_warm(self._onset_warm_f)
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
+
+    def _learn_mode(self):
+        """Tonight's night-mode for constraint-aware learning ('constrained'|'recovery'|'normal'),
+        or None to pool across modes when the mode isn't set yet."""
+        nt = (getattr(self.context, "night_type", None) or "").lower()
+        return nt if nt in ("constrained", "recovery", "normal") else None
 
     def _refresh_hue(self) -> None:
         """(Re)build the Hue dawn driver from the stored config and toggle the orchestrator's
@@ -446,7 +465,9 @@ class DashboardDaemon:
                 "minutes_early": round(mins_early, 1) if mins_early is not None else None,
                 "window_min": (self.wake or {}).get("window_min"),
                 "forced": forced, "p_wake": la.get("p_wake"),
-                "wake_thermal_f": self._wake_thermal_f}
+                "wake_thermal_f": self._wake_thermal_f,
+                "onset_warm_f": getattr(self, "_onset_warm_f", None),
+                "night_type": getattr(self.context, "night_type", None)}
 
     def _flush_wake_log(self) -> None:
         if not self._pending_wake:
