@@ -13,6 +13,13 @@ foreach ($c in @("python", "git", "node", "npm")) {
     }
 }
 
+# Stop any already-running server first -- otherwise the live daemon holds the venv's python.exe
+# and `pip install` fails with "Permission denied: ...\.venv\Scripts\python.exe".
+Write-Host "==> Stopping any running SleepController (so pip isn't blocked)..." -ForegroundColor Cyan
+try { Stop-ScheduledTask -TaskName "SleepController" -ErrorAction SilentlyContinue } catch {}
+Get-Process python, node, uvicorn -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+Start-Sleep -Seconds 2
+
 Write-Host "==> Cloning / updating SleepController..." -ForegroundColor Cyan
 if (Test-Path $Root) { Set-Location $Root; git pull }
 else { git clone https://github.com/dgkenn/SleepController.git $Root; Set-Location $Root }
@@ -28,6 +35,19 @@ $py = Join-Path $Root ".venv\Scripts\python.exe"
 & $py -m pip install --upgrade pip --quiet
 & $py -m pip install -e ".[eightsleep]" --quiet
 & $py -m pip install -r dashboard\api\requirements.txt --quiet
+# pyEight ships a requirements.txt but NO setup.py -- it isn't pip-installable, so we install ITS
+# OWN deps here and put the package on PYTHONPATH (the launchers/watchdog already do that). Skipping
+# this is the usual cause of "pyEight is required for the Eight Sleep cloud adapter".
+$pyEightReq = Join-Path $Root "pyEight\requirements.txt"
+if (Test-Path $pyEightReq) {
+    Write-Host "==> Installing pyEight's own dependencies..." -ForegroundColor Cyan
+    & $py -m pip install -r $pyEightReq --quiet
+}
+# Verify the cloud adapter can actually import pyEight (the real go/no-go for live control).
+$env:PYTHONPATH = "$Root;$Root\dashboard\api;$Root\pyEight"
+& $py -c "from pyeight.eight import EightSleep; print('OK')" > $null 2>&1
+if ($LASTEXITCODE -eq 0) { Write-Host "    pyEight import: OK (live Pod control available)." -ForegroundColor Green }
+else { Write-Host "    pyEight import: FAILED -- run:  `$env:PYTHONPATH='$Root\pyEight'; .\.venv\Scripts\python.exe -c 'import pyeight.eight'  to see why." -ForegroundColor Red }
 
 Write-Host "==> Installing + building the web app (production build for 24/7 stability)..." -ForegroundColor Cyan
 Push-Location (Join-Path $Root "dashboard\web")
@@ -47,21 +67,42 @@ if (-not (Test-Path $envPath)) {
         "DASHBOARD_PASSWORD=$pw",
         "BCG_INGEST_OPEN=1",
         "SLEEPCTL_LIVE=1",
-        "SLEEPCTL_DRY_RUN=1"
+        "SLEEPCTL_DRY_RUN=1",
+        "",
+        "# --- Eight Sleep login (REQUIRED for live control) -------------------------",
+        "# Without these the daemon CANNOT reach the Pod and silently runs the SIMULATOR.",
+        "# Fill them in, then the daemon auto-logs-in on every start -- you never type a password.",
+        "EIGHTSLEEP_EMAIL=",
+        "EIGHTSLEEP_PASSWORD=",
+        "EIGHTSLEEP_SIDE=right",
+        "EIGHTSLEEP_TIMEZONE=America/New_York"
     )
     Set-Content -Path $envPath -Value $lines -Encoding ASCII
     Write-Host ""
-    Write-Host "  Dashboard login:  admin  /  $pw" -ForegroundColor Green
-    Write-Host "  (also saved in deploy\.env)" -ForegroundColor Green
+    Write-Host "  Dashboard login:  admin  /  $pw   (also in deploy\.env)" -ForegroundColor Green
+    Write-Host "  ACTION: open deploy\.env and fill EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD" -ForegroundColor Yellow
 } else {
     Write-Host "  deploy\.env already exists -- leaving it as is." -ForegroundColor Yellow
+    $envText = Get-Content $envPath -Raw
+    if ($envText -notmatch "EIGHTSLEEP_EMAIL") {
+        Write-Host "  WARNING: deploy\.env has NO EIGHTSLEEP_EMAIL -- live control will fall back to the" -ForegroundColor Red
+        Write-Host "           SIMULATOR. Add these lines to deploy\.env to actually drive the Pod:" -ForegroundColor Red
+        Write-Host "             EIGHTSLEEP_EMAIL=you@example.com" -ForegroundColor Yellow
+        Write-Host "             EIGHTSLEEP_PASSWORD=your-password" -ForegroundColor Yellow
+        Write-Host "             EIGHTSLEEP_SIDE=right" -ForegroundColor Yellow
+        Write-Host "             EIGHTSLEEP_TIMEZONE=America/New_York" -ForegroundColor Yellow
+    }
 }
 
 Write-Host ""
 Write-Host "==> Setup complete." -ForegroundColor Green
-Write-Host "Next (Step 2): connect to your Pod, read-only:" -ForegroundColor Cyan
-Write-Host "    cd $Root"
-Write-Host "    .\.venv\Scripts\Activate.ps1"
-Write-Host "    `$env:PYTHONPATH = `"$Root\pyEight`""
-Write-Host "    python -m sleepctl.cli auth"
-Write-Host "    python -m sleepctl.cli calibrate     # read-only, sends nothing"
+Write-Host "Next:" -ForegroundColor Cyan
+Write-Host "  1. Put your Eight Sleep email/password in deploy\.env (EIGHTSLEEP_EMAIL / _PASSWORD)."
+Write-Host "     The daemon logs in automatically from there -- no `auth` prompt, no manual login."
+Write-Host "  2. (optional) read-only Pod check -- sends NOTHING to the bed:"
+Write-Host "       .\.venv\Scripts\Activate.ps1"
+Write-Host "       `$env:PYTHONPATH = `"$Root;$Root\pyEight`""
+Write-Host "       python -m sleepctl.cli calibrate"
+Write-Host "  3. go always-on (Admin PowerShell):"
+Write-Host "       powershell -ExecutionPolicy Bypass -File scripts\windows-always-on.ps1"
+Write-Host "     Then open the iPhone dashboard, press PRIME, and let it run."

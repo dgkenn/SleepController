@@ -51,24 +51,32 @@ powershell -ExecutionPolicy Bypass -File scripts\windows-setup.ps1
 
 ---
 
-## Step 2 — Connect to your Pod (read-only first)
+## Step 2 — Connect to your Pod (no manual login)
+
+The daemon logs in automatically from `deploy\.env` — **put your Eight Sleep credentials there once**
+and you never type a password again:
+
+```ini
+# deploy\.env  (this file is gitignored — it stays only on this PC, never committed)
+EIGHTSLEEP_EMAIL=you@example.com
+EIGHTSLEEP_PASSWORD=your-eight-sleep-password
+EIGHTSLEEP_SIDE=right
+EIGHTSLEEP_TIMEZONE=America/New_York
+```
+
+> ⚠️ Without `EIGHTSLEEP_EMAIL`/`_PASSWORD` in `deploy\.env`, live mode **silently falls back to the
+> simulator** — the dashboard shows `live: false` and the bed never moves. This is the #1 "it didn't
+> work" cause. (`windows-setup.ps1` adds these keys as blanks for you to fill.)
+> If plain email/password fails, newer accounts need an OAuth2 client id/secret — see LIVE_POD.md.
+
+### Optional read-only check — sends zero commands to the bed:
 
 ```powershell
 cd $HOME\SleepController
 .\.venv\Scripts\Activate.ps1
-$env:PYTHONPATH = "$HOME\SleepController\pyEight"
-
-python -m sleepctl.cli auth          # enter your Eight Sleep email + password (stored locally, 0600)
-python -m sleepctl.cli auth --test   # confirms login + network
-```
-
-> Security: creds are saved only on this PC (`~\.config\sleepctl\credentials.json`), never
-> committed. Consider changing your Eight Sleep password after, and don't share the file.
-> If plain email/password fails, newer accounts need an OAuth2 client id/secret — see LIVE_POD.md.
-
-### The first live action is READ-ONLY — it sends zero commands:
-
-```powershell
+$env:PYTHONPATH = "$HOME\SleepController;$HOME\SleepController\pyEight"
+# load the creds from deploy\.env into this shell, then probe:
+Get-Content deploy\.env | ForEach-Object { if ($_ -match '^\s*([^#=]+)=(.*)$') { Set-Item ("env:"+$matches[1].Trim()) $matches[2].Trim() } }
 python -m sleepctl.cli calibrate
 ```
 
