@@ -33,6 +33,18 @@ def _run(coro):
     asyncio.new_event_loop().run_until_complete(coro)
 
 
+def test_startup_loads_learned_profiles_not_silently_skipped():
+    # Regression: __init__ used to call _attach_profiles BEFORE _pending_wake existed, so the whole
+    # profile load (every per-phase learner) threw AttributeError and was silently swallowed — the
+    # live Pod would run on config defaults. Constructing the daemon must fully load profiles.
+    d, client, repo = _daemon()
+    assert d._deepen_policy is not None           # deepening-response policy was learned + applied
+    assert d.cycle.controller.last_precursor_profile is not None  # precursor profile applied
+    assert d._onset_warm_f is not None            # onset maneuver loaded
+    # the deepen actuation gate was actually set on the controller (default True on thin data)
+    assert isinstance(d.cycle.controller.steer_actuate, bool)
+
+
 def test_live_set_temp_reaches_device():
     d, client, repo = _daemon()
     bridge.enqueue_command(repo.conn, "set_temp", {"target_f": 64})

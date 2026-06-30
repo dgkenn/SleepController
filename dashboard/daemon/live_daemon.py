@@ -63,7 +63,6 @@ class LiveDashboardDaemon:
         self.precomp = compute_precompensation(None, cfg)
         self._precomp_checked = 0.0
         controller = SleepController(cfg, setpoints=repo.latest_setpoints())
-        self._attach_profiles(controller)
         self.cycle = ControlCycle(cfg, repo, controller)
         self.nightly = NightlyUpdater(cfg, repo)
         # Confirms the bed is actually heating/cooling from the Hub's water-side device level
@@ -93,6 +92,13 @@ class LiveDashboardDaemon:
         self._wake_last_stage = None
         self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
         self._wake_thermal_f = cfg.tunables.wake_ramp_temp_f   # tonight's wake-ramp temperature
+        self._onset_warm_f = cfg.tunables.onset_warm_nudge_f   # tonight's learned onset warmth
+        self._deepen_policy = None     # learned deepening-response policy (do-no-harm gate)
+        self._precursor_profile = None  # learned personalized awakening-precursor trajectory
+        # Load the learned profiles onto the controller AFTER all the state above exists (the
+        # attach path flushes the wake log + applies every per-phase learner). Doing this last
+        # fixes a startup ordering bug where the whole load was silently skipped.
+        self._attach_profiles(controller)
 
     # ------------------------------------------------------ onset / nap sessions
     def _start_induce(self) -> None:
