@@ -117,8 +117,49 @@ Log in with `admin` + the password from Step 1, then **Share → Add to Home Scr
 PWA. Drop dry-run once you're happy (set `SLEEPCTL_DRY_RUN=0` in `deploy\.env` and relaunch) — and
 once the Pod is back on a real mattress, do the same staged dry-run-first there.
 
-> Always-on across reboots is a later refinement (a Windows Scheduled Task that runs
-> `windows-dashboard.ps1` at logon). For now, re-run the launcher after a reboot.
+`windows-dashboard.ps1` is the **manual** launcher (start once, runs until you reboot or it
+crashes). For an **always-on laptop**, use Step 5 instead.
+
+---
+
+## Step 5 — Make it ALWAYS-ON (laptop: survives reboot, crash, and a closed lid)
+
+Run **once** in an **Administrator** PowerShell (right-click PowerShell → *Run as administrator*):
+
+```powershell
+cd $HOME\SleepController
+git pull                       # get the always-on scripts
+powershell -ExecutionPolicy Bypass -File scripts\windows-always-on.ps1
+```
+
+That does two things:
+
+1. **Keeps the laptop awake on AC** — disables sleep/hibernate and sets *lid-close = do nothing*
+   while plugged in, so you can shut the lid and walk away. (Keep it on the charger; the display
+   may still turn off, which is fine — it doesn't stop the controller.)
+2. **Registers a `SleepController` Scheduled Task** that launches a **watchdog**
+   (`windows-watchdog.ps1`) at every boot/logon and **restarts it if it ever dies**. The watchdog
+   in turn supervises the API + daemon + web and restarts any one that crashes. It uses the
+   **production** web server (`next start`) for 24/7 stability.
+
+Verify / manage it:
+
+```powershell
+Get-Content $HOME\SleepController\.run\watchdog.log -Wait      # watch it come up
+Get-Content $HOME\SleepController\.run\watchdog.heartbeat      # last-alive timestamp
+Get-ScheduledTask SleepController                              # task state
+Stop-ScheduledTask SleepController ; Get-Process python,node | Stop-Process -Force   # stop
+Unregister-ScheduledTask SleepController -Confirm:$false       # remove always-on
+```
+
+Now reboot once to prove it: the dashboard should come back on its own, no login required.
+
+> Remote access (off your WiFi): you already have **Tailscale**/**cloudflared** — see
+> [REMOTE_ACCESS.md](REMOTE_ACCESS.md). The always-on task makes the tunnel target always reachable.
+
+> **Mac/Linux laptop instead?** Same idea, different tools: a `launchd` plist (macOS) or `systemd`
+> service (Linux) running the equivalent watchdog, plus `caffeinate`/`pmset disablesleep` (macOS)
+> or `systemd-inhibit` + `logind.conf HandleLidSwitch=ignore` (Linux). Tell me and I'll add it.
 
 ---
 
