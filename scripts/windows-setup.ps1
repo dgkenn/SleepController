@@ -29,9 +29,10 @@ $py = Join-Path $Root ".venv\Scripts\python.exe"
 & $py -m pip install -e ".[eightsleep]" --quiet
 & $py -m pip install -r dashboard\api\requirements.txt --quiet
 
-Write-Host "==> Installing the web app..." -ForegroundColor Cyan
+Write-Host "==> Installing + building the web app (production build for 24/7 stability)..." -ForegroundColor Cyan
 Push-Location (Join-Path $Root "dashboard\web")
 npm install --no-audit --no-fund
+npm run build
 Pop-Location
 
 Write-Host "==> Generating dashboard secrets (deploy\.env)..." -ForegroundColor Cyan
