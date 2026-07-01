@@ -68,6 +68,12 @@ class SleepController:
         # ('observe') nights this is False — the steerer still judges + logs a SHADOW event (the
         # n-of-1 control arm) but doesn't cool. Set nightly by the daemon from the learner.
         self.steer_actuate = True
+        # Measured thermal effect-latency from the in-bed self-test (minutes for a cool/heat
+        # command to fully land). None until the self-test runs. Floors the deepening-response
+        # horizon (don't judge "did it deepen?" before the cool has taken effect) and lengthens the
+        # wake warm-up runway so the bed is actually warm by the wake time.
+        self.measured_cool_lag_min: Optional[float] = None
+        self.measured_heat_lag_min: Optional[float] = None
         # Multi-signal, escalating, inertia-minimizing wake orchestrator (uses the calibrated
         # sleep/wake classifier + the fused fast movement; never oversleeps the deadline).
         from sleepctl.controller.sleep_wake import SleepWakeClassifier
@@ -385,7 +391,7 @@ class SleepController:
                 "stage_before": frame.stage.value if frame.stage is not None else None,
                 "deep_deficit_min": round(steer.deep_deficit_min, 2),
                 "frac_of_night": round(steer.frac_of_night, 3),
-                "horizon_min": cfg.tunables.steer_response_horizon_min,
+                "horizon_min": self._steer_horizon_min(),
                 "applied": 1 if actuate else 0,
             }
         self._deepen_active = deepen
@@ -399,6 +405,29 @@ class SleepController:
             self.precursor_detector.personalize(profile)
         except Exception:
             pass
+
+    def set_measured_thermal(self, cool_lag_min, heat_lag_min) -> None:
+        """Apply the in-bed self-test's measured cool/heat effect-latency (minutes-to-settle):
+        floors the deepening horizon (cool) and widens the wake warm-up runway (heat)."""
+        self.measured_cool_lag_min = cool_lag_min
+        self.measured_heat_lag_min = heat_lag_min
+        self.wake_orch.set_warm_lead(self.warm_lead_min())
+
+    def _steer_horizon_min(self) -> float:
+        """Deepening-response scoring horizon, floored at the measured cool-lag (+2 min) so the
+        learner never judges 'did cooling deepen me?' before the cool has actually landed."""
+        base = self.cfg.tunables.steer_response_horizon_min
+        if self.measured_cool_lag_min:
+            return round(max(base, self.measured_cool_lag_min + 2.0), 1)
+        return base
+
+    def warm_lead_min(self) -> Optional[float]:
+        """How many minutes before the wake deadline the warming ramp should begin so the bed is
+        actually warm by then — the measured heat-lag (+2 min margin), or None if uncalibrated.
+        Consumed by the wake orchestrator to widen a too-short warm-up runway."""
+        if self.measured_heat_lag_min:
+            return round(self.measured_heat_lag_min + 2.0, 1)
+        return None
 
     def set_steer_policy(self, actuate: bool) -> None:
         """Set whether tonight ACTUATES the deepen nudge (learned do-no-harm gate + the n-of-1

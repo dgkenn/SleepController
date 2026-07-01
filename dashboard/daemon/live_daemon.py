@@ -155,6 +155,15 @@ class LiveDashboardDaemon:
             from sleepctl.ml.wake_profile import build_wake_profile
             controller.set_wake_profile(build_wake_profile(self.repo),
                                         lead_profile=build_lead_time_profile(self.repo))
+            # Feed the in-bed self-test's measured ramp rates to the stall detector + wake warm-up
+            # so both reason about YOUR bed's real cool/heat speed.
+            cal = self.repo.get_thermal_calibration()
+            if cal:
+                thermal = getattr(self, "thermal", None)
+                if thermal is not None:
+                    thermal.set_measured_rates(cal.get("cool_levels_per_min"),
+                                               cal.get("heat_levels_per_min"))
+                controller.set_measured_thermal(cal.get("cool_lag_min"), cal.get("heat_lag_min"))
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
             from sleepctl.benchmarks import sleep_debt_min
             controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))

@@ -123,6 +123,12 @@ class WakeOrchestrator:
         self._up_streak = 0
         self._confirmed = False
         self._confirmed_at: Optional[datetime] = None
+        # Measured warm-up runway from the in-bed self-test (heat-lag + margin): the dawn ramp
+        # must start at least this early or the bed won't be warm by the deadline. None = use cfg.
+        self._warm_lead_min: Optional[float] = None
+
+    def set_warm_lead(self, warm_lead_min) -> None:
+        self._warm_lead_min = warm_lead_min
 
     def reset(self) -> None:
         self._engaged_at = None
@@ -208,7 +214,12 @@ class WakeOrchestrator:
         eff_window = c.window_min * (1.0 - c.debt_window_shrink * debt_factor)
         p_liftable = min(0.95, c.p_wake_liftable + c.debt_threshold_raise * debt_factor)
         window_start = required_wake - timedelta(minutes=eff_window)
-        dawn_start = required_wake - timedelta(minutes=c.thermal_dawn_min)
+        # Dawn warm-up starts at the configured lead, but never later than the MEASURED warm-up
+        # runway (heat-lag + margin) — otherwise the bed wouldn't be warm by the deadline.
+        dawn_min = c.thermal_dawn_min
+        if self._warm_lead_min:
+            dawn_min = max(dawn_min, self._warm_lead_min)
+        dawn_start = required_wake - timedelta(minutes=dawn_min)
         light = self._light(now, dawn_start, required_wake)
         cyc = self.predictor.predict(now, frame.stage).to_dict()
 
