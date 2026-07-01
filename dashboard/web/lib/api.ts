@@ -1006,7 +1006,40 @@ export const api = {
 
   insightsParameters: () =>
     apiFetch<InsightsParametersResponse>('/api/insights/parameters'),
+  // Meta-learning ledger: what every learner currently reports + advisory contradictions
+  learningLedger: () => apiFetch<LearningLedgerResponse>('/api/learning/ledger'),
 };
+
+// ---------------------------------------------------------------------------
+// Meta-learning ledger types (GET /learning/ledger)
+// ---------------------------------------------------------------------------
+
+export type LedgerSource = 'preset' | 'learned' | 'measured';
+export type LedgerPhase = 'onset' | 'maintenance' | 'wake' | 'thermal';
+
+export interface LedgerEntry {
+  name: string;
+  phase: LedgerPhase;
+  value: number | null;
+  unit: string;
+  source: LedgerSource;
+  maturity: number;
+  confidence: number;
+  note: string;
+}
+
+export interface LedgerContradiction {
+  phase: string;
+  a: string;
+  b: string;
+  combined_spread_f: number;
+  message: string;
+}
+
+export interface LearningLedgerResponse {
+  entries: LedgerEntry[];
+  contradictions: LedgerContradiction[];
+}
 
 // SWR fetcher
 export const fetcher = (url: string) =>

@@ -10,7 +10,96 @@ import ExperimentsCard from '@/components/ExperimentsCard';
 import TargetsCard from '@/components/TargetsCard';
 import LearningPhasesCard from '@/components/LearningPhasesCard';
 import useSWR from 'swr';
-import { MLOverview, fetcher } from '@/lib/api';
+import { LearningLedgerResponse, MLOverview, fetcher } from '@/lib/api';
+
+const SOURCE_BADGE: Record<string, string> = {
+  learned: 'bg-success/15 text-success border-success/30',
+  measured: 'bg-brand/15 text-brand border-brand/30',
+  preset: 'bg-gray-700/40 text-gray-400 border-gray-600/50',
+};
+
+function LedgerConfidenceBar({ value }: { value: number }) {
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  const color = pct >= 70 ? 'bg-success' : pct >= 40 ? 'bg-warning' : 'bg-danger';
+  return (
+    <div className="flex items-center gap-2 min-w-[72px]">
+      <div className="flex-1 h-1.5 bg-surface-border rounded-full overflow-hidden">
+        <div className={`h-full ${color} rounded-full`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-[10px] text-gray-500 tabular-nums w-7 text-right">{pct}%</span>
+    </div>
+  );
+}
+
+/** "What the system has learned" — a unified ledger across EVERY independent learner (onset,
+ *  settle, lead time, wake ramp/tuning, deepening, setpoints, thermal calibration, comfort
+ *  profile, resting baseline, baselines), each with its current value, data source, maturity
+ *  and a heuristic confidence — plus any advisory contradiction warnings (two learners quietly
+ *  pulling the same phase's temperature opposite ways). Read-model only; nothing here changes
+ *  controller behavior. */
+function LearningLedgerSection() {
+  const { data } = useSWR<LearningLedgerResponse>('/api/learning/ledger', fetcher, {
+    refreshInterval: 60000,
+  });
+  if (!data) return null;
+
+  const { entries, contradictions } = data;
+  if (!entries.length) return null;
+
+  return (
+    <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500 uppercase tracking-wider">
+          What the system has learned
+        </p>
+        <span className="text-[10px] text-gray-600">{entries.length} learners</span>
+      </div>
+
+      {contradictions.length > 0 && (
+        <div className="bg-warning/10 border border-warning/30 rounded-xl px-3 py-2 space-y-1.5">
+          <p className="text-warning text-xs font-medium">
+            {contradictions.length} advisory contradiction{contradictions.length !== 1 ? 's' : ''}
+          </p>
+          {contradictions.map((w, i) => (
+            <p key={i} className="text-[11px] text-warning/90 leading-snug">
+              {w.message}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <div className="divide-y divide-surface-border">
+        {entries.map((e) => (
+          <div key={e.name} className="py-2.5 flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <p className="text-sm font-medium text-white truncate">{e.name}</p>
+                <span
+                  className={`text-[10px] px-1.5 py-0.5 rounded border ${
+                    SOURCE_BADGE[e.source] ?? SOURCE_BADGE.preset
+                  }`}
+                >
+                  {e.source}
+                </span>
+              </div>
+              <p className="text-[11px] text-gray-500 leading-snug truncate">{e.note}</p>
+              <p className="text-[10px] text-gray-600">
+                {e.value != null ? `${e.value.toFixed(2)} ${e.unit}` : 'n/a'} · {e.maturity}{' '}
+                {e.maturity === 1 ? 'sample' : 'samples'}
+              </p>
+            </div>
+            <LedgerConfidenceBar value={e.confidence} />
+          </div>
+        ))}
+      </div>
+
+      <p className="text-[10px] text-gray-600 leading-snug pt-1 border-t border-surface-border/60">
+        Read-only view of every learner's current state — nothing here changes the controller.
+        Contradictions are advisory only and are never auto-resolved.
+      </p>
+    </div>
+  );
+}
 
 function LearningContent() {
   const { data, error } = useSWR<MLOverview>('/api/ml/overview', fetcher, {
@@ -55,6 +144,10 @@ function LearningContent() {
 
           {/* What's learned across all three phases (onset / maintenance / wake), per night-type */}
           <LearningPhasesCard />
+
+          {/* Meta-learning ledger: every learner's current value/source/maturity/confidence,
+              plus advisory contradiction warnings */}
+          <LearningLedgerSection />
 
           {/* Sleep maintenance: prevent + handle awakenings */}
           <MaintenanceCard />

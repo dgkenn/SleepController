@@ -802,3 +802,7 @@ def insights_parameters(repo=Depends(repo_dep), user: str = AuthDep):
     """What's currently learned: the active setpoint profile, measured thermal/comfort/resting
     baselines, and a couple of learner summaries — each with its value, source, and what it does."""
     return services.insights_parameters(repo)
+# ---- Meta-learning: what the system has learned, across every learner, + contradiction check
+@app.get("/learning/ledger")
+def learning_ledger(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.learning_ledger_view(repo)

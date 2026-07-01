@@ -1385,3 +1385,11 @@ def insights_parameters(repo) -> dict:
         pass
 
     return {"parameters": rows, "n": len(rows)}
+# ------------------------------------------------------------- meta-learning ledger
+def learning_ledger_view(repo) -> dict:
+    """The cross-learner confidence ledger: what EVERY learner currently reports (value,
+    maturity, confidence, source), plus an advisory (never enforced) check for learners quietly
+    pulling the same phase's temperature in opposite directions. Pure read-model — never
+    retrains anything and never changes controller behavior."""
+    from sleepctl.learning.coordinator import build_ledger_report
+    return build_ledger_report(repo, CFG).to_dict()
