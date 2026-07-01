@@ -690,8 +690,38 @@ export interface SelfTestReport {
     heat_f_per_min: number | null;
     cool_lag_min: number | null;
     heat_lag_min: number | null;
+    warmback_levels_per_min?: number | null;
+    warmback_lag_min?: number | null;
+  } | null;
+  resting_baseline: {
+    hr: number | null;
+    hrv: number | null;
+    rr: number | null;
+    movement: number | null;
+    n_samples: number | null;
   } | null;
   simulated?: boolean;
+}
+
+export interface ComfortProfile {
+  neutral_f: number | null;
+  cool_edge_f: number | null;
+  warm_edge_f: number | null;
+}
+
+export interface ComfortCalState {
+  running: boolean;
+  cancelled: boolean;
+  step?: number;
+  n_steps?: number;
+  current_target_f?: number | null;
+  ratings?: { f: number; rating: number }[];
+  result?: ComfortProfile | null;
+}
+
+export interface ComfortStatus {
+  comfort_cal: ComfortCalState | null;
+  profile: (ComfortProfile & { ratings?: { f: number; rating: number }[] }) | null;
 }
 
 export interface SelfTestStatus {
@@ -712,6 +742,21 @@ export const api = {
   cancelSelfTest: () =>
     apiFetch<{ queued: string }>('/api/control/self-test/cancel', { method: 'POST' }),
   selfTestStatus: () => apiFetch<SelfTestStatus>('/api/control/self-test'),
+
+  // Interactive in-bed comfort mapping
+  startComfortCal: (steps_f?: number[]) =>
+    apiFetch<{ queued: string }>('/api/control/comfort-cal', {
+      method: 'POST',
+      body: JSON.stringify(steps_f ? { steps_f } : {}),
+    }),
+  rateComfort: (rating: number) =>
+    apiFetch<{ queued: string }>('/api/control/comfort-cal/rate', {
+      method: 'POST',
+      body: JSON.stringify({ rating }),
+    }),
+  cancelComfortCal: () =>
+    apiFetch<{ queued: string }>('/api/control/comfort-cal/cancel', { method: 'POST' }),
+  comfortCalStatus: () => apiFetch<ComfortStatus>('/api/control/comfort-cal'),
 
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),

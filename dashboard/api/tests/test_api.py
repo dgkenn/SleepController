@@ -250,3 +250,15 @@ def test_self_test_endpoints(auth_client):
     assert "self_test" in st and "calibration" in st
     # the specific route wins over the generic /control/{action} (no 404)
     assert auth_client.post("/control/self-test", json={}).status_code == 200
+
+
+def test_comfort_cal_endpoints(auth_client):
+    assert auth_client.post("/control/comfort-cal", json={"steps_f": [64, 70, 76]}).json()["queued"] \
+        == "comfort_cal_start"
+    assert auth_client.post("/control/comfort-cal", json={}).json()["queued"] == "comfort_cal_start"
+    r = auth_client.post("/control/comfort-cal/rate", json={"rating": -1})
+    assert r.status_code == 200 and r.json()["queued"] == "comfort_cal_rate"
+    assert auth_client.post("/control/comfort-cal/rate", json={}).status_code == 400
+    assert auth_client.post("/control/comfort-cal/cancel").json()["queued"] == "comfort_cal_cancel"
+    st = auth_client.get("/control/comfort-cal").json()
+    assert "comfort_cal" in st and "profile" in st

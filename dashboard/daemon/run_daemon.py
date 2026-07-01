@@ -250,8 +250,54 @@ class DashboardDaemon:
                 self._simulated_self_test(p.get("mode", "full"))
             elif t == "self_test_cancel":
                 pass
+            elif t == "comfort_cal_start":
+                self._comfort_start(p)
+            elif t == "comfort_cal_rate":
+                self._comfort_rate(p.get("rating"))
+            elif t == "comfort_cal_cancel":
+                self._comfort_cancel()
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
+
+    def _comfort_start(self, p: dict) -> None:
+        from sleepctl.controller.comfort import ComfortCalibration, steps_around
+        steps = p.get("steps_f") or steps_around(self.cycle.controller.thermal.profile.neutral_f)
+        self.comfort = ComfortCalibration(steps_f=[float(s) for s in steps])
+        self._comfort_result = None
+        self.power_on, self.paused, self.mode = True, False, "manual"
+        self.manual_target_f = self.comfort.current_target_f()
+
+    def _comfort_rate(self, rating) -> None:
+        c = getattr(self, "comfort", None)
+        if c is None or rating is None:
+            return
+        c.rate(int(rating))
+        if c.done:
+            prof = c.finalize()
+            self._comfort_result = prof.to_dict()
+            try:
+                self.repo.save_comfort_profile(self._comfort_result)
+                if prof.neutral_f is not None:
+                    self.cycle.controller.thermal.profile.neutral_f = float(prof.neutral_f)
+            except Exception as exc:
+                print(f"comfort save skipped: {exc}", flush=True)
+            self.comfort = None
+            self.mode = "auto"
+        else:
+            self.manual_target_f = c.current_target_f()
+
+    def _comfort_cancel(self) -> None:
+        if getattr(self, "comfort", None) is not None:
+            self.comfort.cancel()
+        self.comfort = None
+        self.power_on, self.paused = False, True
+
+    def _comfort_snapshot(self):
+        c = getattr(self, "comfort", None)
+        if c is not None:
+            return c.progress()
+        res = getattr(self, "_comfort_result", None)
+        return {"running": False, "cancelled": False, "result": res} if res else None
 
     def _simulated_self_test(self, mode: str) -> None:
         """Simulator stand-in for the on-bed battery: exercises the command + result surface so
@@ -378,6 +424,7 @@ class DashboardDaemon:
                 "preemption": self.cycle.controller.preemption_summary(),
                 "steering": self.cycle.controller.steering_summary(),
                 "self_test": getattr(self, "_self_test_report", None),
+                "comfort_cal": self._comfort_snapshot(),
             },
         }
 

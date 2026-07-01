@@ -39,6 +39,8 @@ SENSE_ACQUIRE_S = 60.0       # keep polling up to this long for presence + HR to
 CIRCULATION_MIN = 3.0        # sustained pumping window for the sealed-loop test (full mode)
 RAMP_MAX_MIN = 4.0           # cap on how long we watch a single ramp for plateau
 GENTLE_PULSE_S = 90.0        # short cool pulse window (gentle mode)
+WARMBACK_MAX_MIN = 3.0       # cap on the passive warm-back observation window
+WARMBACK_TARGET_LEVELS = 30  # "recovered" once the level drifts back up this many levels
 PLATEAU_EPS_LEVELS = 2       # |delta| below this over the window => settled
 PLATEAU_WINDOW_S = 60.0
 COOL_SETPOINT_F = 60.0       # circulation / gentle-pulse setpoint
@@ -78,6 +80,8 @@ class SelfTestReport:
     checks: list[CheckResult] = field(default_factory=list)
     # measured cool/heat rates + lags (full mode, real device) → fed to the timing modules
     calibration: Optional[dict] = None
+    # resting-physiology baseline captured quiet-and-awake (fed to the arousal/precursor detectors)
+    resting_baseline: Optional[dict] = None
 
     @property
     def overall_passed(self) -> Optional[bool]:
@@ -94,6 +98,7 @@ class SelfTestReport:
             "n_fail": sum(1 for c in self.checks if c.passed is False),
             "checks": [c.to_dict() for c in self.checks],
             "calibration": self.calibration,
+            "resting_baseline": self.resting_baseline,
         }
 
 
@@ -197,16 +202,26 @@ class _Battery:
     # -- CHECK: sensing — does the bed detect ME? -----------------------------
     async def check_sensing(self) -> None:
         self._emit("sensing you in bed")
-        # Give the BCG a beat to acquire: poll up to SENSE_ACQUIRE_S for presence + HR.
-        deadline = time.monotonic() + SENSE_ACQUIRE_S
+        # Give the BCG a beat to acquire: poll up to SENSE_ACQUIRE_S for presence + HR, and while
+        # we're at it collect a resting-physiology baseline (you're lying still and awake — the
+        # ideal moment to anchor the arousal/precursor detectors to YOUR numbers on THIS mattress).
+        # A simulator produces frames instantly — use a fast, short capture there so tests/UI
+        # aren't forced to wait a real minute.
+        poll = 0.02 if self.simulated else POLL_S
+        acquire_s = 3.0 if self.simulated else SENSE_ACQUIRE_S
+        deadline = time.monotonic() + acquire_s
         frame = self.client.read_frame()
+        rest: list = []
         while time.monotonic() < deadline:
             await _update(self.client)
             self._guard()
             frame = self.client.read_frame()
-            if frame.presence is True and frame.heart_rate is not None:
+            if frame.heart_rate is not None:
+                rest.append(frame)      # movement median reflects how still you actually were
+            if frame.presence is True and frame.heart_rate is not None and len(rest) >= 5:
                 break
-            await asyncio.sleep(POLL_S)
+            await asyncio.sleep(poll)
+        self._build_resting_baseline(rest)
 
         presence, hr = frame.presence, frame.heart_rate
         hrv, rr = frame.hrv, frame.respiratory_rate
@@ -244,6 +259,26 @@ class _Battery:
                                   f"{rr:.1f} /min", metrics={"rpm": rr}))
         self._add(CheckResult("sleep_stage", None,
                               f"reporting '{stage}'" if stage else "no stage yet (awake expected at setup)"))
+
+    def _build_resting_baseline(self, frames: list) -> None:
+        if not frames:
+            return
+        hr = _median([f.heart_rate for f in frames if f.heart_rate is not None])
+        hrv = _median([f.hrv for f in frames if f.hrv is not None])
+        rr = _median([f.respiratory_rate for f in frames if f.respiratory_rate is not None])
+        mv = _median([f.movement for f in frames if f.movement is not None])
+        if hr is None:
+            return
+        self.report.resting_baseline = {
+            "hr": _round(hr, 1), "hrv": _round(hrv, 1), "rr": _round(rr, 1),
+            "movement": _round(mv, 3), "n_samples": len(frames), "source": "self_test",
+        }
+        self._add(CheckResult("resting_baseline", True,
+                              f"HR {hr:.0f} bpm"
+                              + (f", HRV {hrv:.0f} ms" if hrv is not None else "")
+                              + (f", RR {rr:.1f}/min" if rr is not None else "")
+                              + f" over {len(frames)} samples",
+                              metrics=self.report.resting_baseline))
 
     # -- CHECK: °F <-> level mapping sanity ------------------------------------
     async def check_mapping(self) -> None:
@@ -341,6 +376,10 @@ class _Battery:
             return
         cool = await self._ramp(COOL_LEVEL, "cool")
         self._guard()
+        # Passive heat-leak: with the bed cooled, cut the element and watch how fast the water side
+        # drifts back up — how quickly you LOSE the cool when the controller isn't actively driving.
+        warmback = await self._measure_warmback()
+        self._guard()
         await asyncio.sleep(POLL_S)
         heat = await self._ramp(HEAT_LEVEL, "heat")
         cool_ok = (cool["levels_per_min"] or 0) <= -1.0
@@ -355,6 +394,8 @@ class _Battery:
             "heat_f_per_min": _f_rate(heat),
             "cool_lag_min": _round((cool["time_to_plateau_s"] or 0) / 60.0) or None,
             "heat_lag_min": _round((heat["time_to_plateau_s"] or 0) / 60.0) or None,
+            "warmback_levels_per_min": _round(warmback.get("levels_per_min")),
+            "warmback_lag_min": _round(warmback.get("lag_min")),
             "source": "self_test",
         }
         gap = ""
@@ -366,6 +407,45 @@ class _Battery:
             f"cool ~{_fmt(cool['levels_per_min'])} lvl/min, heat ~{_fmt(heat['levels_per_min'])} lvl/min{gap}"
             + ("" if passed else " — device_level barely moved: recheck water, cover seating, hardware"),
             metrics={"cool": cool, "heat": heat}))
+
+    async def _measure_warmback(self) -> dict:
+        """With the side powered OFF, sample how fast device_level drifts back UP (passive
+        warm-back). Rate = levels/min upward; lag = minutes to recover ~30 levels toward neutral."""
+        self._emit("warm-back (passive)")
+        if self.dry_run:
+            return {}
+        try:
+            await self.client.turn_off_side()
+        except Exception:
+            return {}
+        t0 = time.monotonic()
+        start = await self._sample_level()
+        samples: list[tuple[float, int]] = []
+        if start is not None:
+            samples.append((0.0, start))
+        deadline = t0 + WARMBACK_MAX_MIN * 60.0
+        recovered_at = None
+        while time.monotonic() < deadline:
+            await asyncio.sleep(POLL_S)
+            lvl = await self._sample_level()
+            if lvl is None:
+                continue
+            elapsed = time.monotonic() - t0
+            samples.append((elapsed, lvl))
+            self._emit()
+            if start is not None and lvl - start >= WARMBACK_TARGET_LEVELS:
+                recovered_at = elapsed
+                break
+        rate = None
+        if len(samples) >= 2 and samples[-1][0] > samples[0][0]:
+            rate = (samples[-1][1] - samples[0][1]) / ((samples[-1][0] - samples[0][0]) / 60.0)
+        lag = (recovered_at / 60.0) if recovered_at else None
+        self._add(CheckResult(
+            "passive_warmback", None,
+            f"drifts warm ~{_fmt(rate)} lvl/min off the element"
+            + (f"; ~{lag:.0f} min to lose {WARMBACK_TARGET_LEVELS} levels" if lag else ""),
+            metrics={"levels_per_min": rate, "lag_min": lag}))
+        return {"levels_per_min": rate, "lag_min": lag}
 
     async def check_thermal_gentle(self) -> None:
         self._emit("cool pulse")
@@ -393,6 +473,13 @@ class _Battery:
     # -- SAFE-OFF: always power the side off ----------------------------------
     async def safe_off(self) -> None:
         self._emit("safe-off")
+        if self.simulated:
+            try:
+                await self.client.turn_off_side()
+            except Exception:
+                pass
+            self._add(CheckResult("safe_off", True, "side powered OFF"))
+            return
         confirmed = False
         for _ in range(6):
             try:
@@ -461,6 +548,14 @@ def _fmt(v) -> str:
 
 def _round(v, n: int = 2):
     return round(v, n) if v is not None else None
+
+
+def _median(values):
+    vals = sorted(v for v in values if v is not None)
+    if not vals:
+        return None
+    n = len(vals)
+    return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2.0
 
 
 def _f_rate(ramp: dict):

@@ -418,6 +418,38 @@ def self_test_status(repo=Depends(repo_dep), user: str = AuthDep):
             "calibration": repo.get_thermal_calibration()}
 
 
+@app.post("/control/comfort-cal")
+def comfort_cal_start(body: dict | None = Body(default=None), repo=Depends(repo_dep),
+                      user: str = AuthDep):
+    """Start the interactive in-bed comfort sweep. Optional body {"steps_f": [..]}."""
+    payload = {}
+    if body and body.get("steps_f"):
+        payload["steps_f"] = body["steps_f"]
+    return _enqueue(repo, "comfort_cal_start", payload)
+
+
+@app.post("/control/comfort-cal/rate")
+def comfort_cal_rate(body: dict = Body(...), repo=Depends(repo_dep), user: str = AuthDep):
+    """Rate the current comfort step: -2 too cold .. 0 just right .. +2 too warm."""
+    rating = (body or {}).get("rating")
+    if rating is None:
+        raise HTTPException(400, "rating required (-2..2)")
+    return _enqueue(repo, "comfort_cal_rate", {"rating": int(rating)})
+
+
+@app.post("/control/comfort-cal/cancel")
+def comfort_cal_cancel(repo=Depends(repo_dep), user: str = AuthDep):
+    return _enqueue(repo, "comfort_cal_cancel")
+
+
+@app.get("/control/comfort-cal")
+def comfort_cal_status(repo=Depends(repo_dep), user: str = AuthDep):
+    """Live comfort-sweep state + the saved comfort profile."""
+    rt = bridge.read_runtime_state(repo.conn)
+    return {"comfort_cal": (rt.get("extra") or {}).get("comfort_cal"),
+            "profile": repo.get_comfort_profile()}
+
+
 @app.post("/control/{action}")
 def control(action: str, repo=Depends(repo_dep), user: str = AuthDep):
     # Maps the dashboard's control buttons to daemon commands. Includes the
