@@ -96,7 +96,8 @@ def diag(token: str = "", repo=Depends(repo_dep)):
     ]
     run = _run_dir()
     out = "\n".join(status_lines)
-    out += "\n\n=== daemon.log (last 80) ===\n" + _tail(os.path.join(run, "daemon.log"), 80)
+    out += "\n\n=== daemon-crash.log (last 40) ===\n" + _tail(os.path.join(run, "daemon-crash.log"), 40)
+    out += "\n\n=== daemon.log (last 60) ===\n" + _tail(os.path.join(run, "daemon.log"), 60)
     out += "\n\n=== daemon.err (last 40) ===\n" + _tail(os.path.join(run, "daemon.err"), 40)
     out += "\n\n=== watchdog.log (last 20) ===\n" + _tail(os.path.join(run, "watchdog.log"), 20)
     return out

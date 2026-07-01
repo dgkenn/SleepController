@@ -646,10 +646,31 @@ def main() -> None:
             print(f"[daemon] phone-sensor fusion disabled: {exc}", flush=True)
     daemon = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=dry_run,
                                  weather=weather, wearable=wearable)
-    asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
-                           command_poll_seconds=args.command_poll_seconds,
-                           telemetry_seconds=args.telemetry_seconds,
-                           max_ticks=args.max_ticks))
+    # Durable crash/exit journal: the watchdog overwrites daemon.log/.err on every restart, so a
+    # crash-loop leaves no trace. Append the real reason (a clean loop-exit OR a full traceback)
+    # to .run/daemon-crash.log, which the /diag endpoint surfaces remotely.
+    try:
+        asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
+                               command_poll_seconds=args.command_poll_seconds,
+                               telemetry_seconds=args.telemetry_seconds,
+                               max_ticks=args.max_ticks))
+        _crash_journal("run() RETURNED cleanly (control loop ended unexpectedly)")
+    except BaseException as exc:  # noqa: BLE001 - we re-raise; just want the reason on disk
+        import traceback
+        _crash_journal(f"run() raised {type(exc).__name__}:\n{traceback.format_exc()}")
+        raise
+
+
+def _crash_journal(msg: str) -> None:
+    try:
+        from datetime import datetime
+        db = os.environ.get("SLEEPCTL_DB", "")
+        run = os.path.join(os.path.dirname(db) if db else ".", ".run")
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "daemon-crash.log"), "a", encoding="utf-8") as fh:
+            fh.write(f"{datetime.now().isoformat()}  {msg}\n")
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
