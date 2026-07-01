@@ -636,6 +636,18 @@ class Repository:
         ivs.reverse()
         return ivs
 
+    def recent_decisions(self, n: int) -> list[dict]:
+        """Raw recent decision-log rows (newest last), for the interpretability surface. Each
+        row carries the per-tick controller call: state/objective/thermal_intent/target_temp_f/
+        target_level/action/reason/confidence — everything needed to explain "why" without
+        re-deriving it from the controller."""
+        rows = self.conn.execute(
+            "SELECT * FROM decisions ORDER BY id DESC LIMIT ?", (n,)
+        ).fetchall()
+        out = [dict(r) for r in rows]
+        out.reverse()
+        return out
+
     def latest_baselines(self) -> Optional[Baselines]:
         row = self.conn.execute(
             "SELECT * FROM baselines ORDER BY id DESC LIMIT 1"

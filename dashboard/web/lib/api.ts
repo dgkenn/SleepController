@@ -466,6 +466,44 @@ export interface ExperimentAnalyzeResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Interpretability ("why did it do that?" / "what's it learned?")
+// ---------------------------------------------------------------------------
+
+export interface InsightDecision {
+  ts: string | null;
+  night_date: string | null;
+  state: string | null;
+  objective: string | null;
+  intent: string | null;
+  action: string | null;
+  target_temp_f: number | null;
+  target_level: number | null;
+  confidence: number | null;
+  reason: string | null;
+  moved: boolean;
+  magnitude_f: number | null;
+}
+
+export interface InsightsDecisionsResponse {
+  decisions: InsightDecision[];
+  n: number;
+}
+
+export interface InsightParameter {
+  name: string;
+  value: number | number[] | string | null;
+  source: string | null;
+  confidence: number | null;
+  version?: number | null;
+  what: string;
+}
+
+export interface InsightsParametersResponse {
+  parameters: InsightParameter[];
+  n: number;
+}
+
+// ---------------------------------------------------------------------------
 // Fetch wrapper
 // ---------------------------------------------------------------------------
 
@@ -961,6 +999,13 @@ export const api = {
 
   stopExperiment: (id: number) =>
     apiFetch<Experiment>(`/api/experiments/${id}/stop`, { method: 'POST' }),
+
+  // Interpretability: "why did it do that?" / "what's it learned?"
+  insightsDecisions: (limit = 50) =>
+    apiFetch<InsightsDecisionsResponse>(`/api/insights/decisions?limit=${limit}`),
+
+  insightsParameters: () =>
+    apiFetch<InsightsParametersResponse>('/api/insights/parameters'),
 };
 
 // SWR fetcher

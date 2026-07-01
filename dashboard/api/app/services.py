@@ -1237,3 +1237,151 @@ def ingest_bcg(repo, payload: dict) -> dict:
             "fs": round(fs, 1), "fs_source": "explicit" if explicit_fs else (
                 "detected" if times else "default"),
             "source": source, "vitals": v}
+
+
+# ================================================================================
+# Interpretability surface: "why did the controller just do that?" / "what's it learned?"
+# Entirely read-only — joins the decision/intervention ledgers for a human-readable
+# timeline, and surfaces the currently-active learned parameters + their source/confidence.
+# ================================================================================
+
+def insights_decisions(repo, limit: int = 50) -> dict:
+    """Recent controller decisions as a human-readable "why it did that" timeline: each entry
+    joins the per-tick decision log (state/intent/target/reason/confidence) with the nearest
+    intervention (an actual commanded level CHANGE) so the reader can see both what the
+    controller was thinking and whether it actually moved the bed."""
+    decisions = repo.recent_decisions(limit)
+    interventions = repo.recent_interventions(limit * 2)
+    # Index interventions by timestamp for an exact-match device-level/magnitude lookup; decisions
+    # log every tick, interventions only log on a level change, so most ticks won't have a match —
+    # that's expected (it means "held" rather than "moved").
+    by_ts: dict[str, list] = {}
+    for iv in interventions:
+        key = iv.timestamp.isoformat() if iv.timestamp else None
+        if key:
+            by_ts.setdefault(key, []).append(iv)
+
+    out = []
+    for d in decisions:
+        ts = d.get("ts")
+        matched = by_ts.get(ts, [])
+        moved = bool(matched)
+        out.append({
+            "ts": ts,
+            "night_date": d.get("night_date"),
+            "state": d.get("state"),
+            "objective": d.get("objective"),
+            "intent": d.get("thermal_intent"),
+            "action": d.get("action"),
+            "target_temp_f": d.get("target_temp_f"),
+            "target_level": d.get("target_level"),
+            "confidence": d.get("confidence"),
+            "reason": d.get("reason"),
+            "moved": moved,
+            "magnitude_f": matched[0].magnitude_f if matched else None,
+        })
+    return {"decisions": out, "n": len(out)}
+
+
+def insights_parameters(repo) -> dict:
+    """A table of the currently-learned control parameters: value + source/confidence + a plain
+    "what it does" note, pulled from the setpoint profile, the thermal/comfort/resting-baseline
+    singletons, and a couple of easily-available learner summaries. Read-only — this mirrors
+    the knobs the controller actually reads, so "what's it learned" matches "why did it do that"."""
+    rows: list[dict] = []
+
+    sp = repo.latest_setpoints()
+    if sp is not None:
+        rows.append({
+            "name": "neutral_f", "value": sp.neutral_f, "source": sp.source or "default",
+            "confidence": None, "version": sp.version,
+            "what": "Baseline bed temperature the controller treats as thermally neutral.",
+        })
+        rows.append({
+            "name": "deep_bias_f", "value": sp.deep_bias_f, "source": sp.source or "default",
+            "confidence": None, "version": sp.version,
+            "what": "How much cooler to run during deep-sleep-seeking windows.",
+        })
+        rows.append({
+            "name": "rem_warm_offset_f", "value": sp.rem_warm_offset_f,
+            "source": sp.source or "default", "confidence": None, "version": sp.version,
+            "what": "Warm offset applied to protect/encourage REM sleep.",
+        })
+        rows.append({
+            "name": "wake_ramp_f", "value": sp.wake_ramp_f, "source": sp.source or "default",
+            "confidence": None, "version": sp.version,
+            "what": "Warmth added during the wake ramp to help you surface gently.",
+        })
+        rows.append({
+            "name": "composite_bed_weight", "value": sp.composite_bed_weight,
+            "source": sp.source or "default", "confidence": None, "version": sp.version,
+            "what": "How much weight the ML setpoint model gives the bed (vs room) temperature.",
+        })
+    else:
+        d = CFG.default_setpoints()
+        rows.append({
+            "name": "neutral_f", "value": d.neutral_f, "source": "default", "confidence": None,
+            "version": None, "what": "Baseline bed temperature (no learned setpoint yet).",
+        })
+
+    cal = repo.get_thermal_calibration()
+    if cal:
+        rows.append({
+            "name": "cool_f_per_min", "value": cal.get("cool_f_per_min"),
+            "source": cal.get("source") or "self_test", "confidence": None, "version": None,
+            "what": "Measured cooling rate — how fast the bed actually cools (feeds pre-cool timing).",
+        })
+        rows.append({
+            "name": "heat_f_per_min", "value": cal.get("heat_f_per_min"),
+            "source": cal.get("source") or "self_test", "confidence": None, "version": None,
+            "what": "Measured heating rate — how fast the bed actually warms (feeds wake warm-up timing).",
+        })
+
+    comfort = repo.get_comfort_profile()
+    if comfort:
+        rows.append({
+            "name": "comfort_neutral_f", "value": comfort.get("neutral_f"),
+            "source": comfort.get("source") or "comfort_cal", "confidence": None, "version": None,
+            "what": "The temperature YOU rated \"just right\" on this mattress from the comfort sweep.",
+        })
+        if comfort.get("cool_edge_f") is not None and comfort.get("warm_edge_f") is not None:
+            rows.append({
+                "name": "comfort_band_f", "value": [comfort.get("cool_edge_f"), comfort.get("warm_edge_f")],
+                "source": comfort.get("source") or "comfort_cal", "confidence": None, "version": None,
+                "what": "Coolest/warmest temperatures you still rated comfortable.",
+            })
+
+    baseline = repo.get_resting_baseline()
+    if baseline:
+        rows.append({
+            "name": "resting_hr_hrv", "value": [baseline.get("hr"), baseline.get("hrv")],
+            "source": baseline.get("source") or "self_test", "confidence": None, "version": None,
+            "what": "Your quiet-awake-in-bed HR/HRV baseline — anchors arousal/wake-risk detection.",
+        })
+
+    # A couple of easily-available learner summaries: settle-nudge (maintenance) + model confidence.
+    try:
+        from sleepctl.learning.settle import learn_settle_nudge
+        settle = learn_settle_nudge(repo, CFG)
+        rows.append({
+            "name": "settle_nudge_f", "value": round(settle, 2), "source": "learned",
+            "confidence": None, "version": None,
+            "what": "Learned nudge applied after an awakening to help you re-settle (cooler/warmer).",
+        })
+    except Exception:
+        pass
+
+    try:
+        rows_ml = build_feature_rows(repo)
+        clean = clean_rows(rows_ml)
+        if len(clean) >= 3:
+            conf = SetpointModel(lam=CFG.ml.ridge_lambda).fit(clean).confidence()
+            rows.append({
+                "name": "model_confidence", "value": round(conf, 3), "source": "ml",
+                "confidence": conf, "version": None,
+                "what": "The setpoint model's confidence, from nights of clean revealed-preference data.",
+            })
+    except Exception:
+        pass
+
+    return {"parameters": rows, "n": len(rows)}

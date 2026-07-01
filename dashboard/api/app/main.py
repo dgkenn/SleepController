@@ -787,3 +787,18 @@ def experiment_analyze(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep)
 @app.post("/experiments/{exp_id}/stop")
 def experiment_stop(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep):
     return services.experiment_stop(repo, exp_id)
+
+
+# ------------------------------------------------------------------ interpretability
+@app.get("/insights/decisions")
+def insights_decisions(limit: int = 50, repo=Depends(repo_dep), user: str = AuthDep):
+    """Recent controller decisions as a human-readable "why it did that" timeline: state,
+    intent/action, target temp, reason, and whether it actually moved the bed."""
+    return services.insights_decisions(repo, limit)
+
+
+@app.get("/insights/parameters")
+def insights_parameters(repo=Depends(repo_dep), user: str = AuthDep):
+    """What's currently learned: the active setpoint profile, measured thermal/comfort/resting
+    baselines, and a couple of learner summaries — each with its value, source, and what it does."""
+    return services.insights_parameters(repo)
