@@ -374,8 +374,17 @@ class EightSleepClient:
         await self._user.set_away_mode("start" if enabled else "end")
 
     async def prime_pod(self) -> None:  # pragma: no cover - requires live device
-        """Prime the Pod's water (the app's prime/clean routine)."""
-        await self._user.prime_pod()
+        """Prime the Pod's water (the app's prime/clean routine).
+
+        A 409 Conflict means a priming task is ALREADY running (the Pod is already priming) —
+        that's benign, not a failure, so we swallow it. Any other error propagates."""
+        try:
+            await self._user.prime_pod()
+        except Exception as exc:
+            status = getattr(getattr(exc, "__cause__", None), "status", None)
+            if status == 409:
+                return  # already priming / already primed — no-op
+            raise
 
     async def increment_level(self, offset: int) -> None:  # pragma: no cover - requires live device
         """Nudge the heating level by ``offset`` (the app's +/- buttons)."""

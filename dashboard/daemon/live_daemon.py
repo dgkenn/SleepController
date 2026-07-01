@@ -347,7 +347,11 @@ class LiveDashboardDaemon:
                 elif t == "end_session":
                     self._end_session()
             except Exception as exc:  # never let a device hiccup wedge the queue
-                self._log(f"command {t} failed: {exc}")
+                # repr + type + the underlying cause: many cloud errors (e.g. RequestError) have an
+                # empty str(), which made the log useless ("command prime failed:").
+                cause = getattr(exc, "__cause__", None)
+                self._log(f"command {t} failed: {type(exc).__name__}: {exc!r}"
+                          + (f" <- {cause!r}" if cause is not None else ""))
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
 
