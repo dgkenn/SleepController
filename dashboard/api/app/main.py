@@ -868,3 +868,37 @@ def push_subscribe(body: PushSubscribeBody, repo=Depends(repo_dep), user: str = 
 @app.post("/push/unsubscribe")
 def push_unsubscribe(body: dict = Body(...), repo=Depends(repo_dep), user: str = AuthDep):
     return services.remove_push_subscription(repo, body.get("endpoint", ""))
+# ---- Circadian phase model + OAuth-free calendar ingest (#10) ----
+@app.get("/circadian")
+def circadian(repo=Depends(repo_dep), user: str = AuthDep):
+    """Circadian phase estimate (habitual sleep window + midpoint, recent phase shift) and the
+    derived wake-maintenance zone — grounded in the user's own recent sleep history."""
+    return services.circadian_view(repo)
+
+
+class CalendarConfigBody(BaseModel):
+    enabled: bool | None = None
+    ics_url: str | None = None   # secret read-only ICS URL (user data — never hardcoded/logged)
+
+
+@app.get("/calendar/config")
+def calendar_config(repo=Depends(repo_dep), user: str = AuthDep):
+    """Whether an ICS feed is configured (URL is masked, never echoed in full)."""
+    return services.calendar_config_view(repo)
+
+
+@app.put("/calendar/config")
+def calendar_config_update(body: CalendarConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.calendar_config_update(repo, body.model_dump(exclude_unset=True))
+
+
+@app.get("/calendar/events")
+def calendar_events(repo=Depends(repo_dep), user: str = AuthDep):
+    """Upcoming events parsed from the last cached ICS fetch (no network hit)."""
+    return services.calendar_events_view(repo)
+
+
+@app.post("/calendar/refresh")
+def calendar_refresh(repo=Depends(repo_dep), user: str = AuthDep):
+    """Force a re-fetch of the configured ICS feed now."""
+    return services.calendar_refresh(repo)

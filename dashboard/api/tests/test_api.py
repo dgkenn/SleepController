@@ -260,5 +260,60 @@ def test_comfort_cal_endpoints(auth_client):
     assert r.status_code == 200 and r.json()["queued"] == "comfort_cal_rate"
     assert auth_client.post("/control/comfort-cal/rate", json={}).status_code == 400
     assert auth_client.post("/control/comfort-cal/cancel").json()["queued"] == "comfort_cal_cancel"
+
+
+def test_circadian_endpoint_returns_phase_estimate(auth_client):
+    r = auth_client.get("/circadian")
+    assert r.status_code == 200
+    body = r.json()
+    # seeded data has 21 nights but the seed doesn't set bedtime/wake_time, so this should
+    # degrade gracefully rather than error -- either a real estimate or the graceful fallback.
+    assert "confidence" in body and "note" in body
+    assert "wake_maintenance_zone" in body
+
+
+def test_circadian_endpoint_estimates_from_bedtime_history(auth_client):
+    # recent_nights() orders by date DESC, so seed these as the most recent nights (future
+    # relative to the seeded demo data) with a real bedtime/wake_time so they're the ones read.
+    from datetime import datetime, timedelta
+    from app.db import get_repo
+    from sleepctl.models import NightSummary
+    repo = get_repo()
+    base = datetime.now() + timedelta(days=1)
+    for i in range(10):
+        d = base + timedelta(days=i)
+        repo.save_night_summary(NightSummary(
+            date=d.date().isoformat(),
+            bedtime=d.replace(hour=23, minute=0),
+            wake_time=(d + timedelta(days=1)).replace(hour=7, minute=0),
+            total_sleep_min=480,
+        ))
+    body = auth_client.get("/circadian").json()
+    assert body["habitual_midpoint_clock"] is not None
+    assert body["wake_maintenance_zone"] is not None
+
+
+def test_calendar_config_roundtrip_masks_url(auth_client):
+    r = auth_client.get("/calendar/config")
+    assert r.status_code == 200 and r.json()["configured"] is False
+    url = "https://calendar.google.com/calendar/ical/verysecretpath1234567890/basic.ics"
+    upd = auth_client.put("/calendar/config", json={"enabled": True, "ics_url": url})
+    assert upd.status_code == 200
+    assert upd.json()["configured"] is True
+    assert upd.json()["ics_url_masked"] != url          # never echoes the raw URL back
+    assert "..." in upd.json()["ics_url_masked"]
+    # disabling clears the configured/active state for consumers without losing the URL
+    auth_client.put("/calendar/config", json={"enabled": False})
+    assert auth_client.get("/calendar/config").json()["enabled"] is False
+
+
+def test_calendar_events_and_refresh_without_config_are_safe(auth_client):
+    # Fresh app instance may have a URL configured from the prior test in this session; disable
+    # explicitly first so this test is independent of ordering.
+    auth_client.put("/calendar/config", json={"enabled": False, "ics_url": None})
+    ev = auth_client.get("/calendar/events").json()
+    assert ev["configured"] is False and ev["events"] == []
+    ref = auth_client.post("/calendar/refresh").json()
+    assert ref["configured"] is False and ref["ok"] is False
     st = auth_client.get("/control/comfort-cal").json()
     assert "comfort_cal" in st and "profile" in st

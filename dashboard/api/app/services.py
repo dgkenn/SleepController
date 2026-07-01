@@ -1525,3 +1525,103 @@ def list_push_subscriptions(repo) -> list[dict]:
 def vapid_public_key() -> dict:
     return {"public_key": settings.vapid_public_key or None,
             "configured": push_sender.vapid_configured()}
+# ------------------------------------------------------------------ circadian phase (#10)
+def circadian_view(repo) -> dict:
+    """The circadian phase estimate + wake-maintenance zone, from recent sleep history.
+
+    Thin wrapper over ``sleepctl.controller.circadian.estimate_circadian`` — the pure,
+    unit-tested model — so the dashboard can surface it directly.
+    """
+    from sleepctl.controller.circadian import estimate_circadian
+    est = estimate_circadian(repo)
+    return est.to_dict()
+
+
+# ------------------------------------------------------------------ OAuth-free calendar (#10)
+def _get_calendar_config(repo) -> dict:
+    """ICS calendar ingest config (secret read-only ICS URL), stored in settings_kv.
+
+    The URL is user data, not a secret we generate — never hardcoded, never logged. Kept
+    server-side in the same settings_kv table the shift/gym/hue configs already use.
+    """
+    import json as _json
+    row = repo.conn.execute(
+        "SELECT value FROM settings_kv WHERE key='calendar_config'").fetchone()
+    d = _json.loads(row["value"]) if row else {}
+    return {"enabled": bool(d.get("enabled", False)), "ics_url": d.get("ics_url")}
+
+
+def calendar_config_view(repo) -> dict:
+    cfg = _get_calendar_config(repo)
+    # Never echo the raw URL back in full once set — enough to confirm it's configured
+    # without re-displaying the secret path on every poll.
+    url = cfg.get("ics_url")
+    masked = None
+    if url:
+        masked = url if len(url) <= 24 else f"{url[:16]}...{url[-8:]}"
+    return {"enabled": cfg["enabled"], "configured": bool(url), "ics_url_masked": masked}
+
+
+def calendar_config_update(repo, values: dict) -> dict:
+    import json as _json
+    merged = {**_get_calendar_config(repo), **(values or {})}
+    repo.conn.execute(
+        "INSERT INTO settings_kv (key, value) VALUES ('calendar_config', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (_json.dumps(merged),))
+    repo.conn.commit()
+    return calendar_config_view(repo)
+
+
+_ICS_SOURCE_CACHE: dict = {}
+
+
+def _get_ics_source(repo):
+    """Build (or reuse) an ``IcsCalendarSource`` for the configured URL. None if unset."""
+    from sleepctl.adapters.calendar import IcsCalendarSource
+    cfg = _get_calendar_config(repo)
+    url = cfg.get("ics_url")
+    if not cfg["enabled"] or not url:
+        return None
+    cached = _ICS_SOURCE_CACHE.get(repo.path)
+    if cached is not None and cached.ics_url == url:
+        return cached
+    src = IcsCalendarSource(url)
+    _ICS_SOURCE_CACHE[repo.path] = src
+    return src
+
+
+def calendar_refresh(repo) -> dict:
+    """Force a re-fetch of the configured ICS feed; returns upcoming events + any fetch error."""
+    from sleepctl.adapters.calendar import next_wake_time_from_events, upcoming_events
+    src = _get_ics_source(repo)
+    if src is None:
+        return {"ok": False, "configured": False, "events": [], "next_wake_time": None}
+    events = src.refresh(force=True)
+    upcoming = upcoming_events(events, within_days=14)
+    nxt = next_wake_time_from_events(events)
+    return {
+        "ok": src._last_error is None,
+        "configured": True,
+        "error": src._last_error,
+        "events": [e.to_dict() for e in upcoming],
+        "next_wake_time": nxt.isoformat() if nxt else None,
+    }
+
+
+def calendar_events_view(repo) -> dict:
+    """Upcoming parsed events from the last (cached) fetch, without forcing a network hit."""
+    from sleepctl.adapters.calendar import next_wake_time_from_events, upcoming_events
+    src = _get_ics_source(repo)
+    if src is None:
+        return {"ok": False, "configured": False, "events": [], "next_wake_time": None}
+    events = src.refresh(force=False)
+    upcoming = upcoming_events(events, within_days=14)
+    nxt = next_wake_time_from_events(events)
+    return {
+        "ok": src._last_error is None,
+        "configured": True,
+        "error": src._last_error,
+        "events": [e.to_dict() for e in upcoming],
+        "next_wake_time": nxt.isoformat() if nxt else None,
+    }

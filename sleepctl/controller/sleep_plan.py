@@ -258,7 +258,7 @@ def plan_night(
         deep_bias_delta_f=deep_bias_delta,
         rem_warm_delta_f=rem_warm_delta,
         strategy=strategy,
-        bedtime=bedtime_guidance(required_wake_time, recent_summaries, need_min, onset),
+        bedtime=bedtime_guidance(required_wake_time, recent_summaries, need_min, onset, repo=repo),
     )
 
 
@@ -308,6 +308,11 @@ class BedtimeGuidance:
     avg_tst_min: Optional[float] = None
     is_chronic_short: bool = False
     message: str = ""
+    # Circadian grounding (optional — only populated when a repo/history was available):
+    # the wake-maintenance zone this bedtime falls near, and a note explaining why "going to
+    # bed earlier" fights biology when lights-out lands inside it.
+    wake_maintenance_zone: Optional[dict] = None
+    circadian_note: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -323,14 +328,24 @@ class BedtimeGuidance:
             "go_earlier_min": self.go_earlier_min,
             "avg_tst_min": self.avg_tst_min, "is_chronic_short": self.is_chronic_short,
             "message": self.message,
+            "wake_maintenance_zone": self.wake_maintenance_zone,
+            "circadian_note": self.circadian_note,
         }
 
 
 def bedtime_guidance(required_wake_time: Optional[datetime], recent_summaries=None,
                      need_min: int = SLEEP_NEED_MIN,
-                     onset_min: Optional[float] = None) -> Optional[BedtimeGuidance]:
+                     onset_min: Optional[float] = None,
+                     repo=None) -> Optional[BedtimeGuidance]:
     """Compute when to be asleep/in bed to hit ``need_min`` before ``required_wake_time``, and the
-    structural shortfall your habitual bedtime leaves on the table. None without a wake time."""
+    structural shortfall your habitual bedtime leaves on the table. None without a wake time.
+
+    When ``repo`` is given, this also grounds the guidance in the circadian phase model
+    (``sleepctl.controller.circadian``): if the recommended lights-out falls inside/near this
+    user's own estimated wake-maintenance zone (the hours before habitual sleep onset when the
+    circadian drive to stay awake peaks), the message explains *why* going earlier will feel
+    like fighting biology rather than just prescribing it.
+    """
     if required_wake_time is None:
         return None
     onset = onset_min if onset_min is not None else median_onset_latency(recent_summaries or [])
@@ -358,12 +373,42 @@ def bedtime_guidance(required_wake_time: Optional[datetime], recent_summaries=No
         msg = (f"Be asleep by {_fmt_clock(asleep_by)} (in bed ~{_fmt_clock(in_bed_by)}) to bank your "
                f"{round(need_min/60,1)} h before {_fmt_clock(wake_clock)}.")
 
+    wmz_dict = None
+    circadian_note = None
+    if repo is not None:
+        try:
+            from sleepctl.controller.circadian import estimate_circadian
+            est = estimate_circadian(repo)
+            wmz = est.wake_maintenance_zone
+            if wmz is not None:
+                wmz_dict = wmz.to_dict()
+                if wmz.contains(required_wake_time.replace(
+                        hour=in_bed_by // 60 % 24, minute=in_bed_by % 60)):
+                    circadian_note = (
+                        f"Your target lights-out (~{_fmt_clock(in_bed_by)}) falls inside your "
+                        f"estimated wake-maintenance zone ({wmz.start_clock}-{wmz.end_clock}) — "
+                        "the hours before your habitual sleep time when your circadian clock "
+                        "actively resists sleep onset. Falling asleep there will feel harder than "
+                        "the clock alone suggests; the earlier fix is shifting your whole schedule "
+                        "(anchor sleep / gradual phase advance), not just trying harder at this hour."
+                    )
+                elif est.phase_shift_hours is not None and abs(est.phase_shift_hours) >= 1.0:
+                    direction = "later" if est.phase_shift_hours > 0 else "earlier"
+                    circadian_note = (
+                        f"Your recent sleep schedule is running ~{abs(est.phase_shift_hours):.1f} h "
+                        f"{direction} than your habitual {est.habitual_midpoint_clock} midpoint — "
+                        "expect some of that resistance-to-sleep feeling until your clock catches up."
+                    )
+        except Exception:
+            pass
+
     return BedtimeGuidance(
         recommended_lights_out=_fmt_clock(asleep_by), target_in_bed=_fmt_clock(in_bed_by),
         need_min=need_min, est_onset_latency_min=onset, habitual_bedtime=hab_str,
         achievable_sleep_min=achievable, structural_shortfall_min=shortfall,
         go_earlier_min=go_earlier, avg_tst_min=chronic["avg_tst_min"],
-        is_chronic_short=chronic["is_chronic"], message=msg)
+        is_chronic_short=chronic["is_chronic"], message=msg,
+        wake_maintenance_zone=wmz_dict, circadian_note=circadian_note)
 
 
 def median_onset_latency(recent_summaries, default_min: float = 15.0,

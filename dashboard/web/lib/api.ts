@@ -772,6 +772,46 @@ export interface ComfortStatus {
   profile: (ComfortProfile & { ratings?: { f: number; rating: number }[] }) | null;
 }
 
+// ---- Circadian phase model + OAuth-free calendar ingest (#10) ----
+export interface WakeMaintenanceZone {
+  start_clock: string;
+  end_clock: string;
+}
+
+export interface CircadianEstimate {
+  n_nights_habitual: number;
+  n_nights_recent: number;
+  habitual_midpoint_clock: string | null;
+  habitual_sleep_start_clock: string | null;
+  habitual_sleep_end_clock: string | null;
+  recent_midpoint_clock: string | null;
+  phase_shift_hours: number | null;
+  confidence: number;
+  wake_maintenance_zone: WakeMaintenanceZone | null;
+  note: string;
+}
+
+export interface CalendarConfig {
+  enabled: boolean;
+  configured: boolean;
+  ics_url_masked: string | null;
+}
+
+export interface CalendarEvent {
+  start: string;
+  end: string | null;
+  summary: string;
+  all_day: boolean;
+}
+
+export interface CalendarEventsResponse {
+  ok: boolean;
+  configured: boolean;
+  error?: string | null;
+  events: CalendarEvent[];
+  next_wake_time: string | null;
+}
+
 export interface SelfTestStatus {
   self_test: SelfTestReport | null;
   calibration: Record<string, number | string | null> | null;
@@ -1032,6 +1072,19 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ endpoint }),
     }),
+  // Circadian phase estimate + wake-maintenance zone
+  circadian: () => apiFetch<CircadianEstimate>('/api/circadian'),
+
+  // OAuth-free calendar (ICS) ingest
+  calendarConfig: () => apiFetch<CalendarConfig>('/api/calendar/config'),
+  calendarConfigUpdate: (values: { enabled?: boolean; ics_url?: string | null }) =>
+    apiFetch<CalendarConfig>('/api/calendar/config', {
+      method: 'PUT',
+      body: JSON.stringify(values),
+    }),
+  calendarEvents: () => apiFetch<CalendarEventsResponse>('/api/calendar/events'),
+  calendarRefresh: () =>
+    apiFetch<CalendarEventsResponse>('/api/calendar/refresh', { method: 'POST' }),
 };
 
 // ---------------------------------------------------------------------------
