@@ -287,6 +287,36 @@ class Repository:
         )
         self.conn.commit()
 
+    # ---- measured thermal-response calibration (from the in-bed self-test) ----
+    def save_thermal_calibration(self, cal: dict) -> None:
+        """Persist the measured cool/heat rates (singleton). ``cal`` carries
+        cool_levels_per_min / heat_levels_per_min (+ optional °F/min) and a source tag."""
+        self.conn.execute(
+            """INSERT INTO thermal_calibration
+            (id, ts, cool_levels_per_min, heat_levels_per_min, cool_f_per_min,
+             heat_f_per_min, cool_lag_min, heat_lag_min, source) VALUES (1,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+             ts=excluded.ts, cool_levels_per_min=excluded.cool_levels_per_min,
+             heat_levels_per_min=excluded.heat_levels_per_min,
+             cool_f_per_min=excluded.cool_f_per_min, heat_f_per_min=excluded.heat_f_per_min,
+             cool_lag_min=excluded.cool_lag_min, heat_lag_min=excluded.heat_lag_min,
+             source=excluded.source""",
+            (_iso(datetime.now()), cal.get("cool_levels_per_min"),
+             cal.get("heat_levels_per_min"), cal.get("cool_f_per_min"),
+             cal.get("heat_f_per_min"), cal.get("cool_lag_min"), cal.get("heat_lag_min"),
+             cal.get("source", "self_test")),
+        )
+        self.conn.commit()
+
+    def get_thermal_calibration(self) -> Optional[dict]:
+        """The latest measured thermal-response calibration, or None if never measured."""
+        try:
+            row = self.conn.execute(
+                "SELECT * FROM thermal_calibration WHERE id = 1").fetchone()
+        except sqlite3.Error:
+            return None
+        return dict(row) if row is not None else None
+
     def log_action(self, action: ActionRecord) -> int:
         """Append a learning action to the ledger; returns its row id."""
         cur = self.conn.execute(

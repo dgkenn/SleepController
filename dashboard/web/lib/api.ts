@@ -668,9 +668,50 @@ export interface ShiftConfig {
   kind: string;
 }
 
+export interface SelfTestCheck {
+  name: string;
+  passed: boolean | null;
+  detail: string;
+  metrics?: Record<string, unknown>;
+}
+
+export interface SelfTestReport {
+  mode: string;
+  running: boolean;
+  aborted: boolean;
+  phase: string;
+  overall_passed: boolean | null;
+  n_fail: number;
+  checks: SelfTestCheck[];
+  calibration: {
+    cool_levels_per_min: number | null;
+    heat_levels_per_min: number | null;
+    cool_f_per_min: number | null;
+    heat_f_per_min: number | null;
+    cool_lag_min: number | null;
+    heat_lag_min: number | null;
+  } | null;
+  simulated?: boolean;
+}
+
+export interface SelfTestStatus {
+  self_test: SelfTestReport | null;
+  calibration: Record<string, number | string | null> | null;
+}
+
 export const api = {
   // Validation backtest
   runBacktest: () => apiFetch<Backtest>('/api/admin/backtest', { method: 'POST' }),
+
+  // On-bed self-test / thermal calibration
+  startSelfTest: (mode: 'full' | 'gentle' | 'sensing' = 'full') =>
+    apiFetch<{ queued: string }>('/api/control/self-test', {
+      method: 'POST',
+      body: JSON.stringify({ mode }),
+    }),
+  cancelSelfTest: () =>
+    apiFetch<{ queued: string }>('/api/control/self-test/cancel', { method: 'POST' }),
+  selfTestStatus: () => apiFetch<SelfTestStatus>('/api/control/self-test'),
 
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),

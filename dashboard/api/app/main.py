@@ -12,7 +12,7 @@ import os
 import secrets
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
@@ -393,6 +393,29 @@ def tonight(repo=Depends(repo_dep), user: str = AuthDep):
 def _enqueue(repo, ctype, payload=None):
     cid = bridge.enqueue_command(repo.conn, ctype, payload)
     return {"queued": ctype, "command_id": cid}
+
+
+@app.post("/control/self-test")
+def self_test_start(body: dict | None = Body(default=None), repo=Depends(repo_dep),
+                    user: str = AuthDep):
+    """Kick off the on-bed self-test / thermal-calibration battery (daemon runs it, pausing
+    control). Body: {"mode": "full"|"gentle"|"sensing"} (default full)."""
+    mode = (body or {}).get("mode", "full")
+    if mode not in ("full", "gentle", "sensing"):
+        mode = "full"
+    return _enqueue(repo, "self_test", {"mode": mode})
+
+
+@app.post("/control/self-test/cancel")
+def self_test_cancel(repo=Depends(repo_dep), user: str = AuthDep):
+    return _enqueue(repo, "self_test_cancel")
+
+
+@app.get("/control/self-test")
+def self_test_status(repo=Depends(repo_dep), user: str = AuthDep):
+    """Live self-test report (progress + PASS/FAIL per check + measured calibration)."""
+    return {"self_test": bridge.read_self_test(repo.conn),
+            "calibration": repo.get_thermal_calibration()}
 
 
 @app.post("/control/{action}")

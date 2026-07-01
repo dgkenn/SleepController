@@ -218,3 +218,37 @@ def test_live_daemon_phone_fusion_is_presence_gated():
     # the wearable's HR/movement did NOT overlay; the daemon flags it as not fused
     assert out["frame"].heart_rate != 71.0
     assert d._phone_fused is False
+
+
+def test_live_self_test_runs_and_leaves_side_off():
+    """The on-bed self-test command runs the battery over the (mock) device, publishes a report,
+    and always powers the side OFF at the end (paused, awaiting a manual Power On)."""
+    d, client, repo = _daemon()
+    bridge.enqueue_command(repo.conn, "self_test", {"mode": "full"})
+
+    async def go():
+        await client.connect()
+        await d._apply_commands()          # runs the battery inline
+    _run(go())
+
+    rep = bridge.read_self_test(repo.conn)
+    assert rep is not None and rep["running"] is False
+    names = {c["name"] for c in rep["checks"]}
+    assert {"connectivity", "presence", "heart_rate", "safe_off"} <= names
+    assert client.off_count >= 1           # SAFE-OFF actuated the side off
+    assert d.power_on is False and d.paused is True   # holds until the user resumes
+
+
+def test_live_self_test_cancel_is_a_known_command():
+    """A cancel command is accepted (not an 'unknown command') even with no battery running."""
+    d, client, repo = _daemon()
+    bridge.enqueue_command(repo.conn, "self_test_cancel")
+
+    async def go():
+        await client.connect()
+        await d._apply_commands()
+    _run(go())
+    # nothing to assert beyond: it applied without raising / wedging the queue
+    pending = repo.conn.execute(
+        "SELECT COUNT(*) c FROM commands WHERE status='pending'").fetchone()["c"]
+    assert pending == 0

@@ -346,6 +346,10 @@ class LiveDashboardDaemon:
                     self._start_nap(p.get("duration_min"), p.get("wake_time"))
                 elif t == "end_session":
                     self._end_session()
+                elif t == "self_test":
+                    await self._run_self_test(p.get("mode", "full"))
+                elif t == "self_test_cancel":
+                    pass  # handled live by the running battery's cancel poll; no-op here
             except Exception as exc:  # never let a device hiccup wedge the queue
                 # repr + type + the underlying cause: many cloud errors (e.g. RequestError) have an
                 # empty str(), which made the log useless ("command prime failed:").
@@ -354,6 +358,53 @@ class LiveDashboardDaemon:
                           + (f" <- {cause!r}" if cause is not None else ""))
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
+
+    async def _run_self_test(self, mode: str) -> None:
+        """Run the on-bed self-test / thermal-calibration battery. Pauses normal control (the
+        battery drives the device directly), streams progress into runtime_state so the phone
+        shows live PASS/FAIL, persists the measured cool/heat calibration for the timing modules,
+        and leaves the side OFF (the user presses Power On to resume)."""
+        from sleepctl.loop.self_test import run_self_test
+
+        self._log(f"self-test starting (mode={mode})")
+        # Pause the closed loop so we're the only thing driving the device.
+        self.paused = True
+
+        def _on_progress(report) -> None:
+            self._self_test_report = report.to_dict()
+            try:
+                bridge.write_self_test(self.repo.conn, self._self_test_report)
+            except Exception:
+                pass
+
+        def _cancelled() -> bool:
+            # Peek the queue WITHOUT consuming it: an emergency stop or an explicit cancel aborts
+            # the battery promptly (it then SAFE-OFFs). Non-destructive read (status stays pending).
+            try:
+                row = self.repo.conn.execute(
+                    "SELECT type FROM commands WHERE status='pending' "
+                    "AND type IN ('stop','self_test_cancel') LIMIT 1").fetchone()
+                return row is not None
+            except Exception:
+                return False
+
+        try:
+            report = await run_self_test(self.client, mode=mode, dry_run=self.dry_run,
+                                         on_progress=_on_progress, cancelled=_cancelled)
+            self._self_test_report = report.to_dict()
+            if report.calibration:
+                try:
+                    self.repo.save_thermal_calibration(report.calibration)
+                    self._attach_profiles(self.cycle.controller)  # apply the new lead-times now
+                    self._log(f"self-test calibration saved: {report.calibration}")
+                except Exception as exc:
+                    self._log(f"self-test calibration save skipped: {exc}")
+            self._log(f"self-test done (overall_passed={report.overall_passed}, "
+                      f"aborted={report.aborted})")
+        finally:
+            # The battery already powered the side OFF; reflect that and hold so the loop doesn't
+            # immediately re-drive. The user presses Power On to resume normal control.
+            self.power_on, self.paused = False, True
 
     def _refresh_precomp(self, now) -> None:
         """Refresh the forecast-driven feed-forward bias (~every 30 min). No-op without a
@@ -451,6 +502,7 @@ class LiveDashboardDaemon:
                       "device": self._safe_device_status(),
                       "experiment": self.active_experiment,
                       "shift_plan": self.shift_plan,
+                      "self_test": getattr(self, "_self_test_report", None),
                       "device_error": error,
                       "data_age_s": round(frame.data_age_seconds, 1)
                       if frame is not None and frame.data_age_seconds is not None else None,

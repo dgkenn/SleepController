@@ -246,8 +246,40 @@ class DashboardDaemon:
                 self._start_nap(p.get("duration_min"), p.get("wake_time"))
             elif t == "end_session":
                 self._end_session()
+            elif t == "self_test":
+                self._simulated_self_test(p.get("mode", "full"))
+            elif t == "self_test_cancel":
+                pass
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
+
+    def _simulated_self_test(self, mode: str) -> None:
+        """Simulator stand-in for the on-bed battery: exercises the command + result surface so
+        the dashboard's bed-test card works in simulator mode. Thermal/water are INFO (no real
+        device to validate); sensing reflects the current simulated frame."""
+        frame, _ = self._read()
+        checks = [
+            {"name": "connectivity", "passed": True, "detail": "simulator (healthy)", "metrics": {}},
+            {"name": "presence", "passed": bool(frame.presence),
+             "detail": "bed detects you in it" if frame.presence else "no presence (simulated)",
+             "metrics": {}},
+            {"name": "heart_rate", "passed": frame.heart_rate is not None,
+             "detail": f"{frame.heart_rate:.0f} bpm" if frame.heart_rate is not None else "n/a",
+             "metrics": {}},
+            {"name": "thermal_response", "passed": None,
+             "detail": "simulated — command path exercised, but no real thermal mass",
+             "metrics": {}},
+            {"name": "safe_off", "passed": True, "detail": "side powered OFF", "metrics": {}},
+        ]
+        self._self_test_report = {
+            "mode": mode, "running": False, "aborted": False, "phase": "done",
+            "started": None, "finished": None, "overall_passed": True,
+            "n_fail": 0, "checks": checks, "calibration": None, "simulated": True,
+        }
+        try:
+            bridge.write_self_test(self.repo.conn, self._self_test_report)
+        except Exception:
+            pass
 
     # ---------------------------------------------------------- onset / nap sessions
     def _start_induce(self) -> None:
@@ -345,6 +377,7 @@ class DashboardDaemon:
                                    "target_level": None, "gap": None},
                 "preemption": self.cycle.controller.preemption_summary(),
                 "steering": self.cycle.controller.steering_summary(),
+                "self_test": getattr(self, "_self_test_report", None),
             },
         }
 

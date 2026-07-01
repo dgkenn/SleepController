@@ -102,6 +102,17 @@ def learn_response_lag(repo, lookback: int = 6000, drop_f: float = 0.8) -> Optio
     return statistics.median(lags)
 
 
+def _measured_cool_lag(repo) -> Optional[float]:
+    """The in-bed self-test's measured minutes-to-cool (plateau), clamped to sane lag bounds."""
+    try:
+        cal = repo.get_thermal_calibration()
+    except Exception:
+        return None
+    if not cal or cal.get("cool_lag_min") is None:
+        return None
+    return max(_LAG_BOUNDS[0], min(_LAG_BOUNDS[1], float(cal["cool_lag_min"])))
+
+
 def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
                             target_prevention: float = 0.75, min_events: int = 4
                             ) -> LeadTimeProfile:
@@ -121,7 +132,14 @@ def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
 
     lag = learn_response_lag(repo)
     learned = lag is not None
-    lag = lag if learned else _DEFAULT_LAG_MIN
+    # The in-bed self-test measures the cool effect-latency directly (controlled, night-one
+    # available). Prefer it over the generic preset when overnight inference has no signal yet.
+    measured = False
+    if not learned:
+        cal_lag = _measured_cool_lag(repo)
+        if cal_lag is not None:
+            lag, measured = cal_lag, True
+    lag = lag if (learned or measured) else _DEFAULT_LAG_MIN
 
     bump = 1.0
     try:
@@ -134,8 +152,9 @@ def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
     except Exception:
         pass
 
-    profile = LeadTimeProfile.from_lag(lag, bump=bump,
-                                       source=("learned" if learned else "preset"))
+    profile = LeadTimeProfile.from_lag(
+        lag, bump=bump,
+        source=("learned" if learned else ("measured" if measured else "preset")))
 
     # Closed-loop adjustment from measured prevention rates.
     try:
