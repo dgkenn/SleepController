@@ -52,6 +52,16 @@ foreach ($port in 8000, 3000) {
             }
     } catch {}
 }
+# The control daemon holds NO listening port, so the port sweep above misses it. Kill any stale
+# run_daemon.py from a previous run too -- otherwise it survives the restart and the supervise
+# loop would see a "live" daemon running old code / a stale deploy\.env.
+try {
+    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine -match 'run_daemon\.py' } | ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Log "cleaned up stale daemon process $($_.ProcessId)"
+        }
+} catch {}
 
 # --- one-time prep: DB + login user, and a PRODUCTION web build if missing ---
 Log "preparing database + login user"
@@ -85,29 +95,40 @@ function Start-Web {
         -RedirectStandardOutput "$run\web.log" -RedirectStandardError "$run\web.err"
 }
 
-$svc = @(
-    @{ name = "api";    proc = $null; start = ${function:Start-Api} },
-    @{ name = "daemon"; proc = $null; start = ${function:Start-Daemon} },
-    @{ name = "web";    proc = $null; start = ${function:Start-Web} }
-)
+# --- supervise by REALITY, not by a Start-Process handle -------------------------------------
+# The old loop trusted $proc.HasExited, which false-positived for the daemon (it holds no port and
+# the handle went stale), so the watchdog kept spawning DUPLICATE daemons -- they piled up and
+# hammered the Eight Sleep API (causing 504s). Now we check actual liveness: api/web by their
+# listening port, the daemon by its command line, and we hard-guarantee exactly ONE daemon.
+function Port-Alive([int]$port) {
+    return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+}
+function Get-DaemonProcs {
+    return @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.CommandLine -and $_.CommandLine -match 'run_daemon\.py' })
+}
+function Ensure-Single-Daemon {
+    $procs = Get-DaemonProcs
+    if ($procs.Count -eq 0) {
+        Log "daemon not running; starting"
+        Start-Daemon | Out-Null
+        Start-Sleep -Seconds 3
+    } elseif ($procs.Count -gt 1) {
+        Log "found $($procs.Count) daemon processes (pileup); trimming to the newest one"
+        $procs | Sort-Object CreationDate -Descending | Select-Object -Skip 1 |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    }
+}
 
-# --- supervise forever: (re)start anything that isn't running ---
 $ip = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
        Where-Object { $_.IPAddress -like "192.168.*" -or $_.IPAddress -like "10.*" } |
        Select-Object -First 1).IPAddress
 Log "supervising; iPhone URL (same WiFi): http://${ip}:3000  login=$($env:DASHBOARD_USER)  live=$($env:SLEEPCTL_LIVE) dry_run=$($env:SLEEPCTL_DRY_RUN)"
 
 while ($true) {
-    foreach ($s in $svc) {
-        if (($null -eq $s.proc) -or ($s.proc.HasExited)) {
-            if ($null -ne $s.proc) { Log "$($s.name) exited (code $($s.proc.ExitCode)); restarting" }
-            else { Log "starting $($s.name)" }
-            try { $s.proc = & $s.start; Log "$($s.name) started (pid $($s.proc.Id))" }
-            catch { Log "FAILED to start $($s.name): $_" }
-            Start-Sleep -Seconds 3   # let it bind before moving on (API before web)
-        }
-    }
-    # heartbeat so you can confirm the watchdog itself is alive
+    if (-not (Port-Alive 8000)) { Log "api not listening; starting"; Start-Api | Out-Null; Start-Sleep -Seconds 3 }
+    Ensure-Single-Daemon
+    if (-not (Port-Alive 3000)) { Log "web not listening; starting"; Start-Web | Out-Null; Start-Sleep -Seconds 3 }
     Set-Content -Path (Join-Path $run "watchdog.heartbeat") -Value (Get-Date -Format o)
     Start-Sleep -Seconds 15
 }
