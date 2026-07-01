@@ -164,6 +164,13 @@ class LiveDashboardDaemon:
                     thermal.set_measured_rates(cal.get("cool_levels_per_min"),
                                                cal.get("heat_levels_per_min"))
                 controller.set_measured_thermal(cal.get("cool_lag_min"), cal.get("heat_lag_min"))
+            # In-bed resting-physiology baseline → arousal/wake-risk anchor.
+            controller.set_resting_baseline(self.repo.get_resting_baseline())
+            # Personal comfort mapping → the controller's neutral is what YOU feel neutral, not the
+            # device's water-scale default.
+            comfort = self.repo.get_comfort_profile()
+            if comfort and comfort.get("neutral_f") is not None:
+                controller.thermal.profile.neutral_f = float(comfort["neutral_f"])
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
             from sleepctl.benchmarks import sleep_debt_min
             controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
@@ -359,6 +366,12 @@ class LiveDashboardDaemon:
                     await self._run_self_test(p.get("mode", "full"))
                 elif t == "self_test_cancel":
                     pass  # handled live by the running battery's cancel poll; no-op here
+                elif t == "comfort_cal_start":
+                    await self._comfort_start(p)
+                elif t == "comfort_cal_rate":
+                    await self._comfort_rate(p.get("rating"))
+                elif t == "comfort_cal_cancel":
+                    await self._comfort_cancel()
             except Exception as exc:  # never let a device hiccup wedge the queue
                 # repr + type + the underlying cause: many cloud errors (e.g. RequestError) have an
                 # empty str(), which made the log useless ("command prime failed:").
@@ -401,19 +414,86 @@ class LiveDashboardDaemon:
             report = await run_self_test(self.client, mode=mode, dry_run=self.dry_run,
                                          on_progress=_on_progress, cancelled=_cancelled)
             self._self_test_report = report.to_dict()
-            if report.calibration:
-                try:
+            try:
+                if report.calibration:
                     self.repo.save_thermal_calibration(report.calibration)
-                    self._attach_profiles(self.cycle.controller)  # apply the new lead-times now
-                    self._log(f"self-test calibration saved: {report.calibration}")
-                except Exception as exc:
-                    self._log(f"self-test calibration save skipped: {exc}")
+                if report.resting_baseline:
+                    self.repo.save_resting_baseline(report.resting_baseline)
+                if report.calibration or report.resting_baseline:
+                    self._attach_profiles(self.cycle.controller)  # apply the new anchors now
+                    self._log(f"self-test saved: cal={report.calibration} "
+                              f"rest={report.resting_baseline}")
+            except Exception as exc:
+                self._log(f"self-test persistence skipped: {exc}")
             self._log(f"self-test done (overall_passed={report.overall_passed}, "
                       f"aborted={report.aborted})")
         finally:
             # The battery already powered the side OFF; reflect that and hold so the loop doesn't
             # immediately re-drive. The user presses Power On to resume normal control.
             self.power_on, self.paused = False, True
+
+    # ----------------------------------------------------- comfort calibration
+    async def _comfort_set_level(self) -> None:
+        """Hold the bed at the current comfort step so you can rate a settled temperature."""
+        c = getattr(self, "comfort", None)
+        if c is None:
+            return
+        target = c.current_target_f()
+        if target is None:
+            return
+        self.power_on, self.paused, self.away = True, False, False
+        if not self.dry_run:
+            await self.client.set_heating_level(
+                self.cycle.controller.thermal.to_level(float(target)))
+
+    async def _comfort_start(self, p: dict) -> None:
+        from sleepctl.controller.comfort import ComfortCalibration, steps_around
+        steps = p.get("steps_f")
+        if not steps:
+            neutral = self.cycle.controller.thermal.profile.neutral_f
+            steps = steps_around(neutral)
+        self.comfort = ComfortCalibration(steps_f=[float(s) for s in steps])
+        self._comfort_result = None
+        self._log(f"comfort calibration started (steps={self.comfort.steps_f})")
+        await self._comfort_set_level()
+
+    async def _comfort_rate(self, rating) -> None:
+        c = getattr(self, "comfort", None)
+        if c is None or rating is None:
+            return
+        c.rate(int(rating))
+        if c.done:
+            await self._comfort_finalize()
+        else:
+            await self._comfort_set_level()
+
+    async def _comfort_finalize(self) -> None:
+        c = self.comfort
+        prof = c.finalize()
+        self._comfort_result = prof.to_dict()
+        try:
+            self.repo.save_comfort_profile(self._comfort_result)
+            self._attach_profiles(self.cycle.controller)  # apply the new neutral now
+            self._log(f"comfort calibration saved: {self._comfort_result}")
+        except Exception as exc:
+            self._log(f"comfort save skipped: {exc}")
+        self.comfort = None
+        # Leave the bed at the learned neutral, powered + on auto for the night.
+        self.power_on, self.paused, self.mode = True, False, "auto"
+
+    async def _comfort_cancel(self) -> None:
+        if getattr(self, "comfort", None) is not None:
+            self.comfort.cancel()
+        self.comfort = None
+        self.power_on, self.paused = False, True
+        self._log("comfort calibration cancelled")
+
+    def _comfort_snapshot(self) -> Optional[dict]:
+        c = getattr(self, "comfort", None)
+        if c is not None:
+            return c.progress()
+        return getattr(self, "_comfort_result", None) and {"running": False, "cancelled": False,
+                                                           "result": self._comfort_result}
 
     def _refresh_precomp(self, now) -> None:
         """Refresh the forecast-driven feed-forward bias (~every 30 min). No-op without a
@@ -512,6 +592,7 @@ class LiveDashboardDaemon:
                       "experiment": self.active_experiment,
                       "shift_plan": self.shift_plan,
                       "self_test": getattr(self, "_self_test_report", None),
+                      "comfort_cal": self._comfort_snapshot(),
                       "device_error": error,
                       "data_age_s": round(frame.data_age_seconds, 1)
                       if frame is not None and frame.data_age_seconds is not None else None,
@@ -613,6 +694,15 @@ class LiveDashboardDaemon:
     # ------------------------------------------------------------------ cycles
     async def control_tick(self) -> None:
         await self._apply_commands()
+        # Comfort calibration owns the bed while active: hold the current step and publish state,
+        # bypassing the normal control decision (you're rating settled temperatures).
+        if getattr(self, "comfort", None) is not None and not self.comfort.done:
+            await self._comfort_set_level()
+            await self.client.update()
+            frame = self._read_frame()
+            self._record_thermal(frame, self.client.now())
+            bridge.write_runtime_state(self.repo.conn, self._snapshot(self._last_decision, frame))
+            return
         self._refresh_hue()
         if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
             self._end_session()
@@ -652,7 +742,10 @@ class LiveDashboardDaemon:
         now = self.client.now()
         self._record_thermal(frame, now)
         decision = None
-        if self.power_on and not self.paused and not self.away:
+        comfort_active = getattr(self, "comfort", None) is not None and not self.comfort.done
+        if comfort_active:
+            await self._comfort_set_level()
+        elif self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))

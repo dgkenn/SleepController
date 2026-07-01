@@ -237,3 +237,14 @@ def test_measured_cool_lag_floors_steer_horizon():
     assert c._steer_horizon_min() >= 32.0 and c._steer_horizon_min() > base
     # heat-lag becomes the wake warm-up runway, pushed to the orchestrator
     assert c.warm_lead_min() == 22.0 and c.wake_orch._warm_lead_min == 22.0
+
+
+def test_resting_baseline_anchors_sleep_baseline_early():
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    c = SleepController(AppConfig.default())
+    # No recent asleep frames -> without a resting baseline, HR base is unknown
+    assert c._sleep_baseline([]) == (None, None)
+    c.set_resting_baseline({"hr": 60.0, "hrv": 50.0, "rr": 14.0, "movement": 0.1})
+    hr, hrv = c._sleep_baseline([])
+    assert hr == 58.0 and hrv == 50.0   # HR nudged 2 bpm below quiet-wakeful resting

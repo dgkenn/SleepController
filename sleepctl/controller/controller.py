@@ -74,6 +74,9 @@ class SleepController:
         # wake warm-up runway so the bed is actually warm by the wake time.
         self.measured_cool_lag_min: Optional[float] = None
         self.measured_heat_lag_min: Optional[float] = None
+        # Measured resting-physiology baseline (quiet-and-awake in bed): {hr, hrv, rr, movement}.
+        # Anchors the arousal/wake-risk baselines early in the night (see _sleep_baseline).
+        self.resting_baseline: Optional[dict] = None
         # Multi-signal, escalating, inertia-minimizing wake orchestrator (uses the calibrated
         # sleep/wake classifier + the fused fast movement; never oversleeps the deadline).
         from sleepctl.controller.sleep_wake import SleepWakeClassifier
@@ -406,6 +409,10 @@ class SleepController:
         except Exception:
             pass
 
+    def set_resting_baseline(self, baseline: Optional[dict]) -> None:
+        """Apply the in-bed resting-physiology baseline (used as the early-night HR/HRV anchor)."""
+        self.resting_baseline = baseline or None
+
     def set_measured_thermal(self, cool_lag_min, heat_lag_min) -> None:
         """Apply the in-bed self-test's measured cool/heat effect-latency (minutes-to-settle):
         floors the deepening horizon (cool) and widens the wake warm-up runway (heat)."""
@@ -513,10 +520,12 @@ class SleepController:
             # Make the whole thermal loop latency-aware with the learned actuation lag.
             self.thermal.set_response_lag(lead_profile.response_lag_min)
 
-    @staticmethod
-    def _sleep_baseline(recent: list) -> tuple:
+    def _sleep_baseline(self, recent: list) -> tuple:
         """Recent settled-sleep HR/HRV baselines (from asleep, low-motion frames) so the
-        arousal + wake-risk detectors measure surges/creep against the right reference."""
+        arousal + wake-risk detectors measure surges/creep against the right reference. Before
+        enough asleep frames exist (early night / night one), fall back to the measured RESTING
+        baseline so the detectors are anchored to YOUR numbers from tick one instead of the
+        population defaults."""
         asleep = [f for f in (recent or [])
                   if f.stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
                   and (f.movement is None or f.movement < 0.2)]
@@ -526,6 +535,13 @@ class SleepController:
         import statistics as _st
         hr = _st.fmean(hrs) if hrs else None
         hrv = _st.fmean(hrvs) if hrvs else None
+        rb = self.resting_baseline
+        if rb:
+            # Asleep HR sits a touch below quiet-wakeful resting HR; nudge the fallback down a bit.
+            if hr is None and rb.get("hr") is not None:
+                hr = rb["hr"] - 2.0
+            if hrv is None and rb.get("hrv") is not None:
+                hrv = rb["hrv"]
         return hr, hrv
 
     @staticmethod

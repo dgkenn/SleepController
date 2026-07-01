@@ -117,3 +117,18 @@ def test_measured_rate_does_not_break_a_healthy_ramp():
         m.record(_t(base, i), target_level=-80, device_level=10 - i * 8)
     h = m.status(_t(base, 9))
     assert h.state == "ramping" and h.responding is True
+
+
+def test_self_test_captures_resting_baseline_and_warmback():
+    import asyncio
+    from sleepctl.loop.live import SimulatedLiveClient
+    from sleepctl.loop.self_test import run_self_test
+
+    async def go():
+        client = SimulatedLiveClient(scenario="normal")
+        await client.connect()
+        return await run_self_test(client, mode="full")
+    rep = asyncio.new_event_loop().run_until_complete(go())
+    # resting baseline captured while "lying still" during sensing
+    assert rep.resting_baseline and rep.resting_baseline["hr"] is not None
+    assert any(c.name == "resting_baseline" for c in rep.checks)

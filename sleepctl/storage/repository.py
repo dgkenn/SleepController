@@ -294,16 +294,19 @@ class Repository:
         self.conn.execute(
             """INSERT INTO thermal_calibration
             (id, ts, cool_levels_per_min, heat_levels_per_min, cool_f_per_min,
-             heat_f_per_min, cool_lag_min, heat_lag_min, source) VALUES (1,?,?,?,?,?,?,?,?)
+             heat_f_per_min, cool_lag_min, heat_lag_min, warmback_levels_per_min,
+             warmback_lag_min, source) VALUES (1,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(id) DO UPDATE SET
              ts=excluded.ts, cool_levels_per_min=excluded.cool_levels_per_min,
              heat_levels_per_min=excluded.heat_levels_per_min,
              cool_f_per_min=excluded.cool_f_per_min, heat_f_per_min=excluded.heat_f_per_min,
              cool_lag_min=excluded.cool_lag_min, heat_lag_min=excluded.heat_lag_min,
-             source=excluded.source""",
+             warmback_levels_per_min=excluded.warmback_levels_per_min,
+             warmback_lag_min=excluded.warmback_lag_min, source=excluded.source""",
             (_iso(datetime.now()), cal.get("cool_levels_per_min"),
              cal.get("heat_levels_per_min"), cal.get("cool_f_per_min"),
              cal.get("heat_f_per_min"), cal.get("cool_lag_min"), cal.get("heat_lag_min"),
+             cal.get("warmback_levels_per_min"), cal.get("warmback_lag_min"),
              cal.get("source", "self_test")),
         )
         self.conn.commit()
@@ -313,6 +316,50 @@ class Repository:
         try:
             row = self.conn.execute(
                 "SELECT * FROM thermal_calibration WHERE id = 1").fetchone()
+        except sqlite3.Error:
+            return None
+        return dict(row) if row is not None else None
+
+    # ---- personal comfort mapping (from the in-bed comfort sweep) -------------
+    def save_comfort_profile(self, prof: dict) -> None:
+        self.conn.execute(
+            """INSERT INTO comfort_profile (id, ts, neutral_f, cool_edge_f, warm_edge_f,
+             ratings, source) VALUES (1,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+             ts=excluded.ts, neutral_f=excluded.neutral_f, cool_edge_f=excluded.cool_edge_f,
+             warm_edge_f=excluded.warm_edge_f, ratings=excluded.ratings, source=excluded.source""",
+            (_iso(datetime.now()), prof.get("neutral_f"), prof.get("cool_edge_f"),
+             prof.get("warm_edge_f"), _jdump(prof.get("ratings")), prof.get("source", "comfort_cal")),
+        )
+        self.conn.commit()
+
+    def get_comfort_profile(self) -> Optional[dict]:
+        try:
+            row = self.conn.execute("SELECT * FROM comfort_profile WHERE id = 1").fetchone()
+        except sqlite3.Error:
+            return None
+        if row is None:
+            return None
+        d = dict(row)
+        d["ratings"] = _jload(d["ratings"]) if d.get("ratings") else None
+        return d
+
+    # ---- resting-physiology baseline (quiet-and-awake in bed) -----------------
+    def save_resting_baseline(self, base: dict) -> None:
+        self.conn.execute(
+            """INSERT INTO resting_baseline (id, ts, hr, hrv, rr, movement, n_samples, source)
+             VALUES (1,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+             ts=excluded.ts, hr=excluded.hr, hrv=excluded.hrv, rr=excluded.rr,
+             movement=excluded.movement, n_samples=excluded.n_samples, source=excluded.source""",
+            (_iso(datetime.now()), base.get("hr"), base.get("hrv"), base.get("rr"),
+             base.get("movement"), base.get("n_samples"), base.get("source", "self_test")),
+        )
+        self.conn.commit()
+
+    def get_resting_baseline(self) -> Optional[dict]:
+        try:
+            row = self.conn.execute("SELECT * FROM resting_baseline WHERE id = 1").fetchone()
         except sqlite3.Error:
             return None
         return dict(row) if row is not None else None

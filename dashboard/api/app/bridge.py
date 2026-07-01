@@ -20,6 +20,8 @@ VALID_COMMANDS = {
     "induce_sleep", "start_nap", "end_session",
     # On-bed self-test / thermal calibration battery
     "self_test", "self_test_cancel",
+    # Interactive in-bed comfort mapping sweep
+    "comfort_cal_start", "comfort_cal_rate", "comfort_cal_cancel",
 }
 
 

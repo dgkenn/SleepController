@@ -5,7 +5,16 @@ import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import DataHealthList from '@/components/DataHealthList';
 import useSWR from 'swr';
-import { AdminHealth, Backtest, LogEntry, SelfTestReport, fetcher, api } from '@/lib/api';
+import {
+  AdminHealth,
+  Backtest,
+  LogEntry,
+  SelfTestReport,
+  ComfortCalState,
+  ComfortStatus,
+  fetcher,
+  api,
+} from '@/lib/api';
 import Link from 'next/link';
 
 function BedTestCard() {
@@ -137,10 +146,164 @@ function BedTestCard() {
                   )}
                 </span>
               </div>
+              {cal.warmback_levels_per_min != null && (
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-gray-400">Warms back (off)</span>
+                  <span className="text-gray-300">
+                    {cal.warmback_lag_min != null
+                      ? `~${cal.warmback_lag_min.toFixed(0)} min to drift warm`
+                      : `${cal.warmback_levels_per_min.toFixed(1)} lvl/min`}
+                  </span>
+                </div>
+              )}
               <p className="text-[10px] text-gray-600 pt-0.5">
                 Feeds pre-cool lead time + wake warm-up timing.
               </p>
             </div>
+          )}
+          {report.resting_baseline?.hr != null && (
+            <div className="pt-2 mt-1 border-t border-surface-border">
+              <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">
+                Resting baseline
+              </p>
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-gray-400">HR / HRV / breathing</span>
+                <span className="text-gray-300">
+                  {report.resting_baseline.hr?.toFixed(0)} bpm
+                  {report.resting_baseline.hrv != null && ` · ${report.resting_baseline.hrv.toFixed(0)} ms`}
+                  {report.resting_baseline.rr != null && ` · ${report.resting_baseline.rr.toFixed(1)}/min`}
+                </span>
+              </div>
+              <p className="text-[10px] text-gray-600 pt-0.5">
+                Anchors the arousal + awakening-precursor detectors.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const RATINGS: { value: number; label: string }[] = [
+  { value: -2, label: 'Too cold' },
+  { value: -1, label: 'A bit cool' },
+  { value: 0, label: 'Just right' },
+  { value: 1, label: 'A bit warm' },
+  { value: 2, label: 'Too warm' },
+];
+
+function ComfortCalCard() {
+  const [state, setState] = useState<ComfortCalState | null>(null);
+  const [polling, setPolling] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useSWR(polling ? '/api/control/comfort-cal' : null, fetcher, {
+    refreshInterval: 2000,
+    onSuccess: (d: ComfortStatus) => {
+      if (d?.comfort_cal) {
+        setState(d.comfort_cal);
+        if (!d.comfort_cal.running) setPolling(false);
+      }
+    },
+  });
+
+  const start = async () => {
+    setBusy(true);
+    try {
+      await api.startComfortCal();
+      setState(null);
+      setPolling(true);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
+  const rate = async (v: number) => {
+    setBusy(true);
+    try {
+      await api.rateComfort(v);
+    } catch {
+      /* ignore */
+    } finally {
+      setBusy(false);
+    }
+  };
+  const cancel = async () => {
+    try {
+      await api.cancelComfortCal();
+    } catch {
+      /* ignore */
+    }
+    setPolling(false);
+  };
+
+  const running = state?.running;
+  const result = state?.result;
+
+  return (
+    <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500 uppercase tracking-wider">Comfort mapping</p>
+        {running ? (
+          <button
+            onClick={cancel}
+            className="text-xs px-3 py-1.5 rounded-lg bg-danger/20 text-danger font-medium border border-danger/30"
+          >
+            Cancel
+          </button>
+        ) : (
+          <button
+            onClick={start}
+            disabled={busy}
+            className="text-xs px-3 py-1.5 rounded-lg bg-brand text-white font-medium disabled:opacity-50"
+          >
+            {busy ? 'Starting…' : 'Start sweep'}
+          </button>
+        )}
+      </div>
+      <p className="text-[11px] text-gray-500 leading-relaxed">
+        Lying in bed, this holds the bed at a few temperatures. Rate each once it settles — it
+        learns the temperature that feels neutral to <em>you</em> on this mattress and sets it as
+        the controller&apos;s neutral.
+      </p>
+
+      {running && (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-gray-400">
+              Step {state?.step} of {state?.n_steps}
+            </span>
+            <span className="text-sm font-semibold text-white">
+              {state?.current_target_f != null ? `${state.current_target_f.toFixed(0)}°F` : '—'}
+            </span>
+          </div>
+          <p className="text-[11px] text-gray-500">How does this feel right now?</p>
+          <div className="grid grid-cols-5 gap-1">
+            {RATINGS.map((r) => (
+              <button
+                key={r.value}
+                onClick={() => rate(r.value)}
+                disabled={busy}
+                className="text-[10px] leading-tight px-1 py-2 rounded-lg bg-surface-raised border border-surface-border text-gray-300 disabled:opacity-50 active:bg-brand active:text-white"
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!running && result && (
+        <div className="space-y-1">
+          <p className="text-sm font-semibold text-success">
+            ✓ Neutral set to {result.neutral_f != null ? `${result.neutral_f.toFixed(0)}°F` : '—'}
+          </p>
+          {result.cool_edge_f != null && result.warm_edge_f != null && (
+            <p className="text-xs text-gray-400">
+              Comfort band {result.cool_edge_f.toFixed(0)}–{result.warm_edge_f.toFixed(0)}°F
+            </p>
           )}
         </div>
       )}
@@ -304,6 +467,9 @@ function AdminContent() {
 
           {/* On-bed self-test / thermal calibration */}
           <BedTestCard />
+
+          {/* Interactive comfort mapping */}
+          <ComfortCalCard />
 
           {/* Controller validation backtest */}
           <ValidateCard />

@@ -134,6 +134,34 @@ CREATE TABLE IF NOT EXISTS thermal_calibration (
     heat_f_per_min REAL,
     cool_lag_min REAL,        -- measured minutes for a cool command to fully take effect (plateau)
     heat_lag_min REAL,        -- measured minutes for a heat command to fully take effect (plateau)
+    warmback_levels_per_min REAL,  -- passive warm-back: how fast the bed drifts warm with the element off
+    warmback_lag_min REAL,         -- minutes for the passive warm-back to return toward neutral
+    source TEXT
+);
+
+-- Personal COMFORT mapping from the in-bed comfort sweep (singleton). What YOU feel at a few
+-- commanded temperatures anchors the controller's neutral to the covered-body reality of this
+-- mattress + sheets, not just the device's water scale.
+CREATE TABLE IF NOT EXISTS comfort_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ts TEXT,
+    neutral_f REAL,           -- the temperature you rated "just right"
+    cool_edge_f REAL,         -- coldest still-comfortable temperature
+    warm_edge_f REAL,         -- warmest still-comfortable temperature
+    ratings TEXT,             -- JSON: [{f, rating}] raw sweep data
+    source TEXT
+);
+
+-- Resting-physiology baseline captured quiet-and-awake in bed (singleton): anchors the arousal /
+-- wake-risk / precursor detectors to YOUR numbers on THIS mattress, correct from night one.
+CREATE TABLE IF NOT EXISTS resting_baseline (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ts TEXT,
+    hr REAL,
+    hrv REAL,
+    rr REAL,
+    movement REAL,
+    n_samples INTEGER,
     source TEXT
 );
 
@@ -220,6 +248,8 @@ CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status);
 _MIGRATIONS = [
     ("steer_events", "applied", "INTEGER DEFAULT 1"),
     ("steer_events", "succeeded", "INTEGER"),
+    ("thermal_calibration", "warmback_levels_per_min", "REAL"),
+    ("thermal_calibration", "warmback_lag_min", "REAL"),
 ]
 
 

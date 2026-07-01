@@ -252,3 +252,37 @@ def test_live_self_test_cancel_is_a_known_command():
     pending = repo.conn.execute(
         "SELECT COUNT(*) c FROM commands WHERE status='pending'").fetchone()["c"]
     assert pending == 0
+
+
+def test_live_comfort_calibration_sweeps_and_saves_neutral():
+    """The interactive comfort sweep holds each step, then derives + saves a neutral setpoint and
+    applies it to the controller."""
+    d, client, repo = _daemon()
+    bridge.enqueue_command(repo.conn, "comfort_cal_start", {"steps_f": [64, 68, 72, 76]})
+
+    async def go():
+        await client.connect()
+        await d._apply_commands()
+        assert d.comfort is not None and d.comfort.current_target_f() == 64
+        for rating in (-2, -1, 1, 2):
+            bridge.enqueue_command(repo.conn, "comfort_cal_rate", {"rating": rating})
+            await d._apply_commands()
+    _run(go())
+
+    assert d.comfort is None                          # sweep finished
+    prof = repo.get_comfort_profile()
+    assert prof and prof["neutral_f"] == 70.0
+    assert d.cycle.controller.thermal.profile.neutral_f == 70.0
+
+
+def test_live_comfort_cancel_stops_and_holds_off():
+    d, client, repo = _daemon()
+    bridge.enqueue_command(repo.conn, "comfort_cal_start", {"steps_f": [64, 72]})
+
+    async def go():
+        await client.connect()
+        await d._apply_commands()
+        bridge.enqueue_command(repo.conn, "comfort_cal_cancel")
+        await d._apply_commands()
+    _run(go())
+    assert d.comfort is None and d.paused is True and d.power_on is False
