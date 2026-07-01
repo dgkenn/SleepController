@@ -317,3 +317,31 @@ def test_calendar_events_and_refresh_without_config_are_safe(auth_client):
     assert ref["configured"] is False and ref["ok"] is False
     st = auth_client.get("/control/comfort-cal").json()
     assert "comfort_cal" in st and "profile" in st
+
+
+def test_login_remember_sets_persistent_cookie(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    # remembered -> persistent cookie (has Max-Age) + rmb claim renewed on /auth/me
+    r = c.post("/auth/login", json={"username": "owner", "password": "secret", "remember": True})
+    assert r.status_code == 200 and r.json()["remember"] is True
+    set_cookie = r.headers.get("set-cookie", "")
+    assert "session=" in set_cookie and "Max-Age=" in set_cookie
+    # /auth/me slides the session forward (re-issues the cookie) for a remembered session
+    me = c.get("/auth/me")
+    assert me.status_code == 200 and me.json()["user"] == "owner"
+    assert "Max-Age=" in me.headers.get("set-cookie", "")
+
+
+def test_login_without_remember_is_session_cookie(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    c = TestClient(app)
+    r = c.post("/auth/login", json={"username": "owner", "password": "secret", "remember": False})
+    assert r.status_code == 200 and r.json()["remember"] is False
+    set_cookie = r.headers.get("set-cookie", "")
+    # session cookie: no Max-Age/Expires -> dropped when the browser closes
+    assert "session=" in set_cookie and "Max-Age=" not in set_cookie
+    # a non-remembered session is NOT slid forward on /auth/me
+    assert "Max-Age=" not in c.get("/auth/me").headers.get("set-cookie", "")

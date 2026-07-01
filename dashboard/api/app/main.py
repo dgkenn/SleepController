@@ -25,7 +25,9 @@ from app.security import (
     authenticate,
     create_token,
     current_user,
+    decode_token,
     ensure_bootstrap_user,
+    _token_from_request,
 )
 
 app = FastAPI(title="sleepctl dashboard", version="1.0.0")
@@ -108,6 +110,7 @@ def diag(token: str = "", repo=Depends(repo_dep)):
 class LoginBody(BaseModel):
     username: str
     password: str
+    remember: bool = True   # "keep me logged in" — persistent, sliding session
 
 
 class TempBody(BaseModel):
@@ -145,14 +148,24 @@ def health():
     return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
 
 
+def _issue_session(response: Response, username: str, remember: bool) -> str:
+    """Set the session cookie. Remember → a long-lived PERSISTENT cookie; otherwise a
+    SESSION cookie (no max_age) that the browser drops when it's closed."""
+    ttl_hours = settings.jwt_remember_hours if remember else settings.jwt_session_hours
+    token = create_token(username, ttl_hours=ttl_hours, remember=remember)
+    kwargs = dict(httponly=True, samesite="lax")
+    if remember:
+        kwargs["max_age"] = ttl_hours * 3600      # persist across browser restarts
+    response.set_cookie("session", token, **kwargs)
+    return token
+
+
 @app.post("/auth/login")
 def login(body: LoginBody, response: Response):
     if not authenticate(body.username, body.password):
         raise HTTPException(401, "invalid credentials")
-    token = create_token(body.username)
-    response.set_cookie("session", token, httponly=True, samesite="lax",
-                        max_age=settings.jwt_ttl_hours * 3600)
-    return {"token": token, "user": body.username}
+    token = _issue_session(response, body.username, body.remember)
+    return {"token": token, "user": body.username, "remember": body.remember}
 
 
 @app.post("/auth/logout")
@@ -162,7 +175,15 @@ def logout(response: Response):
 
 
 @app.get("/auth/me")
-def me(user: str = AuthDep):
+def me(request: Request, response: Response, user: str = AuthDep):
+    # Sliding renewal: whenever the app checks who's logged in, re-issue a fresh long-lived
+    # cookie IF the user opted to stay signed in — so an actively-used session never expires.
+    try:
+        claims = decode_token(_token_from_request(request) or "")
+        if claims.get("rmb"):
+            _issue_session(response, user, remember=True)
+    except Exception:
+        pass
     return {"user": user}
 
 

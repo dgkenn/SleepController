@@ -915,10 +915,10 @@ export const api = {
     }),
 
   // Auth
-  login: (username: string, password: string) =>
-    apiFetch<{ token: string; user: AuthUser }>('/api/auth/login', {
+  login: (username: string, password: string, remember = true) =>
+    apiFetch<{ token: string; user: AuthUser; remember: boolean }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, remember }),
     }),
 
   logout: () => apiFetch<void>('/api/auth/logout', { method: 'POST' }),
