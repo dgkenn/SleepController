@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import bridge, services
@@ -44,6 +46,60 @@ def repo_dep():
         yield repo
     finally:
         repo.close()
+
+
+def _tail(path: str, n: int) -> str:
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return "".join(fh.readlines()[-n:]).rstrip() or "(empty)"
+    except FileNotFoundError:
+        return "(file not found)"
+    except Exception as exc:  # never let diag crash
+        return f"(could not read: {exc})"
+
+
+def _run_dir() -> str:
+    """Locate the .run log directory (next to the SQLite DB / repo root)."""
+    db = os.environ.get("SLEEPCTL_DB", "")
+    root = os.path.dirname(db) if db else os.getcwd()
+    return os.path.join(root, ".run")
+
+
+@app.get("/diag", response_class=PlainTextResponse)
+def diag(token: str = "", repo=Depends(repo_dep)):
+    """Read-only remote diagnostics: device/live status + the daemon log tails, as plain text.
+
+    Gated by a secret ``DIAG_TOKEN`` (env). Returns 404 when the token is missing/wrong or the
+    feature is disabled, so it's invisible to scanners. Contains NO credentials — only status +
+    logs — but it IS reachable over the public Funnel URL, so keep the token strong. This exists so
+    the maintainer can read the daemon state remotely without shelling into the host."""
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    device = extra.get("device") or {}
+    status_lines = [
+        "=== STATUS ===",
+        f"updated={rt.get('updated')}  stale={rt.get('stale')}  daemon_alive={rt.get('daemon_alive')}",
+        f"live={extra.get('live')}  dry_run={extra.get('dry_run')}  mode={rt.get('mode')}  "
+        f"state={rt.get('state')}",
+        f"power_on={extra.get('power_on')}  away={extra.get('away')}  bed_presence={extra.get('bed_presence')}",
+        f"target_temp_f={rt.get('target_temp_f')}  bed_temp_f={rt.get('bed_temp_f')}  "
+        f"room_temp_f={rt.get('room_temp_f')}  stage={rt.get('stage')}",
+        f"target_level={rt.get('target_level')}  device_level={extra.get('device_level')}  "
+        f"device_target_level={extra.get('device_target_level')}",
+        f"device={json.dumps(device)}",
+        f"thermal_health={json.dumps(extra.get('thermal_health'))}",
+        f"device_error={extra.get('device_error')}",
+    ]
+    run = _run_dir()
+    out = "\n".join(status_lines)
+    out += "\n\n=== daemon.log (last 80) ===\n" + _tail(os.path.join(run, "daemon.log"), 80)
+    out += "\n\n=== daemon.err (last 40) ===\n" + _tail(os.path.join(run, "daemon.err"), 40)
+    out += "\n\n=== watchdog.log (last 20) ===\n" + _tail(os.path.join(run, "watchdog.log"), 20)
+    return out
 
 
 # ------------------------------------------------------------------ models

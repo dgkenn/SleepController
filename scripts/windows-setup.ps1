@@ -68,6 +68,8 @@ if (-not (Test-Path $envPath)) {
         "BCG_INGEST_OPEN=1",
         "SLEEPCTL_LIVE=1",
         "SLEEPCTL_DRY_RUN=1",
+        "# Read-only remote diagnostics at /api/diag?token=... (status + daemon logs, no creds).",
+        "DIAG_TOKEN=$(RandHex 16)",
         "",
         "# --- Eight Sleep login (REQUIRED for live control) -------------------------",
         "# Without these the daemon CANNOT reach the Pod and silently runs the SIMULATOR.",

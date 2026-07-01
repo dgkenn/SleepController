@@ -7,6 +7,19 @@ def test_health_no_auth(client):
     assert client.get("/health").json()["ok"] is True
 
 
+def test_diag_requires_token(client, monkeypatch):
+    # disabled by default (no DIAG_TOKEN) -> 404 even with a token
+    monkeypatch.delenv("DIAG_TOKEN", raising=False)
+    assert client.get("/diag?token=whatever").status_code == 404
+    # enabled: wrong/absent token -> 404, correct token -> 200 plaintext status+logs
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    assert client.get("/diag").status_code == 404
+    assert client.get("/diag?token=nope").status_code == 404
+    r = client.get("/diag?token=s3cret-xyz")
+    assert r.status_code == 200 and "=== STATUS ===" in r.text
+    assert "daemon.log" in r.text
+
+
 def test_auth_required(client):
     # fresh client without cookie -> 401
     from fastapi.testclient import TestClient
