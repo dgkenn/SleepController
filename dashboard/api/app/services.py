@@ -1653,3 +1653,40 @@ def calendar_events_view(repo) -> dict:
         "events": [e.to_dict() for e in upcoming],
         "next_wake_time": nxt.isoformat() if nxt else None,
     }
+
+
+# ======================================================================================
+# Safety/quality surfacing: data-quality gate (Feature #6) + decision guardrail (Feature #8).
+# Both read the daemon's ``runtime_state.extra`` the same way ``preemption_status`` above
+# reads "preemption"/"steering" -- additive, so until a daemon is updated to publish these
+# keys the endpoints just report the neutral "unavailable" defaults below (no daemon changes
+# were made for this feature; the daemon side is a small future follow-up: publish
+# ``controller.data_quality_summary()`` / ``controller.guardrail_summary()`` into ``extra``).
+# ======================================================================================
+def data_quality_status(repo) -> dict:
+    """Live data-quality-gate state for the dashboard: current trust score, top reason, and
+    whether it's currently forcing a conservative HOLD."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    dq = extra.get("data_quality") or {}
+    return {
+        "score": dq.get("score"),
+        "reasons": dq.get("reasons", []),
+        "top_reason": dq.get("top_reason"),
+        "gating": bool(dq.get("gating", False)),
+        "stale": rt.get("stale", True),
+    }
+
+
+def guardrail_status(repo) -> dict:
+    """Live decision-guardrail state for the dashboard: any current findings and whether a
+    CRITICAL one is forcing a safe hold this tick."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    gr = extra.get("guardrail") or {}
+    return {
+        "triggered": bool(gr.get("triggered", False)),
+        "critical": bool(gr.get("critical", False)),
+        "findings": gr.get("findings", []),
+        "stale": rt.get("stale", True),
+    }

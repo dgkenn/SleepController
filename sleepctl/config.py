@@ -200,6 +200,31 @@ class Tunables:
     weather_enabled: bool = True
     weather_latitude: float = 42.3601   # Boston, MA
     weather_longitude: float = -71.0589
+    # --- Data-quality gate (do-no-harm on untrustworthy frames) --------------------------
+    # Below this score, confidence is down-weighted and the decision is biased toward HOLD
+    # (see ``sleepctl.controller.data_quality`` + ``SleepController.decide``).
+    data_quality_hold_score: float = 0.5     # below this: force a conservative HOLD
+    data_quality_downweight_score: float = 0.8  # below this: scale confidence by the score
+    # --- Decision guardrail (trajectory-level invariant monitor) -------------------------
+    # Backstop over the recent decision/frame TRAJECTORY, not any single sub-module. See
+    # ``sleepctl.controller.guardrail``. Findings are {code, severity}; CRITICAL forces HOLD.
+    guardrail_window_min: float = 20.0        # recent-history window the guardrail inspects
+    # (a) aggressive cooling while HR is rising above the sleep baseline (possible arousal-drive).
+    # This is a BACKSTOP, so its bar is deliberately set above the primary ArousalDetector's own
+    # hr_surge threshold (6.0 bpm, see arousal.py) -- it should only fire on a clearer, more
+    # sustained signal than the routine arousal path already handles, to stay rare/conservative.
+    guardrail_hr_rise_bpm: float = 8.0        # HR this far above sleep baseline = "rising"
+    guardrail_cool_run_count: int = 5         # this many consecutive COOLER actions = "sustained"
+    # (b) target outside the personal comfort band (from repo.get_comfort_profile)
+    guardrail_comfort_margin_f: float = 2.0   # allowed slack beyond the learned edges
+    # (c) thermal oscillation: rapid target reversals over a short window. Deliberately set
+    # ABOVE what normal maintenance settle-cool/deep-bias/REM-neutral cycling produces (verified
+    # against the "normal" full-night scenario) so this only catches genuine hunting/flapping.
+    guardrail_oscillation_window_min: float = 30.0
+    guardrail_oscillation_reversals: int = 5  # this many direction reversals in the window = flap
+    guardrail_oscillation_min_delta_f: float = 1.5  # ignore reversals smaller than this
+    # (d) sustained commanded-vs-device divergence (reuses thermal_health if available)
+    guardrail_stall_ticks: int = 3            # consecutive "stalled" ThermalHealth reads to flag
 
 
 @dataclass

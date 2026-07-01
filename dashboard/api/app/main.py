@@ -943,3 +943,15 @@ def efficacy_config(repo=Depends(repo_dep), user: str = AuthDep):
 @app.put("/efficacy/config")
 def efficacy_config_update(body: EfficacyConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
     return services.efficacy_config_update(repo, body.model_dump(exclude_none=True))
+# ---- Safety/quality: data-quality gate + decision guardrail ----
+@app.get("/safety/data-quality")
+def safety_data_quality(repo=Depends(repo_dep), user: str = AuthDep):
+    """Live data-quality-gate state: trust score, top reason, and whether it's forcing a HOLD."""
+    return services.data_quality_status(repo)
+
+
+@app.get("/safety/guardrail")
+def safety_guardrail(repo=Depends(repo_dep), user: str = AuthDep):
+    """Live decision-guardrail state: current findings and whether a CRITICAL one is forcing
+    a safe hold."""
+    return services.guardrail_status(repo)

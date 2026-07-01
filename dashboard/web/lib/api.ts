@@ -1135,6 +1135,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(values),
     }),
+  // Data-quality gate (Feature #6)
+  dataQuality: () => apiFetch<DataQualityResponse>('/api/safety/data-quality'),
+
+  // Decision guardrail (Feature #8)
+  guardrail: () => apiFetch<GuardrailResponse>('/api/safety/guardrail'),
 };
 
 // ---------------------------------------------------------------------------
@@ -1178,3 +1183,28 @@ export const fetcher = (url: string) =>
     if (!r.ok) throw new Error(r.statusText);
     return r.json();
   });
+
+// ---------------------------------------------------------------------------
+// Data-quality gate (Feature #6) + decision guardrail (Feature #8) -- additive.
+// ---------------------------------------------------------------------------
+
+export interface DataQualityResponse {
+  score: number | null;
+  reasons: string[];
+  top_reason: string | null;
+  gating: boolean;
+  stale: boolean;
+}
+
+export interface GuardrailFinding {
+  code: string;
+  severity: 'info' | 'warning' | 'critical';
+  message: string;
+}
+
+export interface GuardrailResponse {
+  triggered: boolean;
+  critical: boolean;
+  findings: GuardrailFinding[];
+  stale: boolean;
+}

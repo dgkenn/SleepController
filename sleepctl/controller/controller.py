@@ -13,6 +13,8 @@ from typing import Optional
 
 from sleepctl.config import AppConfig
 from sleepctl.controller.architecture import ArchitectureSteering
+from sleepctl.controller.data_quality import DataQuality, assess_data_quality
+from sleepctl.controller.guardrail import DecisionGuardrail, GuardrailAssessment
 from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
 from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
@@ -107,6 +109,23 @@ class SleepController:
         self.pending_precool_event = None  # consumed + logged by the cycle
         self.should_wake = False
         self.pending_wake_alarm = None  # WakeAlarmSpec to program (vibration + heat), once
+        # Data-quality gate (Feature #6): last frame's trust assessment, exposed for
+        # runtime_state/telemetry. Never raises confidence — only down-weights it and can
+        # force a HOLD on untrustworthy data (see ``_apply_data_quality_gate``).
+        self.last_data_quality: Optional[DataQuality] = None
+        # Decision guardrail (Feature #8): a top-level invariant monitor over the recent
+        # decision/frame TRAJECTORY (do-no-harm backstop, not a second controller). Recent
+        # decisions are tracked here (bounded) so the guardrail can see the trajectory without
+        # requiring every caller (offline runtime + live daemons) to thread history through.
+        self.guardrail = DecisionGuardrail(cfg)
+        self.last_guardrail: Optional[GuardrailAssessment] = None
+        self._recent_decisions: list = []
+        # Optional context the caller may attach for the guardrail (both fully optional —
+        # absence just means those specific guardrail checks are skipped):
+        #   comfort_profile: dict from repo.get_comfort_profile() -- {"cool_edge_f", "warm_edge_f", ...}
+        #   thermal_health: a ThermalHealth-like object/namespace with a ``.state`` attribute
+        self.comfort_profile: Optional[dict] = None
+        self.thermal_health_status = None
 
     def _objective(self, context: Optional[ContextRecord]) -> NightObjective:
         if context is None:
@@ -134,12 +153,42 @@ class SleepController:
         # --- stale-data guard: never act on stale/low-confidence data -----------
         if frame.is_stale(cfg.tunables.stale_data_seconds):
             level = self.thermal.to_level(self._last_target_f)
-            return self._build(
+            decision = self._build(
                 now, self.sm.state, objective, ThermalIntent.STABILIZE,
                 self._last_target_f, level, CorrectionAction.HOLD,
                 "data stale; holding last command", 0.3, frame,
                 wake_signals=[],
             )
+            self._record_decision(decision)
+            return decision
+
+        # --- data-quality gate: extends the stale-data guard with a graded trust score ----
+        # (Feature #6). The hard stale-guard above already refused to act on data older than
+        # ``stale_data_seconds``; this catches everything ELSE that makes a frame untrustworthy
+        # (borderline staleness, high movement, missing vitals, uncertain presence, low stage
+        # confidence) and, when bad enough, forces the same conservative HOLD — do no harm on
+        # data we don't trust, never act aggressively on it.
+        data_quality = assess_data_quality(frame, cfg, now)
+        self.last_data_quality = data_quality
+        # Confirmed bed-exit (presence is False, not just unknown) is high-confidence, actionable
+        # information -- not untrustworthy data -- and the state machine MUST still be allowed to
+        # transition to IDLE on it (that transition is itself the safe/neutral outcome). Gating
+        # here on presence would instead FREEZE the state machine mid-WAKE/MAINTENANCE, which is
+        # the opposite of do-no-harm. So the hard early-hold only applies while still in bed
+        # (or presence is unknown); the score/reasons are still computed + surfaced either way.
+        if data_quality.score < cfg.tunables.data_quality_hold_score and frame.presence is not False:
+            level = self.thermal.to_level(self._last_target_f)
+            reason = (f"data quality low (score={data_quality.score:.2f}"
+                     f"{', ' + data_quality.top_reason if data_quality.top_reason else ''}); "
+                     "holding last command")
+            decision = self._build(
+                now, self.sm.state, objective, ThermalIntent.STABILIZE,
+                self._last_target_f, level, CorrectionAction.HOLD,
+                reason, round(0.3 * data_quality.score, 2), frame,
+                wake_signals=[], data_quality=data_quality,
+            )
+            self._record_decision(decision)
+            return decision
 
         # --- graded arousal detection (maintenance: detect + grade disturbances) -
         sleep_hr_base, sleep_hrv_base = self._sleep_baseline(recent)
@@ -302,15 +351,58 @@ class SleepController:
         # The Pod senses HR/HRV/RR via ballistocardiography, which needs stillness, so
         # discount confidence when there is significant movement (biometrics less reliable).
         confidence *= self._biometric_reliability(frame)
+        # Data-quality gate (Feature #6): a borderline-trustworthy frame (above the hard HOLD
+        # floor but below the downweight floor) further discounts confidence proportionally —
+        # extends the movement-only discount above with the fuller multi-signal picture.
+        if data_quality.score < cfg.tunables.data_quality_downweight_score:
+            confidence *= data_quality.score
+            if data_quality.top_reason:
+                reason += f" [data_quality={data_quality.score:.2f}:{data_quality.top_reason}]"
+
+        # --- decision guardrail (Feature #8): trajectory-level do-no-harm backstop --------
+        # Runs over the recent decision/frame history (not this tick's sub-modules) looking for
+        # invariant violations a single-tick check would miss. A CRITICAL finding overrides to a
+        # SAFE HOLD (revert toward the last-good target, no aggressive move); non-critical
+        # findings are just surfaced for visibility.
+        guardrail = self.guardrail.evaluate(
+            recent, self._recent_decisions, target_f, now,
+            sleep_hr_baseline=sleep_hr_base,
+            comfort_profile=self.comfort_profile,
+            thermal_health=self.thermal_health_status,
+        )
+        self.last_guardrail = guardrail
+        if guardrail.critical:
+            safe_f = cfg.tunables.neutral_temp_f
+            # Revert toward neutral gently — never jump further than the normal max step.
+            step = cfg.tunables.max_step_f
+            if safe_f > self._last_target_f:
+                target_f = min(safe_f, self._last_target_f + step)
+            elif safe_f < self._last_target_f:
+                target_f = max(safe_f, self._last_target_f - step)
+            else:
+                target_f = self._last_target_f
+            level = self.thermal.to_level(target_f)
+            action = CorrectionAction.HOLD
+            codes = ",".join(f.code for f in guardrail.findings if f.severity == "critical")
+            reason = f"guardrail critical ({codes}); safe hold toward neutral"
+            confidence = min(confidence, 0.3)
+            # Keep the thermal controller's internal bookkeeping (variability-cap window +
+            # latency-damping anchor) in sync with this override, so next tick's resolve()
+            # doesn't fight stale un-overridden history (see ThermalController.note_override).
+            self.thermal.note_override(target_f, now=now)
 
         self._last_target_f = target_f
-        return self._build(
+        decision = self._build(
             now, state, objective, intent, target_f, level, action, reason,
             confidence, frame,
             wake_signals=wake_event.signals if wake_event else [],
             minutes_in_bed=minutes_in_bed,
             ambient_temp_f=ambient_temp_f,
+            data_quality=data_quality,
+            guardrail=guardrail,
         )
+        self._record_decision(decision)
+        return decision
 
     # -- helpers -----------------------------------------------------------------
     @staticmethod
@@ -341,6 +433,48 @@ class SleepController:
             "precursor_reasons": list(pre.reasons) if pre else [],
             "precursor_signals": pre.signals if pre else {},
         }
+
+    def data_quality_summary(self) -> dict:
+        """Live data-quality-gate state for the dashboard: current trust score + top reason,
+        and whether it's currently forcing/would force a conservative HOLD."""
+        dq = self.last_data_quality
+        if dq is None:
+            return {"score": None, "reasons": [], "top_reason": None, "gating": False}
+        gating = dq.score < self.cfg.tunables.data_quality_hold_score
+        return {
+            "score": round(dq.score, 3),
+            "reasons": list(dq.reasons),
+            "top_reason": dq.top_reason,
+            "gating": gating,
+        }
+
+    def guardrail_summary(self) -> dict:
+        """Live decision-guardrail state for the dashboard: any current findings and whether a
+        CRITICAL one is forcing a safe hold this tick."""
+        gr = self.last_guardrail
+        if gr is None:
+            return {"triggered": False, "critical": False, "findings": []}
+        return gr.to_dict()
+
+    def set_comfort_profile(self, profile: Optional[dict]) -> None:
+        """Attach the learned personal comfort band (``repo.get_comfort_profile()``) so the
+        guardrail can flag a target outside it. Optional — absence just skips that check."""
+        self.comfort_profile = profile or None
+
+    def set_thermal_health_status(self, status) -> None:
+        """Attach the latest ``ThermalHealth`` (device-responsiveness) reading so the guardrail
+        can fold sustained commanded-vs-device divergence into its trajectory checks. Optional —
+        absence just skips that check (the dedicated ThermalResponseMonitor still runs
+        independently wherever it's already wired)."""
+        self.thermal_health_status = status
+
+    def _record_decision(self, decision: Decision, max_history: int = 60) -> None:
+        """Keep a bounded trailing window of decisions so the guardrail can see the recent
+        TRAJECTORY (oscillation, sustained cooling runs) without every caller threading decision
+        history through ``decide()``."""
+        self._recent_decisions.append(decision)
+        if len(self._recent_decisions) > max_history:
+            self._recent_decisions = self._recent_decisions[-max_history:]
 
     def set_night_targets(self, targets, est_sleep_min: Optional[float] = None) -> None:
         """Hand the controller tonight's PERSONALIZED ideal architecture (from the SleepPlan) so the
@@ -569,8 +703,14 @@ class SleepController:
     def _build(
         self, now, state, objective, intent, target_f, level, action, reason,
         confidence, frame, wake_signals, minutes_in_bed: float = 0.0,
-        ambient_temp_f=None,
+        ambient_temp_f=None, data_quality: Optional[DataQuality] = None,
+        guardrail: Optional[GuardrailAssessment] = None,
     ) -> Decision:
+        # Data-quality gate (Feature #6) + decision guardrail (Feature #8): surfaced on every
+        # Decision (and, from there, in runtime_state) so the score/findings are visible even
+        # when they didn't change the outcome this tick.
+        dq = data_quality or self.last_data_quality
+        gr = guardrail or self.last_guardrail
         log_payload = {
             "stage": frame.stage.value if frame.stage is not None else None,
             "stage_confidence": frame.stage_confidence,
@@ -594,6 +734,8 @@ class SleepController:
             "should_wake": self.should_wake,
             "wake_action": self.last_wake_action.to_dict() if self.last_wake_action else None,
             "minutes_in_bed": round(minutes_in_bed, 1),
+            "data_quality": dq.to_dict() if dq is not None else None,
+            "guardrail": gr.to_dict() if gr is not None else None,
         }
         return Decision(
             timestamp=now,
