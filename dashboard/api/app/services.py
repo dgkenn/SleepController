@@ -281,9 +281,22 @@ def build_status(repo) -> dict:
         "recommendation": {"action": rec.get("action"), "reason": rec.get("reason"),
                            "confidence": rec.get("confidence"), "mode": rec.get("mode")},
         "last_night": _last_night_brief(repo, last) if last else None,
-        "alerts": active_alerts(repo),
+        "alerts": _status_alerts(repo),
         "schedule": schedule_brief(repo),
     }
+
+
+def _status_alerts(repo) -> list[dict]:
+    """Alerts for the ``/status``/SSE payload: piggy-backs the health-monitor sync onto
+    this already-frequently-polled path (see ``evaluate_and_sync_health_alerts`` for why
+    this is "the least-invasive periodic check that works" — no extra process, just a
+    few indexed lookups on a request that already happens every few seconds while the
+    app is open). Never let a health-monitor hiccup break the core status response."""
+    try:
+        evaluate_and_sync_health_alerts(repo)
+    except Exception:
+        pass
+    return active_alerts(repo)
 
 
 def _last_night_brief(repo, last) -> dict:
@@ -1393,3 +1406,122 @@ def learning_ledger_view(repo) -> dict:
     retrains anything and never changes controller behavior."""
     from sleepctl.learning.coordinator import build_ledger_report
     return build_ledger_report(repo, CFG).to_dict()
+# ============================================================================
+# Goal #2: detect controller/bed failures and push them to the phone so a silent
+# multi-hour outage becomes a 2-minute fix. ``health_monitor.evaluate_health`` is the
+# pure decision layer (see that module for the full rationale); everything below wires
+# it to the existing ``alerts`` table/endpoint and the Web Push sender.
+# ============================================================================
+from app import health_monitor, push_sender  # noqa: E402
+
+
+# Health-monitor alert types are namespaced with "health_" so they never collide with
+# the pre-existing per-day-deduped alert types above (e.g. "stale_data") — they use a
+# different lifecycle (raise-on-appear, auto-clear-on-resolve) rather than one-per-day.
+_HEALTH_ALERT_PREFIX = "health_"
+
+
+def _health_alert_type(code: str) -> str:
+    return f"{_HEALTH_ALERT_PREFIX}{code}"
+
+
+def active_health_alert_codes(repo) -> set[str]:
+    """Codes (bare, without the ``health_`` prefix) with a currently-open alert row —
+    used both to avoid re-pushing every poll and to know what to auto-clear."""
+    rows = repo.conn.execute(
+        "SELECT type FROM alerts WHERE acknowledged=0 AND type LIKE ?",
+        (f"{_HEALTH_ALERT_PREFIX}%",),
+    ).fetchall()
+    return {r["type"][len(_HEALTH_ALERT_PREFIX):] for r in rows}
+
+
+def _raise_health_alert(repo, issue: dict) -> bool:
+    """Insert an open alert row for ``issue`` if one isn't already open. Returns True if
+    a NEW row was inserted (i.e. this is a newly-appearing issue, not a repeat)."""
+    atype = _health_alert_type(issue["code"])
+    exists = repo.conn.execute(
+        "SELECT 1 FROM alerts WHERE type=? AND acknowledged=0 LIMIT 1", (atype,)
+    ).fetchone()
+    if exists:
+        return False
+    repo.conn.execute(
+        "INSERT INTO alerts (ts, type, severity, message, acknowledged) VALUES (?,?,?,?,0)",
+        (datetime.now(timezone.utc).isoformat(), atype, issue["severity"], issue["message"]),
+    )
+    repo.conn.commit()
+    return True
+
+
+def _clear_health_alert(repo, code: str) -> None:
+    """Auto-acknowledge the open alert for a health-monitor code whose condition has
+    resolved — this is what makes the alert list reflect CURRENT state rather than
+    accumulating stale entries forever."""
+    repo.conn.execute(
+        "UPDATE alerts SET acknowledged=1 WHERE type=? AND acknowledged=0",
+        (_health_alert_type(code),),
+    )
+    repo.conn.commit()
+
+
+def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None) -> dict:
+    """Run the health evaluator against the live runtime_state, raise alerts for newly
+    appearing issues, clear alerts for issues that resolved, and push newly-appearing
+    CRITICAL issues to any subscribed phones. Returns a small summary dict (useful for
+    tests/diagnostics); safe to call on every ``/status``/``/alerts`` request — it's a
+    handful of indexed SQLite lookups, not a background job, so there's no extra process
+    to keep alive (see the module docstring in health_monitor.py for why that's enough)."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    issues = health_monitor.evaluate_health(rt, recent_errors=recent_errors,
+                                            stale_seconds=settings.runtime_stale_seconds)
+    current_codes = {i["code"] for i in issues}
+    previously_active = active_health_alert_codes(repo)
+
+    newly_raised = []
+    for issue in issues:
+        if _raise_health_alert(repo, issue):
+            newly_raised.append(issue)
+
+    for code in previously_active - current_codes:
+        _clear_health_alert(repo, code)
+
+    pushed = 0
+    to_push = push_sender.select_new_critical(newly_raised, previously_active)
+    if to_push:
+        subs = list_push_subscriptions(repo)
+        for issue in to_push:
+            result = push_sender.deliver(issue, subs)
+            if result.ok:
+                pushed += 1
+            if result.stale_removed:
+                # best-effort cleanup of dead subscriptions surfaced by the transport
+                pass
+
+    return {"issues": issues, "newly_raised": [i["code"] for i in newly_raised],
+            "cleared": sorted(previously_active - current_codes), "pushed": pushed}
+
+
+# ---------------------------------------------------------------------- push subscriptions
+def add_push_subscription(repo, endpoint: str, p256dh: str, auth: str) -> dict:
+    repo.conn.execute(
+        """INSERT INTO push_subscriptions (endpoint, p256dh, auth, created) VALUES (?,?,?,?)
+        ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth""",
+        (endpoint, p256dh, auth, datetime.now(timezone.utc).isoformat()),
+    )
+    repo.conn.commit()
+    return {"ok": True}
+
+
+def remove_push_subscription(repo, endpoint: str) -> dict:
+    repo.conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+    repo.conn.commit()
+    return {"ok": True}
+
+
+def list_push_subscriptions(repo) -> list[dict]:
+    rows = repo.conn.execute("SELECT endpoint, p256dh, auth FROM push_subscriptions").fetchall()
+    return [dict(r) for r in rows]
+
+
+def vapid_public_key() -> dict:
+    return {"public_key": settings.vapid_public_key or None,
+            "configured": push_sender.vapid_configured()}

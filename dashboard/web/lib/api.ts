@@ -465,6 +465,16 @@ export interface ExperimentAnalyzeResponse {
   analysis: Analysis;
 }
 
+export interface VapidKeyResponse {
+  public_key: string | null;
+  configured: boolean;
+}
+
+export interface PushSubscribeBody {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
 // ---------------------------------------------------------------------------
 // Interpretability ("why did it do that?" / "what's it learned?")
 // ---------------------------------------------------------------------------
@@ -1008,6 +1018,20 @@ export const api = {
     apiFetch<InsightsParametersResponse>('/api/insights/parameters'),
   // Meta-learning ledger: what every learner currently reports + advisory contradictions
   learningLedger: () => apiFetch<LearningLedgerResponse>('/api/learning/ledger'),
+  // Web Push (silent-outage alerts -> phone)
+  vapidPublicKey: () => apiFetch<VapidKeyResponse>('/api/push/vapid-public-key'),
+
+  pushSubscribe: (body: PushSubscribeBody) =>
+    apiFetch<{ ok: boolean }>('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  pushUnsubscribe: (endpoint: string) =>
+    apiFetch<{ ok: boolean }>('/api/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    }),
 };
 
 // ---------------------------------------------------------------------------

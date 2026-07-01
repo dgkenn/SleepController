@@ -38,6 +38,7 @@ app.add_middleware(
 @app.on_event("startup")
 def _startup() -> None:
     ensure_bootstrap_user()
+    _start_health_watchdog()
 
 
 def repo_dep():
@@ -806,3 +807,64 @@ def insights_parameters(repo=Depends(repo_dep), user: str = AuthDep):
 @app.get("/learning/ledger")
 def learning_ledger(repo=Depends(repo_dep), user: str = AuthDep):
     return services.learning_ledger_view(repo)
+# ======================================================================================
+# Goal #2: silent-outage detection -> Web Push. The health evaluator itself already runs
+# on every /status + SSE tick (see services._status_alerts). The background watchdog
+# below is the belt-and-suspenders half: it keeps evaluating on a fixed interval even
+# when NO client/browser tab is open at all (the actual "6-hour silent outage" scenario
+# — nobody has the dashboard open to trigger a request). It's a single daemon thread,
+# not a new process, so there's nothing extra to deploy/supervise.
+# ------------------------------------------------------------------------------------
+import threading  # noqa: E402
+
+_HEALTH_WATCHDOG_INTERVAL_S = 60
+_health_watchdog_started = False
+
+
+def _health_watchdog_loop() -> None:
+    import time
+    while True:
+        try:
+            repo = get_repo()
+            try:
+                services.evaluate_and_sync_health_alerts(repo)
+            finally:
+                repo.close()
+        except Exception:
+            pass  # never let the watchdog thread die on a transient DB/import hiccup
+        time.sleep(_HEALTH_WATCHDOG_INTERVAL_S)
+
+
+def _start_health_watchdog() -> None:
+    global _health_watchdog_started
+    if _health_watchdog_started:
+        return
+    _health_watchdog_started = True
+    t = threading.Thread(target=_health_watchdog_loop, name="health-watchdog", daemon=True)
+    t.start()
+
+
+# ------------------------------------------------------------------------------ push
+class PushSubscribeBody(BaseModel):
+    endpoint: str
+    keys: dict  # {"p256dh": ..., "auth": ...}
+
+
+@app.get("/push/vapid-public-key")
+def push_vapid_public_key():
+    """Public info only — no auth required so the "Enable alerts" button can fetch the
+    key before the user necessarily has a session (mirrors how service workers fetch
+    manifest.json unauthenticated)."""
+    return services.vapid_public_key()
+
+
+@app.post("/push/subscribe")
+def push_subscribe(body: PushSubscribeBody, repo=Depends(repo_dep), user: str = AuthDep):
+    keys = body.keys or {}
+    return services.add_push_subscription(repo, body.endpoint, keys.get("p256dh", ""),
+                                          keys.get("auth", ""))
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe(body: dict = Body(...), repo=Depends(repo_dep), user: str = AuthDep):
+    return services.remove_push_subscription(repo, body.get("endpoint", ""))

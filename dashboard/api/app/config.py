@@ -32,5 +32,14 @@ class Settings:
         default_factory=lambda: os.environ.get("BCG_INGEST_OPEN", "").strip().lower()
         in ("1", "true", "yes", "on"))
 
+    # Web Push (VAPID). Keys are env-only, never committed — see deploy/.env.example.
+    # Generate with: python3 -m app.push_keys  (prints a keypair; requires the optional
+    # `py_vapid`/`pywebpush` dependency — see requirements.txt). Left blank, /push/subscribe
+    # still records subscriptions but sending is a documented no-op until keys are set.
+    vapid_public_key: str = field(default_factory=lambda: os.environ.get("VAPID_PUBLIC_KEY", ""))
+    vapid_private_key: str = field(default_factory=lambda: os.environ.get("VAPID_PRIVATE_KEY", ""))
+    vapid_subject: str = field(
+        default_factory=lambda: os.environ.get("VAPID_SUBJECT", "mailto:admin@example.com"))
+
 
 settings = Settings()

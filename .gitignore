@@ -26,3 +26,7 @@ scratch_data/
 
 # Claude Code agent worktrees (harness scratch; never commit)
 .claude/
+# deploy env files hold real secrets (DASHBOARD_PASSWORD, JWT_SECRET, VAPID keys, Eight
+# Sleep creds) once `make up`/the operator fills them in — only .env.example is tracked.
+deploy/.env
+.env
