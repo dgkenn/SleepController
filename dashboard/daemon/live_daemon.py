@@ -587,6 +587,8 @@ class LiveDashboardDaemon:
                       "thermal_health": self.thermal.status().to_dict(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
+                      "data_quality": self.cycle.controller.data_quality_summary(),
+                      "guardrail": self.cycle.controller.guardrail_summary(),
                       "precompensation": self.precomp,
                       "device": self._safe_device_status(),
                       "experiment": self.active_experiment,

@@ -415,6 +415,8 @@ class DashboardDaemon:
                                    "target_level": None, "gap": None},
                 "preemption": self.cycle.controller.preemption_summary(),
                 "steering": self.cycle.controller.steering_summary(),
+                "data_quality": self.cycle.controller.data_quality_summary(),
+                "guardrail": self.cycle.controller.guardrail_summary(),
                 "self_test": getattr(self, "_self_test_report", None),
                 "comfort_cal": self._comfort_snapshot(),
                 "efficacy_arm": self.efficacy_arm,
