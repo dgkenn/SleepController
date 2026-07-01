@@ -539,6 +539,41 @@ class Repository:
             }
         return out
 
+    # ---- standing "does the controller help?" efficacy trial -----------------
+    def assign_efficacy_night(self, night_date: str, arm: str) -> None:
+        """Persist tonight's efficacy-trial arm assignment ('controlled'|'held'). Idempotent:
+        a night's arm must not change once assigned, so this never overwrites an existing row."""
+        self.conn.execute(
+            "INSERT INTO efficacy_nights (night_date, arm, resolved) VALUES (?,?,0) "
+            "ON CONFLICT(night_date) DO NOTHING",
+            (night_date, arm),
+        )
+        self.conn.commit()
+
+    def record_efficacy_outcome(self, night_date: str, wake_events=None, deep_pct=None,
+                                efficiency=None, outcome_score=None) -> None:
+        """Record tonight's measured outcome against its already-assigned arm (no-op if the
+        night was never assigned one)."""
+        self.conn.execute(
+            "UPDATE efficacy_nights SET wake_events=?, deep_pct=?, efficiency=?, "
+            "outcome_score=?, resolved=1 WHERE night_date=?",
+            (wake_events, deep_pct, efficiency, outcome_score, night_date),
+        )
+        self.conn.commit()
+
+    def efficacy_rows(self, resolved_only: bool = False) -> list:
+        q = "SELECT * FROM efficacy_nights"
+        if resolved_only:
+            q += " WHERE resolved=1"
+        q += " ORDER BY night_date ASC"
+        return [dict(r) for r in self.conn.execute(q).fetchall()]
+
+    def efficacy_night(self, night_date: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM efficacy_nights WHERE night_date=?", (night_date,)
+        ).fetchone()
+        return dict(row) if row else None
+
     def backfill_action_rewards(self) -> None:
         """Set each action's reward = mean outcome_score of the nights its version produced.
 

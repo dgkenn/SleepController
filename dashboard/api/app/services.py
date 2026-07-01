@@ -688,6 +688,34 @@ def experiment_stop(repo, exp_id: int) -> dict:
     return out or {"error": "not found"}
 
 
+# ------------------------------------------------------------------ standing efficacy trial
+# "Does the controller help?" — the standing CONTROLLED vs HELD (do-no-harm neutral baseline)
+# comparison. Opt-in (default OFF); see sleepctl.eval.efficacy for the arm-assignment/analysis
+# logic this just exposes over HTTP.
+
+def efficacy_status(repo) -> dict:
+    from sleepctl.eval.efficacy import (
+        analyze_efficacy, backfill_from_nightly_summaries, get_efficacy_config)
+    # Best-effort catch-up: resolve any efficacy_nights row whose night has since produced a
+    # nightly_summaries row but wasn't recorded at close-out (e.g. daemon restarted mid-flush,
+    # or the simulator daemon, which has no nightly close-out wiring at all).
+    try:
+        backfill_from_nightly_summaries(repo)
+    except Exception:
+        pass
+    return {"config": get_efficacy_config(repo), "analysis": analyze_efficacy(repo)}
+
+
+def efficacy_config_view(repo) -> dict:
+    from sleepctl.eval.efficacy import get_efficacy_config
+    return get_efficacy_config(repo)
+
+
+def efficacy_config_update(repo, values: dict) -> dict:
+    from sleepctl.eval.efficacy import set_efficacy_config
+    return set_efficacy_config(repo, values)
+
+
 # ------------------------------------------------------------------ phone/iPhone BCG ingest
 import threading  # noqa: E402
 

@@ -87,6 +87,7 @@ class LiveDashboardDaemon:
         self._consec_errors = 0
         self._last_decision = None  # reused by the fast telemetry tick between control ticks
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
+        self.efficacy_arm = None  # tonight's standing efficacy-trial arm, if the trial is enabled
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
@@ -229,6 +230,22 @@ class LiveDashboardDaemon:
                 self._log(f"experiment '{arm.get('name')}' arm {arm.get('arm')} applied tonight")
         except Exception as exc:
             self._log(f"experiment-arm apply skipped: {exc}")
+        # Standing "does the controller help?" efficacy trial (opt-in, default OFF): assign
+        # tonight CONTROLLED vs a do-no-harm HELD baseline and, on a HELD night, force a neutral
+        # setpoint + disable experimental steering/preemption via EXISTING controller setters.
+        # Applied AFTER the n-of-1 experiment arm above so a HELD night always wins (the stricter,
+        # do-no-harm baseline) if the two features are ever enabled at once.
+        try:
+            from sleepctl.eval.efficacy import apply_efficacy_arm
+            base_eff = controller.thermal.profile
+            eff_prof, eff_info = apply_efficacy_arm(
+                self.repo, self.cfg, controller, datetime.now().date().isoformat(), base_eff)
+            controller.set_setpoints(eff_prof)
+            self.efficacy_arm = eff_info
+            if eff_info:
+                self._log(f"efficacy trial: tonight is {eff_info['arm']}")
+        except Exception as exc:
+            self._log(f"efficacy-trial apply skipped: {exc}")
 
     def _apply_night_type(self, hint: str) -> None:
         try:
@@ -573,6 +590,7 @@ class LiveDashboardDaemon:
                       "precompensation": self.precomp,
                       "device": self._safe_device_status(),
                       "experiment": self.active_experiment,
+                      "efficacy_arm": self.efficacy_arm,
                       "shift_plan": self.shift_plan,
                       "self_test": getattr(self, "_self_test_report", None),
                       "comfort_cal": self._comfort_snapshot(),
@@ -761,6 +779,15 @@ class LiveDashboardDaemon:
             try:
                 night = await self.client.fetch_night_summary(night_date)
                 self.nightly.run(night)
+                # Record tonight's outcome against whichever arm the standing efficacy trial
+                # assigned (no-op if the trial is off / this night was never assigned an arm).
+                from sleepctl.eval.efficacy import record_efficacy_outcome
+                total = night.total_sleep_min
+                deep_pct = (night.deep_min / total) if (night.deep_min is not None and total) \
+                    else None
+                record_efficacy_outcome(
+                    self.repo, night_date, wake_events=night.wake_events, deep_pct=deep_pct,
+                    efficiency=night.sleep_efficiency, outcome_score=night.outcome_score)
             except Exception as exc:
                 self._log(f"nightly close-out skipped: {exc}")
             self._attach_profiles(self.cycle.controller)  # learn from the night just ended

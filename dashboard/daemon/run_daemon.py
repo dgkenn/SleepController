@@ -88,6 +88,7 @@ class DashboardDaemon:
         self.session_mode = "night"   # night | induce | nap
         self.nap_plan = None          # NapPlan.to_dict() when a nap session is active
         self.nap_deadline = None      # datetime the nap should end
+        self.efficacy_arm = None      # tonight's standing efficacy-trial arm, if enabled
         self.simulate = simulate
         if simulate:
             self.source = SimulatorSource("normal", seed=7,
@@ -111,6 +112,25 @@ class DashboardDaemon:
             except Exception as exc:
                 print(f"phone-sensor fusion disabled: {exc}", flush=True)
         self.context = ContextRecord(date=datetime.now().date().isoformat())
+        self._apply_efficacy_arm()
+
+    def _apply_efficacy_arm(self) -> None:
+        """Standing "does the controller help?" efficacy trial (opt-in, default OFF): assign
+        tonight CONTROLLED vs a do-no-harm HELD baseline and, on a HELD night, force a neutral
+        setpoint + disable experimental steering/preemption via EXISTING controller setters.
+        Mirrors the live daemon's ``_attach_profiles`` hook (see live_daemon.py)."""
+        try:
+            from sleepctl.eval.efficacy import apply_efficacy_arm
+            base = self.cycle.controller.thermal.profile
+            prof, info = apply_efficacy_arm(
+                self.repo, self.cfg, self.cycle.controller,
+                datetime.now().date().isoformat(), base)
+            self.cycle.controller.set_setpoints(prof)
+            self.efficacy_arm = info
+            if info:
+                print(f"efficacy trial: tonight is {info['arm']}", flush=True)
+        except Exception as exc:
+            print(f"efficacy-trial apply skipped: {exc}", flush=True)
 
     # ---------------------------------------------------------------- commands
     def _clamp_temp(self, f: float) -> float:
@@ -397,6 +417,7 @@ class DashboardDaemon:
                 "steering": self.cycle.controller.steering_summary(),
                 "self_test": getattr(self, "_self_test_report", None),
                 "comfort_cal": self._comfort_snapshot(),
+                "efficacy_arm": self.efficacy_arm,
             },
         }
 
@@ -497,6 +518,9 @@ class DashboardDaemon:
             self.cycle.controller.set_precursor_profile(self._precursor_profile)
         except Exception as exc:
             print(f"profile refresh skipped: {exc}", flush=True)
+        # Re-assign/apply tonight's efficacy-trial arm now that a new night is starting (mirrors
+        # the live daemon re-attaching profiles after each night ends).
+        self._apply_efficacy_arm()
 
     def _learn_mode(self):
         """Tonight's night-mode for constraint-aware learning ('constrained'|'recovery'|'normal'),

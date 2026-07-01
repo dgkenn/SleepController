@@ -902,3 +902,23 @@ def calendar_events(repo=Depends(repo_dep), user: str = AuthDep):
 def calendar_refresh(repo=Depends(repo_dep), user: str = AuthDep):
     """Force a re-fetch of the configured ICS feed now."""
     return services.calendar_refresh(repo)
+# ---- Standing efficacy trial: "does the controller help?" (opt-in, default OFF) ----
+class EfficacyConfigBody(BaseModel):
+    enabled: bool | None = None
+    block_nights: int | None = None
+
+
+@app.get("/efficacy")
+def efficacy_status(repo=Depends(repo_dep), user: str = AuthDep):
+    """Standing-trial status: current config + the CONTROLLED-vs-HELD analysis so far."""
+    return services.efficacy_status(repo)
+
+
+@app.get("/efficacy/config")
+def efficacy_config(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.efficacy_config_view(repo)
+
+
+@app.put("/efficacy/config")
+def efficacy_config_update(body: EfficacyConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.efficacy_config_update(repo, body.model_dump(exclude_none=True))

@@ -7,6 +7,7 @@ import RecommendationCard from '@/components/RecommendationCard';
 import MaintenanceCard from '@/components/MaintenanceCard';
 import ForensicsCard from '@/components/ForensicsCard';
 import ExperimentsCard from '@/components/ExperimentsCard';
+import EfficacyCard from '@/components/EfficacyCard';
 import TargetsCard from '@/components/TargetsCard';
 import LearningPhasesCard from '@/components/LearningPhasesCard';
 import useSWR from 'swr';
@@ -157,6 +158,9 @@ function LearningContent() {
 
           {/* Self-experiments: A/B testing sleep levers */}
           <ExperimentsCard />
+
+          {/* Standing efficacy trial: does the closed loop actually help? */}
+          <EfficacyCard />
 
           {/* Model confidence */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">

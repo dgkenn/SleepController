@@ -513,6 +513,46 @@ export interface InsightsParametersResponse {
   n: number;
 }
 
+// ---- Standing efficacy trial: "does the controller help?" -----------------
+
+export interface EfficacyConfig {
+  enabled: boolean;
+  block_nights: number;
+}
+
+export interface EfficacyMetricStat {
+  n: number;
+  mean: number | null;
+  sd: number | null;
+}
+
+export interface EfficacyMetricComparison {
+  controlled: EfficacyMetricStat;
+  held: EfficacyMetricStat;
+  diff_held_minus_controlled: number | null;
+  ci: [number, number] | null;
+  p_value: number | null;
+  lower_better: boolean;
+}
+
+export interface EfficacyAnalysis {
+  enough_data: boolean;
+  min_n_per_arm: number;
+  n_controlled: number;
+  n_held: number;
+  metrics: {
+    wake_events: EfficacyMetricComparison;
+    deep_pct: EfficacyMetricComparison;
+    efficiency: EfficacyMetricComparison;
+  };
+  verdict: string;
+}
+
+export interface EfficacyStatusResponse {
+  config: EfficacyConfig;
+  analysis: EfficacyAnalysis;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch wrapper
 // ---------------------------------------------------------------------------
@@ -1085,6 +1125,16 @@ export const api = {
   calendarEvents: () => apiFetch<CalendarEventsResponse>('/api/calendar/events'),
   calendarRefresh: () =>
     apiFetch<CalendarEventsResponse>('/api/calendar/refresh', { method: 'POST' }),
+  // Standing efficacy trial ("does the controller help?")
+  efficacyStatus: () => apiFetch<EfficacyStatusResponse>('/api/efficacy'),
+
+  efficacyConfig: () => apiFetch<EfficacyConfig>('/api/efficacy/config'),
+
+  updateEfficacyConfig: (values: Partial<EfficacyConfig>) =>
+    apiFetch<EfficacyConfig>('/api/efficacy/config', {
+      method: 'PUT',
+      body: JSON.stringify(values),
+    }),
 };
 
 // ---------------------------------------------------------------------------
