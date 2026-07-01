@@ -37,12 +37,13 @@ from sleepctl.controller.controller import SleepController  # noqa: E402
 from sleepctl.loop.cycle import ControlCycle  # noqa: E402
 from sleepctl.models import ContextRecord  # noqa: E402
 
+import command_spec as cs  # noqa: E402
 from app import bridge  # noqa: E402
 from app.db import get_repo  # noqa: E402
 
 # How far a single +/- nudge moves the target, and the manual temp clamp (water °F).
 NUDGE_STEP_DEFAULT_F = 1.0
-TEMP_MIN_F, TEMP_MAX_F = 55.0, 110.0
+TEMP_MIN_F, TEMP_MAX_F = cs.TEMP_MIN_F, cs.TEMP_MAX_F
 
 
 def _parse_wake_dt(wake_time):
@@ -113,7 +114,7 @@ class DashboardDaemon:
 
     # ---------------------------------------------------------------- commands
     def _clamp_temp(self, f: float) -> float:
-        return max(TEMP_MIN_F, min(TEMP_MAX_F, float(f)))
+        return cs.clamp_temp(f)
 
     def _apply_night_type(self, hint: str) -> None:
         """Compute tonight's plan and push the night mode into the controller context so
@@ -143,65 +144,39 @@ class DashboardDaemon:
             t, p = cmd["type"], cmd["payload"]
             changed = True
             if t == "stop":
-                self.paused = True
-                self.power_on = False
+                cs.apply_stop_state(self)
                 if self.simulate:
                     self.actuator.set_level(0)
             elif t == "pause":
-                self.paused = True
+                cs.apply_pause(self)
             elif t in ("start", "resume"):
-                self.paused = False
+                cs.apply_start_or_resume(self)
             elif t == "power_off":
-                self.power_on = False
-                self.paused = True
+                cs.apply_power_off_state(self)
                 if self.simulate:
                     self.actuator.set_level(0)
             elif t == "power_on":
-                self.power_on = True
-                self.paused = False
-                self.away = False
+                cs.apply_power_on_state(self)
             elif t == "away_on":
-                self.away = True
-                self.power_on = False
+                cs.apply_away_on_state(self)
                 if self.simulate:
                     self.actuator.set_level(0)
             elif t == "away_off":
-                self.away = False
-                self.power_on = True
+                cs.apply_away_off_state(self)
             elif t == "prime":
                 # simulator: no-op (water priming is a device routine); live client primes.
                 pass
             elif t == "safe_default":
-                self.paused = False
-                self.power_on = True
-                self.away = False
-                self.manual_target_f = None
-                self.mode = "auto"
+                cs.apply_safe_default_state(self)
                 self.repo.save_setpoints(self.cfg.default_setpoints())
             elif t == "set_mode":
-                self.mode = p.get("mode", "auto")
+                cs.apply_set_mode(self, p)
             elif t == "set_temp":
-                self.manual_target_f = self._clamp_temp(p.get("target_f"))
-                self.mode = "manual"
-                self.power_on = True
-                self.paused = False
+                cs.apply_set_temp(self, p)
             elif t == "nudge_temp":
-                base = self.manual_target_f if self.manual_target_f is not None \
-                    else (self.last_target_f if self.last_target_f is not None else 70.0)
-                self.manual_target_f = self._clamp_temp(base + float(p.get("delta_f", 0)))
-                self.mode = "manual"
-                self.power_on = True
-                self.paused = False
+                cs.apply_nudge_temp(self, p)
             elif t == "set_wake":
-                self.wake = {
-                    "wake_time": p.get("wake_time"),
-                    "window_min": p.get("window_min") or self.cfg.tunables.wake_window_min,
-                    "vibration_power": p.get("vibration_power")
-                    if p.get("vibration_power") is not None
-                    else self.cfg.tunables.wake_vibration_power,
-                    "thermal_level": p.get("thermal_level"),
-                    "night_type": p.get("night_type") or "auto",
-                }
+                self.wake = cs.build_wake_dict(self.cfg, p)
                 wake = _parse_wake_dt(p.get("wake_time"))
                 if wake is None:
                     # malformed wake time -> ignore this command rather than crash the loop
@@ -236,10 +211,7 @@ class DashboardDaemon:
                 except Exception as exc:
                     print(f"wake window selection skipped: {exc}", flush=True)
             elif t == "clear_wake":
-                self.wake = None
-                self.context.required_wake_time = None
-                self.context.night_type = None
-                self.context.is_short_sleep_day = None
+                cs.apply_clear_wake(self)
             elif t == "induce_sleep":
                 self._start_induce()
             elif t == "start_nap":

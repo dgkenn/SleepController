@@ -26,9 +26,10 @@ from sleepctl.precompensation import compute_precompensation
 from sleepctl.loop.nightly import NightlyUpdater
 from sleepctl.models import ContextRecord, ControllerState
 
+import command_spec as cs
 from app import bridge
 
-TEMP_MIN_F, TEMP_MAX_F = 55.0, 110.0
+TEMP_MIN_F, TEMP_MAX_F = cs.TEMP_MIN_F, cs.TEMP_MAX_F
 
 
 def _parse_wake_dt(wake_time):
@@ -140,7 +141,7 @@ class LiveDashboardDaemon:
 
     @staticmethod
     def _clamp_temp(f) -> float:
-        return max(TEMP_MIN_F, min(TEMP_MAX_F, float(f)))
+        return cs.clamp_temp(f)
 
     def _learn_mode(self):
         """Tonight's night-mode for constraint-aware learning ('constrained'|'recovery'|'normal'),
@@ -262,32 +263,30 @@ class LiveDashboardDaemon:
                 if t == "stop":
                     # EMERGENCY STOP is a safety override: hard-off the side ALWAYS, even in
                     # dry-run. A silent no-op emergency stop is exactly what you don't want.
-                    self.power_on = False
-                    self.paused = True
+                    cs.apply_stop_state(self)
                     try:
                         await self.client.turn_off_side()
                         self._log("EMERGENCY STOP: side turned off")
                     except Exception as exc:
                         self._log(f"EMERGENCY STOP turn_off_side failed: {exc}")
                 elif t == "power_off":
-                    self.power_on = False
-                    self.paused = True
+                    cs.apply_power_off_state(self)
                     if not self.dry_run:
                         await self.client.turn_off_side()
                 elif t == "pause":
-                    self.paused = True
+                    cs.apply_pause(self)
                 elif t in ("start", "resume"):
-                    self.paused = False
+                    cs.apply_start_or_resume(self)
                 elif t == "power_on":
-                    self.power_on, self.paused, self.away = True, False, False
+                    cs.apply_power_on_state(self)
                     if not self.dry_run:
                         await self.client.turn_on_side()
                 elif t == "away_on":
-                    self.away, self.power_on = True, False
+                    cs.apply_away_on_state(self)
                     if not self.dry_run:
                         await self.client.set_away_mode(True)
                 elif t == "away_off":
-                    self.away, self.power_on = False, True
+                    cs.apply_away_off_state(self)
                     if not self.dry_run:
                         await self.client.set_away_mode(False)
                         await self.client.turn_on_side()
@@ -295,31 +294,18 @@ class LiveDashboardDaemon:
                     if not self.dry_run:
                         await self.client.prime_pod()
                 elif t == "safe_default":
-                    self.paused, self.power_on, self.away = False, True, False
-                    self.manual_target_f, self.mode = None, "auto"
+                    cs.apply_safe_default_state(self)
                     self.repo.save_setpoints(self.cfg.default_setpoints())
                 elif t == "set_mode":
-                    self.mode = p.get("mode", "auto")
+                    cs.apply_set_mode(self, p)
                 elif t == "set_temp":
-                    self.manual_target_f = self._clamp_temp(p.get("target_f"))
-                    self.mode, self.power_on, self.paused = "manual", True, False
+                    cs.apply_set_temp(self, p)
                     await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
                 elif t == "nudge_temp":
-                    base = self.manual_target_f if self.manual_target_f is not None \
-                        else (self.last_target_f if self.last_target_f is not None else 70.0)
-                    self.manual_target_f = self._clamp_temp(base + float(p.get("delta_f", 0)))
-                    self.mode, self.power_on, self.paused = "manual", True, False
+                    cs.apply_nudge_temp(self, p)
                     await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
                 elif t == "set_wake":
-                    self.wake = {
-                        "wake_time": p.get("wake_time"),
-                        "window_min": p.get("window_min") or self.cfg.tunables.wake_window_min,
-                        "vibration_power": p.get("vibration_power")
-                        if p.get("vibration_power") is not None
-                        else self.cfg.tunables.wake_vibration_power,
-                        "thermal_level": p.get("thermal_level"),
-                        "night_type": p.get("night_type") or "auto",
-                    }
+                    self.wake = cs.build_wake_dict(self.cfg, p)
                     wk = _parse_wake_dt(p.get("wake_time"))
                     if wk is None:
                         self._log(f"set_wake ignored: bad wake_time {p.get('wake_time')!r}")
@@ -352,10 +338,7 @@ class LiveDashboardDaemon:
                         except Exception as exc:
                             self._log(f"wake window selection skipped: {exc}")
                 elif t == "clear_wake":
-                    self.wake = None
-                    self.context.required_wake_time = None
-                    self.context.night_type = None
-                    self.context.is_short_sleep_day = None
+                    cs.apply_clear_wake(self)
                 elif t == "induce_sleep":
                     self._start_induce()
                 elif t == "start_nap":
