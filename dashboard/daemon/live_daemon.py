@@ -531,12 +531,29 @@ class LiveDashboardDaemon:
 
     def _refresh_shift_plan(self) -> None:
         """Advisory cross-shift sleep-debt plan: debt + strategy from recent nights, plus banking /
-        prophylactic-nap logic when a manual next-shift hint is set (calendar feed is a follow-up)."""
+        prophylactic-nap logic from the next shift (auto-synced from the work calendar when
+        connected, else the manual next-shift hint — see ``services.sync_calendar_to_shift``)."""
         try:
             from app import services
             self.shift_plan = services.shift_plan_view(self.repo)
         except Exception as exc:
             self._log(f"shift plan skipped: {exc}")
+            return
+        # Calendar-driven auto-wake (mirrors the gym advisor's effective-wake pattern above in
+        # `set_wake`): only when the user has NOT set tonight's wake by hand (self.wake is None
+        # exactly when no "set_wake" command has been applied / it was cleared) do we let the
+        # next calendar shift arm a morning alarm. A manual wake pick ALWAYS wins — this branch
+        # never runs once self.wake is set, and never touches self.context.required_wake_time
+        # in that case. Night shifts intentionally get no morning alarm here (calendar_effective_
+        # wake returns None) — the banking/anchor-sleep plan above already covers those.
+        if self.wake is None:
+            try:
+                from app import services as _svc
+                auto_wake = _svc.calendar_effective_wake(self.repo)
+                if auto_wake is not None:
+                    self.context.required_wake_time = auto_wake
+            except Exception as exc:
+                self._log(f"calendar auto-wake skipped: {exc}")
 
     def _safe_device_status(self) -> dict:
         fn = getattr(self.client, "device_status", None)

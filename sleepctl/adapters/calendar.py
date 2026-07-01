@@ -343,3 +343,30 @@ class IcsCalendarSource(CalendarSource):
             is_short_sleep_day=(opp is not None and opp < SHORT_SLEEP_THRESHOLD_MIN),
             schedule_variable=None,
         )
+
+
+# --------------------------------------------------------------------------------------------
+# Shift classification — turns a single-calendar "the shift IS the event" feed into the
+# day/night kind the shift planner (``sleepctl.shift_manager.Shift``) already understands.
+# Deliberately a pure, start-hour heuristic: no per-user configuration needed, and it degrades
+# gracefully for any rotation (day/evening/night) a hospital roster throws at it. "call" shifts
+# are intentionally NOT auto-classified here — they carry different semantics (post-call
+# recovery / drowsy-driving warnings) that only the user should opt into, via the manual picker.
+# --------------------------------------------------------------------------------------------
+
+# A shift starting at/after this hour (24h clock) is treated as a night shift...
+NIGHT_SHIFT_START_HOUR = 16
+# ...or before this hour (i.e. an overnight/early-morning start is still "night").
+NIGHT_SHIFT_END_HOUR = 4
+
+
+def classify_shift(start: datetime) -> str:
+    """Classify a shift as ``"day"`` or ``"night"`` from its start hour alone.
+
+    Night: starts in the evening/overnight, hour >= 16 (4pm) or hour < 4 (am). Everything else
+    (roughly 04:00-15:59) is a day shift. This intentionally never returns "call" — that kind
+    stays manual-only (see module docstring above)."""
+    hour = start.hour
+    if hour >= NIGHT_SHIFT_START_HOUR or hour < NIGHT_SHIFT_END_HOUR:
+        return "night"
+    return "day"

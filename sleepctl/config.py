@@ -225,6 +225,11 @@ class Tunables:
     guardrail_oscillation_min_delta_f: float = 1.5  # ignore reversals smaller than this
     # (d) sustained commanded-vs-device divergence (reuses thermal_health if available)
     guardrail_stall_ticks: int = 3            # consecutive "stalled" ThermalHealth reads to flag
+    # --- Calendar-driven shift planning ---------------------------------------------------
+    # For a DAY (or evening) shift picked up from the work calendar, how long before the shift
+    # start to set the auto-wake alarm — time to get up, ready, and out the door. Night shifts
+    # don't get a morning alarm at all (the daytime-sleep/banking plan handles those instead).
+    shift_prep_buffer_min: int = 90
 
 
 @dataclass

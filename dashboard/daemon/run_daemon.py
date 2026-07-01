@@ -437,10 +437,28 @@ class DashboardDaemon:
                 print(f"wearable fusion skipped: {exc}", flush=True)
         return frame, now
 
+    def _refresh_calendar_wake(self) -> None:
+        """Calendar-driven auto-wake (mirrors the gym advisor's effective-wake pattern in
+        `_apply_commands`'s set_wake handling): only when the user has NOT set tonight's wake by
+        hand (self.wake is None) does the next work-calendar shift get to arm a morning alarm.
+        Manual wake ALWAYS wins — this never touches required_wake_time once self.wake is set.
+        Night shifts get no morning alarm here (calendar_effective_wake returns None for those);
+        the shift planner's banking/anchor-sleep guidance covers them instead."""
+        if self.wake is not None:
+            return
+        try:
+            from app import services
+            auto_wake = services.calendar_effective_wake(self.repo)
+            if auto_wake is not None:
+                self.context.required_wake_time = auto_wake
+        except Exception as exc:
+            print(f"calendar auto-wake skipped: {exc}", flush=True)
+
     def control_tick(self) -> None:
         """Full sense->decide->act cycle plus a fresh snapshot."""
         self._apply_commands()
         self._refresh_hue()
+        self._refresh_calendar_wake()
         # A nap ends once its deadline has passed (the smart wake has fired by then).
         if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
             self._end_session()
