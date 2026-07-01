@@ -12,6 +12,7 @@ import QuickTemp from '@/components/QuickTemp';
 import CheckInCard from '@/components/CheckInCard';
 import ReadinessCard from '@/components/ReadinessCard';
 import ShiftCard from '@/components/ShiftCard';
+import CircadianCard from '@/components/CircadianCard';
 import { useStatusStream } from '@/lib/useStatusStream';
 import useSWR from 'swr';
 import { CheckInStatus, fetcher } from '@/lib/api';
@@ -85,6 +86,9 @@ function HomeContent() {
 
           {/* Cross-shift sleep strategy: debt, banking, naps, anchor */}
           <ShiftCard />
+
+          {/* Circadian phase estimate + OAuth-free calendar auto-ingest */}
+          <CircadianCard />
 
           {/* Hero temps */}
           <StatusHero data={data} />

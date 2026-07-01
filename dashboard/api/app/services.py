@@ -281,9 +281,22 @@ def build_status(repo) -> dict:
         "recommendation": {"action": rec.get("action"), "reason": rec.get("reason"),
                            "confidence": rec.get("confidence"), "mode": rec.get("mode")},
         "last_night": _last_night_brief(repo, last) if last else None,
-        "alerts": active_alerts(repo),
+        "alerts": _status_alerts(repo),
         "schedule": schedule_brief(repo),
     }
+
+
+def _status_alerts(repo) -> list[dict]:
+    """Alerts for the ``/status``/SSE payload: piggy-backs the health-monitor sync onto
+    this already-frequently-polled path (see ``evaluate_and_sync_health_alerts`` for why
+    this is "the least-invasive periodic check that works" — no extra process, just a
+    few indexed lookups on a request that already happens every few seconds while the
+    app is open). Never let a health-monitor hiccup break the core status response."""
+    try:
+        evaluate_and_sync_health_alerts(repo)
+    except Exception:
+        pass
+    return active_alerts(repo)
 
 
 def _last_night_brief(repo, last) -> dict:
@@ -673,6 +686,34 @@ def experiment_stop(repo, exp_id: int) -> dict:
     from sleepctl.experiments import stop_experiment
     out = stop_experiment(repo, exp_id)
     return out or {"error": "not found"}
+
+
+# ------------------------------------------------------------------ standing efficacy trial
+# "Does the controller help?" — the standing CONTROLLED vs HELD (do-no-harm neutral baseline)
+# comparison. Opt-in (default OFF); see sleepctl.eval.efficacy for the arm-assignment/analysis
+# logic this just exposes over HTTP.
+
+def efficacy_status(repo) -> dict:
+    from sleepctl.eval.efficacy import (
+        analyze_efficacy, backfill_from_nightly_summaries, get_efficacy_config)
+    # Best-effort catch-up: resolve any efficacy_nights row whose night has since produced a
+    # nightly_summaries row but wasn't recorded at close-out (e.g. daemon restarted mid-flush,
+    # or the simulator daemon, which has no nightly close-out wiring at all).
+    try:
+        backfill_from_nightly_summaries(repo)
+    except Exception:
+        pass
+    return {"config": get_efficacy_config(repo), "analysis": analyze_efficacy(repo)}
+
+
+def efficacy_config_view(repo) -> dict:
+    from sleepctl.eval.efficacy import get_efficacy_config
+    return get_efficacy_config(repo)
+
+
+def efficacy_config_update(repo, values: dict) -> dict:
+    from sleepctl.eval.efficacy import set_efficacy_config
+    return set_efficacy_config(repo, values)
 
 
 # ------------------------------------------------------------------ phone/iPhone BCG ingest
@@ -1237,3 +1278,415 @@ def ingest_bcg(repo, payload: dict) -> dict:
             "fs": round(fs, 1), "fs_source": "explicit" if explicit_fs else (
                 "detected" if times else "default"),
             "source": source, "vitals": v}
+
+
+# ================================================================================
+# Interpretability surface: "why did the controller just do that?" / "what's it learned?"
+# Entirely read-only — joins the decision/intervention ledgers for a human-readable
+# timeline, and surfaces the currently-active learned parameters + their source/confidence.
+# ================================================================================
+
+def insights_decisions(repo, limit: int = 50) -> dict:
+    """Recent controller decisions as a human-readable "why it did that" timeline: each entry
+    joins the per-tick decision log (state/intent/target/reason/confidence) with the nearest
+    intervention (an actual commanded level CHANGE) so the reader can see both what the
+    controller was thinking and whether it actually moved the bed."""
+    decisions = repo.recent_decisions(limit)
+    interventions = repo.recent_interventions(limit * 2)
+    # Index interventions by timestamp for an exact-match device-level/magnitude lookup; decisions
+    # log every tick, interventions only log on a level change, so most ticks won't have a match —
+    # that's expected (it means "held" rather than "moved").
+    by_ts: dict[str, list] = {}
+    for iv in interventions:
+        key = iv.timestamp.isoformat() if iv.timestamp else None
+        if key:
+            by_ts.setdefault(key, []).append(iv)
+
+    out = []
+    for d in decisions:
+        ts = d.get("ts")
+        matched = by_ts.get(ts, [])
+        moved = bool(matched)
+        out.append({
+            "ts": ts,
+            "night_date": d.get("night_date"),
+            "state": d.get("state"),
+            "objective": d.get("objective"),
+            "intent": d.get("thermal_intent"),
+            "action": d.get("action"),
+            "target_temp_f": d.get("target_temp_f"),
+            "target_level": d.get("target_level"),
+            "confidence": d.get("confidence"),
+            "reason": d.get("reason"),
+            "moved": moved,
+            "magnitude_f": matched[0].magnitude_f if matched else None,
+        })
+    return {"decisions": out, "n": len(out)}
+
+
+def insights_parameters(repo) -> dict:
+    """A table of the currently-learned control parameters: value + source/confidence + a plain
+    "what it does" note, pulled from the setpoint profile, the thermal/comfort/resting-baseline
+    singletons, and a couple of easily-available learner summaries. Read-only — this mirrors
+    the knobs the controller actually reads, so "what's it learned" matches "why did it do that"."""
+    rows: list[dict] = []
+
+    sp = repo.latest_setpoints()
+    if sp is not None:
+        rows.append({
+            "name": "neutral_f", "value": sp.neutral_f, "source": sp.source or "default",
+            "confidence": None, "version": sp.version,
+            "what": "Baseline bed temperature the controller treats as thermally neutral.",
+        })
+        rows.append({
+            "name": "deep_bias_f", "value": sp.deep_bias_f, "source": sp.source or "default",
+            "confidence": None, "version": sp.version,
+            "what": "How much cooler to run during deep-sleep-seeking windows.",
+        })
+        rows.append({
+            "name": "rem_warm_offset_f", "value": sp.rem_warm_offset_f,
+            "source": sp.source or "default", "confidence": None, "version": sp.version,
+            "what": "Warm offset applied to protect/encourage REM sleep.",
+        })
+        rows.append({
+            "name": "wake_ramp_f", "value": sp.wake_ramp_f, "source": sp.source or "default",
+            "confidence": None, "version": sp.version,
+            "what": "Warmth added during the wake ramp to help you surface gently.",
+        })
+        rows.append({
+            "name": "composite_bed_weight", "value": sp.composite_bed_weight,
+            "source": sp.source or "default", "confidence": None, "version": sp.version,
+            "what": "How much weight the ML setpoint model gives the bed (vs room) temperature.",
+        })
+    else:
+        d = CFG.default_setpoints()
+        rows.append({
+            "name": "neutral_f", "value": d.neutral_f, "source": "default", "confidence": None,
+            "version": None, "what": "Baseline bed temperature (no learned setpoint yet).",
+        })
+
+    cal = repo.get_thermal_calibration()
+    if cal:
+        rows.append({
+            "name": "cool_f_per_min", "value": cal.get("cool_f_per_min"),
+            "source": cal.get("source") or "self_test", "confidence": None, "version": None,
+            "what": "Measured cooling rate — how fast the bed actually cools (feeds pre-cool timing).",
+        })
+        rows.append({
+            "name": "heat_f_per_min", "value": cal.get("heat_f_per_min"),
+            "source": cal.get("source") or "self_test", "confidence": None, "version": None,
+            "what": "Measured heating rate — how fast the bed actually warms (feeds wake warm-up timing).",
+        })
+
+    comfort = repo.get_comfort_profile()
+    if comfort:
+        rows.append({
+            "name": "comfort_neutral_f", "value": comfort.get("neutral_f"),
+            "source": comfort.get("source") or "comfort_cal", "confidence": None, "version": None,
+            "what": "The temperature YOU rated \"just right\" on this mattress from the comfort sweep.",
+        })
+        if comfort.get("cool_edge_f") is not None and comfort.get("warm_edge_f") is not None:
+            rows.append({
+                "name": "comfort_band_f", "value": [comfort.get("cool_edge_f"), comfort.get("warm_edge_f")],
+                "source": comfort.get("source") or "comfort_cal", "confidence": None, "version": None,
+                "what": "Coolest/warmest temperatures you still rated comfortable.",
+            })
+
+    baseline = repo.get_resting_baseline()
+    if baseline:
+        rows.append({
+            "name": "resting_hr_hrv", "value": [baseline.get("hr"), baseline.get("hrv")],
+            "source": baseline.get("source") or "self_test", "confidence": None, "version": None,
+            "what": "Your quiet-awake-in-bed HR/HRV baseline — anchors arousal/wake-risk detection.",
+        })
+
+    # A couple of easily-available learner summaries: settle-nudge (maintenance) + model confidence.
+    try:
+        from sleepctl.learning.settle import learn_settle_nudge
+        settle = learn_settle_nudge(repo, CFG)
+        rows.append({
+            "name": "settle_nudge_f", "value": round(settle, 2), "source": "learned",
+            "confidence": None, "version": None,
+            "what": "Learned nudge applied after an awakening to help you re-settle (cooler/warmer).",
+        })
+    except Exception:
+        pass
+
+    try:
+        rows_ml = build_feature_rows(repo)
+        clean = clean_rows(rows_ml)
+        if len(clean) >= 3:
+            conf = SetpointModel(lam=CFG.ml.ridge_lambda).fit(clean).confidence()
+            rows.append({
+                "name": "model_confidence", "value": round(conf, 3), "source": "ml",
+                "confidence": conf, "version": None,
+                "what": "The setpoint model's confidence, from nights of clean revealed-preference data.",
+            })
+    except Exception:
+        pass
+
+    return {"parameters": rows, "n": len(rows)}
+# ------------------------------------------------------------- meta-learning ledger
+def learning_ledger_view(repo) -> dict:
+    """The cross-learner confidence ledger: what EVERY learner currently reports (value,
+    maturity, confidence, source), plus an advisory (never enforced) check for learners quietly
+    pulling the same phase's temperature in opposite directions. Pure read-model — never
+    retrains anything and never changes controller behavior."""
+    from sleepctl.learning.coordinator import build_ledger_report
+    return build_ledger_report(repo, CFG).to_dict()
+# ============================================================================
+# Goal #2: detect controller/bed failures and push them to the phone so a silent
+# multi-hour outage becomes a 2-minute fix. ``health_monitor.evaluate_health`` is the
+# pure decision layer (see that module for the full rationale); everything below wires
+# it to the existing ``alerts`` table/endpoint and the Web Push sender.
+# ============================================================================
+from app import health_monitor, push_sender  # noqa: E402
+
+
+# Health-monitor alert types are namespaced with "health_" so they never collide with
+# the pre-existing per-day-deduped alert types above (e.g. "stale_data") — they use a
+# different lifecycle (raise-on-appear, auto-clear-on-resolve) rather than one-per-day.
+_HEALTH_ALERT_PREFIX = "health_"
+
+
+def _health_alert_type(code: str) -> str:
+    return f"{_HEALTH_ALERT_PREFIX}{code}"
+
+
+def active_health_alert_codes(repo) -> set[str]:
+    """Codes (bare, without the ``health_`` prefix) with a currently-open alert row —
+    used both to avoid re-pushing every poll and to know what to auto-clear."""
+    rows = repo.conn.execute(
+        "SELECT type FROM alerts WHERE acknowledged=0 AND type LIKE ?",
+        (f"{_HEALTH_ALERT_PREFIX}%",),
+    ).fetchall()
+    return {r["type"][len(_HEALTH_ALERT_PREFIX):] for r in rows}
+
+
+def _raise_health_alert(repo, issue: dict) -> bool:
+    """Insert an open alert row for ``issue`` if one isn't already open. Returns True if
+    a NEW row was inserted (i.e. this is a newly-appearing issue, not a repeat)."""
+    atype = _health_alert_type(issue["code"])
+    exists = repo.conn.execute(
+        "SELECT 1 FROM alerts WHERE type=? AND acknowledged=0 LIMIT 1", (atype,)
+    ).fetchone()
+    if exists:
+        return False
+    repo.conn.execute(
+        "INSERT INTO alerts (ts, type, severity, message, acknowledged) VALUES (?,?,?,?,0)",
+        (datetime.now(timezone.utc).isoformat(), atype, issue["severity"], issue["message"]),
+    )
+    repo.conn.commit()
+    return True
+
+
+def _clear_health_alert(repo, code: str) -> None:
+    """Auto-acknowledge the open alert for a health-monitor code whose condition has
+    resolved — this is what makes the alert list reflect CURRENT state rather than
+    accumulating stale entries forever."""
+    repo.conn.execute(
+        "UPDATE alerts SET acknowledged=1 WHERE type=? AND acknowledged=0",
+        (_health_alert_type(code),),
+    )
+    repo.conn.commit()
+
+
+def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None) -> dict:
+    """Run the health evaluator against the live runtime_state, raise alerts for newly
+    appearing issues, clear alerts for issues that resolved, and push newly-appearing
+    CRITICAL issues to any subscribed phones. Returns a small summary dict (useful for
+    tests/diagnostics); safe to call on every ``/status``/``/alerts`` request — it's a
+    handful of indexed SQLite lookups, not a background job, so there's no extra process
+    to keep alive (see the module docstring in health_monitor.py for why that's enough)."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    issues = health_monitor.evaluate_health(rt, recent_errors=recent_errors,
+                                            stale_seconds=settings.runtime_stale_seconds)
+    current_codes = {i["code"] for i in issues}
+    previously_active = active_health_alert_codes(repo)
+
+    newly_raised = []
+    for issue in issues:
+        if _raise_health_alert(repo, issue):
+            newly_raised.append(issue)
+
+    for code in previously_active - current_codes:
+        _clear_health_alert(repo, code)
+
+    pushed = 0
+    to_push = push_sender.select_new_critical(newly_raised, previously_active)
+    if to_push:
+        subs = list_push_subscriptions(repo)
+        for issue in to_push:
+            result = push_sender.deliver(issue, subs)
+            if result.ok:
+                pushed += 1
+            if result.stale_removed:
+                # best-effort cleanup of dead subscriptions surfaced by the transport
+                pass
+
+    return {"issues": issues, "newly_raised": [i["code"] for i in newly_raised],
+            "cleared": sorted(previously_active - current_codes), "pushed": pushed}
+
+
+# ---------------------------------------------------------------------- push subscriptions
+def add_push_subscription(repo, endpoint: str, p256dh: str, auth: str) -> dict:
+    repo.conn.execute(
+        """INSERT INTO push_subscriptions (endpoint, p256dh, auth, created) VALUES (?,?,?,?)
+        ON CONFLICT(endpoint) DO UPDATE SET p256dh=excluded.p256dh, auth=excluded.auth""",
+        (endpoint, p256dh, auth, datetime.now(timezone.utc).isoformat()),
+    )
+    repo.conn.commit()
+    return {"ok": True}
+
+
+def remove_push_subscription(repo, endpoint: str) -> dict:
+    repo.conn.execute("DELETE FROM push_subscriptions WHERE endpoint=?", (endpoint,))
+    repo.conn.commit()
+    return {"ok": True}
+
+
+def list_push_subscriptions(repo) -> list[dict]:
+    rows = repo.conn.execute("SELECT endpoint, p256dh, auth FROM push_subscriptions").fetchall()
+    return [dict(r) for r in rows]
+
+
+def vapid_public_key() -> dict:
+    return {"public_key": settings.vapid_public_key or None,
+            "configured": push_sender.vapid_configured()}
+# ------------------------------------------------------------------ circadian phase (#10)
+def circadian_view(repo) -> dict:
+    """The circadian phase estimate + wake-maintenance zone, from recent sleep history.
+
+    Thin wrapper over ``sleepctl.controller.circadian.estimate_circadian`` — the pure,
+    unit-tested model — so the dashboard can surface it directly.
+    """
+    from sleepctl.controller.circadian import estimate_circadian
+    est = estimate_circadian(repo)
+    return est.to_dict()
+
+
+# ------------------------------------------------------------------ OAuth-free calendar (#10)
+def _get_calendar_config(repo) -> dict:
+    """ICS calendar ingest config (secret read-only ICS URL), stored in settings_kv.
+
+    The URL is user data, not a secret we generate — never hardcoded, never logged. Kept
+    server-side in the same settings_kv table the shift/gym/hue configs already use.
+    """
+    import json as _json
+    row = repo.conn.execute(
+        "SELECT value FROM settings_kv WHERE key='calendar_config'").fetchone()
+    d = _json.loads(row["value"]) if row else {}
+    return {"enabled": bool(d.get("enabled", False)), "ics_url": d.get("ics_url")}
+
+
+def calendar_config_view(repo) -> dict:
+    cfg = _get_calendar_config(repo)
+    # Never echo the raw URL back in full once set — enough to confirm it's configured
+    # without re-displaying the secret path on every poll.
+    url = cfg.get("ics_url")
+    masked = None
+    if url:
+        masked = url if len(url) <= 24 else f"{url[:16]}...{url[-8:]}"
+    return {"enabled": cfg["enabled"], "configured": bool(url), "ics_url_masked": masked}
+
+
+def calendar_config_update(repo, values: dict) -> dict:
+    import json as _json
+    merged = {**_get_calendar_config(repo), **(values or {})}
+    repo.conn.execute(
+        "INSERT INTO settings_kv (key, value) VALUES ('calendar_config', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (_json.dumps(merged),))
+    repo.conn.commit()
+    return calendar_config_view(repo)
+
+
+_ICS_SOURCE_CACHE: dict = {}
+
+
+def _get_ics_source(repo):
+    """Build (or reuse) an ``IcsCalendarSource`` for the configured URL. None if unset."""
+    from sleepctl.adapters.calendar import IcsCalendarSource
+    cfg = _get_calendar_config(repo)
+    url = cfg.get("ics_url")
+    if not cfg["enabled"] or not url:
+        return None
+    cached = _ICS_SOURCE_CACHE.get(repo.path)
+    if cached is not None and cached.ics_url == url:
+        return cached
+    src = IcsCalendarSource(url)
+    _ICS_SOURCE_CACHE[repo.path] = src
+    return src
+
+
+def calendar_refresh(repo) -> dict:
+    """Force a re-fetch of the configured ICS feed; returns upcoming events + any fetch error."""
+    from sleepctl.adapters.calendar import next_wake_time_from_events, upcoming_events
+    src = _get_ics_source(repo)
+    if src is None:
+        return {"ok": False, "configured": False, "events": [], "next_wake_time": None}
+    events = src.refresh(force=True)
+    upcoming = upcoming_events(events, within_days=14)
+    nxt = next_wake_time_from_events(events)
+    return {
+        "ok": src._last_error is None,
+        "configured": True,
+        "error": src._last_error,
+        "events": [e.to_dict() for e in upcoming],
+        "next_wake_time": nxt.isoformat() if nxt else None,
+    }
+
+
+def calendar_events_view(repo) -> dict:
+    """Upcoming parsed events from the last (cached) fetch, without forcing a network hit."""
+    from sleepctl.adapters.calendar import next_wake_time_from_events, upcoming_events
+    src = _get_ics_source(repo)
+    if src is None:
+        return {"ok": False, "configured": False, "events": [], "next_wake_time": None}
+    events = src.refresh(force=False)
+    upcoming = upcoming_events(events, within_days=14)
+    nxt = next_wake_time_from_events(events)
+    return {
+        "ok": src._last_error is None,
+        "configured": True,
+        "error": src._last_error,
+        "events": [e.to_dict() for e in upcoming],
+        "next_wake_time": nxt.isoformat() if nxt else None,
+    }
+
+
+# ======================================================================================
+# Safety/quality surfacing: data-quality gate (Feature #6) + decision guardrail (Feature #8).
+# Both read the daemon's ``runtime_state.extra`` the same way ``preemption_status`` above
+# reads "preemption"/"steering" -- additive, so until a daemon is updated to publish these
+# keys the endpoints just report the neutral "unavailable" defaults below (no daemon changes
+# were made for this feature; the daemon side is a small future follow-up: publish
+# ``controller.data_quality_summary()`` / ``controller.guardrail_summary()`` into ``extra``).
+# ======================================================================================
+def data_quality_status(repo) -> dict:
+    """Live data-quality-gate state for the dashboard: current trust score, top reason, and
+    whether it's currently forcing a conservative HOLD."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    dq = extra.get("data_quality") or {}
+    return {
+        "score": dq.get("score"),
+        "reasons": dq.get("reasons", []),
+        "top_reason": dq.get("top_reason"),
+        "gating": bool(dq.get("gating", False)),
+        "stale": rt.get("stale", True),
+    }
+
+
+def guardrail_status(repo) -> dict:
+    """Live decision-guardrail state for the dashboard: any current findings and whether a
+    CRITICAL one is forcing a safe hold this tick."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    gr = extra.get("guardrail") or {}
+    return {
+        "triggered": bool(gr.get("triggered", False)),
+        "critical": bool(gr.get("critical", False)),
+        "findings": gr.get("findings", []),
+        "stale": rt.get("stale", True),
+    }

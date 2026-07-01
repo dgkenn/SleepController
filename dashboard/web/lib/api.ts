@@ -465,6 +465,94 @@ export interface ExperimentAnalyzeResponse {
   analysis: Analysis;
 }
 
+export interface VapidKeyResponse {
+  public_key: string | null;
+  configured: boolean;
+}
+
+export interface PushSubscribeBody {
+  endpoint: string;
+  keys: { p256dh: string; auth: string };
+}
+
+// ---------------------------------------------------------------------------
+// Interpretability ("why did it do that?" / "what's it learned?")
+// ---------------------------------------------------------------------------
+
+export interface InsightDecision {
+  ts: string | null;
+  night_date: string | null;
+  state: string | null;
+  objective: string | null;
+  intent: string | null;
+  action: string | null;
+  target_temp_f: number | null;
+  target_level: number | null;
+  confidence: number | null;
+  reason: string | null;
+  moved: boolean;
+  magnitude_f: number | null;
+}
+
+export interface InsightsDecisionsResponse {
+  decisions: InsightDecision[];
+  n: number;
+}
+
+export interface InsightParameter {
+  name: string;
+  value: number | number[] | string | null;
+  source: string | null;
+  confidence: number | null;
+  version?: number | null;
+  what: string;
+}
+
+export interface InsightsParametersResponse {
+  parameters: InsightParameter[];
+  n: number;
+}
+
+// ---- Standing efficacy trial: "does the controller help?" -----------------
+
+export interface EfficacyConfig {
+  enabled: boolean;
+  block_nights: number;
+}
+
+export interface EfficacyMetricStat {
+  n: number;
+  mean: number | null;
+  sd: number | null;
+}
+
+export interface EfficacyMetricComparison {
+  controlled: EfficacyMetricStat;
+  held: EfficacyMetricStat;
+  diff_held_minus_controlled: number | null;
+  ci: [number, number] | null;
+  p_value: number | null;
+  lower_better: boolean;
+}
+
+export interface EfficacyAnalysis {
+  enough_data: boolean;
+  min_n_per_arm: number;
+  n_controlled: number;
+  n_held: number;
+  metrics: {
+    wake_events: EfficacyMetricComparison;
+    deep_pct: EfficacyMetricComparison;
+    efficiency: EfficacyMetricComparison;
+  };
+  verdict: string;
+}
+
+export interface EfficacyStatusResponse {
+  config: EfficacyConfig;
+  analysis: EfficacyAnalysis;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch wrapper
 // ---------------------------------------------------------------------------
@@ -724,6 +812,46 @@ export interface ComfortStatus {
   profile: (ComfortProfile & { ratings?: { f: number; rating: number }[] }) | null;
 }
 
+// ---- Circadian phase model + OAuth-free calendar ingest (#10) ----
+export interface WakeMaintenanceZone {
+  start_clock: string;
+  end_clock: string;
+}
+
+export interface CircadianEstimate {
+  n_nights_habitual: number;
+  n_nights_recent: number;
+  habitual_midpoint_clock: string | null;
+  habitual_sleep_start_clock: string | null;
+  habitual_sleep_end_clock: string | null;
+  recent_midpoint_clock: string | null;
+  phase_shift_hours: number | null;
+  confidence: number;
+  wake_maintenance_zone: WakeMaintenanceZone | null;
+  note: string;
+}
+
+export interface CalendarConfig {
+  enabled: boolean;
+  configured: boolean;
+  ics_url_masked: string | null;
+}
+
+export interface CalendarEvent {
+  start: string;
+  end: string | null;
+  summary: string;
+  all_day: boolean;
+}
+
+export interface CalendarEventsResponse {
+  ok: boolean;
+  configured: boolean;
+  error?: string | null;
+  events: CalendarEvent[];
+  next_wake_time: string | null;
+}
+
 export interface SelfTestStatus {
   self_test: SelfTestReport | null;
   calibration: Record<string, number | string | null> | null;
@@ -787,10 +915,10 @@ export const api = {
     }),
 
   // Auth
-  login: (username: string, password: string) =>
-    apiFetch<{ token: string; user: AuthUser }>('/api/auth/login', {
+  login: (username: string, password: string, remember = true) =>
+    apiFetch<{ token: string; user: AuthUser; remember: boolean }>('/api/auth/login', {
       method: 'POST',
-      body: JSON.stringify({ username, password }),
+      body: JSON.stringify({ username, password, remember }),
     }),
 
   logout: () => apiFetch<void>('/api/auth/logout', { method: 'POST' }),
@@ -961,7 +1089,89 @@ export const api = {
 
   stopExperiment: (id: number) =>
     apiFetch<Experiment>(`/api/experiments/${id}/stop`, { method: 'POST' }),
+
+  // Interpretability: "why did it do that?" / "what's it learned?"
+  insightsDecisions: (limit = 50) =>
+    apiFetch<InsightsDecisionsResponse>(`/api/insights/decisions?limit=${limit}`),
+
+  insightsParameters: () =>
+    apiFetch<InsightsParametersResponse>('/api/insights/parameters'),
+  // Meta-learning ledger: what every learner currently reports + advisory contradictions
+  learningLedger: () => apiFetch<LearningLedgerResponse>('/api/learning/ledger'),
+  // Web Push (silent-outage alerts -> phone)
+  vapidPublicKey: () => apiFetch<VapidKeyResponse>('/api/push/vapid-public-key'),
+
+  pushSubscribe: (body: PushSubscribeBody) =>
+    apiFetch<{ ok: boolean }>('/api/push/subscribe', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  pushUnsubscribe: (endpoint: string) =>
+    apiFetch<{ ok: boolean }>('/api/push/unsubscribe', {
+      method: 'POST',
+      body: JSON.stringify({ endpoint }),
+    }),
+  // Circadian phase estimate + wake-maintenance zone
+  circadian: () => apiFetch<CircadianEstimate>('/api/circadian'),
+
+  // OAuth-free calendar (ICS) ingest
+  calendarConfig: () => apiFetch<CalendarConfig>('/api/calendar/config'),
+  calendarConfigUpdate: (values: { enabled?: boolean; ics_url?: string | null }) =>
+    apiFetch<CalendarConfig>('/api/calendar/config', {
+      method: 'PUT',
+      body: JSON.stringify(values),
+    }),
+  calendarEvents: () => apiFetch<CalendarEventsResponse>('/api/calendar/events'),
+  calendarRefresh: () =>
+    apiFetch<CalendarEventsResponse>('/api/calendar/refresh', { method: 'POST' }),
+  // Standing efficacy trial ("does the controller help?")
+  efficacyStatus: () => apiFetch<EfficacyStatusResponse>('/api/efficacy'),
+
+  efficacyConfig: () => apiFetch<EfficacyConfig>('/api/efficacy/config'),
+
+  updateEfficacyConfig: (values: Partial<EfficacyConfig>) =>
+    apiFetch<EfficacyConfig>('/api/efficacy/config', {
+      method: 'PUT',
+      body: JSON.stringify(values),
+    }),
+  // Data-quality gate (Feature #6)
+  dataQuality: () => apiFetch<DataQualityResponse>('/api/safety/data-quality'),
+
+  // Decision guardrail (Feature #8)
+  guardrail: () => apiFetch<GuardrailResponse>('/api/safety/guardrail'),
 };
+
+// ---------------------------------------------------------------------------
+// Meta-learning ledger types (GET /learning/ledger)
+// ---------------------------------------------------------------------------
+
+export type LedgerSource = 'preset' | 'learned' | 'measured';
+export type LedgerPhase = 'onset' | 'maintenance' | 'wake' | 'thermal';
+
+export interface LedgerEntry {
+  name: string;
+  phase: LedgerPhase;
+  value: number | null;
+  unit: string;
+  source: LedgerSource;
+  maturity: number;
+  confidence: number;
+  note: string;
+}
+
+export interface LedgerContradiction {
+  phase: string;
+  a: string;
+  b: string;
+  combined_spread_f: number;
+  message: string;
+}
+
+export interface LearningLedgerResponse {
+  entries: LedgerEntry[];
+  contradictions: LedgerContradiction[];
+}
 
 // SWR fetcher
 export const fetcher = (url: string) =>
@@ -973,3 +1183,28 @@ export const fetcher = (url: string) =>
     if (!r.ok) throw new Error(r.statusText);
     return r.json();
   });
+
+// ---------------------------------------------------------------------------
+// Data-quality gate (Feature #6) + decision guardrail (Feature #8) -- additive.
+// ---------------------------------------------------------------------------
+
+export interface DataQualityResponse {
+  score: number | null;
+  reasons: string[];
+  top_reason: string | null;
+  gating: boolean;
+  stale: boolean;
+}
+
+export interface GuardrailFinding {
+  code: string;
+  severity: 'info' | 'warning' | 'critical';
+  message: string;
+}
+
+export interface GuardrailResponse {
+  triggered: boolean;
+  critical: boolean;
+  findings: GuardrailFinding[];
+  stale: boolean;
+}

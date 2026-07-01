@@ -63,3 +63,49 @@ self.addEventListener('fetch', (event) => {
     )
   );
 });
+
+// ---------------------------------------------------------------------------
+// Web Push — goal #2: a silent controller/bed outage should buzz the phone.
+// The backend (dashboard/api/app/push_sender.py) sends a JSON payload shaped
+// {title, body, tag, severity, url} (see push_sender.build_payload). ``tag``
+// dedupes so re-delivery of the same still-open issue replaces rather than
+// stacks notifications.
+// ---------------------------------------------------------------------------
+self.addEventListener('push', (event) => {
+  let data = { title: 'SleepCtl alert', body: 'A controller issue needs attention.', tag: 'sleepctl-alert', url: '/' };
+  if (event.data) {
+    try {
+      data = { ...data, ...event.data.json() };
+    } catch (e) {
+      data.body = event.data.text() || data.body;
+    }
+  }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      tag: data.tag,
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      data: { url: data.url || '/' },
+      requireInteraction: data.severity === 'critical',
+    })
+  );
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const c of clientList) {
+        if ('focus' in c) {
+          c.navigate(url);
+          return c.focus();
+        }
+      }
+      if (self.clients.openWindow) {
+        return self.clients.openWindow(url);
+      }
+    })
+  );
+});

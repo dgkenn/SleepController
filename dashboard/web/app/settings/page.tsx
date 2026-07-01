@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import BigButton from '@/components/BigButton';
+import PushEnableCard from '@/components/PushEnableCard';
 import useSWR from 'swr';
 import { SettingsResponse, fetcher, api } from '@/lib/api';
 
@@ -32,7 +33,6 @@ function SettingsContent() {
   const [values, setValues] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState('');
-  const [notifEnabled, setNotifEnabled] = useState(false);
 
   useEffect(() => {
     if (data) {
@@ -91,35 +91,8 @@ function SettingsContent() {
         </div>
 
         <div className="px-4 space-y-4">
-          {/* Notification toggle stub */}
-          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-sm font-medium text-white">Push Notifications</p>
-                <p className="text-xs text-gray-500 mt-0.5">Alerts and wake reminders</p>
-              </div>
-              <button
-                onClick={() => setNotifEnabled((v) => !v)}
-                className={`w-12 h-7 rounded-full transition-colors relative ${
-                  notifEnabled ? 'bg-brand' : 'bg-gray-700'
-                }`}
-                aria-label="Toggle notifications"
-                role="switch"
-                aria-checked={notifEnabled}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-6 h-6 bg-white rounded-full shadow transition-transform ${
-                    notifEnabled ? 'translate-x-5' : 'translate-x-0'
-                  }`}
-                />
-              </button>
-            </div>
-            {notifEnabled && (
-              <p className="text-xs text-warning mt-2">
-                Note: Push notifications require PWA install and backend webhook support
-              </p>
-            )}
-          </div>
+          {/* Web Push: buzz the phone the moment a critical controller/bed issue appears */}
+          <PushEnableCard />
 
           {/* Settings fields */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">

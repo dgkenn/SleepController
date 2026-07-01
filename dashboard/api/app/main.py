@@ -25,7 +25,9 @@ from app.security import (
     authenticate,
     create_token,
     current_user,
+    decode_token,
     ensure_bootstrap_user,
+    _token_from_request,
 )
 
 app = FastAPI(title="sleepctl dashboard", version="1.0.0")
@@ -38,6 +40,7 @@ app.add_middleware(
 @app.on_event("startup")
 def _startup() -> None:
     ensure_bootstrap_user()
+    _start_health_watchdog()
 
 
 def repo_dep():
@@ -107,6 +110,7 @@ def diag(token: str = "", repo=Depends(repo_dep)):
 class LoginBody(BaseModel):
     username: str
     password: str
+    remember: bool = True   # "keep me logged in" — persistent, sliding session
 
 
 class TempBody(BaseModel):
@@ -144,14 +148,24 @@ def health():
     return {"ok": True, "ts": datetime.now(timezone.utc).isoformat()}
 
 
+def _issue_session(response: Response, username: str, remember: bool) -> str:
+    """Set the session cookie. Remember → a long-lived PERSISTENT cookie; otherwise a
+    SESSION cookie (no max_age) that the browser drops when it's closed."""
+    ttl_hours = settings.jwt_remember_hours if remember else settings.jwt_session_hours
+    token = create_token(username, ttl_hours=ttl_hours, remember=remember)
+    kwargs = dict(httponly=True, samesite="lax")
+    if remember:
+        kwargs["max_age"] = ttl_hours * 3600      # persist across browser restarts
+    response.set_cookie("session", token, **kwargs)
+    return token
+
+
 @app.post("/auth/login")
 def login(body: LoginBody, response: Response):
     if not authenticate(body.username, body.password):
         raise HTTPException(401, "invalid credentials")
-    token = create_token(body.username)
-    response.set_cookie("session", token, httponly=True, samesite="lax",
-                        max_age=settings.jwt_ttl_hours * 3600)
-    return {"token": token, "user": body.username}
+    token = _issue_session(response, body.username, body.remember)
+    return {"token": token, "user": body.username, "remember": body.remember}
 
 
 @app.post("/auth/logout")
@@ -161,7 +175,15 @@ def logout(response: Response):
 
 
 @app.get("/auth/me")
-def me(user: str = AuthDep):
+def me(request: Request, response: Response, user: str = AuthDep):
+    # Sliding renewal: whenever the app checks who's logged in, re-issue a fresh long-lived
+    # cookie IF the user opted to stay signed in — so an actively-used session never expires.
+    try:
+        claims = decode_token(_token_from_request(request) or "")
+        if claims.get("rmb"):
+            _issue_session(response, user, remember=True)
+    except Exception:
+        pass
     return {"user": user}
 
 
@@ -787,3 +809,149 @@ def experiment_analyze(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep)
 @app.post("/experiments/{exp_id}/stop")
 def experiment_stop(exp_id: int, repo=Depends(repo_dep), user: str = AuthDep):
     return services.experiment_stop(repo, exp_id)
+
+
+# ------------------------------------------------------------------ interpretability
+@app.get("/insights/decisions")
+def insights_decisions(limit: int = 50, repo=Depends(repo_dep), user: str = AuthDep):
+    """Recent controller decisions as a human-readable "why it did that" timeline: state,
+    intent/action, target temp, reason, and whether it actually moved the bed."""
+    return services.insights_decisions(repo, limit)
+
+
+@app.get("/insights/parameters")
+def insights_parameters(repo=Depends(repo_dep), user: str = AuthDep):
+    """What's currently learned: the active setpoint profile, measured thermal/comfort/resting
+    baselines, and a couple of learner summaries — each with its value, source, and what it does."""
+    return services.insights_parameters(repo)
+# ---- Meta-learning: what the system has learned, across every learner, + contradiction check
+@app.get("/learning/ledger")
+def learning_ledger(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.learning_ledger_view(repo)
+# ======================================================================================
+# Goal #2: silent-outage detection -> Web Push. The health evaluator itself already runs
+# on every /status + SSE tick (see services._status_alerts). The background watchdog
+# below is the belt-and-suspenders half: it keeps evaluating on a fixed interval even
+# when NO client/browser tab is open at all (the actual "6-hour silent outage" scenario
+# — nobody has the dashboard open to trigger a request). It's a single daemon thread,
+# not a new process, so there's nothing extra to deploy/supervise.
+# ------------------------------------------------------------------------------------
+import threading  # noqa: E402
+
+_HEALTH_WATCHDOG_INTERVAL_S = 60
+_health_watchdog_started = False
+
+
+def _health_watchdog_loop() -> None:
+    import time
+    while True:
+        try:
+            repo = get_repo()
+            try:
+                services.evaluate_and_sync_health_alerts(repo)
+            finally:
+                repo.close()
+        except Exception:
+            pass  # never let the watchdog thread die on a transient DB/import hiccup
+        time.sleep(_HEALTH_WATCHDOG_INTERVAL_S)
+
+
+def _start_health_watchdog() -> None:
+    global _health_watchdog_started
+    if _health_watchdog_started:
+        return
+    _health_watchdog_started = True
+    t = threading.Thread(target=_health_watchdog_loop, name="health-watchdog", daemon=True)
+    t.start()
+
+
+# ------------------------------------------------------------------------------ push
+class PushSubscribeBody(BaseModel):
+    endpoint: str
+    keys: dict  # {"p256dh": ..., "auth": ...}
+
+
+@app.get("/push/vapid-public-key")
+def push_vapid_public_key():
+    """Public info only — no auth required so the "Enable alerts" button can fetch the
+    key before the user necessarily has a session (mirrors how service workers fetch
+    manifest.json unauthenticated)."""
+    return services.vapid_public_key()
+
+
+@app.post("/push/subscribe")
+def push_subscribe(body: PushSubscribeBody, repo=Depends(repo_dep), user: str = AuthDep):
+    keys = body.keys or {}
+    return services.add_push_subscription(repo, body.endpoint, keys.get("p256dh", ""),
+                                          keys.get("auth", ""))
+
+
+@app.post("/push/unsubscribe")
+def push_unsubscribe(body: dict = Body(...), repo=Depends(repo_dep), user: str = AuthDep):
+    return services.remove_push_subscription(repo, body.get("endpoint", ""))
+# ---- Circadian phase model + OAuth-free calendar ingest (#10) ----
+@app.get("/circadian")
+def circadian(repo=Depends(repo_dep), user: str = AuthDep):
+    """Circadian phase estimate (habitual sleep window + midpoint, recent phase shift) and the
+    derived wake-maintenance zone — grounded in the user's own recent sleep history."""
+    return services.circadian_view(repo)
+
+
+class CalendarConfigBody(BaseModel):
+    enabled: bool | None = None
+    ics_url: str | None = None   # secret read-only ICS URL (user data — never hardcoded/logged)
+
+
+@app.get("/calendar/config")
+def calendar_config(repo=Depends(repo_dep), user: str = AuthDep):
+    """Whether an ICS feed is configured (URL is masked, never echoed in full)."""
+    return services.calendar_config_view(repo)
+
+
+@app.put("/calendar/config")
+def calendar_config_update(body: CalendarConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.calendar_config_update(repo, body.model_dump(exclude_unset=True))
+
+
+@app.get("/calendar/events")
+def calendar_events(repo=Depends(repo_dep), user: str = AuthDep):
+    """Upcoming events parsed from the last cached ICS fetch (no network hit)."""
+    return services.calendar_events_view(repo)
+
+
+@app.post("/calendar/refresh")
+def calendar_refresh(repo=Depends(repo_dep), user: str = AuthDep):
+    """Force a re-fetch of the configured ICS feed now."""
+    return services.calendar_refresh(repo)
+# ---- Standing efficacy trial: "does the controller help?" (opt-in, default OFF) ----
+class EfficacyConfigBody(BaseModel):
+    enabled: bool | None = None
+    block_nights: int | None = None
+
+
+@app.get("/efficacy")
+def efficacy_status(repo=Depends(repo_dep), user: str = AuthDep):
+    """Standing-trial status: current config + the CONTROLLED-vs-HELD analysis so far."""
+    return services.efficacy_status(repo)
+
+
+@app.get("/efficacy/config")
+def efficacy_config(repo=Depends(repo_dep), user: str = AuthDep):
+    return services.efficacy_config_view(repo)
+
+
+@app.put("/efficacy/config")
+def efficacy_config_update(body: EfficacyConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.efficacy_config_update(repo, body.model_dump(exclude_none=True))
+# ---- Safety/quality: data-quality gate + decision guardrail ----
+@app.get("/safety/data-quality")
+def safety_data_quality(repo=Depends(repo_dep), user: str = AuthDep):
+    """Live data-quality-gate state: trust score, top reason, and whether it's forcing a HOLD."""
+    return services.data_quality_status(repo)
+
+
+@app.get("/safety/guardrail")
+def safety_guardrail(repo=Depends(repo_dep), user: str = AuthDep):
+    """Live decision-guardrail state: current findings and whether a CRITICAL one is forcing
+    a safe hold."""
+    return services.guardrail_status(repo)

@@ -188,6 +188,27 @@ class ThermalController:
         self._recent_targets.append(clamped)
         return clamped
 
+    def note_override(self, final_f: float, now=None) -> None:
+        """Sync internal bookkeeping when a caller overrides the ``resolve()`` output
+        (e.g. a safety backstop forcing a safe-hold target).
+
+        ``resolve()`` records its own proposal into ``_recent_targets``/``_last_cmd_water``
+        for the variability cap + latency damping. If a caller substitutes a DIFFERENT final
+        value without telling this controller, those internals silently desync from the real
+        commanded trajectory. Patching only the newest entry isn't enough: ``_recent_targets``
+        is a short window (maxlen=8) used verbatim as the variability-cap's [lo, hi] anchor, so
+        older UN-overridden entries from before the override (e.g. a low pre-guardrail proposal)
+        would still sit in the window and could clamp a later legitimate resolve() far below the
+        override once the cap's swing budget is measured against that stale low. Reset the whole
+        window to the override value instead, so "recent commanded history" honestly reflects
+        the safe value going forward and the next tick's cap is anchored on reality, not a stale
+        pre-override trajectory. Call this right after substituting an override."""
+        self._recent_targets.clear()
+        self._recent_targets.append(final_f)
+        if now is not None:
+            self._last_cmd_time = now
+            self._last_cmd_water = final_f
+
     # -- conversion --------------------------------------------------------------
     def to_level(self, target_f: float) -> int:
         t = self.cfg.tunables

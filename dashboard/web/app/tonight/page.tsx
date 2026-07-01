@@ -11,6 +11,7 @@ import SleepSessionCard from '@/components/SleepSessionCard';
 import SleepPlanCard from '@/components/SleepPlanCard';
 import WeatherCard from '@/components/WeatherCard';
 import PreemptionCard from '@/components/PreemptionCard';
+import SafetyGuardrailCard from '@/components/SafetyGuardrailCard';
 import GymCard from '@/components/GymCard';
 import HueCard from '@/components/HueCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
@@ -201,6 +202,9 @@ function TonightContent() {
 
           {/* Predictive pre-emption — live awakening avoidance */}
           <PreemptionCard />
+
+          {/* Safety backstop — data-quality gate + decision guardrail */}
+          <SafetyGuardrailCard />
 
           {/* Live device health (power / link / water / thermal-response) */}
           {data && <DeviceStatusCard data={data} />}

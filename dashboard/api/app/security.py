@@ -47,10 +47,13 @@ def _b64d(s: str) -> bytes:
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def create_token(username: str) -> str:
+def create_token(username: str, ttl_hours: int | None = None, remember: bool = False) -> str:
     header = _b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    exp = int(time.time()) + settings.jwt_ttl_hours * 3600
-    payload = _b64(json.dumps({"sub": username, "exp": exp}).encode())
+    hours = ttl_hours if ttl_hours is not None else settings.jwt_ttl_hours
+    exp = int(time.time()) + hours * 3600
+    # ``rmb`` records that the user asked to stay signed in, so the session can be slid forward
+    # on activity (see /auth/me) rather than hard-expiring while the app is in active use.
+    payload = _b64(json.dumps({"sub": username, "exp": exp, "rmb": bool(remember)}).encode())
     signing_input = f"{header}.{payload}".encode()
     sig = hmac.new(settings.jwt_secret.encode(), signing_input, hashlib.sha256).digest()
     return f"{header}.{payload}.{_b64(sig)}"

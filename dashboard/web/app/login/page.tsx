@@ -9,6 +9,7 @@ export default function LoginPage() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
@@ -20,7 +21,7 @@ export default function LoginPage() {
     setError('');
     setLoading(true);
     try {
-      await api.login(username, password);
+      await api.login(username, password, remember);
       router.replace('/');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
@@ -90,6 +91,16 @@ export default function LoginPage() {
             "
           />
         </div>
+
+        <label className="flex items-center gap-3 py-1 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            className="w-5 h-5 rounded accent-brand"
+          />
+          <span className="text-sm text-gray-300">Keep me logged in</span>
+        </label>
 
         <button
           type="submit"

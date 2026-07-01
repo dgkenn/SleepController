@@ -3,3 +3,10 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 PyYAML>=6.0
 # the sleepctl engine is installed from the repo root: `pip install -e .`
+
+# OPTIONAL — only needed to actually DELIVER Web Push notifications (VAPID signing).
+# Not installed by default: it pulls in `cryptography`, the exact dependency family this
+# project's stdlib-only auth avoids (see app/security.py's docstring). Without it,
+# /push/subscribe still works and alerts still raise/clear in the DB and show in-app —
+# only the phone push itself is a documented no-op (see app/push_sender.py).
+# pywebpush>=2.0

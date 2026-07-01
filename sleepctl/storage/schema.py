@@ -240,6 +240,30 @@ CREATE TABLE IF NOT EXISTS experiments (
     result TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_experiments_status ON experiments(status);
+
+-- Standing "does the controller help?" efficacy trial: every night is assigned CONTROLLED
+-- (normal closed loop) or HELD (do-no-harm fixed-neutral baseline: steering/preemption off,
+-- neutral setpoint, still clamped + smart-wake). Compared over many nights with significance
+-- (sleepctl.eval.efficacy). Opt-in, defaults OFF (see the ``efficacy_config`` singleton below).
+CREATE TABLE IF NOT EXISTS efficacy_nights (
+    night_date TEXT PRIMARY KEY,
+    arm TEXT NOT NULL,             -- 'controlled' | 'held'
+    wake_events INTEGER,
+    deep_pct REAL,
+    efficiency REAL,
+    outcome_score REAL,
+    resolved INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_efficacy_nights_arm ON efficacy_nights(arm);
+
+-- Efficacy-trial config (singleton). Engine-level (not the dashboard's settings_kv) so
+-- sleepctl.eval.efficacy works standalone against a plain Repository, same as
+-- thermal_calibration/comfort_profile/resting_baseline above.
+CREATE TABLE IF NOT EXISTS efficacy_config (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    enabled INTEGER DEFAULT 0,     -- opt-in: defaults OFF
+    block_nights INTEGER DEFAULT 3
+);
 """
 
 
