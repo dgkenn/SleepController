@@ -23,3 +23,6 @@ scratch_data/
 
 # codespace-up.sh runtime logs
 .run/
+
+# Claude Code agent worktrees (harness scratch; never commit)
+.claude/
