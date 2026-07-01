@@ -39,6 +39,20 @@ try {
     }
 } catch { Log "firewall rule skipped (run once as admin if the phone can't connect): $_" }
 
+# --- clean up ORPHANS from a previous run (they'd hold ports 8000/3000 and block the fresh
+# start, and would still be serving stale code/env). The watchdog runs elevated via the task,
+# so it can kill them even when a normal shell can't. This makes a plain task restart clean --
+# no reboot needed to pick up new code or a changed deploy\.env.
+foreach ($port in 8000, 3000) {
+    try {
+        Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
+                Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
+                Log "cleaned up stale process $_ on port $port"
+            }
+    } catch {}
+}
+
 # --- one-time prep: DB + login user, and a PRODUCTION web build if missing ---
 Log "preparing database + login user"
 & $py -c "from app.db import connect; from app.security import ensure_bootstrap_user; connect(); ensure_bootstrap_user(); print('db ready')" 2>&1 | ForEach-Object { Log "db: $_" }
