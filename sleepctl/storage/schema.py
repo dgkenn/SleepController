@@ -121,6 +121,22 @@ CREATE TABLE IF NOT EXISTS setpoints (
     profile TEXT
 );
 
+-- Measured thermal-response calibration from the in-bed self-test (singleton). Records how fast
+-- the bed actually COOLS and HEATS against the real in-bed thermal mass (levels/min and the
+-- derived °F/min + minutes-of-lag), so the timing modules (pre-cool lead, smart-wake warm-up)
+-- start from a controlled measurement instead of inferring it from noisy overnight data.
+CREATE TABLE IF NOT EXISTS thermal_calibration (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ts TEXT,
+    cool_levels_per_min REAL,
+    heat_levels_per_min REAL,
+    cool_f_per_min REAL,
+    heat_f_per_min REAL,
+    cool_lag_min REAL,        -- measured minutes for a cool command to fully take effect (plateau)
+    heat_lag_min REAL,        -- measured minutes for a heat command to fully take effect (plateau)
+    source TEXT
+);
+
 -- Action ledger: the learning action chosen per night + its predictions and observed reward.
 CREATE TABLE IF NOT EXISTS actions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

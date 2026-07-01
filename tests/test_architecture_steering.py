@@ -225,3 +225,15 @@ def test_steer_event_ledger_resolves_stage_response():
         assert eff["deepen"]["act"]["woke"] == 0
     finally:
         os.remove(path)
+
+
+def test_measured_cool_lag_floors_steer_horizon():
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    c = SleepController(AppConfig.default())
+    base = c._steer_horizon_min()
+    # a large measured cool-lag pushes the scoring horizon out past the default
+    c.set_measured_thermal(cool_lag_min=30.0, heat_lag_min=20.0)
+    assert c._steer_horizon_min() >= 32.0 and c._steer_horizon_min() > base
+    # heat-lag becomes the wake warm-up runway, pushed to the orchestrator
+    assert c.warm_lead_min() == 22.0 and c.wake_orch._warm_lead_min == 22.0

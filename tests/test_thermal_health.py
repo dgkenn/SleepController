@@ -93,3 +93,27 @@ def test_health_to_dict_round_trips():
     d = m.status(now).to_dict()
     assert set(d) == {"state", "responding", "reason", "device_level", "target_level", "gap"}
     assert d["state"] == "ok"
+
+
+def test_measured_rate_sharpens_stall_reason():
+    # With a measured cool rate, a flat device level while commanded to cool is STALLED and the
+    # reason quotes the expected progress (judged against the bed's real speed).
+    m = _mon()
+    m.set_measured_rates(cool_levels_per_min=-30, heat_levels_per_min=20)
+    base = datetime(2026, 6, 27, 2, 0)
+    for i in range(10):
+        m.record(_t(base, i), target_level=-80, device_level=10)  # commanded cool, not moving
+    h = m.status(_t(base, 9))
+    assert h.state == "stalled" and h.responding is False
+    assert "expected" in h.reason
+
+
+def test_measured_rate_does_not_break_a_healthy_ramp():
+    m = _mon()
+    m.set_measured_rates(cool_levels_per_min=-30, heat_levels_per_min=20)
+    base = datetime(2026, 6, 27, 2, 0)
+    # device level marching down toward the target at ~the measured rate -> ramping, healthy
+    for i in range(10):
+        m.record(_t(base, i), target_level=-80, device_level=10 - i * 8)
+    h = m.status(_t(base, 9))
+    assert h.state == "ramping" and h.responding is True

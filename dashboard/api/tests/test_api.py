@@ -234,3 +234,19 @@ def test_shift_plan_and_banking_roundtrip(auth_client):
     # Clearing disables the shift-aware path.
     auth_client.put("/shift/config", json={"enabled": False, "next_shift": None})
     assert auth_client.get("/shift/plan").json()["banking"] is None
+
+
+def test_self_test_endpoints(auth_client):
+    # kick off (default full) -> enqueues the daemon command
+    r = auth_client.post("/control/self-test", json={"mode": "gentle"})
+    assert r.status_code == 200 and r.json()["queued"] == "self_test"
+    # a bad mode falls back to full rather than erroring
+    assert auth_client.post("/control/self-test", json={"mode": "bogus"}).json()["queued"] \
+        == "self_test"
+    # cancel is its own command
+    assert auth_client.post("/control/self-test/cancel").json()["queued"] == "self_test_cancel"
+    # status endpoint returns the (possibly null) report + measured calibration slot
+    st = auth_client.get("/control/self-test").json()
+    assert "self_test" in st and "calibration" in st
+    # the specific route wins over the generic /control/{action} (no 404)
+    assert auth_client.post("/control/self-test", json={}).status_code == 200

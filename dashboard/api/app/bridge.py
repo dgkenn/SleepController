@@ -18,6 +18,8 @@ VALID_COMMANDS = {
     "power_on", "power_off", "away_on", "away_off", "prime",
     # On-demand onset induction + nap sessions
     "induce_sleep", "start_nap", "end_session",
+    # On-bed self-test / thermal calibration battery
+    "self_test", "self_test_cancel",
 }
 
 
@@ -132,6 +134,33 @@ def read_sensor_sample(conn: sqlite3.Connection) -> dict | None:
             age = None
     d["age_seconds"] = age
     return d
+
+
+def write_self_test(conn: sqlite3.Connection, report: dict | None) -> None:
+    """Merge the live self-test report into ``runtime_state.extra['self_test']`` in place,
+    leaving the rest of the snapshot untouched so the dashboard's sensor fields don't blank out
+    while the battery runs. ``None`` clears it."""
+    row = conn.execute("SELECT extra FROM runtime_state WHERE id = 1").fetchone()
+    extra = {}
+    if row is not None and row["extra"]:
+        try:
+            extra = json.loads(row["extra"])
+        except Exception:
+            extra = {}
+    extra["self_test"] = report
+    conn.execute("UPDATE runtime_state SET extra = ?, updated = ? WHERE id = 1",
+                 (json.dumps(extra), _now()))
+    conn.commit()
+
+
+def read_self_test(conn: sqlite3.Connection) -> dict | None:
+    row = conn.execute("SELECT extra FROM runtime_state WHERE id = 1").fetchone()
+    if row is None or not row["extra"]:
+        return None
+    try:
+        return json.loads(row["extra"]).get("self_test")
+    except Exception:
+        return None
 
 
 def write_runtime_state(conn: sqlite3.Connection, snapshot: dict) -> None:
