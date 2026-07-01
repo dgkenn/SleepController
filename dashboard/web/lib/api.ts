@@ -748,12 +748,19 @@ export interface ShiftPlan {
   shift_enabled: boolean;
   next_shift: string | null;
   next_shift_kind: string;
+  // Calendar-driven shifts: which source produced next_shift, the shift's end (if known), and
+  // (for a day shift only) the auto-wake time the daemon will arm — null for a night shift.
+  next_shift_source?: 'manual' | 'calendar' | null;
+  shift_end?: string | null;
+  recommended_wake?: string | null;
 }
 
 export interface ShiftConfig {
   enabled: boolean;
   next_shift: string | null;
   kind: string;
+  source?: 'manual' | 'calendar';
+  shift_end?: string | null;
 }
 
 export interface SelfTestCheck {

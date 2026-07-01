@@ -2,7 +2,33 @@
 
 import { useState } from 'react';
 import useSWR from 'swr';
-import { api, fetcher, CircadianEstimate, CalendarConfig } from '@/lib/api';
+import { api, fetcher, CircadianEstimate, CalendarConfig, ShiftPlan } from '@/lib/api';
+
+/** "Tue 07:00" style clock for a next-shift/auto-wake ISO datetime, or null if unset. */
+function _shiftClock(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  const day = d.toLocaleDateString(undefined, { weekday: 'short' });
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit', hour12: false });
+  return `${day} ${time}`;
+}
+
+/** Plain-language next-shift line for the card: day shift shows the auto-wake time, night
+ *  shift points at the banking/anchor-sleep guidance instead of a morning alarm. */
+function shiftSummary(plan: ShiftPlan | undefined): string | null {
+  if (!plan || !plan.shift_enabled || !plan.next_shift) return null;
+  const when = _shiftClock(plan.next_shift);
+  if (!when) return null;
+  if (plan.next_shift_kind === 'night') {
+    return `Next: Night shift ${when} — bank sleep tonight, protect daytime sleep.`;
+  }
+  const wake = _shiftClock(plan.recommended_wake);
+  const kindLabel = plan.next_shift_kind === 'call' ? 'Call shift' : 'Day shift';
+  return wake
+    ? `Next: ${kindLabel} ${when} → auto-wake ${wake}.`
+    : `Next: ${kindLabel} ${when}.`;
+}
 
 /** Circadian phase estimate — the dominant variable on a rotating shift schedule. Shows your
  *  habitual sleep window/midpoint, how far your recent schedule has drifted from it, and the
@@ -18,6 +44,9 @@ export default function CircadianCard() {
     fetcher,
     { refreshInterval: 5 * 60000 }
   );
+  const { data: shiftPlan } = useSWR<ShiftPlan>('/api/shift/plan', fetcher, {
+    refreshInterval: 5 * 60000,
+  });
   const [url, setUrl] = useState('');
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -124,6 +153,18 @@ export default function CircadianCard() {
           iCal format&quot;) gives a read-only .ics URL that auto-detects your next shift.
         </p>
       </div>
+
+      {/* Next shift, auto-synced from the connected calendar (falls back to the manual hint) */}
+      {shiftSummary(shiftPlan) && (
+        <div className="pt-2 border-t border-surface-border/60">
+          <p className="text-[11px] text-gray-300 leading-snug">{shiftSummary(shiftPlan)}</p>
+          {shiftPlan?.next_shift_source && (
+            <p className="text-[10px] text-gray-600 leading-snug">
+              source: {shiftPlan.next_shift_source === 'calendar' ? 'work calendar' : 'manual'}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

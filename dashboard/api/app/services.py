@@ -776,13 +776,17 @@ def gym_config_update(repo, values: dict) -> dict:
 
 
 def _get_shift_config(repo) -> dict:
-    """Manual next-shift hint (until a calendar feed lands), stored in settings_kv."""
+    """Next-shift hint stored in settings_kv — either typed by hand or auto-synced from the work
+    calendar (see ``sync_calendar_to_shift``). ``source`` distinguishes the two so a manual entry
+    is never silently overwritten once the calendar is turned off."""
     import json as _json
     row = repo.conn.execute("SELECT value FROM settings_kv WHERE key='shift_config'").fetchone()
     d = _json.loads(row["value"]) if row else {}
     return {"enabled": bool(d.get("enabled", False)),
             "next_shift": d.get("next_shift"),               # ISO datetime of the shift start
-            "kind": d.get("kind", "night")}                  # 'night' | 'call' | 'day'
+            "kind": d.get("kind", "night"),                  # 'night' | 'call' | 'day'
+            "source": d.get("source", "manual"),             # 'manual' | 'calendar'
+            "shift_end": d.get("shift_end")}                 # ISO datetime of the shift end
 
 
 def shift_config_view(repo) -> dict:
@@ -794,6 +798,14 @@ def shift_config_update(repo, values: dict) -> dict:
     merged = {**_get_shift_config(repo), **(values or {})}
     if merged.get("kind") not in ("night", "call", "day"):
         merged["kind"] = "night"
+    if merged.get("source") not in ("manual", "calendar"):
+        merged["source"] = "manual"
+    # A manual edit (no explicit source="calendar" in this update) takes the config back under
+    # the user's control, so the next calendar sync won't silently overwrite it unless the
+    # calendar legitimately produces a new next-shift event.
+    if "source" not in (values or {}) and any(k in (values or {}) for k in
+                                              ("enabled", "next_shift", "kind")):
+        merged["source"] = "manual"
     repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES ('shift_config', ?) "
                       "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                       (_json.dumps(merged),))
@@ -801,19 +813,86 @@ def shift_config_update(repo, values: dict) -> dict:
     return merged
 
 
+def sync_calendar_to_shift(repo) -> dict:
+    """Bridge the OAuth-free calendar feed into the shift planner: the resident dedicates ONE
+    calendar to work shifts only, so each event IS the shift itself (start->end), not a separate
+    "first commitment of the day". When the calendar is ENABLED, take the next upcoming shift
+    event, classify it day/night by its start hour, and write it into ``shift_config`` (tagged
+    ``source: "calendar"`` so it's clearly distinguishable from a manually-typed hint). When the
+    calendar is DISABLED, this is a no-op — any manually-set shift_config (source != "calendar")
+    is left completely alone, so turning the calendar off never clobbers a manual override.
+
+    Returns the (possibly updated) shift_config dict."""
+    from sleepctl.adapters.calendar import classify_shift, upcoming_events
+    cal_cfg = _get_calendar_config(repo)
+    if not cal_cfg["enabled"]:
+        return _get_shift_config(repo)
+
+    src = _get_ics_source(repo)
+    if src is None:
+        return _get_shift_config(repo)
+
+    events = src.refresh(force=False)
+    upcoming = upcoming_events(events)
+    if not upcoming:
+        return _get_shift_config(repo)
+
+    nxt = upcoming[0]
+    kind = classify_shift(nxt.start)
+    return shift_config_update(repo, {
+        "enabled": True,
+        "next_shift": nxt.start.isoformat(),
+        "kind": kind,
+        "source": "calendar",
+        "shift_end": nxt.end.isoformat() if nxt.end else None,
+    })
+
+
+def calendar_effective_wake(repo, for_night_date=None):
+    """The auto-wake target implied by the next calendar shift, or None.
+
+    DAY shift: return ``shift_start - shift_prep_buffer_min`` (time to get up, ready, and out
+    the door before the shift starts). NIGHT shift: return None — no morning alarm; the
+    daytime-sleep/banking side of the shift planner (``plan_shift_sleep``) handles those. Also
+    None when the calendar is disabled/unconfigured or there's no upcoming shift."""
+    from datetime import datetime, timedelta
+    cal_cfg = _get_calendar_config(repo)
+    if not cal_cfg["enabled"]:
+        return None
+    cfg = _get_shift_config(repo)
+    if not cfg.get("enabled") or not cfg.get("next_shift") or cfg.get("source") != "calendar":
+        return None
+    if cfg.get("kind") == "night":
+        return None
+    try:
+        start = datetime.fromisoformat(cfg["next_shift"])
+    except Exception:
+        return None
+    buffer_min = CFG.tunables.shift_prep_buffer_min
+    return start - timedelta(minutes=buffer_min)
+
+
 def shift_plan_view(repo) -> dict:
     """The strategic cross-shift sleep plan: live debt, tonight's target, banking before a night
     block, prophylactic/recovery/anchor naps, and safety warnings. Computed on demand from the
-    user's recent nights + the manual next-shift hint."""
+    user's recent nights + the next shift (auto-synced from the work calendar when connected,
+    else the manual next-shift hint)."""
     from datetime import datetime, timedelta
 
     from sleepctl.shift_manager import Shift, plan_shift_sleep
+    sync_calendar_to_shift(repo)
     cfg = _get_shift_config(repo)
     shifts = []
     if cfg["enabled"] and cfg["next_shift"]:
         try:
             start = datetime.fromisoformat(cfg["next_shift"])
-            shifts = [Shift(start=start, end=start + timedelta(hours=12), kind=cfg["kind"])]
+            end = None
+            if cfg.get("shift_end"):
+                try:
+                    end = datetime.fromisoformat(cfg["shift_end"])
+                except Exception:
+                    end = None
+            shifts = [Shift(start=start, end=end or start + timedelta(hours=12), kind=cfg["kind"])]
         except Exception:
             shifts = []
     plan = plan_shift_sleep(repo.recent_nights(14), shifts, datetime.now())
@@ -821,6 +900,13 @@ def shift_plan_view(repo) -> dict:
     out["shift_enabled"] = cfg["enabled"]
     out["next_shift"] = cfg["next_shift"] if cfg["enabled"] else None
     out["next_shift_kind"] = cfg["kind"]
+    out["next_shift_source"] = cfg.get("source", "manual") if cfg["enabled"] else None
+    out["shift_end"] = cfg.get("shift_end") if cfg["enabled"] else None
+    recommended_wake = None
+    if cfg["enabled"] and cfg["kind"] != "night":
+        wake = calendar_effective_wake(repo)
+        recommended_wake = wake.isoformat() if wake else None
+    out["recommended_wake"] = recommended_wake
     return out
 
 
@@ -1620,7 +1706,11 @@ def _get_ics_source(repo):
 
 
 def calendar_refresh(repo) -> dict:
-    """Force a re-fetch of the configured ICS feed; returns upcoming events + any fetch error."""
+    """Force a re-fetch of the configured ICS feed; returns upcoming events + any fetch error.
+
+    Also syncs the freshly-fetched feed into ``shift_config`` (see ``sync_calendar_to_shift``)
+    so the shift plan reflects the real next shift immediately after a refresh, not just on the
+    next ``/shift/plan`` poll."""
     from sleepctl.adapters.calendar import next_wake_time_from_events, upcoming_events
     src = _get_ics_source(repo)
     if src is None:
@@ -1628,6 +1718,10 @@ def calendar_refresh(repo) -> dict:
     events = src.refresh(force=True)
     upcoming = upcoming_events(events, within_days=14)
     nxt = next_wake_time_from_events(events)
+    try:
+        sync_calendar_to_shift(repo)
+    except Exception:
+        pass
     return {
         "ok": src._last_error is None,
         "configured": True,

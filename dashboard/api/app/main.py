@@ -250,6 +250,8 @@ class ShiftConfigBody(BaseModel):
     enabled: bool | None = None
     next_shift: str | None = None   # ISO datetime of the next shift start (null to clear)
     kind: str | None = None         # 'night' | 'call' | 'day'
+    source: str | None = None       # 'manual' | 'calendar' (calendar-synced entries are tagged)
+    shift_end: str | None = None    # ISO datetime of the shift end (from a calendar event)
 
 
 @app.get("/shift/plan")
