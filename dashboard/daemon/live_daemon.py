@@ -659,7 +659,7 @@ class LiveDashboardDaemon:
         th = self.thermal.status(now)
         if th.state != self._thermal_state:
             if th.state == "stalled":
-                self._log(f"⚠ thermal: {th.reason}")
+                self._log(f"WARNING: thermal: {th.reason}")
                 self._emit_event("thermal", "warn", "thermal_stalled",
                                  th.reason or "thermal response stalled",
                                  {"device_level": frame.device_level,

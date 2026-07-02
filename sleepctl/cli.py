@@ -101,7 +101,7 @@ def _cmd_report(args: argparse.Namespace) -> int:
     from sleepctl.ml.phenotype import correlate_with_outcome
     corr = correlate_with_outcome(repo)
     if corr:
-        print("\nPhenotype — factors most correlated with the night's reward:")
+        print("\nPhenotype -- factors most correlated with the night's reward:")
         for name, r, n in corr[:5]:
             print(f"  {name}: r={r} (n={n})")
     repo.close()
@@ -120,18 +120,18 @@ def _cmd_night_report(args: argparse.Namespace) -> int:
     if getattr(args, "json", False):
         print(_json.dumps(report, indent=2, default=str))
         return 0
-    print(f"━━ Nightly report — {report.get('date') or 'no data'} ━━")
+    print(f"== Nightly report -- {report.get('date') or 'no data'} ==")
     print(report["narrative"])
     if report.get("what_i_did", {}).get("recent"):
         print("\nWhat I did (most recent):")
         for a in report["what_i_did"]["recent"]:
-            print(f"  {a.get('action')} {a.get('magnitude_f')}°F — {a.get('reason')}"
+            print(f"  {a.get('action')} {a.get('magnitude_f')} degF -- {a.get('reason')}"
                   + ("  [held]" if a.get("held") else "")
                   + ("  [reverted]" if a.get("reverted") else ""))
     if report.get("suggestions"):
         print("\nSuggested next:")
         for s in report["suggestions"]:
-            print(f"  • {s.get('reason')}")
+            print(f"  - {s.get('reason')}")
     return 0
 
 
@@ -199,7 +199,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             longitude=args.lon if args.lon is not None else cfg.tunables.weather_longitude,
         )
         t = weather.current_temp_f()
-        print(f"Ambient awareness: outdoor temp = {t} °F"
+        print(f"Ambient awareness: outdoor temp = {t} degF"
               if t is not None else "Ambient awareness: weather unavailable (will retry)")
 
     from sleepctl.controller.controller import SleepController
@@ -639,8 +639,8 @@ def _cmd_backtest(args) -> int:
     print(format_report(rep))
     d = rep["delta"]
     improved = d["wake_events"] < 0 and d["outcome_score"] > 0
-    print("\n" + ("✓ closed loop improves the night vs no control"
-                  if improved else "✗ no improvement — investigate"))
+    print("\n" + ("OK closed loop improves the night vs no control"
+                  if improved else "FAIL no improvement -- investigate"))
     return 0 if improved else 1
 
 
