@@ -1186,3 +1186,49 @@ def diag_probe(token: str = ""):
     except Exception as exc:
         result = _diag_probe_result(False, error=f"probe failed: {type(exc).__name__}: {exc}")
     return JSONResponse(result)
+
+
+# ---- diagnostics: web-facing summary ----
+# Auth-gated (dashboard login cookie via AuthDep) counterparts to /diag + /diag/events, meant
+# for the logged-in owner's web app (persistent health badge + /diagnostics page) -- NOT the
+# DIAG_TOKEN gate, which the browser doesn't have. Kept at this end-of-file seam so it merges
+# cleanly alongside the other diag work happening in parallel.
+@app.get("/diagnostics")
+def diagnostics_summary(repo=Depends(repo_dep), user: str = AuthDep):
+    """The same self-diagnosis battery ``/diag?format=json`` returns, but gated by the normal
+    dashboard session cookie instead of ``DIAG_TOKEN`` -- what the web app's health badge and
+    ``/diagnostics`` page poll. Never 500s: any failure in the diagnostics engine itself is
+    caught and reported as a DOWN verdict with the error as a single check, rather than
+    raising past this endpoint."""
+    try:
+        from app.diagnostics import run_diagnostics
+        report = run_diagnostics(repo, run_dir=_run_dir())
+        return JSONResponse(report)
+    except Exception as exc:  # the diagnostics engine is itself defensive; this is a last resort
+        return JSONResponse({
+            "verdict": "DOWN",
+            "headline": f"diagnostics engine crashed: {exc}",
+            "primary_remedy": "check the API's own logs; the diagnostics battery failed to run",
+            "checks": [{
+                "id": "diagnostics_engine", "title": "Diagnostics engine", "status": "fail",
+                "detail": f"{type(exc).__name__}: {exc}", "remedy": None,
+            }],
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "version": {"sha": None, "branch": None},
+        })
+
+
+@app.get("/diagnostics/events")
+def diagnostics_events(limit: int = 200, category: str = "", severity: str = "", since: str = "",
+                       repo=Depends(repo_dep), user: str = AuthDep):
+    """Auth-gated counterpart to ``/diag/events`` (session cookie, not ``DIAG_TOKEN``) for the
+    web diagnostics page's recent-events list. ``repo.recent_events`` already never raises
+    (returns ``[]`` on error); this wrapper just adds a belt-and-suspenders try/except so a
+    bad query param can never turn into a 500."""
+    try:
+        return repo.recent_events(
+            limit=limit, category=category or None, severity=severity or None,
+            since_iso=since or None,
+        )
+    except Exception:
+        return []

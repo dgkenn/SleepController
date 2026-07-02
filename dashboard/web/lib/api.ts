@@ -1215,3 +1215,45 @@ export interface GuardrailResponse {
   findings: GuardrailFinding[];
   stale: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Diagnostics (web-facing): persistent health badge + /diagnostics page.
+// Mirrors app/diagnostics.py's run_diagnostics() dict, served auth-gated at GET /diagnostics
+// (session cookie, not the DIAG_TOKEN remote-access gate).
+// ---------------------------------------------------------------------------
+
+export type DiagStatus = 'ok' | 'warn' | 'fail' | 'info';
+export type DiagVerdict = 'HEALTHY' | 'DEGRADED' | 'DOWN';
+
+export interface DiagCheck {
+  id: string;
+  title: string;
+  status: DiagStatus;
+  detail: string;
+  remedy: string | null;
+}
+
+export interface DiagnosticsReport {
+  verdict: DiagVerdict;
+  headline: string;
+  primary_remedy: string | null;
+  checks: DiagCheck[];
+  generated_at: string;
+  version: { sha: string | null; branch: string | null };
+}
+
+export interface DiagEvent {
+  id: number;
+  ts: string;
+  category: string;
+  severity: string;
+  message?: string;
+  data?: Record<string, unknown> | null;
+  [k: string]: unknown;
+}
+
+export const diagnosticsApi = {
+  summary: () => apiFetch<DiagnosticsReport>('/api/diagnostics'),
+  events: (limit = 100) =>
+    apiFetch<DiagEvent[]>(`/api/diagnostics/events?limit=${limit}`),
+};

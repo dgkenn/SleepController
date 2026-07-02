@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/lib/useAuth';
+import HealthBadge from '@/components/HealthBadge';
 
 export default function AuthGuard({ children }: { children: React.ReactNode }) {
   const { isAuthenticated, isLoading } = useAuth();
@@ -26,5 +27,11 @@ export default function AuthGuard({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  return <>{children}</>;
+  return (
+    <>
+      {/* Persistent health badge: visible on every authenticated screen, taps through to /diagnostics */}
+      <HealthBadge />
+      {children}
+    </>
+  );
 }

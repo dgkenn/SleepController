@@ -386,3 +386,39 @@ def test_diag_json_still_404s_without_token(client, monkeypatch):
     assert client.get("/diag?format=json").status_code == 404
     monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
     assert client.get("/diag?format=json&token=nope").status_code == 404
+
+
+# ------------------------------------------------------------------ /diagnostics (web-facing, auth-gated)
+def test_diagnostics_requires_auth(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    assert TestClient(app).get("/diagnostics").status_code == 401
+
+
+def test_diagnostics_returns_verdict_and_checks(auth_client):
+    from app.db import get_repo
+    r = get_repo()
+    try:
+        _seed_runtime_state(r)
+    finally:
+        r.close()
+    resp = auth_client.get("/diagnostics")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["verdict"] in ("HEALTHY", "DEGRADED", "DOWN")
+    assert "checks" in body and isinstance(body["checks"], list) and body["checks"]
+    assert "generated_at" in body
+    for c in body["checks"]:
+        assert c["status"] in ("ok", "warn", "fail", "info")
+
+
+def test_diagnostics_events_requires_auth(client):
+    from fastapi.testclient import TestClient
+    from app.main import app
+    assert TestClient(app).get("/diagnostics/events").status_code == 401
+
+
+def test_diagnostics_events_returns_list(auth_client):
+    resp = auth_client.get("/diagnostics/events?limit=10")
+    assert resp.status_code == 200
+    assert isinstance(resp.json(), list)
