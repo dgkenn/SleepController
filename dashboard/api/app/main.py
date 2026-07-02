@@ -119,8 +119,33 @@ def diag(token: str = "", format: str = "", repo=Depends(repo_dep)):
         f"thermal_health={json.dumps(extra.get('thermal_health'))}",
         f"device_error={extra.get('device_error')}",
     ]
+
+    # WATER-LOOP / CAPACITY -- surfaces the richer per-side pyEight fields (device_status()'s
+    # last_prime/last_low_water/device_level/device_target_level/now_heating/now_cooling/
+    # external_schedule, see eightsleep_cloud.py) plus the three health checks built on them
+    # (thermal_capacity, external_conflict, frozen_telemetry -- see app/diagnostics.py /
+    # sleepctl.diagnostics_thermal) so a stuck prime, an air-bound loop, a low reservoir, an
+    # Eight Sleep app schedule conflict, or frozen telemetry are all visible at a glance
+    # instead of requiring a manual debugging session to discover.
+    checks_by_id = {c.get("id"): c for c in (report.get("checks") or [])}
+    water_loop_lines = [
+        "=== WATER-LOOP / CAPACITY ===",
+        f"last_prime={device.get('last_prime')}  last_low_water={device.get('last_low_water')}",
+        f"now_heating={device.get('now_heating')}  now_cooling={device.get('now_cooling')}",
+        f"external_schedule={json.dumps(device.get('external_schedule'))}",
+    ]
+    for check_id in ("thermal_capacity", "external_conflict", "frozen_telemetry"):
+        c = checks_by_id.get(check_id)
+        if c is None:
+            continue
+        line = f"[{str(c.get('status')).upper():<4}] {check_id}: {c.get('detail')}"
+        if c.get("remedy"):
+            line += f"  (fix: {c['remedy']})"
+        water_loop_lines.append(line)
+
     out = render_diagnosis_text(report)
     out += "\n\n" + "\n".join(status_lines)
+    out += "\n\n" + "\n".join(water_loop_lines)
     out += "\n\n=== daemon-crash.log (last 40) ===\n" + _tail(os.path.join(run, "daemon-crash.log"), 40)
     out += "\n\n=== daemon.log (last 60) ===\n" + _tail(os.path.join(run, "daemon.log"), 60)
     out += "\n\n=== daemon.err (last 40) ===\n" + _tail(os.path.join(run, "daemon.err"), 40)

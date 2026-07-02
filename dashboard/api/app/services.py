@@ -1958,8 +1958,17 @@ _STALE_AT_NIGHT_THRESHOLD_S = 300    # runtime_state older than this WHILE someo
 _NIGHT_FAILURE_RATE_LIMIT_S = 3600   # at most one push per condition per hour
 _NIGHT_WINDOW_START_HOUR = 21        # fallback "probably asleep" window (21:00-09:00) for when
 _NIGHT_WINDOW_END_HOUR = 9           # bed presence isn't (yet) known, e.g. right at lights-out
-_NIGHT_FAILURE_CODES = {"device_offline", "reservoir_empty", "stuck_commands", "data_stale_at_night"}
+# Water-loop/capacity + frozen-telemetry device-health conditions (see
+# ``_detect_thermal_failure_conditions`` below) are pushed under a WIDER gate than the
+# original four -- a stuck prime or an air-bound loop is a device-health problem, not just a
+# 3am comfort issue, so they alert whenever the bed is actively being driven, not only at
+# night/with confirmed presence (see ``check_and_alert_failures``).
+_THERMAL_FAILURE_CODES = {"stuck_prime", "reduced_capacity", "low_water", "frozen_telemetry"}
+_NIGHT_FAILURE_CODES = ({"device_offline", "reservoir_empty", "stuck_commands",
+                        "data_stale_at_night"} | _THERMAL_FAILURE_CODES)
 _NIGHT_FAILURE_LAST_SENT_PREFIX = "night_failure_last_sent__"  # + code -> settings_kv: ISO ts
+_THERMAL_HISTORY_HOURS = 1           # state_history window fed to the thermal detectors
+_THERMAL_HISTORY_LIMIT = 200
 
 
 def _in_night_window(now: datetime) -> bool:
@@ -2047,17 +2056,76 @@ def _detect_failure_conditions(rt: dict, repo, now: datetime) -> list[dict]:
     return out
 
 
+def _detect_thermal_failure_conditions(rt: dict, repo, now: datetime) -> list[dict]:
+    """Water-loop/capacity + frozen-telemetry device-health conditions, from the pure
+    ``sleepctl.diagnostics_thermal`` engine fed by ``state_history`` (already-recorded trend
+    data -- no new sampling needed, see ``Repository.record_state_snapshot``). Independent of
+    gating, mirroring ``_detect_failure_conditions`` above: never raises, degrades to an empty
+    list on any error so a bad history row can never break the daemon tick that calls this."""
+    extra = rt.get("extra") or {}
+    device = extra.get("device") or {}
+    if not isinstance(device, dict):
+        device = {}
+    out: list[dict] = []
+    try:
+        from sleepctl.diagnostics_thermal import analyze_thermal_capacity, detect_frozen_telemetry
+        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        capacity = analyze_thermal_capacity(device, history, now.isoformat())
+        status = capacity.get("status")
+        if status == "stuck_prime":
+            out.append({
+                "code": "stuck_prime", "severity": "critical",
+                "title": "Bed alert: prime stuck",
+                "body": capacity.get("remedy") or capacity.get("reason") or
+                        "Priming has been running far longer than it should.",
+            })
+        elif status == "reduced_capacity":
+            out.append({
+                "code": "reduced_capacity", "severity": "critical",
+                "title": "Bed alert: reduced thermal capacity",
+                "body": capacity.get("remedy") or capacity.get("reason") or
+                        "The bed isn't responding to strong thermal commands.",
+            })
+        elif status == "low_water":
+            out.append({
+                "code": "low_water", "severity": "warning",
+                "title": "Bed alert: low water",
+                "body": capacity.get("remedy") or capacity.get("reason") or
+                        "The reservoir is reporting low.",
+            })
+
+        frozen = detect_frozen_telemetry(history)
+        if frozen.get("status") == "frozen_telemetry":
+            out.append({
+                "code": "frozen_telemetry", "severity": "critical",
+                "title": "Bed alert: telemetry frozen",
+                "body": frozen.get("remedy") or frozen.get("reason") or
+                        "bed_temp_f/device_level haven't changed in a while despite active control.",
+            })
+    except Exception:
+        pass
+    return out
+
+
 def check_and_alert_failures(repo) -> list[dict]:
     """The nighttime-failure detector + pusher. Meant to be called on every daemon tick (both
     daemons) so a silent failure gets a phone push even with no browser tab open to drive the
     request-based health monitor above -- and it's cheap/idempotent enough to also back
     ``GET /alerts/active`` for the web app's banner.
 
-    Gated on it actually mattering: LIVE mode (not the simulator/dry-run) AND "night context"
-    (bed presence, or within the configured night window -- see ``_in_night_window``). Outside
-    that gate the conditions are still logged via ``repo.log_event`` for forensics, but NOTHING
-    is pushed and this returns an EMPTY list -- a bed offline at noon with nobody near it isn't
-    a 3am emergency.
+    Gated on it actually mattering, LIVE mode (not the simulator/dry-run) always required, plus
+    one of two applicability gates depending on the condition:
+      * the original four (``device_offline``, ``reservoir_empty``, ``stuck_commands``,
+        ``data_stale_at_night``) need "night context" (bed presence, or within the configured
+        night window -- see ``_in_night_window``) -- they're comfort/safety issues that matter
+        most while someone's actually trying to sleep.
+      * the water-loop/capacity + frozen-telemetry conditions (``_THERMAL_FAILURE_CODES``) are
+        DEVICE-HEALTH problems, not just a 3am comfort issue -- a stuck prime or an air-bound
+        loop matters whenever the bed is actively being driven, so they also fire while the
+        controller is powered on and not in away mode, even mid-day with nobody (yet) detected
+        in bed (bed-presence sensing is itself unreliable -- see eightsleep_cloud.py).
+    Outside its gate a condition is still logged via ``repo.log_event`` for forensics, but
+    NOTHING is pushed for it.
 
     Each condition pushes at most once per hour (persisted via the same settings_kv
     last-sent-timestamp pattern the morning report throttle uses) and that throttle is cleared
@@ -2068,6 +2136,7 @@ def check_and_alert_failures(repo) -> list[dict]:
     now = datetime.now(timezone.utc)
 
     conditions = _detect_failure_conditions(rt, repo, now)
+    conditions += _detect_thermal_failure_conditions(rt, repo, now)
     active_codes = {c["code"] for c in conditions}
 
     # Auto-clear any per-condition throttle whose condition is no longer active, so the NEXT
@@ -2081,9 +2150,11 @@ def check_and_alert_failures(repo) -> list[dict]:
     dry_run = bool(extra.get("dry_run", False))
     bed_presence = bool(extra.get("bed_presence"))
     night_context = bed_presence or _in_night_window(now)
-    matters = live and not dry_run and night_context
+    device_active = bool(extra.get("power_on", True)) and not bool(extra.get("away", False))
+    comfort_matters = live and not dry_run and night_context
+    device_health_matters = live and not dry_run and (night_context or device_active)
 
-    if not matters:
+    if not (comfort_matters or device_health_matters):
         for cond in conditions:
             try:
                 repo.log_event("alert", "info", cond["code"],
@@ -2093,7 +2164,18 @@ def check_and_alert_failures(repo) -> list[dict]:
         return []
 
     subs = None
+    result: list[dict] = []
     for cond in conditions:
+        code_matters = (device_health_matters if cond["code"] in _THERMAL_FAILURE_CODES
+                        else comfort_matters)
+        if not code_matters:
+            try:
+                repo.log_event("alert", "info", cond["code"],
+                               f"(not paging: outside live/night gate) {cond['body']}", cond)
+            except Exception:
+                pass
+            continue
+        result.append(cond)
         key = _NIGHT_FAILURE_LAST_SENT_PREFIX + cond["code"]
         last_sent = _kv_get_json(repo, key)
         should_push = True
@@ -2115,7 +2197,7 @@ def check_and_alert_failures(repo) -> list[dict]:
                                        subscriptions=subs, tag=f"sleepctl-night-{cond['code']}")
             _kv_set_json(repo, key, now.isoformat())
 
-    return conditions
+    return result
 
 
 def send_test_night_alert(repo) -> dict:

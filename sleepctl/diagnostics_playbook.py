@@ -218,6 +218,76 @@ PLAYBOOK: list[PlaybookEntry] = [
         fix="Check the Hub's network connection and power; check status.eightsleep.com for a "
             "cloud-side outage; power-cycle the Hub if it stays offline.",
     ),
+    # ---- water-loop / thermal-capacity health (sleepctl.diagnostics_thermal) ---------------
+    # These five key off the ``thermal_capacity``/``external_conflict``/``frozen_telemetry``
+    # checks app.diagnostics.run_diagnostics() adds (see that module) — discovered live: an
+    # air-bound water loop, a prime that never finishes, an empty-ish reservoir, the Eight
+    # Sleep app's own schedule fighting this controller, and a daemon crash-loop that froze
+    # telemetry while looking otherwise "steady".
+    PlaybookEntry(
+        id="stuck_prime",
+        symptom="Prime was started but never finishes (Pod stays in 'priming' for many minutes)",
+        # NOTE: keyword on "stuck_prime:" (with the colon ``app.diagnostics``'s
+        # ``f"{status}: {reason}"`` detail format always produces) rather than a looser phrase
+        # like "air-bound" -- that word ALSO appears in this very entry's own remedy text below
+        # (which the ``_blob`` keyword scan also sees), so a loose match would make this and
+        # ``air_bound_loop`` cross-trigger on each other's check.
+        detect=lambda ctx: _status(ctx, "thermal_capacity") in ("warn", "fail")
+        and _keyword_match(ctx, ("stuck_prime:",)),
+        likely_cause="The Pod's priming routine has been running continuously for more than "
+                     "~6 minutes without completing (lastPrime never advances) — the water "
+                     "loop is almost always air-bound.",
+        fix="Top off the reservoir with distilled water, reseat the hub↔cover connectors, "
+            "then re-prime (dashboard Controls -> Prime, or POST /control/prime).",
+    ),
+    PlaybookEntry(
+        id="air_bound_loop",
+        symptom="Bed heats/cools weakly or not at all even though it's online and has water",
+        detect=lambda ctx: _status(ctx, "thermal_capacity") in ("warn", "fail")
+        and _keyword_match(ctx, ("reduced_capacity:",)),
+        likely_cause="The bed isn't responding to strong thermal commands — device_level and "
+                     "bed_temp_f barely move even under a strong commanded target. This is "
+                     "usually air trapped in the water loop after a leak or low-water event, "
+                     "reducing heat-transfer capacity without taking the Pod fully offline.",
+        fix="Purge air from the loop: top off the reservoir with distilled water, reseat the "
+            "hub↔cover connectors, then re-prime 2-4 times in a row (dashboard Controls -> "
+            "Prime, or POST /control/prime).",
+    ),
+    PlaybookEntry(
+        id="low_water_reservoir",
+        symptom="Pod reports it needs priming, or a low-water event was logged recently",
+        detect=lambda ctx: _status(ctx, "thermal_capacity") in ("warn", "fail")
+        and _keyword_match(ctx, ("low_water:",)),
+        likely_cause="The reservoir is low enough that the Pod flagged needs_priming or "
+                     "logged a recent lastLowWater event — thermal performance degrades before "
+                     "has_water actually flips to false.",
+        fix="Top off the Hub reservoir with distilled water, then run PRIME (dashboard "
+            "Controls -> Prime, or POST /control/prime).",
+    ),
+    PlaybookEntry(
+        id="external_schedule_conflict",
+        symptom="The bed's setpoint keeps drifting away from what this controller commanded",
+        detect=lambda ctx: _status(ctx, "external_conflict") in ("warn", "fail")
+        or _keyword_match(ctx, ("external_setpoint_conflict:",)),
+        likely_cause="The Eight Sleep app's own schedule (or another controller/app) has an "
+                     "active setpoint that repeatedly overrides or fights the level this "
+                     "controller is commanding.",
+        fix="Open the Eight Sleep app and turn OFF the schedule/Autopilot for this bed side so "
+            "sleepctl has sole control of the setpoint.",
+    ),
+    PlaybookEntry(
+        id="frozen_telemetry",
+        symptom="Bed temperature/level readings look perfectly steady for a long time",
+        detect=lambda ctx: _status(ctx, "frozen_telemetry") in ("warn", "fail")
+        or _keyword_match(ctx, ("frozen_telemetry:",)),
+        likely_cause="bed_temp_f and device_level haven't changed in many minutes despite an "
+                     "actively non-neutral commanded target — genuine equilibrium doesn't look "
+                     "like this; the daemon is likely wedged or crash-looping and is publishing "
+                     "the same stale reading every tick.",
+        fix="Restart the daemon (dashboard -> Diagnostics -> Restart daemon, or POST "
+            "/diag/action/restart?target=daemon) and check daemon.log/daemon-crash.log for "
+            "the underlying crash.",
+    ),
 ]
 
 

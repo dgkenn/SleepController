@@ -48,10 +48,17 @@ DOWN_TRIGGER_IDS = {"daemon_heartbeat", "api"}
 # Rendering/aggregation order (stable, readable; doesn't affect verdict logic).
 _CHECK_ORDER = [
     "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
-    "device_water", "device_online", "priming", "thermal_response", "recent_errors",
+    "device_water", "device_online", "priming", "thermal_response",
+    "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "eight_sleep_creds", "version", "log_sizes",
     "calendar", "shift",
 ]
+
+# History window handed to the thermal-capacity/conflict/frozen-telemetry detectors — plenty
+# to confirm a stuck prime (>6 min) or a frozen window (>5 min) without pulling the whole 7-day
+# state_history table on every /diag hit.
+_THERMAL_HISTORY_HOURS = 1
+_THERMAL_HISTORY_LIMIT = 200
 
 
 def _check(id: str, title: str, status: str, detail: str, remedy: str | None = None) -> dict:
@@ -342,6 +349,83 @@ def _check_thermal_response(extra: dict) -> dict:
                   f"state={state or 'unknown'}", None)
 
 
+# ------------------------------------------------------------------ water-loop / capacity / conflict / frozen
+# Three checks built on ``sleepctl.diagnostics_thermal`` (pure detection engine) fed by the
+# ``state_history`` table (see ``Repository.record_state_snapshot``/``state_history``) — this
+# is the trend data the daemon already records every ~60s, so no new sampling is needed. These
+# close the loop on failure modes that were previously only found by manually reading logs: an
+# air-bound water loop, a prime that starts but never finishes, a low reservoir, the Eight
+# Sleep app's own schedule fighting this controller, and telemetry frozen by a crash-looping
+# daemon.
+def _check_thermal_capacity(repo, extra: dict) -> dict:
+    device = extra.get("device") or {}
+    if not isinstance(device, dict):
+        device = {}
+    try:
+        from sleepctl.diagnostics_thermal import analyze_thermal_capacity
+        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        result = analyze_thermal_capacity(device, history, now_iso)
+    except Exception as exc:
+        return _check("thermal_capacity", "Water-loop / thermal capacity", "info",
+                     f"check could not run: {exc!r}", None)
+
+    status = result.get("status")
+    reason = result.get("reason") or "no water-loop/thermal-capacity issue detected."
+    remedy = result.get("remedy") or None
+    detail = f"{status}: {reason}"
+    if status in ("stuck_prime", "reduced_capacity"):
+        return _check("thermal_capacity", "Water-loop / thermal capacity", "fail", detail, remedy)
+    if status == "low_water":
+        return _check("thermal_capacity", "Water-loop / thermal capacity", "warn", detail, remedy)
+    if status == "insufficient_data":
+        return _check("thermal_capacity", "Water-loop / thermal capacity", "info", reason, None)
+    return _check("thermal_capacity", "Water-loop / thermal capacity", "ok", reason, None)
+
+
+def _check_external_conflict(repo, extra: dict) -> dict:
+    device = extra.get("device") or {}
+    if not isinstance(device, dict):
+        device = {}
+    try:
+        from sleepctl.diagnostics_thermal import detect_external_conflict
+        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        result = detect_external_conflict(device, history)
+    except Exception as exc:
+        return _check("external_conflict", "External controller conflict", "info",
+                     f"check could not run: {exc!r}", None)
+
+    status = result.get("status")
+    reason = result.get("reason") or "no external-controller conflict detected."
+    remedy = result.get("remedy") or None
+    detail = f"{status}: {reason}"
+    if status == "external_setpoint_conflict":
+        return _check("external_conflict", "External controller conflict", "warn", detail, remedy)
+    if status == "insufficient_data":
+        return _check("external_conflict", "External controller conflict", "info", reason, None)
+    return _check("external_conflict", "External controller conflict", "ok", reason, None)
+
+
+def _check_frozen_telemetry(repo) -> dict:
+    try:
+        from sleepctl.diagnostics_thermal import detect_frozen_telemetry
+        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        result = detect_frozen_telemetry(history)
+    except Exception as exc:
+        return _check("frozen_telemetry", "Frozen telemetry", "info",
+                     f"check could not run: {exc!r}", None)
+
+    status = result.get("status")
+    reason = result.get("reason") or "telemetry is updating normally."
+    remedy = result.get("remedy") or None
+    detail = f"{status}: {reason}"
+    if status == "frozen_telemetry":
+        return _check("frozen_telemetry", "Frozen telemetry", "fail", detail, remedy)
+    if status == "insufficient_data":
+        return _check("frozen_telemetry", "Frozen telemetry", "info", reason, None)
+    return _check("frozen_telemetry", "Frozen telemetry", "ok", reason, None)
+
+
 def _check_live_mode(extra: dict) -> dict:
     live = extra.get("live")
     dry_run = extra.get("dry_run")
@@ -521,6 +605,11 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("device_online", "Device online", lambda: _check_device_online(extra))
     add("priming", "Priming state", lambda: _check_priming(extra))
     add("thermal_response", "Thermal response", lambda: _check_thermal_response(extra))
+    add("thermal_capacity", "Water-loop / thermal capacity",
+        lambda: _check_thermal_capacity(repo, extra))
+    add("external_conflict", "External controller conflict",
+        lambda: _check_external_conflict(repo, extra))
+    add("frozen_telemetry", "Frozen telemetry", lambda: _check_frozen_telemetry(repo))
     add("live_mode", "Live / dry-run mode", lambda: _check_live_mode(extra))
     add("cloud_errors", "Eight Sleep cloud errors", lambda: _check_cloud_errors(run_dir))
     add("recent_errors", "Recent daemon errors", lambda: _check_recent_errors(run_dir))
