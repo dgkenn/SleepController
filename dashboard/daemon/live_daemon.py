@@ -38,10 +38,12 @@ def _write_daemon_heartbeat() -> None:
 from sleepctl.config import AppConfig
 from sleepctl.controller.controller import SleepController
 from sleepctl.controller.thermal_health import ThermalResponseMonitor
+from sleepctl.diagnostics_blackbox import BlackBoxRecorder
 from sleepctl.loop.cycle import ControlCycle
 from sleepctl.precompensation import compute_precompensation
 from sleepctl.loop.nightly import NightlyUpdater
 from sleepctl.models import ContextRecord, ControllerState
+from sleepctl.storage.backup import maybe_run_backup
 
 import command_spec as cs
 from app import bridge
@@ -124,6 +126,9 @@ class LiveDashboardDaemon:
         self._onset_warm_f = cfg.tunables.onset_warm_nudge_f   # tonight's learned onset warmth
         self._deepen_policy = None     # learned deepening-response policy (do-no-harm gate)
         self._precursor_profile = None  # learned personalized awakening-precursor trajectory
+        self._last_history_ts = 0.0    # monotonic clock: throttles state_history writes
+        self._last_applied_commands: list = []
+        self.blackbox = BlackBoxRecorder(bridge.run_dir())   # crash pre-history ring buffer
         # Load the learned profiles onto the controller AFTER all the state above exists (the
         # attach path flushes the wake log + applies every per-phase learner). Doing this last
         # fixes a startup ordering bug where the whole load was silently skipped.
@@ -306,12 +311,14 @@ class LiveDashboardDaemon:
         """Drain the dashboard command queue, applying each to the REAL device. Returns
         True if any device-affecting change occurred."""
         changed = False
+        self._last_applied_commands = []   # reset each call; read by the blackbox recorder
         while True:
             cmd = bridge.next_pending_command(self.repo.conn)
             if cmd is None:
                 break
             t, p = cmd["type"], cmd["payload"]
             changed = True
+            self._last_applied_commands.append(t)
             try:
                 if t == "stop":
                     # EMERGENCY STOP is a safety override: hard-off the side ALWAYS, even in
@@ -679,6 +686,51 @@ class LiveDashboardDaemon:
                       if decision else None},
         }
 
+    # ---- diagnostics: 48h state-history trend + black-box crash pre-history --------------
+    def _record_state_history(self, snapshot: dict) -> None:
+        """Append a throttled (~60s) copy of ``snapshot`` to ``state_history`` (see
+        ``Repository.record_state_snapshot``) so /diag/history has a real trend, not just the
+        latest instant. Best-effort: a DB hiccup here must never affect the control loop."""
+        now = asyncio.get_event_loop().time()
+        if now - self._last_history_ts < 60.0:
+            return
+        self._last_history_ts = now
+        try:
+            self.repo.record_state_snapshot(snapshot)
+        except Exception:
+            pass
+
+    def _blackbox_entry(self, decision, frame) -> dict:
+        """One tick's black-box summary: state/decision + key frame fields + any command
+        applied this tick (see ``sleepctl.diagnostics_blackbox.BlackBoxRecorder``)."""
+        return {
+            "state": decision.state.value if decision else None,
+            "intent": decision.thermal_intent.value if decision else None,
+            "target_temp_f": decision.target_temp_f if decision else None,
+            "reason": decision.reason if decision else None,
+            "hr": frame.heart_rate if frame else None,
+            "hrv": frame.hrv if frame else None,
+            "rr": frame.respiratory_rate if frame else None,
+            "stage": frame.stage.value if frame and frame.stage else None,
+            "bed_temp_f": frame.bed_temp_f if frame else None,
+            "presence": frame.presence if frame else None,
+            "data_age_s": frame.data_age_seconds if frame else None,
+            "commands": list(self._last_applied_commands),
+        }
+
+    def _maybe_backup(self) -> None:
+        """Once-a-day rotating DB backup (see ``sleepctl.storage.backup``), called from the
+        nightly close-out seam (``_maybe_close_out``). Filename-timestamp-gated so it's safe to call
+        more than once/night and survives daemon restarts. Best-effort: never allowed to break
+        the control loop."""
+        try:
+            path = maybe_run_backup(self.repo.path)
+            if path:
+                self._emit_event("backup", "info", "db_backup", "rotating DB backup written",
+                                 {"path": path})
+        except Exception as exc:
+            self._log(f"db backup skipped: {exc}")
+
     def _refresh_hue(self) -> None:
         """(Re)build the Hue dawn driver from the stored config; toggle the orchestrator's light
         ramp accordingly. Rebuilds only when the config changes."""
@@ -806,7 +858,10 @@ class LiveDashboardDaemon:
             self._prev_state = decision.state
         self._last_decision = decision
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
-        bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
+        snapshot = self._snapshot(decision, frame)
+        bridge.write_runtime_state(self.repo.conn, snapshot)
+        self._record_state_history(snapshot)
+        self.blackbox.record(self._blackbox_entry(decision, frame))
 
     async def command_tick(self) -> bool:
         """Fast path for realtime control: apply queued overrides and snapshot now.
@@ -826,7 +881,10 @@ class LiveDashboardDaemon:
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
         self._last_decision = decision
-        bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
+        snapshot = self._snapshot(decision, frame)
+        bridge.write_runtime_state(self.repo.conn, snapshot)
+        self._record_state_history(snapshot)
+        self.blackbox.record(self._blackbox_entry(decision, frame))
         return True
 
     async def telemetry_tick(self) -> None:
@@ -839,7 +897,10 @@ class LiveDashboardDaemon:
         frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
-        bridge.write_runtime_state(self.repo.conn, self._snapshot(self._last_decision, frame))
+        snapshot = self._snapshot(self._last_decision, frame)
+        bridge.write_runtime_state(self.repo.conn, snapshot)
+        self._record_state_history(snapshot)
+        self.blackbox.record(self._blackbox_entry(self._last_decision, frame))
 
     async def _maybe_close_out(self, decision, now) -> None:
         if decision.state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY,
@@ -867,6 +928,7 @@ class LiveDashboardDaemon:
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})
                 self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
+                self._maybe_backup()      # rotating DB backup: once/day, gated on-disk
             except Exception as exc:
                 self._log(f"nightly close-out skipped: {exc}")
             self._attach_profiles(self.cycle.controller)  # learn from the night just ended
@@ -932,6 +994,10 @@ class LiveDashboardDaemon:
                             self.repo.conn, self._snapshot(None, None, error=repr(exc)))
                     except Exception:
                         pass
+                    try:
+                        self.blackbox.dump_crash()   # preserve the ~200 ticks before this error
+                    except Exception:
+                        pass
                     await asyncio.sleep(min(30.0, command_poll_seconds * min(self._consec_errors, 8)))
                 finally:
                     if due:
@@ -949,6 +1015,10 @@ class LiveDashboardDaemon:
             self._hb_stop.set()
             self._emit_event("lifecycle", "info", "daemon_stopping",
                              "daemon stopping; device client closing")
+            try:
+                self.blackbox.dump_latest()   # clean-shutdown pre-history snapshot
+            except Exception:
+                pass
             await self.client.close()
             self._log("sleepctl dashboard LIVE daemon stopped; device client closed.")
 

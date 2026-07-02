@@ -1364,3 +1364,49 @@ def diag_morning_report_send(token: str = "", force: bool = False, repo=Depends(
     except Exception:
         pass
     return result
+
+
+# ---- diagnostics: DB backup / state history / black-box ----------------------------------
+# Three more remote diagnostics tools, gated exactly like /diag (secret DIAG_TOKEN, 404 on
+# missing/wrong token): a 48h+ runtime-state trend (state_history, see sleepctl.storage.schema
+# + Repository.record_state_snapshot/state_history) and the black-box flight-recorder dump
+# (see sleepctl.diagnostics_blackbox), which together answer "what was the bed doing over the
+# last two days" and "what did the daemon see in the ticks right before it died" without
+# needing shell access to the host. DB backups themselves (sleepctl.storage.backup) are a CLI
+# command (`sleepctl backup`) + a daemon hook, not an HTTP endpoint -- nothing here writes.
+@app.get("/diag/history")
+def diag_history(token: str = "", hours: int = 48, limit: int = 2000, repo=Depends(repo_dep)):
+    """Remote 48h(+) runtime-state trend pull: newest-first ``state_history`` rows (state,
+    mode, target_temp_f, bed_temp_f, room_temp_f, stage, confidence, target_level,
+    daemon_alive, extra) within the last ``hours``. Both daemons append a throttled (~60s)
+    snapshot here every tick, independent of the singleton ``runtime_state`` row -- this is
+    what lets you see the trend, not just the latest instant."""
+    _diag_gate(token)
+    return repo.state_history(hours=hours, limit=limit)
+
+
+_BLACKBOX_MAX_BYTES = 200 * 1024  # ~200KB response cap, same budget as /diag/logs
+
+
+@app.get("/diag/blackbox")
+def diag_blackbox(token: str = ""):
+    """The most recent black-box flight-recorder dump -- the last ~200 daemon ticks (state,
+    decision summary, key frame fields, any command applied) leading up to a crash, or the
+    clean-shutdown snapshot if nothing has crashed -- as raw JSONL text. Capped like
+    /diag/logs (~200KB, truncated from the front if larger)."""
+    _diag_gate(token)
+    from sleepctl.diagnostics_blackbox import latest_blackbox_path
+
+    path = latest_blackbox_path(_run_dir())
+    if path is None:
+        return PlainTextResponse("(no blackbox dump found)")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            data = fh.read()
+    except Exception as exc:
+        return PlainTextResponse(f"(could not read blackbox dump: {exc})")
+    encoded = data.encode("utf-8", errors="replace")
+    if len(encoded) > _BLACKBOX_MAX_BYTES:
+        data = ("(truncated to the last 200KB)\n"
+                + encoded[-_BLACKBOX_MAX_BYTES:].decode("utf-8", errors="ignore"))
+    return PlainTextResponse(data)

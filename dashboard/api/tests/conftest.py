@@ -3,9 +3,18 @@
 from __future__ import annotations
 
 import os
+import sys
 import tempfile
 
 import pytest
+
+# Make sure `import sleepctl` resolves THIS checkout's package, not whatever `pip install -e`
+# happens to point at (an editable install is a single global mapping; it isn't per-worktree,
+# so a plain `sleepctl` import can otherwise silently pick up a stale/foreign copy that's
+# missing modules only added here). Insert ahead of everything else on sys.path.
+_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 # Must run before any `app.*` import so module-level Settings() picks these up.
 _TMP = tempfile.mkdtemp()
