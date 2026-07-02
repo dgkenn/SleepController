@@ -544,6 +544,7 @@ function AdminContent() {
             {[
               { href: '/settings', label: 'Settings' },
               { href: '/learning', label: 'ML Overview' },
+              { href: '/diagnostics', label: 'Diagnostics' },
             ].map((item) => (
               <Link
                 key={item.href}
