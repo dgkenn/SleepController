@@ -286,3 +286,24 @@ def test_live_comfort_cancel_stops_and_holds_off():
         await d._apply_commands()
     _run(go())
     assert d.comfort is None and d.paused is True and d.power_on is False
+
+
+def test_log_never_raises_on_unencodable_char():
+    """Regression: on Windows the cp1252 console couldn't encode "⚠"/"°", so the daemon's
+    ``_log`` raised UnicodeEncodeError inside the control loop — and its crash handler logged
+    the exception repr (which still held the offending char) and died too, crash-looping the
+    whole daemon every few minutes and freezing all telemetry. ``_log`` must never raise, even
+    when stdout cannot encode the message."""
+    import io
+    repo = get_repo()
+    client = SimulatedLiveClient(scenario="normal", seed=7)
+    d = LiveDashboardDaemon(AppConfig.default(), client, repo, verbose=True)
+    old = sys.stdout
+    # a strict ASCII stream mimics the Windows cp1252 console that triggered the crash loop
+    sys.stdout = io.TextIOWrapper(io.BytesIO(), encoding="ascii", errors="strict")
+    try:
+        d._log("⚠ thermal: not enough history — target 55 °F")  # must not raise
+        d._log("plain ascii still logs fine")
+    finally:
+        sys.stdout = old
+    repo.close()
