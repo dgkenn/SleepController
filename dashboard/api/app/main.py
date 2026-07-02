@@ -2051,3 +2051,18 @@ def diag_action_test_alert(token: str = "", repo=Depends(repo_dep)):
     except Exception:
         pass
     return {"ok": result["ok"], "sent": result["sent"], "verify_with": "/alerts/active"}
+
+
+# ---- insights: 3am wake analysis ----
+# The 3AM WAKE targeted analysis (sleepctl.analysis.wake_patterns): the user's #1 problem is
+# STAYING ASLEEP, so this surfaces their PERSONAL recurring wake windows (clock time + sleep
+# stage exited + confidence), what correlates with each, and a bounded, comfort-aware
+# suggestion once the evidence is strong enough. Read-only, session-authenticated like the
+# rest of ``/insights/*``; standalone (no efficacy-trial dependency).
+@app.get("/insights/wake-patterns")
+def insights_wake_patterns(lookback_nights: int = 60, repo=Depends(repo_dep), user: str = AuthDep):
+    from sleepctl.analysis.wake_patterns import wake_analysis_report
+    from sleepctl.config import AppConfig
+
+    n = max(1, min(int(lookback_nights), 365))
+    return wake_analysis_report(repo, lookback_nights=n, cfg=AppConfig.default())

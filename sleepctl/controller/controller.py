@@ -103,6 +103,13 @@ class SleepController:
         self.last_wake_risk = None        # last WakeRisk
         self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
         self.last_precursor_profile = None  # learned personalized awakening-precursor trajectory
+        # 3AM WAKE targeted analysis: an OPTIONAL, gated pre-emption keyed off the personal
+        # recurring-wake-window report (sleepctl.analysis.wake_patterns.wake_analysis_report's
+        # ``recurring_windows``). None until a caller attaches one via ``set_wake_window_report``
+        # (do-no-harm by construction -- see ``should_preempt_window``: a missing/empty report,
+        # a disabled gate, or thin/low-confidence evidence all resolve to "no effect").
+        self.wake_window_report = None
+        self.last_wake_window_preempt = None  # last should_preempt_window() result, for telemetry
         self._arousal_started: Optional[datetime] = None  # for re-settling latency
         self.last_resettle_latency_min: Optional[float] = None
         self._anticipatory_active = False
@@ -221,6 +228,15 @@ class SleepController:
                 # Pre-empt on rising risk OR a leading-edge precursor OR a micro-arousal.
                 self._preempt_cool = risk.preempt or precursor.should_preempt or (
                     arousal.level is ArousalLevel.MICRO and frame.stage is not SleepStage.DEEP)
+                # 3AM WAKE targeted analysis: a fourth, purely ADDITIVE vote -- a HIGH-CONFIDENCE
+                # personal recurring wake window (see sleepctl.analysis.wake_patterns) approaching
+                # on the clock. Gated (enabled flag + min-nights + confidence) inside
+                # ``should_preempt_window``; resolves to None (no effect, telemetry-only) whenever
+                # no report is attached or the evidence hasn't cleared the bar yet.
+                from sleepctl.analysis.wake_patterns import should_preempt_window
+                self.last_wake_window_preempt = should_preempt_window(
+                    self.wake_window_report, now, cfg)
+                self._preempt_cool = self._preempt_cool or bool(self.last_wake_window_preempt)
                 # Edge-trigger a pre-cool efficacy event when anticipatory cooling first
                 # fires for a window (so the lead-time learner can later score prevention).
                 anticip = next((r for r in risk.reasons if r.startswith("anticipatory_")), None)
@@ -432,6 +448,9 @@ class SleepController:
             "precursor_score": round(pre.score, 3) if pre else None,
             "precursor_reasons": list(pre.reasons) if pre else [],
             "precursor_signals": pre.signals if pre else {},
+            # 3AM WAKE targeted analysis: whether a personal recurring wake window is the (or
+            # part of the) reason we're pre-empting right now -- None when no gated window fired.
+            "wake_window_preempt": self.last_wake_window_preempt,
         }
 
     def data_quality_summary(self) -> dict:
@@ -542,6 +561,14 @@ class SleepController:
             self.precursor_detector.personalize(profile)
         except Exception:
             pass
+
+    def set_wake_window_report(self, recurring_windows) -> None:
+        """Attach the personal recurring-wake-window report (the ``recurring_windows`` list from
+        ``sleepctl.analysis.wake_patterns.wake_analysis_report``) so maintenance can preemptively
+        smooth the bed a little before a HIGH-CONFIDENCE recurring wake window. Purely additive to
+        the existing wake-risk/precursor/micro-arousal pre-empt union; a no-op (log-only) below
+        the configured nights/confidence gate -- see ``should_preempt_window``."""
+        self.wake_window_report = recurring_windows
 
     def set_resting_baseline(self, baseline: Optional[dict]) -> None:
         """Apply the in-bed resting-physiology baseline (used as the early-night HR/HRV anchor)."""
