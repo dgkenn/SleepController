@@ -1267,6 +1267,7 @@ def diag_repair(token: str = "", repo=Depends(repo_dep)):
                        {"actions_done": done})
     except Exception:
         pass  # the events log is best-effort; must never break the repair response
+    report["verify_with"] = _verify_with(token)  # append-only: act -> re-fetch /diag/all to confirm
     return report
 
 
@@ -1302,7 +1303,7 @@ def diag_action_restart(token: str = "", target: str = "", repo=Depends(repo_dep
                        f"remote restart requested: target={target}", {"target": target})
     except Exception:
         pass
-    return {"requested": target}
+    return {"requested": target, "verify_with": _verify_with(token)}  # append-only retrofit
 
 
 @app.post("/diag/action/reconnect")
@@ -1329,7 +1330,8 @@ def diag_action_reconnect(token: str = "", repo=Depends(repo_dep)):
                        {"command_id": command_id})
     except Exception:
         pass
-    return {"reconnect_requested": True, "command_id": command_id, "detail": detail}
+    return {"reconnect_requested": True, "command_id": command_id, "detail": detail,
+            "verify_with": _verify_with(token)}  # append-only retrofit
 
 
 # ---- morning report (Feature #6): daily health + last-night push --------------------------
@@ -1469,3 +1471,549 @@ def diag_playbook(token: str = "", repo=Depends(repo_dep)):
     matched_ids = {m["id"] for m in matches}
     entries = [dict(e, matched=(e["id"] in matched_ids)) for e in playbook_catalog()]
     return {"entries": entries, "matches": matches}
+
+
+# ==============================================================================================
+# ---- Claude operator console: /diag/all + manifest + actions + self-update ----
+#
+# Goal (see docs/CLAUDE_REMOTE_OPS.md): a brand-new Claude session, given only the funnel URL +
+# DIAG_TOKEN, can (a) fetch /diag/manifest to learn the whole control plane, (b) fetch /diag/all
+# for total system context in ONE request instead of ten, (c) take any safe recovery action
+# (including shipping + deploying a code fix), and (d) re-fetch /diag/all (or an action
+# response's own ``verify_with`` pointer) to confirm the result. Everything here is gated
+# exactly like the rest of /diag* (``_diag_gate`` -- secret DIAG_TOKEN, constant-time compare,
+# 404 on missing/wrong token so it's invisible to scanners) and reuses the existing
+# diagnostics/bundle/repair/bridge/backup helpers rather than re-deriving any of their logic.
+# ==============================================================================================
+
+_DIAG_ALL_NO_DEFAULT = object()
+
+
+def _diag_safe(fn, default=_DIAG_ALL_NO_DEFAULT):
+    """Run ``fn()``; on ANY exception, degrade to ``default`` (or a small ``{"error": ...}``
+    dict when no default is given) instead of raising. Used throughout ``/diag/all`` /
+    ``/diag/manifest`` so one failing sub-section (a bad import, a locked table, a missing file)
+    can never turn a total-context fetch into a 500 -- it just makes that one field visibly
+    degrade."""
+    try:
+        return fn()
+    except Exception as exc:
+        if default is _DIAG_ALL_NO_DEFAULT:
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        return default
+
+
+def _verify_with(token: str) -> str:
+    return f"/diag/all?token={token}"
+
+
+def _action_result(action: str, result, token: str, ok: bool = True,
+                   verify_path: str | None = None) -> dict:
+    """Uniform shape for every remote-action endpoint: ``{ok, action, result, verify_with}`` --
+    so the act -> verify loop (take an action, then re-fetch ``verify_with``) always looks the
+    same regardless of which action was taken. ``verify_path`` overrides the default
+    ``/diag/all`` pointer for actions whose own dedicated status endpoint is the more useful
+    thing to re-check (e.g. self-update -> ``/diag/update-status``). ``/diag/repair``,
+    ``/diag/action/restart`` and ``/diag/action/reconnect`` predate this helper and keep their
+    original response shape (append-only), but now also carry a ``verify_with`` key each (see
+    the retrofit at their ``return`` statements above)."""
+    verify_with = f"{verify_path}?token={token}" if verify_path else _verify_with(token)
+    return {"ok": ok, "action": action, "result": result, "verify_with": verify_with}
+
+
+def _backups_info() -> dict:
+    """Cheap, read-only summary of what's in ``.run/backups`` -- reuses
+    ``sleepctl.storage.backup`` (never re-implements the naming/listing convention)."""
+    from sleepctl.storage.backup import default_backup_dir, list_backups
+
+    db_path = os.environ.get("SLEEPCTL_DB", "")
+    if not db_path:
+        return {"backup_dir": None, "count": 0, "latest": None,
+                "detail": "SLEEPCTL_DB not configured"}
+    backup_dir = default_backup_dir(db_path)
+    files = list_backups(backup_dir)
+    return {"backup_dir": backup_dir, "count": len(files),
+            "latest": os.path.basename(files[-1]) if files else None}
+
+
+def _project_state(repo) -> dict:
+    """Whole-system snapshot: not just "is it healthy" but "what is every subsystem doing right
+    now". Deliberately just gathers the SAME reads the authenticated dashboard UI already calls
+    (``services.*`` / ``repo.get_*``) into one place -- no reimplementation -- so a DIAG_TOKEN
+    holder without a dashboard login sees the same picture an owner does. Every sub-read is
+    independently wrapped by ``_diag_safe`` so one broken subsystem view degrades to an
+    ``{"error": ...}`` field rather than breaking the whole payload."""
+    return {
+        "status": _diag_safe(lambda: services.build_status(repo)),
+        "tonight_plan": _diag_safe(lambda: services.sleep_plan(repo)),
+        "learning": _diag_safe(lambda: services.learning_ledger_view(repo)),
+        "efficacy": _diag_safe(lambda: services.efficacy_status(repo)),
+        "safety": {
+            "data_quality": _diag_safe(lambda: services.data_quality_status(repo)),
+            "guardrail": _diag_safe(lambda: services.guardrail_status(repo)),
+        },
+        "calendar": {
+            "config": _diag_safe(lambda: services.calendar_config_view(repo)),
+            "events": _diag_safe(lambda: services.calendar_events_view(repo)),
+        },
+        "shift_plan": _diag_safe(lambda: services.shift_plan_view(repo)),
+        "calibration": {
+            "thermal_calibration": _diag_safe(lambda: repo.get_thermal_calibration()),
+            "comfort_profile": _diag_safe(lambda: repo.get_comfort_profile()),
+            "resting_baseline": _diag_safe(lambda: repo.get_resting_baseline()),
+            "self_test": _diag_safe(lambda: bridge.read_self_test(repo.conn)),
+        },
+    }
+
+
+def _diag_all_payload(repo) -> dict:
+    """Build the single composite ``/diag/all`` document. Reuses ``diag_bundle.collect_bundle``
+    for the verdict/checks/events/log-tails/result-files/heartbeats/redacted-config sections
+    (the exact same aggregation ``/diag/bundle`` uses -- never re-derived here), then adds what
+    that bundle doesn't carry: state history, a black-box pointer, the full playbook catalog
+    (not just current matches), the live self-test report, a backups summary, and the whole
+    project's live subsystem state. Every section is independently defensive (``_diag_safe``)."""
+    from app.diag_bundle import collect_bundle
+
+    run = _run_dir()
+    bundle = _diag_safe(lambda: collect_bundle(repo, run, tail_lines=40, events_limit=100),
+                        default={})
+    diag = (bundle or {}).get("diag") or {}
+
+    rt = _diag_safe(lambda: bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds),
+                    default={})
+    extra = rt.get("extra") if isinstance(rt, dict) else {}
+    if not isinstance(extra, dict):
+        extra = {}
+
+    def _playbook_catalog_annotated():
+        from sleepctl.diagnostics_playbook import playbook_catalog
+        matches = diag.get("playbook_matches") or []
+        matched_ids = {m["id"] for m in matches if isinstance(m, dict) and "id" in m}
+        entries = [dict(e, matched=(e["id"] in matched_ids)) for e in playbook_catalog()]
+        return {"entries": entries, "matches": matches}
+
+    def _blackbox_info():
+        from sleepctl.diagnostics_blackbox import latest_blackbox_path
+        path = latest_blackbox_path(run)
+        if not path:
+            return {"available": False, "path": None, "mtime": None}
+        mtime = None
+        try:
+            mtime = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc).isoformat()
+        except OSError:
+            pass
+        return {"available": True, "path": path, "mtime": mtime}
+
+    return {
+        "manifest": "GET /diag/manifest?token=... -> the full capability catalog (every "
+                    "diagnostic read + action endpoint, plus the 12-feature coverage map).",
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "verdict": diag.get("verdict"),
+        "headline": diag.get("headline"),
+        "primary_remedy": diag.get("primary_remedy"),
+        "checks": diag.get("checks"),
+        "playbook_matches": diag.get("playbook_matches"),
+        "playbook": _diag_safe(_playbook_catalog_annotated),
+        "version": diag.get("version"),
+        "runtime_state": rt,
+        "device": extra.get("device"),
+        "config_redacted": (bundle or {}).get("config_redacted"),
+        "heartbeats": (bundle or {}).get("heartbeats"),
+        "recent_events": (bundle or {}).get("events"),
+        "state_history_recent": _diag_safe(lambda: repo.state_history(hours=48, limit=2000)[:60],
+                                           default=[]),
+        "blackbox_available": _diag_safe(_blackbox_info),
+        "self_test": _diag_safe(lambda: bridge.read_self_test(repo.conn)),
+        "log_tails": (bundle or {}).get("logs"),
+        "result_and_alert_files": (bundle or {}).get("result_and_alert_files"),
+        "backups": _diag_safe(_backups_info),
+        "project_state": _diag_safe(lambda: _project_state(repo), default={}),
+    }
+
+
+@app.get("/diag/all")
+def diag_all(token: str = "", repo=Depends(repo_dep)):
+    """ONE-SHOT total system context: everything a troubleshooter (human or a fresh Claude
+    session) needs, so it's one fetch instead of ten separate ``/diag*`` calls. Gated exactly
+    like ``/diag`` (404 on missing/wrong ``DIAG_TOKEN``).
+
+    Returns: ``generated_at``, ``verdict``/``headline``/``primary_remedy``/``checks`` (the same
+    diagnostics battery ``/diag`` runs), ``playbook_matches`` + the full annotated ``playbook``
+    catalog, ``version`` (deployed commit/branch), ``runtime_state`` (the daemon's live
+    snapshot, incl. ``extra``) + ``device``, ``config_redacted`` (secrets never included --
+    see ``app.diag_bundle``), ``heartbeats``, ``recent_events`` (~100), ``state_history_recent``
+    (last ~60 rows of the 48h trend), ``blackbox_available`` (bool + path/mtime),
+    ``self_test`` (last report, if any), ``log_tails`` (~40 lines per whitelisted log),
+    ``result_and_alert_files``, ``backups`` (count/latest in ``.run/backups``), and
+    ``project_state`` -- the whole rest of the project's live state (controller status +
+    tonight's plan, learning ledger, efficacy trial, safety gates, calendar/shift, and
+    calibration: thermal/comfort/resting-baseline/self-test). A top-level ``manifest`` field
+    points at ``GET /diag/manifest`` for the full endpoint catalog.
+
+    Defensive by construction: every section is independently wrapped, and the whole handler is
+    wrapped again below -- a single sub-section failure degrades that field to an error/null, it
+    can never turn this into a 500."""
+    _diag_gate(token)
+    try:
+        return JSONResponse(_diag_all_payload(repo))
+    except Exception as exc:  # last-resort belt-and-suspenders; individual sections already
+        return JSONResponse({                                # degrade via _diag_safe above
+            "manifest": "GET /diag/manifest?token=... -> the full capability catalog.",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "verdict": "UNKNOWN",
+            "error": f"{type(exc).__name__}: {exc}",
+        })
+
+
+# ---------------------------------------------------------------- capability manifest
+# A brand-new Claude session's first call: GET /diag/manifest?token=... -> the entire control
+# plane in one document, so nothing has to be discovered by trial and error. Kept as an explicit
+# module-level list (not generated from FastAPI's route table) so it's readable/greppable and
+# each entry can carry a human description + example, not just a path.
+_DIAG_MANIFEST: list[dict] = [
+    {"method": "GET", "path": "/diag", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "format", "required": False,
+                  "description": "'json' for the full structured dict; default is a "
+                                 "human-readable plaintext summary"}],
+     "description": "Self-diagnosis battery: verdict + checks + device/live status + log tails.",
+     "example": "/diag?token=...&format=json"},
+    {"method": "GET", "path": "/diag/events", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "limit", "required": False, "description": "max rows, default 200"},
+                {"name": "category", "required": False, "description": "filter, e.g. remote_action"},
+                {"name": "severity", "required": False, "description": "filter, e.g. warn"},
+                {"name": "since", "required": False, "description": "min ISO timestamp"}],
+     "description": "Structured event-log timeline (repo.recent_events), filterable.",
+     "example": "/diag/events?token=...&category=remote_action&limit=50"},
+    {"method": "GET", "path": "/diag/logs", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "file", "required": False,
+                  "description": f"one of {', '.join(sorted(_DIAG_LOG_FILES))}; default daemon"},
+                {"name": "lines", "required": False, "description": "tail length, default 100, max 1000"},
+                {"name": "grep", "required": False, "description": "regex or substring filter"}],
+     "description": "Raw, unsummarized log tail (plain text).",
+     "example": "/diag/logs?token=...&file=watchdog&lines=200&grep=CRITICAL"},
+    {"method": "GET", "path": "/diag/probe", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Fresh READ-ONLY Eight Sleep cloud round-trip, bypassing runtime_state.",
+     "example": "/diag/probe?token=..."},
+    {"method": "GET", "path": "/diag/history", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "hours", "required": False, "description": "lookback window, default 48"},
+                {"name": "limit", "required": False, "description": "max rows, default 2000"}],
+     "description": "48h+ runtime-state trend (state_history rows, newest-first).",
+     "example": "/diag/history?token=...&hours=24"},
+    {"method": "GET", "path": "/diag/blackbox", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Most recent flight-recorder dump (last ~200 ticks before a crash), JSONL.",
+     "example": "/diag/blackbox?token=..."},
+    {"method": "GET", "path": "/diag/bundle", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "format", "required": False, "description": "'zip' for an untruncated per-file zip"},
+                {"name": "lines", "required": False, "description": "per-log tail length, default 150"}],
+     "description": "One-artifact 'send this to Claude' diagnostic bundle (text or zip).",
+     "example": "/diag/bundle?token=...&format=zip"},
+    {"method": "GET", "path": "/diag/playbook", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Known-issue playbook catalog, each entry flagged if currently matched.",
+     "example": "/diag/playbook?token=..."},
+    {"method": "POST", "path": "/diag/repair", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "One-click safe self-repair battery (clears stuck queue, re-inits a stuck "
+                    "device, restarts a dead daemon, clears a stale alert). Idempotent.",
+     "example": "POST /diag/repair?token=..."},
+    {"method": "POST", "path": "/diag/action/restart", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "target", "required": True, "description": "daemon|api|web|all"}],
+     "description": "Request a component restart via .run/restart.request (watchdog-consumed).",
+     "example": "POST /diag/action/restart?token=...&target=daemon"},
+    {"method": "POST", "path": "/diag/action/reconnect", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Enqueue a benign safe_default re-init (deduped against a pending one).",
+     "example": "POST /diag/action/reconnect?token=..."},
+    {"method": "GET", "path": "/diag/morning-report", "gate": "session (dashboard login)",
+     "params": [],
+     "description": "Today's morning health report (verdict + last-night summary). Session-"
+                    "gated, not DIAG_TOKEN -- listed here because it's part of the /diag* family.",
+     "example": "GET /diag/morning-report (with a dashboard session cookie)"},
+    {"method": "POST", "path": "/diag/morning-report/send", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "force", "required": False, "description": "bypass the once-per-day throttle"}],
+     "description": "Send the daily morning-report push now (self-throttling).",
+     "example": "POST /diag/morning-report/send?token=...&force=true"},
+    {"method": "GET", "path": "/diag/all", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "ONE-SHOT total system context: verdict, checks, playbook, runtime state, "
+                    "device, redacted config, heartbeats, recent events, 48h history, blackbox "
+                    "pointer, self-test, log tails, backups, and the whole project's live "
+                    "subsystem state (project_state). Start here.",
+     "example": "GET /diag/all?token=..."},
+    {"method": "GET", "path": "/diag/manifest", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "This capability catalog (every diagnostic read + action endpoint).",
+     "example": "GET /diag/manifest?token=..."},
+    {"method": "POST", "path": "/diag/action/self-test", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"},
+                {"name": "mode", "required": False, "description": "full|gentle|sensing, default full"}],
+     "description": "Enqueue the on-bed self-test / thermal-calibration battery.",
+     "example": "POST /diag/action/self-test?token=...&mode=full"},
+    {"method": "POST", "path": "/diag/action/backup", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Take an immediate consistent SQLite backup into .run/backups (read-only, "
+                    "safe from the API process; uses sqlite3's online backup API).",
+     "example": "POST /diag/action/backup?token=..."},
+    {"method": "POST", "path": "/diag/action/run-diagnostics", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Convenience 're-check now': returns a fresh /diag/all payload wrapped in "
+                    "the uniform action-result shape.",
+     "example": "POST /diag/action/run-diagnostics?token=..."},
+    {"method": "POST", "path": "/diag/action/update", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Highest-privilege action: request a self-update. Writes "
+                    ".run/update.request = the DEPLOY_BRANCH env value (default 'main'); the "
+                    "watchdog does the actual git fetch/reset/validate/restart -- this endpoint "
+                    "never runs git or a shell itself. See docs/CLAUDE_REMOTE_OPS.md for the "
+                    "threat model.",
+     "example": "POST /diag/action/update?token=..."},
+    {"method": "GET", "path": "/diag/update-status", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "The watchdog-written .run/update.result record from the last self-update "
+                    "attempt (branch, git_ok, git_output tail, validate_verdict, restarted, summary).",
+     "example": "GET /diag/update-status?token=..."},
+]
+
+# Key OPERATIONAL read/write endpoints (session-auth-gated, NOT DIAG_TOKEN -- the normal
+# dashboard surface) -- listed here too so a fresh Claude session sees the WHOLE API, not just
+# the token-gated troubleshooting mirror. These require a logged-in dashboard session (AuthDep);
+# they are not reachable with just DIAG_TOKEN. A curated subset (not exhaustive) covering the
+# controller, learning, efficacy, calendar/shift, safety, circadian, and control-command surface.
+_OPERATIONAL_MANIFEST: list[dict] = [
+    {"method": "GET", "path": "/status", "gate": "session",
+     "params": [], "description": "Live controller status: state/mode/temps/device/schedule/alerts.",
+     "example": "GET /status"},
+    {"method": "GET", "path": "/tonight", "gate": "session",
+     "params": [], "description": "Tonight's control snapshot + schedule + ML recommendation.",
+     "example": "GET /tonight"},
+    {"method": "GET", "path": "/tonight/plan", "gate": "session",
+     "params": [], "description": "Tonight's full wake-aware sleep plan (services.sleep_plan).",
+     "example": "GET /tonight/plan"},
+    {"method": "GET", "path": "/efficacy", "gate": "session",
+     "params": [], "description": "Standing efficacy trial status (CONTROLLED-vs-HELD analysis).",
+     "example": "GET /efficacy"},
+    {"method": "GET", "path": "/efficacy/config", "gate": "session",
+     "params": [], "description": "Efficacy trial config (enabled, block_nights).",
+     "example": "GET /efficacy/config"},
+    {"method": "GET", "path": "/learning/ledger", "gate": "session",
+     "params": [], "description": "Meta-learning ledger: what's learned across every learner.",
+     "example": "GET /learning/ledger"},
+    {"method": "GET", "path": "/learning/phases", "gate": "session",
+     "params": [], "description": "What's learned across onset/maintenance/wake phases, per mode.",
+     "example": "GET /learning/phases"},
+    {"method": "GET", "path": "/calendar/config", "gate": "session",
+     "params": [], "description": "Work-shift calendar (ICS) configuration (URL masked).",
+     "example": "GET /calendar/config"},
+    {"method": "GET", "path": "/calendar/events", "gate": "session",
+     "params": [], "description": "Upcoming events from the last cached ICS fetch.",
+     "example": "GET /calendar/events"},
+    {"method": "POST", "path": "/calendar/refresh", "gate": "session",
+     "params": [], "description": "Force a re-fetch of the configured ICS feed.",
+     "example": "POST /calendar/refresh"},
+    {"method": "GET", "path": "/safety/data-quality", "gate": "session",
+     "params": [], "description": "Data-quality gate: trust score, top reason, forced HOLD?",
+     "example": "GET /safety/data-quality"},
+    {"method": "GET", "path": "/safety/guardrail", "gate": "session",
+     "params": [], "description": "Decision-guardrail state: findings + forced safe hold?",
+     "example": "GET /safety/guardrail"},
+    {"method": "GET", "path": "/circadian", "gate": "session",
+     "params": [], "description": "Circadian phase estimate + wake-maintenance zone.",
+     "example": "GET /circadian"},
+    {"method": "POST", "path": "/control/{action}", "gate": "session",
+     "params": [{"name": "action", "required": True,
+                  "description": "start|pause|resume|stop|safe-default|power-on|power-off|"
+                                 "away-on|away-off|prime"}],
+     "description": "Enqueue a control command the daemon applies on its next tick.",
+     "example": "POST /control/safe-default"},
+]
+
+# The 12 diagnostics features this console was built to make fully remotely usable, and where
+# each one is reachable from. Surfaced as `coverage` in GET /diag/manifest so it's easy to
+# confirm at a glance that nothing was left stranded behind a dashboard-only view.
+_DIAG_COVERAGE: dict[str, dict] = {
+    "1": {"feature": "Diagnostics battery verdict (HEALTHY/DEGRADED/DOWN) + checks",
+          "endpoint": "GET /diag  (and GET /diag/all)"},
+    "2": {"feature": "One-click safe repair", "endpoint": "POST /diag/repair"},
+    "3": {"feature": "Structured event-log timeline", "endpoint": "GET /diag/events  (and /diag/all.recent_events)"},
+    "4": {"feature": "DB backup action + backups listing",
+          "endpoint": "POST /diag/action/backup  (and /diag/all.backups)"},
+    "5": {"feature": "One-artifact 'send this to Claude' bundle", "endpoint": "GET /diag/bundle"},
+    "6": {"feature": "Daily morning health report", "endpoint": "GET /diag/morning-report, POST /diag/morning-report/send"},
+    "7": {"feature": "Live runtime health verdict (web app mirror)", "endpoint": "GET /diagnostics (session-gated)"},
+    "8": {"feature": "Black-box flight-recorder dump", "endpoint": "GET /diag/blackbox  (and /diag/all.blackbox_available)"},
+    "9": {"feature": "Known-issue playbook matches", "endpoint": "GET /diag/playbook  (and /diag/all.playbook_matches)"},
+    "10": {"feature": "48h+ runtime-state trend", "endpoint": "GET /diag/history  (and /diag/all.state_history_recent)"},
+    "11": {"feature": "Connectivity/heartbeats + a live cloud probe",
+           "endpoint": "GET /diag/probe  (and /diag/all.heartbeats)"},
+    "12": {"feature": "Token-gated remote actions (restart/reconnect/self-test/backup/update)",
+           "endpoint": "POST /diag/action/*"},
+}
+
+
+@app.get("/diag/manifest")
+def diag_manifest(token: str = ""):
+    """Capability catalog: every diagnostic read + action endpoint (``diag_endpoints``), the key
+    session-auth operational endpoints for context (``operational_endpoints``), and a
+    ``coverage`` map naming each of this project's 12 diagnostics features and the endpoint that
+    serves it. Purpose: a fresh Claude session fetches this ONE URL first and instantly knows
+    the whole control plane before touching anything. Gated exactly like ``/diag``."""
+    _diag_gate(token)
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "note": "diag_endpoints are gated by DIAG_TOKEN (?token=...) and reachable over the "
+                "public funnel URL with no dashboard login. operational_endpoints are the "
+                "normal in-app dashboard surface, gated by the session cookie/JWT (AuthDep) "
+                "instead -- listed here for completeness so a fresh session sees the entire "
+                "API, but DIAG_TOKEN alone does not grant access to them.",
+        "diag_endpoints": _DIAG_MANIFEST,
+        "operational_endpoints": _OPERATIONAL_MANIFEST,
+        "coverage": _DIAG_COVERAGE,
+    }
+
+
+# ---------------------------------------------------------------- rounding out the safe action set
+@app.post("/diag/action/self-test")
+def diag_action_self_test(token: str = "", mode: str = "full", repo=Depends(repo_dep)):
+    """Enqueue the on-bed self-test / thermal-calibration battery (``self_test`` is in
+    ``bridge.VALID_COMMANDS``) -- the same command ``POST /control/self-test`` sends, just
+    reachable with only DIAG_TOKEN (no dashboard session). ``mode`` is one of
+    full|gentle|sensing (default full; anything else falls back to full). Logged as
+    ``category="remote_action"``. Gated exactly like ``/diag``."""
+    _diag_gate(token)
+    if mode not in ("full", "gentle", "sensing"):
+        mode = "full"
+    command_id = bridge.enqueue_command(repo.conn, "self_test", {"mode": mode})
+    try:
+        repo.log_event("remote_action", "info", "self_test_request",
+                       f"remote self-test requested: mode={mode}",
+                       {"command_id": command_id, "mode": mode})
+    except Exception:
+        pass
+    return _action_result("self-test", {"command_id": command_id, "mode": mode}, token)
+
+
+@app.post("/diag/action/backup")
+def diag_action_backup(token: str = "", repo=Depends(repo_dep)):
+    """Take an immediate, consistent SQLite backup via ``sleepctl.storage.backup.run_backup``
+    (the online backup API -- safe to call while the DB is open elsewhere; never a raw file
+    copy). Read-only from the API's perspective: it only ever *reads* the live DB and *writes*
+    a brand-new file under ``.run/backups`` (pruned to the most recent 7). Logged as
+    ``category="remote_action"``. Gated exactly like ``/diag``."""
+    _diag_gate(token)
+    from sleepctl.storage.backup import run_backup
+
+    db_path = os.environ.get("SLEEPCTL_DB", "")
+    if not db_path:
+        raise HTTPException(500, "SLEEPCTL_DB is not configured; cannot back up")
+    try:
+        path = run_backup(db_path, keep=7)
+    except Exception as exc:
+        raise HTTPException(500, f"backup failed: {exc}") from exc
+    try:
+        repo.log_event("remote_action", "info", "backup_request",
+                       f"remote backup created: {os.path.basename(path)}", {"path": path})
+    except Exception:
+        pass
+    return _action_result("backup", {"path": path}, token)
+
+
+@app.post("/diag/action/run-diagnostics")
+def diag_action_run_diagnostics(token: str = "", repo=Depends(repo_dep)):
+    """Convenience 're-check now': re-runs the exact same aggregation ``GET /diag/all`` does and
+    returns it as this action's ``result``, so a caller that just took another action can chain
+    straight into "and now show me everything" without a second round-trip's worth of URL
+    construction. Gated exactly like ``/diag``."""
+    _diag_gate(token)
+    return _action_result("run-diagnostics", _diag_all_payload(repo), token)
+
+
+# ---------------------------------------------------------------- self-update (highest privilege)
+# Threat model (see docs/CLAUDE_REMOTE_OPS.md for the full writeup):
+#   * gated by DIAG_TOKEN like every other /diag* endpoint (404 on missing/wrong token);
+#   * the branch is NOT a caller-supplied parameter -- it comes only from this process's own
+#     DEPLOY_BRANCH env var (default "main"), so a token holder can request *that an update run*
+#     but cannot pick an arbitrary branch/remote/URL through the HTTP layer;
+#   * that branch value is still checked against a strict allowlist regex before it's ever
+#     written to disk, and the SAME regex is re-checked by the watchdog before it touches git
+#     (defense in depth: the file is trusted by construction here, but the watchdog treats it as
+#     untrusted input anyway);
+#   * this endpoint NEVER executes git or a shell -- it only writes one flag file
+#     (``.run/update.request``). All the actual `git fetch`/`git reset --hard`/validate/restart
+#     work happens in ``scripts/windows-watchdog.ps1``'s ``Handle-UpdateRequest``, which only
+#     ever operates on THIS repo's already-configured ``origin`` remote (no arbitrary remote/URL
+#     is ever accepted from anywhere in this path).
+_UPDATE_BRANCH_ALLOWLIST_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+
+
+@app.post("/diag/action/update")
+def diag_action_update(token: str = "", repo=Depends(repo_dep)):
+    """Request a self-update + redeploy. Writes ``.run/update.request`` = the ``DEPLOY_BRANCH``
+    env value (default ``main``) -- this endpoint does NOT run git itself; the watchdog
+    (``scripts/windows-watchdog.ps1``'s ``Handle-UpdateRequest``) consumes the flag file each
+    supervise tick, does ``git fetch``/``git reset --hard origin/<branch>``, runs
+    ``validate_env.ps1``, and only then triggers a full restart via the existing
+    ``.run/restart.request`` mechanism (never restarts on a failed git/validate step). Poll
+    ``GET /diag/update-status`` to see the outcome. Gated exactly like ``/diag``; see the
+    threat-model comment above this function for why this is safe to expose."""
+    _diag_gate(token)
+    branch = (os.environ.get("DEPLOY_BRANCH") or "main").strip() or "main"
+    if not _UPDATE_BRANCH_ALLOWLIST_RE.match(branch):
+        raise HTTPException(
+            500, f"DEPLOY_BRANCH {branch!r} fails the allowlist regex; refusing to request an "
+                 "update (fix the DEPLOY_BRANCH env var in deploy/.env)")
+
+    run = _run_dir()
+    try:
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "update.request"), "w", encoding="utf-8") as fh:
+            fh.write(branch)
+    except Exception as exc:
+        raise HTTPException(500, f"could not write update.request: {exc}") from exc
+
+    try:
+        repo.log_event("remote_action", "warn", "update_request",
+                       f"remote self-update requested: branch={branch}", {"branch": branch})
+    except Exception:
+        pass
+    return _action_result("update", {"branch": branch}, token, verify_path="/diag/update-status")
+
+
+@app.get("/diag/update-status")
+def diag_update_status(token: str = ""):
+    """The watchdog-written outcome of the last self-update attempt --
+    ``.run/update.result`` (JSON: ``timestamp``, ``branch``, ``git_ok``, ``git_output`` (tail),
+    ``validate_verdict``, ``restarted``, ``summary``). Returns
+    ``{"available": false, "detail": ...}`` if no update has ever been requested/completed yet,
+    or the raw text if the result file isn't valid JSON for some reason (never 500s). Gated
+    exactly like ``/diag``."""
+    _diag_gate(token)
+    path = os.path.join(_run_dir(), "update.result")
+    try:
+        # utf-8-sig: PowerShell 5.1's `Set-Content -Encoding UTF8` (used by the watchdog to
+        # write this file) prepends a BOM; -sig strips it if present (harmless no-op otherwise).
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return JSONResponse({"available": False,
+                             "detail": "no update has been requested/completed yet "
+                                       "(.run/update.result not found)"})
+    except Exception as exc:
+        return JSONResponse({"available": False, "detail": f"could not read update.result: {exc}"})
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed.setdefault("available", True)
+            return JSONResponse(parsed)
+        return JSONResponse({"available": True, "value": parsed})
+    except Exception:
+        return PlainTextResponse(raw)
