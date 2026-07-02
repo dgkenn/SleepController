@@ -265,6 +265,30 @@ CREATE TABLE IF NOT EXISTS efficacy_config (
     block_nights INTEGER DEFAULT 3
 );
 
+-- Randomized efficacy MICRO-trials (sleepctl.ml.efficacy_trial): on a capped fraction of
+-- ELIGIBLE (normal, full-length) nights, randomize the controller between 'active' (normal
+-- closed loop) and 'sham' (do-no-harm neutral hold) to measure the controller's TRUE CAUSAL
+-- effect on wake_events/deep%/HRV/efficiency, with a confidence interval, rather than assuming
+-- it helps. Kept as its OWN table rather than extending efficacy_nights above: the two systems
+-- use different arm vocabularies ('active'/'sham' vs 'controlled'/'held') and
+-- efficacy_nights.night_date is a primary key, so sharing rows would let one system silently
+-- clobber the other's assignment on any night both happened to be enabled. Every planned night
+-- gets a row here (including ineligible ones, with eligible=0) so the schedule is fully
+-- auditable, not just the randomized nights.
+CREATE TABLE IF NOT EXISTS efficacy_trials (
+    night_date TEXT PRIMARY KEY,
+    arm TEXT NOT NULL,             -- 'active' | 'sham'
+    eligible INTEGER NOT NULL DEFAULT 1,  -- 0 = ineligible (short/recovery/nap night); arm forced 'active'
+    seed REAL,                     -- deterministic [0,1) draw from hash(night_date) -- audit trail
+    wake_events INTEGER,
+    deep_pct REAL,
+    hrv REAL,
+    efficiency REAL,
+    outcome_score REAL,
+    resolved INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_efficacy_trials_arm ON efficacy_trials(arm);
+
 -- Structured, queryable event log: "what happened and when" as one query instead of grepping
 -- unstructured text logs. Both daemons emit best-effort rows here at lifecycle/error/state/device
 -- moments (see LiveDashboardDaemon._emit_event / DashboardDaemon._emit_event). severity is one of

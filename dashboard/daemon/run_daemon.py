@@ -115,6 +115,7 @@ class DashboardDaemon:
         self.nap_plan = None          # NapPlan.to_dict() when a nap session is active
         self.nap_deadline = None      # datetime the nap should end
         self.efficacy_arm = None      # tonight's standing efficacy-trial arm, if enabled
+        self.efficacy_trial_arm = None  # tonight's randomized efficacy MICRO-trial arm, if any
         self.simulate = simulate
         if simulate:
             self.source = SimulatorSource("normal", seed=7,
@@ -162,6 +163,28 @@ class DashboardDaemon:
         except Exception as exc:
             print(f"efficacy-trial apply skipped: {exc}", flush=True)
 
+    def _apply_efficacy_micro_trial(self) -> None:
+        """Randomized efficacy MICRO-trial (on by default, conservative): once tonight's night
+        TYPE is known (see ``_apply_night_type``, which runs first), assign 'active' vs 'sham'
+        -- eligibility-gated so short/recovery/nap nights ALWAYS run active -- and on a sham
+        night force a neutral hold via the EXISTING controller setters, same do-no-harm pattern
+        as the standing trial above. Applied AFTER the standing trial so a HELD night from that
+        (older, coarser) system still wins if both are ever enabled at once; a SHAM night here
+        is equally conservative either way."""
+        try:
+            from sleepctl.ml.efficacy_trial import apply_trial_arm
+            base = self.cycle.controller.thermal.profile
+            context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
+            prof, info = apply_trial_arm(
+                self.repo, self.cfg, self.cycle.controller,
+                datetime.now().date().isoformat(), context, base)
+            self.cycle.controller.set_setpoints(prof)
+            self.efficacy_trial_arm = info
+            print(f"efficacy micro-trial: tonight is {info['arm']} "
+                 f"(eligible={info['eligible']})", flush=True)
+        except Exception as exc:
+            print(f"efficacy micro-trial apply skipped: {exc}", flush=True)
+
     # ---------------------------------------------------------------- commands
     def _clamp_temp(self, f: float) -> float:
         return cs.clamp_temp(f)
@@ -192,6 +215,10 @@ class DashboardDaemon:
             self.cycle.controller.set_night_targets(plan.targets, plan.est_sleep_min)
         except Exception as exc:
             print(f"night-type planning skipped: {exc}", flush=True)
+        # Night TYPE is only known now (plan_night just classified it) -- the randomized
+        # efficacy micro-trial's eligibility gate needs that, so it is applied here rather than
+        # at daemon start-up (unlike the older standing trial above, which doesn't gate on type).
+        self._apply_efficacy_micro_trial()
 
     def _apply_commands(self) -> bool:
         """Apply all pending commands. Returns True if any device-affecting change occurred."""

@@ -260,11 +260,31 @@ class MLConfig:
 
 
 @dataclass
+class EfficacyTrialConfig:
+    """Gates for the randomized efficacy MICRO-trials (sleepctl.ml.efficacy_trial): on a capped
+    fraction of ELIGIBLE (normal, full-length) nights, randomize active-vs-sham control to
+    measure the controller's true causal effect. On by default but deliberately conservative --
+    a low sham fraction, a real minimum-nights bar before a verdict is reported, and an
+    auto-stop guardrail that kills sham assignment the moment it's trending worse."""
+
+    enabled: bool = True             # on by default -- conservative caps below keep it safe
+    sham_fraction: float = 0.2       # target share of ELIGIBLE nights run as 'sham'; hard-capped
+                                     # at sleepctl.ml.efficacy_trial.MAX_SHAM_FRACTION (0.25)
+    min_nights_before_verdict: int = 10  # per-arm nights required before analyze_trials asserts
+                                         # a significant effect either way
+    auto_stop_min_n: int = 6         # per-arm nights required before the auto-stop guardrail
+                                     # is even allowed to evaluate (never acts on a hunch)
+    auto_stop_threshold: float = 1.0  # sham mean wake_events must exceed active mean by at
+                                      # least this many events/night to trip the guardrail
+
+
+@dataclass
 class AppConfig:
     profile: UserProfile = field(default_factory=UserProfile)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
     tunables: Tunables = field(default_factory=Tunables)
     ml: MLConfig = field(default_factory=MLConfig)
+    efficacy_trial: EfficacyTrialConfig = field(default_factory=EfficacyTrialConfig)
 
     @classmethod
     def default(cls) -> "AppConfig":
@@ -290,7 +310,7 @@ class AppConfig:
         """Load overrides from a YAML file; missing file -> defaults.
 
         YAML may contain top-level keys ``profile``, ``benchmarks``, ``tunables``,
-        each a mapping of field -> value. Unknown keys are ignored.
+        ``ml``, ``efficacy_trial``, each a mapping of field -> value. Unknown keys are ignored.
         """
         import os
 
@@ -307,6 +327,7 @@ class AppConfig:
             ("benchmarks", cfg.benchmarks),
             ("tunables", cfg.tunables),
             ("ml", cfg.ml),
+            ("efficacy_trial", cfg.efficacy_trial),
         ):
             overrides = data.get(section_name) or {}
             if not is_dataclass(section_obj):

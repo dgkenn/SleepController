@@ -2066,3 +2066,39 @@ def insights_wake_patterns(lookback_nights: int = 60, repo=Depends(repo_dep), us
 
     n = max(1, min(int(lookback_nights), 365))
     return wake_analysis_report(repo, lookback_nights=n, cfg=AppConfig.default())
+
+
+# ---- efficacy micro-trials ----
+# Randomized n-of-1 efficacy MICRO-trials (sleepctl.ml.efficacy_trial): on a capped fraction of
+# ELIGIBLE (normal, full-length) nights, the controller is randomized active-vs-sham so the
+# CAUSAL effect of the controller's interventions can be measured with a confidence interval,
+# instead of assumed. Read-only surface (assignment/config live purely in the engine + daemon
+# wiring; the dashboard side is already covered by /diag/all for the raw table via /diag/bundle).
+@app.get("/efficacy/trials")
+def efficacy_trials_view(repo=Depends(repo_dep), user: str = AuthDep):
+    """Current causal-effect estimate for the randomized efficacy micro-trial: arm counts +
+    the wake_events/deep_pct/hrv/efficiency comparison (mean difference, 95% CI, p-value) plus
+    a plain-English verdict. Session-auth gated like the rest of the dashboard (not the secret
+    ``DIAG_TOKEN`` used by /diag/*)."""
+    from sleepctl.config import AppConfig
+    from sleepctl.ml.efficacy_trial import analyze_trials
+
+    cfg = AppConfig.default()
+    rows = repo.efficacy_trial_rows(resolved_only=True)
+    analysis = analyze_trials(rows, min_nights_before_verdict=cfg.efficacy_trial.min_nights_before_verdict)
+    all_rows = repo.efficacy_trial_rows(resolved_only=False)
+    n_eligible = sum(1 for r in all_rows if r.get("eligible"))
+    n_ineligible = len(all_rows) - n_eligible
+    return {
+        "config": {
+            "enabled": cfg.efficacy_trial.enabled,
+            "sham_fraction": cfg.efficacy_trial.sham_fraction,
+            "min_nights_before_verdict": cfg.efficacy_trial.min_nights_before_verdict,
+            "auto_stop_min_n": cfg.efficacy_trial.auto_stop_min_n,
+            "auto_stop_threshold": cfg.efficacy_trial.auto_stop_threshold,
+        },
+        "n_nights_planned": len(all_rows),
+        "n_eligible": n_eligible,
+        "n_ineligible": n_ineligible,
+        "analysis": analysis,
+    }
