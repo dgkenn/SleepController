@@ -150,3 +150,78 @@ complete, self-contained diagnosis on its own, with no secrets in it.
 - If `/diag` says `HEALTHY` but the bed still isn't doing what you expect, that means the
   *infrastructure* (daemon, API, device link) is fine — the issue is in the control decision
   itself. Check `/insights/decisions` and `/tonight/plan` next.
+
+## Watchdog self-healing (restart storms, boot validation, smoke test)
+
+`scripts/windows-watchdog.ps1` now protects itself against the failure mode where a broken
+deploy causes a component to crash-loop forever: the watchdog restarts it every ~15s, all
+night, without ever surfacing that something's actually wrong.
+
+### Restart-storm limiter
+
+Each of `api` / `daemon` / `web` has its own trailing restart-timestamp history. If a
+component is restarted **more than 5 times within a 5-minute window**, the watchdog:
+
+1. logs a line starting `CRITICAL: RESTART STORM: <component> restarted N times in 5 min --
+   HOLDING, needs attention` in `.run\watchdog.log`,
+2. writes `.run\watchdog.alert` (one line: timestamp + reason),
+3. stops restarting that component for a **5-minute cooldown** (it's simply left down —
+   the watchdog doesn't touch it again until the cooldown expires).
+
+After the cooldown, the watchdog tries exactly once more. If it storms again, it goes right
+back on hold (and the alert stays). Once a component is observed healthy again (port
+listening / heartbeat fresh), its storm history is cleared; `.run\watchdog.alert` is removed
+automatically once **no** component is currently holding.
+
+Every daemon (re)start is logged with WHY it happened, e.g.:
+
+```
+daemon heartbeat 112s stale; restarting (restart #3 in window)
+```
+
+### Remote-restart flag (`.run\restart.request`)
+
+A future remote-action endpoint (not built yet) can request a restart by writing a one-line
+flag file:
+
+```
+.run\restart.request   contents: daemon | api | web | all
+```
+
+Each supervise iteration checks for this file FIRST, before anything else. If present, the
+watchdog logs `restart requested: <target>`, force-stops the matching process(es) (by the
+port they own for api/web, by command-line match for the daemon), deletes the flag file, and
+lets the normal loop notice the component is down and restart it on the next pass (no separate
+restart path — it reuses the same storm-aware logic as an organic crash). This *does* count
+against that component's storm limiter, so a broken remote-restart caller can't thrash the
+system either.
+
+### Boot-time validation (`scripts/validate_env.ps1`)
+
+Runs automatically, early, before any service starts. Checks `deploy\.env` for the required
+keys (`SLEEPCTL_DB`, `JWT_SECRET`, `DASHBOARD_USER`, `DASHBOARD_PASSWORD` — FATAL if missing),
+warns (non-fatal) if `EIGHTSLEEP_EMAIL`/`EIGHTSLEEP_PASSWORD` or `DIAG_TOKEN` are missing,
+confirms the venv python exists and `from pyeight.eight import EightSleep` imports, and
+confirms the `SLEEPCTL_DB` directory is writable. Writes `.run\validate.result`
+(`PASS`/`WARN`/`FAIL` + a `[FAIL]`/`[WARN]`/`[OK]` line per check) and the watchdog echoes it
+into `watchdog.log`. A `FAIL` also raises `.run\watchdog.alert` — but the watchdog **still
+attempts to start every service**; validation only reports, it never bricks the boot. Can also
+be run standalone: `powershell -ExecutionPolicy Bypass -File scripts\validate_env.ps1`.
+
+### Post-restart smoke test (`.run\smoke.result`)
+
+~40 seconds after the watchdog starts supervising, it runs one end-to-end check: `GET
+http://localhost:8000/health` returns 200, `.run\daemon.heartbeat` is fresh (< 90s), and port
+3000 is listening. Writes `.run\smoke.result` = `SMOKE PASS` or `SMOKE FAIL: <what failed>`
+and logs it; a `FAIL` also raises `.run\watchdog.alert`. This turns a broken deploy (bad
+build, import error, dead creds) into an immediate, loud failure instead of a silent one
+discovered hours later.
+
+### Where to look
+
+`scripts\doctor.ps1` now prints `.run\watchdog.alert` (if active), and the full contents of
+`.run\validate.result` / `.run\smoke.result`, plus a **CONNECTIVITY** section: the LAN IP, port
+3000 listening state, and (best-effort) `tailscale status` / `tailscale funnel status` /
+`tailscale serve status` output — so "the phone can't reach the dashboard" self-diagnoses
+(look for an ACTIVE `https://` funnel/serve URL). If the `tailscale` CLI isn't installed it
+prints `(tailscale CLI not found)` instead of erroring.
