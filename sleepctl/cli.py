@@ -624,6 +624,12 @@ def build_parser() -> argparse.ArgumentParser:
                           help="pending commands older than this are marked abandoned/applied")
     p_repair.add_argument("--json", action="store_true", help="emit the full report as JSON")
     p_repair.set_defaults(func=_cmd_repair)
+
+    p_backup = sub.add_parser(
+        "backup", help="Consistent rotating DB backup (safe while a daemon/API has it open)")
+    p_backup.add_argument("--db", default="sleepctl.db")
+    p_backup.add_argument("--keep", type=int, default=7, help="how many recent backups to retain")
+    p_backup.set_defaults(func=_cmd_backup)
     return parser
 
 
@@ -636,6 +642,22 @@ def _cmd_backtest(args) -> int:
     print("\n" + ("✓ closed loop improves the night vs no control"
                   if improved else "✗ no improvement — investigate"))
     return 0 if improved else 1
+
+
+def _cmd_backup(args: argparse.Namespace) -> int:
+    """Make a consistent online-backup copy of the DB (safe while a daemon/API has it open,
+    including under WAL) and prune to the most recent --keep. See ``sleepctl.storage.backup``
+    for the restore procedure (copy the chosen file back over the live DB with services
+    stopped)."""
+    from sleepctl.storage.backup import run_backup
+
+    try:
+        path = run_backup(args.db, keep=args.keep)
+    except Exception as exc:
+        print(f"backup failed: {exc}")
+        return 1
+    print(f"Backup written to {path}")
+    return 0
 
 
 def main(argv=None) -> int:

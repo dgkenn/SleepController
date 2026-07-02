@@ -54,6 +54,8 @@ def _write_daemon_heartbeat() -> None:
 import command_spec as cs  # noqa: E402
 from app import bridge  # noqa: E402
 from app.db import get_repo  # noqa: E402
+from sleepctl.diagnostics_blackbox import BlackBoxRecorder  # noqa: E402
+from sleepctl.storage.backup import maybe_run_backup  # noqa: E402
 
 # How far a single +/- nudge moves the target, and the manual temp clamp (water °F).
 NUDGE_STEP_DEFAULT_F = 1.0
@@ -138,6 +140,9 @@ class DashboardDaemon:
                 print(f"phone-sensor fusion disabled: {exc}", flush=True)
         self.context = ContextRecord(date=datetime.now().date().isoformat())
         self._apply_efficacy_arm()
+        self._last_history_ts = 0.0        # monotonic clock: throttles state_history writes
+        self._last_applied_commands: list = []
+        self.blackbox = BlackBoxRecorder(bridge.run_dir())   # crash pre-history ring buffer
 
     def _apply_efficacy_arm(self) -> None:
         """Standing "does the controller help?" efficacy trial (opt-in, default OFF): assign
@@ -191,12 +196,14 @@ class DashboardDaemon:
     def _apply_commands(self) -> bool:
         """Apply all pending commands. Returns True if any device-affecting change occurred."""
         changed = False
+        self._last_applied_commands = []   # reset each call; read by the blackbox recorder
         while True:
             cmd = bridge.next_pending_command(self.repo.conn)
             if cmd is None:
                 break
             t, p = cmd["type"], cmd["payload"]
             changed = True
+            self._last_applied_commands.append(t)
             if t == "stop":
                 cs.apply_stop_state(self)
                 if self.simulate:
@@ -468,6 +475,50 @@ class DashboardDaemon:
             },
         }
 
+    # ---- diagnostics: 48h state-history trend + black-box crash pre-history --------------
+    def _record_state_history(self, snapshot: dict) -> None:
+        """Append a throttled (~60s) copy of ``snapshot`` to ``state_history`` (see
+        ``Repository.record_state_snapshot``) so /diag/history has a real trend, not just the
+        latest instant. Best-effort: a DB hiccup here must never affect the control loop."""
+        now = time.monotonic()
+        if now - self._last_history_ts < 60.0:
+            return
+        self._last_history_ts = now
+        try:
+            self.repo.record_state_snapshot(snapshot)
+        except Exception:
+            pass
+
+    def _blackbox_entry(self, decision, frame) -> dict:
+        """One tick's black-box summary: state/decision + key frame fields + any command
+        applied this tick (see ``sleepctl.diagnostics_blackbox.BlackBoxRecorder``)."""
+        return {
+            "state": decision.state.value if decision else None,
+            "intent": decision.thermal_intent.value if decision else None,
+            "target_temp_f": decision.target_temp_f if decision else None,
+            "reason": decision.reason if decision else None,
+            "hr": frame.heart_rate if frame else None,
+            "hrv": frame.hrv if frame else None,
+            "rr": frame.respiratory_rate if frame else None,
+            "stage": frame.stage.value if frame and frame.stage else None,
+            "bed_temp_f": frame.bed_temp_f if frame else None,
+            "presence": frame.presence if frame else None,
+            "data_age_s": frame.data_age_seconds if frame else None,
+            "commands": list(self._last_applied_commands),
+        }
+
+    def _maybe_backup(self) -> None:
+        """Once-a-day rotating DB backup (see ``sleepctl.storage.backup``), called from the
+        nightly close-out seam. Filename-timestamp-gated so it's safe to call more than once/night and
+        survives daemon restarts. Best-effort: never allowed to break the control loop."""
+        try:
+            path = maybe_run_backup(self.repo.path)
+            if path:
+                self._emit_event("backup", "info", "db_backup", "rotating DB backup written",
+                                 {"path": path})
+        except Exception as exc:
+            print(f"db backup skipped: {exc}", flush=True)
+
     # ---------------------------------------------------------------- cycles
     def _read(self):
         frame = self.source.read_frame()
@@ -536,7 +587,10 @@ class DashboardDaemon:
                 # tick that actually left the prior (non-idle) state — not every idle tick.
                 self._refresh_profiles(nightly_close_out=transitioned)
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
-        bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
+        snapshot = self._snapshot(decision, frame)
+        bridge.write_runtime_state(self.repo.conn, snapshot)
+        self._record_state_history(snapshot)
+        self.blackbox.record(self._blackbox_entry(decision, frame))
 
     def _refresh_profiles(self, nightly_close_out: bool = False) -> None:
         if nightly_close_out:
@@ -545,6 +599,7 @@ class DashboardDaemon:
             self._emit_event("nightly", "info", "nightly_close_out",
                              "nightly close-out ran (profiles refreshed)")
             self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
+            self._maybe_backup()      # rotating DB backup: once/day, gated on-disk (survives restarts)
         self._flush_wake_log()            # persist last night's wake conditions first
         try:
             from sleepctl.learning.lead_time import build_lead_time_profile
@@ -703,7 +758,10 @@ class DashboardDaemon:
             decision = self.cycle.decide(frame, self.context, now)
             if self.mode == "manual" and self.manual_target_f is not None:
                 self.actuator.set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
-        bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
+        snapshot = self._snapshot(decision, frame)
+        bridge.write_runtime_state(self.repo.conn, snapshot)
+        self._record_state_history(snapshot)
+        self.blackbox.record(self._blackbox_entry(decision, frame))
 
     # backward-compatible alias
     def tick(self) -> None:
@@ -731,12 +789,14 @@ class DashboardDaemon:
                     print(f"daemon tick error: {exc}", flush=True)
                     cat, sev = _classify_tick_error(exc)
                     self._emit_event(cat, sev, "tick_error", repr(exc))
+                    self.blackbox.dump_crash()   # preserve the ~200 ticks leading up to this
                 bridge.write_heartbeat("daemon")   # 2nd liveness signal for the diagnosis battery
                 if max_ticks is not None and ticks >= max_ticks:
                     break
                 time.sleep(self.command_poll_seconds)
         finally:
             self._emit_event("lifecycle", "info", "daemon_stopping", "daemon stopping")
+            self.blackbox.dump_latest()   # clean-shutdown pre-history snapshot
 
 
 def _env_truthy(name: str) -> bool:
@@ -824,6 +884,10 @@ def main() -> None:
     except BaseException as exc:  # noqa: BLE001 - we re-raise; just want the reason on disk
         import traceback
         _crash_journal(f"run() raised {type(exc).__name__}:\n{traceback.format_exc()}")
+        try:
+            daemon.blackbox.dump_crash()   # preserve the ~200 ticks leading up to this crash
+        except Exception:
+            pass
         raise
 
 

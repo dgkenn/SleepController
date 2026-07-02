@@ -121,6 +121,56 @@ failure. If credentials are missing, pyEight isn't installed, the cloud call err
 times out, you still get a `200` with `{"ok": false, "error": "..."}` — this endpoint is
 designed to never 500 on you.
 
+### `GET /api/diag/history` — 48h(+) runtime-state trend
+
+```
+https://<your-host>/api/diag/history?token=<DIAG_TOKEN>&hours=48
+```
+
+Both daemons append a throttled (~60s) copy of every `runtime_state` snapshot to a
+`state_history` table (rows older than ~7 days are pruned automatically on write). This
+endpoint returns those rows, newest-first, as JSON: `state`, `mode`, `target_temp_f`,
+`bed_temp_f`, `room_temp_f`, `stage`, `confidence`, `target_level`, `daemon_alive`, `extra`.
+Use it to see a *trend* ("was the bed slowly drifting warm all night?") instead of just the
+one instant `/diag`'s `=== STATUS ===` block shows. `&limit=` caps the row count (default
+2000).
+
+### `GET /api/diag/blackbox` — crash pre-history (flight-recorder dump)
+
+```
+https://<your-host>/api/diag/blackbox?token=<DIAG_TOKEN>
+```
+
+Each daemon keeps an in-memory ring buffer of its last ~200 ticks (state, decision
+summary, key frame fields, any command applied). On an unhandled tick error it's dumped to
+`.run/blackbox-<timestamp>.jsonl`; on a clean shutdown it's dumped to
+`.run/blackbox-latest.jsonl`. This endpoint returns the most recent of those dumps verbatim
+(crash dump preferred over the clean-shutdown one), capped at ~200KB like `/diag/logs`. It's
+the fastest way to see exactly what the daemon was seeing/deciding in the seconds before it
+died, without needing shell access to the host.
+
+## Rotating DB backups
+
+The engine takes a consistent snapshot of the SQLite DB once a day (via
+`sqlite3.Connection.backup()`, not a raw file copy — safe even while the DB is open under
+WAL) into `.run/backups/sleep-YYYYMMDD-HHMMSS.db`, keeping the most recent 7 by default. It
+runs automatically from each daemon's nightly close-out, and can also be run by hand:
+
+```
+sleepctl backup --db <path-to-sleepctl.db> --keep 7
+```
+
+**To restore:** stop the dashboard API + daemon (and the watchdog, so it doesn't restart them
+mid-swap), then copy the chosen backup file over the live DB path and restart:
+
+```
+cp .run/backups/sleep-<timestamp>.db <SLEEPCTL_DB path>
+```
+
+A restored DB is a consistent point-in-time snapshot — anything written after that backup was
+taken is lost, but the file itself is never a half-written/corrupt copy. See
+`sleepctl/storage/backup.py` for the implementation.
+
 ## (b) The dashboard/API does NOT load
 
 You can't hit `/diag` if the API itself is down. Instead, RDP/console into the Windows host

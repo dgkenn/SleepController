@@ -279,6 +279,28 @@ CREATE TABLE IF NOT EXISTS events (
     data TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
+
+-- Append-only trend history of runtime_state snapshots (a full row per throttled write, unlike
+-- the singleton runtime_state table which only ever holds the latest one). Powers a 48h+
+-- "what was the bed actually doing" trend view without re-deriving it from raw_samples/decisions.
+-- Both daemons append here on a throttled (~60s) cadence (see DashboardDaemon/LiveDashboardDaemon
+-- ._record_state_history); Repository.record_state_snapshot also prunes rows older than ~7 days
+-- on every write so the table stays bounded regardless of tick cadence.
+CREATE TABLE IF NOT EXISTS state_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    state TEXT,
+    mode TEXT,
+    target_temp_f REAL,
+    bed_temp_f REAL,
+    room_temp_f REAL,
+    stage TEXT,
+    confidence REAL,
+    target_level INTEGER,
+    daemon_alive INTEGER,
+    extra TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_state_history_ts ON state_history(ts);
 """
 
 

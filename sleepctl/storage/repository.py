@@ -855,3 +855,56 @@ class Repository:
             grogginess=r["grogginess"],
             daytime_performance=r["daytime_performance"],
         )
+
+    # ---- runtime-state history: append-only trend of runtime_state snapshots (48h+ window) --
+    def record_state_snapshot(self, snapshot: dict) -> None:
+        """Append one runtime_state-shaped snapshot to ``state_history`` (see ``bridge.
+        write_runtime_state`` for the same field set). Defensive: swallows any error rather
+        than raising, so a broken history write can never break the control loop that calls
+        it. Also prunes rows older than ~7 days on every write so the table stays bounded
+        regardless of how often callers throttle their writes."""
+        try:
+            self.conn.execute(
+                """INSERT INTO state_history
+                (ts, state, mode, target_temp_f, bed_temp_f, room_temp_f, stage, confidence,
+                 target_level, daemon_alive, extra)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    snapshot.get("ts") or _iso(datetime.now()),
+                    snapshot.get("state"),
+                    snapshot.get("mode"),
+                    snapshot.get("target_temp_f"),
+                    snapshot.get("bed_temp_f"),
+                    snapshot.get("room_temp_f"),
+                    snapshot.get("stage"),
+                    snapshot.get("confidence"),
+                    snapshot.get("target_level"),
+                    _b2i(bool(snapshot.get("daemon_alive", True))),
+                    _jdump(snapshot.get("extra")),
+                ),
+            )
+            self.conn.execute(
+                "DELETE FROM state_history WHERE ts < ?",
+                (_iso(datetime.now() - timedelta(days=7)),),
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def state_history(self, hours: int = 48, limit: int = 2000) -> list[dict]:
+        """Newest-first ``state_history`` rows from the last ``hours``, JSON-decoding ``extra``.
+        Defensive: returns [] on any error rather than raising."""
+        try:
+            cutoff = _iso(datetime.now() - timedelta(hours=hours))
+            rows = self.conn.execute(
+                "SELECT * FROM state_history WHERE ts >= ? ORDER BY id DESC LIMIT ?",
+                (cutoff, int(limit)),
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["extra"] = _jload(d.get("extra"))
+                out.append(d)
+            return out
+        except Exception:
+            return []
