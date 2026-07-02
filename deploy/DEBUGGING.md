@@ -275,3 +275,83 @@ discovered hours later.
 `tailscale serve status` output — so "the phone can't reach the dashboard" self-diagnoses
 (look for an ACTIVE `https://` funnel/serve URL). If the `tailscale` CLI isn't installed it
 prints `(tailscale CLI not found)` instead of erroring.
+
+## How to send Claude a diagnostic bundle
+
+The fastest way to get help debugging: generate ONE file with everything relevant and hand it
+over. Two ways to get it, depending on whether the API is reachable.
+
+**API is up** — `GET /diag/bundle?token=<DIAG_TOKEN>`:
+
+```
+https://<your-host>/api/diag/bundle?token=<DIAG_TOKEN>
+```
+
+Returns one clearly-sectioned `text/plain` document (`===== SECTION =====` headers): the full
+`/diag` verdict (both the summary and the lossless JSON), recent structured events,
+`.run/*.result`/`.run/*.alert` file contents, daemon/watchdog heartbeat ages, a tail of every
+whitelisted log (`daemon`, `daemon-err`, `daemon-crash`, `watchdog`, `api`, `api-err`, `web`,
+`web-build` — `&lines=` controls how many lines per log, default 150), and a **redacted**
+config snapshot (env keys present + non-secret values only). Capped at ~1MB so it stays
+paste-friendly; `curl` it straight to a file:
+
+```
+curl "https://<your-host>/api/diag/bundle?token=<DIAG_TOKEN>" -o diag-bundle.txt
+```
+
+If the text cap would cut something off, add `&format=zip` for an untruncated zip of the same
+sections as individual files (`diag.json`, `diagnosis_summary.txt`, `events.json`,
+`config_redacted.txt`, `logs/*.log.tail.txt`, `results/*`).
+
+**API is down** — run the standalone PowerShell collector on the host itself:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\collect-diagnostics.ps1
+```
+
+It reads the same `.run` logs/results directly (no API needed), applies the identical
+redaction rule, and writes `.run\diag-bundle-YYYYMMDD-HHMMSS.txt` — it prints the full path
+when done. Paste or upload that file to Claude.
+
+**Redaction rule** (identical in both the API endpoint and the PowerShell script): any config
+key whose NAME matches `PASSWORD`, `SECRET`, `TOKEN`, `ICS_URL`, `CLIENT_SECRET`, or `JWT`
+(case-insensitive) is always rendered `<redacted>` — its real value is never read into the
+bundle. Every other configured key (e.g. `SLEEPCTL_LIVE`, `SLEEPCTL_DRY_RUN`, `TZ`,
+`CORS_ORIGINS`) shows its actual, non-secret value so you don't have to separately ask "is
+dry-run on?".
+
+## Known-issue playbook
+
+`/diag` and `/diag/bundle` both cross-check the live diagnostics against a small, structured
+playbook of issues this project has actually hit — symptom → likely cause → concrete fix —
+instead of leaving pattern-matching to memory. When anything matches, `/diag`'s plaintext
+output gains a `=== LIKELY CAUSES & FIXES ===` section right under the check list, and the
+same matches are in the JSON form under `playbook_matches`.
+
+For the full catalog (every entry the playbook knows about, each annotated with whether it
+`matched` right now) plus the shorthand `matches` list on its own:
+
+```
+https://<your-host>/api/diag/playbook?token=<DIAG_TOKEN>
+```
+
+Gated exactly like `/diag` (404 on missing/wrong `DIAG_TOKEN`). The knowledge lives in
+`sleepctl/diagnostics_playbook.py` (engine-side, dashboard-free, unit-tested independently) so
+it stays usable from the CLI/tests too, not just the API.
+
+| id | symptom | likely cause | fix |
+|----|---------|---------------|-----|
+| `water_reservoir_empty` | Bed won't heat or cool / feels completely unresponsive | Hub's water reservoir is empty (`has_water=false`) | Fill the reservoir, then run PRIME (Controls → Prime, or `POST /control/prime`) |
+| `watchdog_restart_storm` | A component (api/daemon/web) keeps crash-looping | Watchdog saw >5 restarts of one component in 5 minutes and put it on hold (`.run\watchdog.alert`) | Read the `CRITICAL: RESTART STORM` line in `watchdog.log`, fix the underlying crash in `daemon.err`/`daemon-crash.log`; the hold clears once the component is healthy again |
+| `daemon_heartbeat_stale` | Control loop looks stuck | The daemon process is dead/hung — `daemon.heartbeat` stopped updating | Check `daemon.log`/`daemon.err`/`daemon-crash.log`; the watchdog auto-restarts within ~15s, otherwise run `doctor.ps1` |
+| `dry_run_left_on` | Live mode is on but the bed never actually moves | `SLEEPCTL_DRY_RUN=1` with `SLEEPCTL_LIVE=1` — decisions are logged, nothing is sent | Unset/clear `SLEEPCTL_DRY_RUN` in `deploy/.env`, restart the daemon |
+| `pyeight_auth_failure` | Eight Sleep cloud calls fail with an auth error | Stored token expired or the account password/OAuth secret changed | Verify `EIGHTSLEEP_EMAIL`/`EIGHTSLEEP_PASSWORD` are current; see `deploy/LIVE_POD.md` for OAuth client id/secret accounts |
+| `no_credentials_configured` | Daemon runs in SIMULATOR mode unexpectedly | `EIGHTSLEEP_EMAIL`/`EIGHTSLEEP_PASSWORD` not both set | Set both in `deploy/.env`, restart the daemon |
+| `db_locked` | Requests fail intermittently; errors mention the database | SQLite locked by two processes (e.g. a stale daemon) writing the same DB file | `doctor.ps1`'s PROCESSES section flags >1 `run_daemon.py`; stop the stale one |
+| `port_in_use` | API or web server fails to start | Another process already bound to port 8000/3000 | `doctor.ps1`'s PORTS/PROCESSES sections show the owning PID; stop it |
+| `calendar_ics_unreachable` | Work-shift calendar isn't updating | `CALENDAR_ICS_URL` couldn't be fetched — network issue or the secret URL was rotated | Re-copy the ICS URL into `deploy/.env` or the dashboard's calendar settings, then `POST /calendar/refresh` |
+| `device_offline` | The Pod/Hub shows offline | Hub reporting offline to Eight Sleep's cloud — network/power issue, or a cloud-side outage | Check the Hub's network/power; check status.eightsleep.com; power-cycle if it stays offline |
+
+None of these are auto-fixed today (`auto_fixable: false` on every entry) — they're all
+human actions (fill water, fix creds, restart a process), which isn't something this system
+should ever do to your bed without you.

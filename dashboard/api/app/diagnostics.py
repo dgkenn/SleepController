@@ -531,6 +531,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
 
     verdict, headline, primary_remedy = _aggregate(checks)
     git_info = _git_head_info(repo_root)
+    playbook_matches = _match_known_issues(repo, checks, run_dir)
 
     return {
         "verdict": verdict,
@@ -539,7 +540,25 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         "checks": checks,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "version": {"sha": git_info.get("sha"), "branch": git_info.get("branch")},
+        "playbook_matches": playbook_matches,
     }
+
+
+# ------------------------------------------------------------------ known-issue playbook (#9)
+def _match_known_issues(repo, checks: list[dict], run_dir: str) -> list[dict]:
+    """Run the engine-side known-issue playbook (``sleepctl.diagnostics_playbook``) against
+    this battery's checks + recent structured events. Defensive: never raises, degrades to no
+    matches rather than breaking ``run_diagnostics``."""
+    try:
+        from sleepctl.diagnostics_playbook import match_playbook
+        events: list[dict] = []
+        try:
+            events = repo.recent_events(limit=100)
+        except Exception:
+            events = []
+        return match_playbook({"checks": checks}, events=events, run_dir=run_dir)
+    except Exception:
+        return []
 
 
 # ------------------------------------------------------------------ plaintext rendering
@@ -565,4 +584,13 @@ def render_diagnosis_text(report: dict) -> str:
         if c.get("remedy"):
             line += f"  (fix: {c['remedy']})"
         lines.append(line)
+
+    matches = report.get("playbook_matches") or []
+    if matches:
+        lines.append("")
+        lines.append("=== LIKELY CAUSES & FIXES ===")
+        for m in matches:
+            lines.append(f"- {m.get('symptom')}")
+            lines.append(f"    cause: {m.get('likely_cause')}")
+            lines.append(f"    fix:   {m.get('fix')}")
     return "\n".join(lines)

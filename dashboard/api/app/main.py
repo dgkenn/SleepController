@@ -1410,3 +1410,62 @@ def diag_blackbox(token: str = ""):
         data = ("(truncated to the last 200KB)\n"
                 + encoded[-_BLACKBOX_MAX_BYTES:].decode("utf-8", errors="ignore"))
     return PlainTextResponse(data)
+
+
+# ---- diagnostics: bundle / playbook ----
+# Two more maintainer tools layered on the same run_diagnostics() battery: a single-artifact
+# "send this to Claude" bundle (everything needed to diagnose an issue in one paste/download)
+# and the known-issue playbook (symptom -> likely cause -> concrete fix). Both gated exactly
+# like /diag (secret DIAG_TOKEN, 404 on missing/wrong token so they're invisible to scanners).
+@app.get("/diag/bundle")
+def diag_bundle(token: str = "", format: str = "", lines: int = 150, repo=Depends(repo_dep)):
+    """One-shot diagnostic bundle: the full ``/diag`` JSON verdict, recent structured events,
+    tails of every whitelisted log, ``.run/*.result``/``.run/*.alert`` files, daemon/watchdog
+    heartbeat ages, and a REDACTED snapshot of the deploy config (env keys present +
+    non-secret values only -- any key matching PASSWORD/SECRET/TOKEN/ICS_URL/CLIENT_SECRET/JWT
+    (case-insensitive) is always rendered ``<redacted>``, never its real value).
+
+    Default response is ``text/plain``, clearly sectioned (``===== SECTION =====`` headers)
+    and capped at ~1MB so it's paste-friendly straight into a chat -- or ``curl`` it to a file
+    and hand the file over. Add ``?format=zip`` for an UNtruncated zip of the individual
+    section files instead (one file per log/section) when the text cap would cut something
+    off. ``?lines=`` controls the per-log tail length fed into the text/zip (default 150,
+    same 1..1000 clamp as ``/diag/logs``).
+
+    Gated exactly like ``/diag`` (404 on missing/wrong ``DIAG_TOKEN``)."""
+    _diag_gate(token)
+    from app.diag_bundle import collect_bundle, render_bundle_files, render_bundle_text
+
+    n = max(1, min(int(lines), _DIAG_LOGS_MAX_LINES))
+    data = collect_bundle(repo, _run_dir(), tail_lines=n)
+
+    if format == "zip":
+        import io
+        import zipfile
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name, content in render_bundle_files(data).items():
+                zf.writestr(name, content)
+        buf.seek(0)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        headers = {"Content-Disposition": f'attachment; filename="diag-bundle-{ts}.zip"'}
+        return StreamingResponse(buf, media_type="application/zip", headers=headers)
+
+    return PlainTextResponse(render_bundle_text(data))
+
+
+@app.get("/diag/playbook")
+def diag_playbook(token: str = "", repo=Depends(repo_dep)):
+    """The known-issue playbook (id, symptom, likely_cause, fix, auto_fixable) -- the full
+    catalog, each entry annotated with whether it currently ``matched`` this instance's live
+    diagnostics, plus ``matches`` as its own shorthand list. Gated exactly like ``/diag``."""
+    _diag_gate(token)
+    from app.diagnostics import run_diagnostics
+    from sleepctl.diagnostics_playbook import playbook_catalog
+
+    report = run_diagnostics(repo, run_dir=_run_dir())
+    matches = report.get("playbook_matches") or []
+    matched_ids = {m["id"] for m in matches}
+    entries = [dict(e, matched=(e["id"] in matched_ids)) for e in playbook_catalog()]
+    return {"entries": entries, "matches": matches}
