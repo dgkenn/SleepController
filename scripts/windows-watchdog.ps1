@@ -95,28 +95,32 @@ function Start-Web {
         -RedirectStandardOutput "$run\web.log" -RedirectStandardError "$run\web.err"
 }
 
-# --- supervise by REALITY, not by a Start-Process handle -------------------------------------
-# The old loop trusted $proc.HasExited, which false-positived for the daemon (it holds no port and
-# the handle went stale), so the watchdog kept spawning DUPLICATE daemons -- they piled up and
-# hammered the Eight Sleep API (causing 504s). Now we check actual liveness: api/web by their
-# listening port, the daemon by its command line, and we hard-guarantee exactly ONE daemon.
+# --- supervise by REALITY -------------------------------------------------------------------
+# api/web: their listening port. Daemon: a HEARTBEAT FILE it rewrites every ~2s. The previous
+# approaches (a Start-Process handle, then a CIM command-line query) both FLAPPED in the
+# scheduled-task context -- the query intermittently returned 0 or 2 for one healthy daemon, so
+# the watchdog spuriously started duplicates and then killed a working daemon (and the in-progress
+# self-test) every ~20s. A file's mtime is unambiguous: fresh (< 90s) => the daemon is alive.
 function Port-Alive([int]$port) {
     return [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
 }
-function Get-DaemonProcs {
-    return @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-             Where-Object { $_.CommandLine -and $_.CommandLine -match 'run_daemon\.py' })
+$script:daemonHb = Join-Path $run "daemon.heartbeat"
+$script:daemonGraceUntil = (Get-Date)   # after a (re)start, wait this long for the first beat
+function Daemon-Alive {
+    if (-not (Test-Path $script:daemonHb)) { return $false }
+    return ((New-TimeSpan -Start (Get-Item $script:daemonHb).LastWriteTime -End (Get-Date)).TotalSeconds -lt 90)
 }
-function Ensure-Single-Daemon {
-    $procs = Get-DaemonProcs
-    if ($procs.Count -eq 0) {
-        Log "daemon not running; starting"
-        Start-Daemon | Out-Null
-        Start-Sleep -Seconds 3
-    } elseif ($procs.Count -gt 1) {
-        Log "found $($procs.Count) daemon processes (pileup); trimming to the newest one"
-        $procs | Sort-Object CreationDate -Descending | Select-Object -Skip 1 |
+function Ensure-Daemon {
+    if ((Get-Date) -lt $script:daemonGraceUntil) { return }   # let a fresh daemon connect + beat
+    if (-not (Daemon-Alive)) {
+        Log "daemon heartbeat stale/missing; restarting"
+        # best-effort: clear any lingering run_daemon before starting a clean one
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match 'run_daemon\.py' } |
             ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 500
+        Start-Daemon | Out-Null
+        $script:daemonGraceUntil = (Get-Date).AddSeconds(45)  # don't re-judge until it can beat
     }
 }
 
@@ -127,7 +131,7 @@ Log "supervising; iPhone URL (same WiFi): http://${ip}:3000  login=$($env:DASHBO
 
 while ($true) {
     if (-not (Port-Alive 8000)) { Log "api not listening; starting"; Start-Api | Out-Null; Start-Sleep -Seconds 3 }
-    Ensure-Single-Daemon
+    Ensure-Daemon
     if (-not (Port-Alive 3000)) { Log "web not listening; starting"; Start-Web | Out-Null; Start-Sleep -Seconds 3 }
     Set-Content -Path (Join-Path $run "watchdog.heartbeat") -Value (Get-Date -Format o)
     Start-Sleep -Seconds 15

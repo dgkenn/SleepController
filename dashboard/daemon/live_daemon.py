@@ -15,8 +15,24 @@ Stop (the ``stop`` command) hard-offs the side via ``turn_off_side()``.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timedelta
 from typing import Optional
+
+
+def _write_daemon_heartbeat() -> None:
+    """Touch .run/daemon.heartbeat so the watchdog can detect daemon liveness by a FILE it
+    reads directly (mtime), instead of an unreliable process/command-line query that flaps in the
+    scheduled-task context and spuriously restarts a healthy daemon."""
+    try:
+        db = os.environ.get("SLEEPCTL_DB", "")
+        root = os.path.dirname(db) if db else os.getcwd()
+        run = os.path.join(root, ".run")
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "daemon.heartbeat"), "w") as fh:
+            fh.write(datetime.now().isoformat())
+    except Exception:
+        pass
 
 from sleepctl.config import AppConfig
 from sleepctl.controller.controller import SleepController
@@ -827,8 +843,10 @@ class LiveDashboardDaemon:
         ticks = 0
         last_control = 0.0
         last_telem = 0.0
+        _write_daemon_heartbeat()   # first beat immediately so the watchdog sees us alive at once
         try:
             while True:
+                _write_daemon_heartbeat()   # every ~command_poll_seconds — reliable liveness signal
                 loop_now = asyncio.get_event_loop().time()
                 due = loop_now - last_control >= poll_seconds
                 telem_due = loop_now - last_telem >= telemetry_seconds
