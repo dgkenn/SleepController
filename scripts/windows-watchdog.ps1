@@ -127,6 +127,119 @@ function Handle-RestartRequest {
     }
 }
 
+# --- remote self-update hook (Claude operator console) ----------------------------------------
+# A token-gated API endpoint (POST /diag/action/update) writes .run\update.request containing a
+# branch name (read server-side from DEPLOY_BRANCH, default "main") -- the API NEVER runs git or
+# a shell itself, it only writes this one flag file. This is the watchdog side of that protocol:
+# fetch + hard-reset THIS repo's checkout to origin/<branch> (never an arbitrary remote/URL --
+# always this same, already-configured "origin"), validate the result, and only THEN trigger a
+# normal restart via the EXISTING .run\restart.request mechanism (reused, not reimplemented --
+# this function never kills a process itself). Defensive by construction: any failure here is
+# logged as CRITICAL + raises .run\watchdog.alert, and the running system is left untouched (no
+# restart) rather than risk restarting into a broken deploy. Whatever happens is recorded to
+# .run\update.result for GET /diag/update-status to surface. PS 5.1 compatible (no ??, ?., etc).
+$script:updateRequestFile = Join-Path $run "update.request"
+$script:updateResultFile = Join-Path $run "update.result"
+$script:updateBranchAllowlist = '^[A-Za-z0-9._/-]+$'
+
+function Write-UpdateResult($record) {
+    try {
+        ($record | ConvertTo-Json -Depth 5) | Set-Content -Path $script:updateResultFile -Encoding UTF8
+    } catch {
+        Log "WARN: could not write update.result: $_"
+    }
+}
+
+function Handle-UpdateRequest {
+    if (-not (Test-Path $script:updateRequestFile)) { return }
+    $branch = $null
+    try { $branch = (Get-Content -Path $script:updateRequestFile -Raw -ErrorAction Stop).Trim() } catch {}
+    # delete the flag immediately -- a stuck/re-created flag can never loop an update forever
+    Remove-Item -Path $script:updateRequestFile -Force -ErrorAction SilentlyContinue
+    if (-not $branch) { return }
+
+    if ($branch -notmatch $script:updateBranchAllowlist) {
+        Log "CRITICAL: self-update requested branch '$branch' fails the allowlist regex -- ignoring"
+        Write-Alert "self-update rejected: branch '$branch' fails the allowlist regex"
+        Write-UpdateResult @{
+            timestamp = (Get-Date -Format o); branch = $branch; git_ok = $false
+            git_output = ""; validate_verdict = ""; restarted = $false
+            summary = "rejected: branch name '$branch' fails the allowlist regex"
+        }
+        return
+    }
+
+    # Everything past this point is best-effort: a crash here must never take down the
+    # supervise loop that keeps api/daemon/web alive.
+    try {
+        Log "self-update requested: branch=$branch"
+        $ts = Get-Date -Format o
+        $gitOutput = @()
+        $gitOk = $true
+
+        $fetchOut = & git -C $Root fetch --prune origin $branch 2>&1
+        $gitOutput += $fetchOut
+        if ($LASTEXITCODE -ne 0) { $gitOk = $false }
+
+        if ($gitOk) {
+            $resetOut = & git -C $Root reset --hard "origin/$branch" 2>&1
+            $gitOutput += $resetOut
+            if ($LASTEXITCODE -ne 0) { $gitOk = $false }
+        }
+
+        $gitOutputText = ($gitOutput | Out-String)
+        $gitOutputTail = $gitOutputText
+        if ($gitOutputTail.Length -gt 4000) {
+            $gitOutputTail = $gitOutputTail.Substring($gitOutputTail.Length - 4000)
+        }
+        $gitOutputTail -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { Log "self-update git: $_" }
+
+        $validateVerdict = "SKIPPED"
+        if ($gitOk) {
+            $validateScript = Join-Path $Root "scripts\validate_env.ps1"
+            if (Test-Path $validateScript) {
+                & $validateScript -Root $Root
+                $vExit = $LASTEXITCODE
+                if ($vExit -ge 2) { $validateVerdict = "FAIL" }
+                elseif ($vExit -eq 1) { $validateVerdict = "WARN" }
+                else { $validateVerdict = "PASS" }
+            } else {
+                Log "WARN: scripts\validate_env.ps1 not found after self-update -- treating as WARN"
+                $validateVerdict = "WARN"
+            }
+        }
+
+        $restarted = $false
+        if ($gitOk -and $validateVerdict -ne "FAIL") {
+            # reuse the EXISTING restart.request protocol -- never kill a process directly here
+            Set-Content -Path $script:restartRequestFile -Value "all" -Encoding ASCII
+            $restarted = $true
+            $summary = "update to '$branch' succeeded (validate=$validateVerdict) -- restart requested"
+            Log "self-update: $summary"
+        } else {
+            $reason = if (-not $gitOk) { "git fetch/reset failed" } else { "validate_env reported FAIL" }
+            $summary = "update to '$branch' FAILED ($reason) -- leaving the running system as-is"
+            Log "CRITICAL: self-update: $summary"
+            Write-Alert "self-update FAILED for branch '$branch': $reason -- see .run\update.result"
+        }
+
+        Write-UpdateResult @{
+            timestamp = $ts; branch = $branch; git_ok = $gitOk; git_output = $gitOutputTail
+            validate_verdict = $validateVerdict; restarted = $restarted; summary = $summary
+        }
+    } catch {
+        Log "CRITICAL: self-update handler crashed: $_"
+        Write-Alert "self-update handler crashed: $_"
+        try {
+            Write-UpdateResult @{
+                timestamp = (Get-Date -Format o); branch = $branch; git_ok = $false
+                git_output = "$_"; validate_verdict = "ERROR"; restarted = $false
+                summary = "self-update handler crashed: $_"
+            }
+        } catch {}
+    }
+}
+
 # --- load deploy\.env into the environment ---
 $envPath = Join-Path $Root "deploy\.env"
 if (-not (Test-Path $envPath)) { Log "FATAL: deploy\.env missing -- run windows-setup.ps1 first."; exit 1 }
@@ -300,6 +413,10 @@ $script:smokeTestAt = (Get-Date).AddSeconds(40)
 $script:smokeTestDone = $false
 
 while ($true) {
+    # Update BEFORE restart so a same-tick "all" restart request written by Handle-UpdateRequest
+    # (on a successful update) is picked up immediately by Handle-RestartRequest below, instead
+    # of waiting for the next ~15s tick.
+    Handle-UpdateRequest
     Handle-RestartRequest
 
     if (-not (Port-Alive 8000)) {

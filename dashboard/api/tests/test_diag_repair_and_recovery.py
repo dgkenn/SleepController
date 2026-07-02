@@ -136,7 +136,8 @@ def test_diag_action_restart_writes_restart_request_for_allowed_target(client, m
 
     r = client.post("/diag/action/restart?token=s3cret-xyz&target=daemon")
     assert r.status_code == 200
-    assert r.json() == {"requested": "daemon"}
+    assert r.json() == {"requested": "daemon",
+                        "verify_with": "/diag/all?token=s3cret-xyz"}
     assert os.path.exists(flag)
     assert open(flag, encoding="utf-8").read().strip() == "daemon"
     os.remove(flag)
