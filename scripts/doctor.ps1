@@ -90,6 +90,45 @@ foreach ($port in 8000, 3000) {
     }
 }
 
+# ------------------------------------------------------------------ connectivity (LAN + tailscale)
+Section "CONNECTIVITY"
+$lanIp = (Get-NetIPAddress -AddressFamily IPv4 -PrefixOrigin Dhcp -ErrorAction SilentlyContinue |
+          Where-Object { $_.IPAddress -like "192.168.*" -or $_.IPAddress -like "10.*" } |
+          Select-Object -First 1).IPAddress
+if (-not $lanIp) { $lanIp = "(no LAN IP found -- not on WiFi/Ethernet with a DHCP lease?)" }
+Write-Host "LAN IP: $lanIp"
+$port3000Listening = [bool](Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue)
+Write-Host "port 3000 listening: $port3000Listening  (same-WiFi dashboard URL: http://${lanIp}:3000)"
+
+if (Get-Command tailscale -ErrorAction SilentlyContinue) {
+    Write-Host ""
+    Write-Host "-- tailscale status --"
+    try {
+        tailscale status 2>&1 | ForEach-Object { Write-Host $_ }
+    } catch {
+        Write-Host "(tailscale status failed: $_)"
+    }
+    Write-Host ""
+    Write-Host "-- tailscale funnel status (public internet access, if enabled) --"
+    try {
+        tailscale funnel status 2>&1 | ForEach-Object { Write-Host $_ }
+    } catch {
+        Write-Host "(tailscale funnel status failed / funnel not enabled: $_)"
+    }
+    Write-Host ""
+    Write-Host "-- tailscale serve status (tailnet-only access, if enabled) --"
+    try {
+        tailscale serve status 2>&1 | ForEach-Object { Write-Host $_ }
+    } catch {
+        Write-Host "(tailscale serve status failed / serve not enabled: $_)"
+    }
+    Write-Host ""
+    Write-Host "(if the phone can't reach the dashboard off-WiFi: funnel/serve above should show an ACTIVE https:// URL --"
+    Write-Host " if neither shows one, that -- not the app -- is why the phone can't connect.)"
+} else {
+    Write-Host "(tailscale CLI not found)"
+}
+
 # ------------------------------------------------------------------ heartbeats + logs
 Section "HEARTBEATS (.run)"
 function HeartbeatAge($name) {
@@ -104,6 +143,23 @@ if (-not (Test-Path $run)) {
 } else {
     HeartbeatAge "daemon"
     HeartbeatAge "watchdog"
+
+    Write-Host ""
+    $alertPath = Join-Path $run "watchdog.alert"
+    if (Test-Path $alertPath) {
+        Write-Host "watchdog.alert : ACTIVE -- $(Get-Content $alertPath -Raw)" -ForegroundColor Red
+    } else {
+        Write-Host "watchdog.alert : (none -- no active restart-storm or smoke-test failure)"
+    }
+    foreach ($resultFile in @("validate.result", "smoke.result")) {
+        $p = Join-Path $run $resultFile
+        if (Test-Path $p) {
+            Write-Host "${resultFile} :"
+            Get-Content -Path $p | ForEach-Object { Write-Host "    $_" }
+        } else {
+            Write-Host "${resultFile} : MISSING (watchdog hasn't run since this feature was added, or hasn't started yet)"
+        }
+    }
 }
 
 function TailLog($name, $n = 15) {
