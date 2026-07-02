@@ -130,6 +130,7 @@ override location with `--lat/--lon`; disable the weather fallback with `--no-we
 | `train`     | Refit the ML models and propose (or `--apply`) the next setpoint |
 | `checkin`   | Log subjective morning data (`--quality/--grogginess/--performance`, 0–10) |
 | `recalibrate` | Monthly re-anchor + ML status report |
+| `doctor`    | Data + learning + config health check — `[OK]/[WARN]/[FAIL]/[INFO]` report, `--json`; see **[docs/DIAGNOSTICS_CLI.md](docs/DIAGNOSTICS_CLI.md)** |
 
 ## Self-learning (ML)
 
