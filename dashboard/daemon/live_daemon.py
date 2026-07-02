@@ -1009,6 +1009,19 @@ class LiveDashboardDaemon:
                                            daemon=True)
         self._hb_thread.start()
         await self.client.connect()
+        # Take exclusive thermal control: disable Eight Sleep's Autopilot so its dynamic
+        # bedtime engine stops overriding our commands (verified live -- Autopilot re-writes
+        # currentLevel to its own escalating targets within ~45s, and away mode idles the pod).
+        # smart.enabled=false keeps the pod actuating under our currentLevel. Skipped in dry-run
+        # (read-only) and when the client doesn't support it (e.g. the simulator).
+        if not self.dry_run and hasattr(self.client, "set_autopilot"):
+            try:
+                await self.client.set_autopilot(False)
+                self._log("Eight Sleep Autopilot DISABLED (exclusive control; no schedule override).")
+                self._emit_event("lifecycle", "info", "autopilot_disabled",
+                                 "Autopilot disabled for exclusive control", {})
+            except Exception as exc:  # pragma: no cover - network dependent
+                self._log(f"WARNING: could not disable Autopilot: {exc!r}")
         self._log(f"sleepctl dashboard LIVE daemon started (dry_run={self.dry_run}, "
                   f"control={poll_seconds:g}s, telemetry={telemetry_seconds:g}s)."
                   + ("  [READ-ONLY: no device commands]" if self.dry_run else ""))

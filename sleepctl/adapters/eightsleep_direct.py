@@ -675,6 +675,26 @@ class EightSleepDirectClient:
         smart[sleep_stage] = self._clamp(level)
         await self._request("PUT", url, json_body={"smart": smart})
 
+    async def set_autopilot(self, enabled: bool) -> None:
+        """Enable/disable Eight Sleep's Autopilot schedule for this side.
+
+        Autopilot's dynamic *bedtime* engine (``currentState.type == 'smart:bedtime'``)
+        continuously re-writes ``currentLevel`` to its own escalating targets, which
+        overrides our commands within ~45 s. Setting ``smart.enabled = false`` is the
+        validated way to take exclusive control **while the pod keeps actuating** --
+        unlike away mode, which idles the device (target 0, no heating). Steering the
+        static stage levels (``bedTimeLevel`` etc.) does *not* work: the dynamic engine
+        ignores them and reasserts its own target (verified live).
+
+        Stage levels are preserved (we GET the current ``smart`` object and only flip
+        ``enabled``), so re-enabling restores the user's Autopilot exactly.
+        """
+        url = f"{APP_API_URL}/users/{self._user_id}/temperature"
+        data = await self._request("GET", url)
+        smart = dict((data or {}).get("smart", {}) or {})
+        smart["enabled"] = bool(enabled)
+        await self._request("PUT", url, json_body={"smart": smart})
+
     async def turn_on_side(self) -> None:
         url = f"{APP_API_URL}/users/{self._user_id}/temperature"
         await self._request("PUT", url, json_body={"currentState": {"type": "smart"}})
