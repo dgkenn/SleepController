@@ -6,6 +6,7 @@ Subcommands:
   run        run the live closed-loop daemon (requires a configured Pod adapter)
   auth       authenticate to Eight Sleep / Google Calendar
   calibrate  probe Pod 2 capabilities + build the F<->level calibration
+  doctor     data + learning + config health check (complements the live-runtime doctor)
 """
 
 from __future__ import annotations
@@ -414,6 +415,89 @@ def _cmd_recalibrate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _fetch_live_diag(timeout: float = 1.5):
+    """Best-effort probe of a locally running dashboard API's runtime-health endpoint.
+
+    Returns ``(data, note)``: ``data`` is a parsed dict (or ``{"raw": True, "lines": [...]}``
+    if the endpoint answered but not in JSON), and ``note`` is a short human-readable reason
+    when the endpoint could not be reached/parsed. Never raises — the CLI's data/learning
+    checks must work standalone even if no dashboard is running.
+    """
+    import json as _json
+    import os
+    import urllib.error
+    import urllib.request
+
+    token = os.environ.get("DIAG_TOKEN", "")
+    url = f"http://localhost:8000/diag?token={token}&format=json"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (local only)
+            body = resp.read().decode("utf-8", errors="replace")
+    except Exception as exc:
+        return None, f"dashboard API not reachable — data checks only ({exc.__class__.__name__})"
+
+    try:
+        data = _json.loads(body)
+    except Exception:
+        lines = [ln for ln in body.strip().splitlines() if ln.strip()][:4]
+        return {"raw": True, "lines": lines}, None
+    return data, None
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Data + learning + config health check (engine-side). See ``sleepctl.diagnostics``.
+
+    Complements (does not replace) a live-runtime doctor: if a dashboard API is reachable
+    locally, its live-health verdict is shown first under LIVE RUNTIME; otherwise that
+    section just notes it wasn't reachable and the report continues with data-only checks.
+    """
+    import json as _json
+
+    from sleepctl.diagnostics import data_diagnostics
+    from sleepctl.storage.repository import Repository
+
+    cfg = AppConfig.default()
+    repo = Repository(args.db)
+    try:
+        report = data_diagnostics(repo, cfg)
+    finally:
+        repo.close()
+
+    live, live_note = _fetch_live_diag()
+
+    if args.json:
+        out = dict(report)
+        if live is not None:
+            out["live_runtime"] = live
+        else:
+            out["live_runtime"] = {"reachable": False, "note": live_note}
+        print(_json.dumps(out, indent=2, default=str))
+        return 1 if report["verdict"] == "DEGRADED" else 0
+
+    print("== sleepctl doctor ==")
+    print("\nLIVE RUNTIME")
+    if live is None:
+        print(f"  ({live_note})")
+    elif isinstance(live, dict) and live.get("raw"):
+        print("  dashboard API reachable (plain-text /diag response; no JSON verdict field):")
+        for ln in live["lines"]:
+            print(f"    {ln}")
+    elif isinstance(live, dict) and "verdict" in live:
+        print(f"  verdict={live.get('verdict')}  {live.get('headline', '')}")
+    else:
+        print("  dashboard API reachable, but the response shape was not recognized.")
+
+    print(f"\n{report['headline']}\n")
+    icons = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]", "info": "[INFO]"}
+    for c in report["checks"]:
+        icon = icons.get(c.get("status"), "[??]  ")
+        line = f"{icon} {c.get('title')} — {c.get('detail')}"
+        if c.get("remedy"):
+            line += f"  (fix: {c['remedy']})"
+        print(line)
+    return 1 if report["verdict"] == "DEGRADED" else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sleepctl", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -496,6 +580,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_bt.add_argument("--scenario", default="normal")
     p_bt.add_argument("--seed", type=int, default=7)
     p_bt.set_defaults(func=_cmd_backtest)
+
+    p_doctor = sub.add_parser(
+        "doctor", help="Data + learning + config health check (not the live-runtime doctor)")
+    p_doctor.add_argument("--db", default="sleepctl.db")
+    p_doctor.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    p_doctor.set_defaults(func=_cmd_doctor)
     return parser
 
 
