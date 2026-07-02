@@ -158,6 +158,70 @@ class Repository:
         )
         self.conn.commit()
 
+    # ---- structured event log ("what happened and when" as one query) --------
+    def log_event(self, category: str, severity: str, code: str, message: str,
+                  data: Optional[dict] = None) -> None:
+        """Append a structured event row. Defensive: swallows any error rather than raising,
+        so a broken event log can never break the control loop that calls it."""
+        try:
+            self.conn.execute(
+                "INSERT INTO events (ts, category, severity, code, message, data) "
+                "VALUES (?,?,?,?,?,?)",
+                (_iso(datetime.now()), category, severity, code, message, _jdump(data)),
+            )
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def recent_events(self, limit: int = 200, category: Optional[str] = None,
+                      severity: Optional[str] = None, since_iso: Optional[str] = None) -> list[dict]:
+        """Newest-first structured events, optionally filtered by category / severity / a minimum
+        ISO timestamp. Defensive: returns [] on any error rather than raising."""
+        try:
+            q = "SELECT * FROM events WHERE 1=1"
+            args: list = []
+            if category:
+                q += " AND category = ?"
+                args.append(category)
+            if severity:
+                q += " AND severity = ?"
+                args.append(severity)
+            if since_iso:
+                q += " AND ts >= ?"
+                args.append(since_iso)
+            q += " ORDER BY id DESC LIMIT ?"
+            args.append(int(limit))
+            rows = self.conn.execute(q, args).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["data"] = _jload(d.get("data"))
+                out.append(d)
+            return out
+        except Exception:
+            return []
+
+    def prune_events(self, keep_days: int = 14, max_rows: int = 20000) -> int:
+        """Delete events older than ``keep_days`` and, if still over ``max_rows``, the oldest
+        excess rows. Defensive: returns 0 on any error rather than raising. Returns rows deleted."""
+        try:
+            cutoff = _iso(datetime.now() - timedelta(days=keep_days))
+            cur = self.conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            deleted = cur.rowcount or 0
+            total = self.conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
+            if total > max_rows:
+                excess = total - max_rows
+                ids = [r["id"] for r in self.conn.execute(
+                    "SELECT id FROM events ORDER BY id ASC LIMIT ?", (excess,)).fetchall()]
+                if ids:
+                    qmarks = ",".join("?" * len(ids))
+                    cur2 = self.conn.execute(f"DELETE FROM events WHERE id IN ({qmarks})", ids)
+                    deleted += cur2.rowcount or 0
+            self.conn.commit()
+            return deleted
+        except Exception:
+            return 0
+
     def save_night_summary(self, ns: NightSummary) -> None:
         self.conn.execute(
             """INSERT INTO nightly_summaries

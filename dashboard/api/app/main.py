@@ -977,3 +977,25 @@ def safety_guardrail(repo=Depends(repo_dep), user: str = AuthDep):
     """Live decision-guardrail state: current findings and whether a CRITICAL one is forcing
     a safe hold."""
     return services.guardrail_status(repo)
+
+
+# ---- structured event log: "what happened and when" as one query, not a log grep ----
+@app.get("/diag/events")
+def diag_events(token: str = "", limit: int = 200, category: str = "", severity: str = "",
+                since: str = "", repo=Depends(repo_dep)):
+    """Remote structured-incident-timeline pull: the daemons' events table, filterable by
+    category / severity / a minimum ISO ``since`` timestamp.
+
+    SAME token gating as ``/diag`` (secret ``DIAG_TOKEN`` env, constant-time compare, 404 when
+    missing/wrong/disabled — invisible to scanners). Complements ``/diag``'s log tails with a
+    structured, queryable event timeline instead of unstructured text."""
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+    return repo.recent_events(
+        limit=limit,
+        category=category or None,
+        severity=severity or None,
+        since_iso=since or None,
+    )

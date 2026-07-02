@@ -49,6 +49,16 @@ from app import bridge
 TEMP_MIN_F, TEMP_MAX_F = cs.TEMP_MIN_F, cs.TEMP_MAX_F
 
 
+def _classify_tick_error(exc: BaseException) -> tuple[str, str]:
+    """(category, severity) for a tick exception: cloud-flavored errors (RequestError/504/
+    timeout — the common transient Eight Sleep API hiccups) are downgraded to a 'cloud'/'warn'
+    event; everything else is a plain 'error'/'error' event."""
+    msg = repr(exc)
+    if any(s in msg for s in ("RequestError", "504", "timeout", "Timeout")):
+        return "cloud", "warn"
+    return "error", "error"
+
+
 def _parse_wake_dt(wake_time):
     """'HH:MM' -> the next datetime it occurs, or None if malformed (so a bad UI command degrades
     gracefully instead of crashing the command loop)."""
@@ -156,6 +166,15 @@ class LiveDashboardDaemon:
     def _log(self, msg: str) -> None:
         if self.verbose:
             print(msg, flush=True)
+
+    def _emit_event(self, category: str, severity: str, code: str, message: str,
+                    data: Optional[dict] = None) -> None:
+        """Best-effort structured event log entry (see ``sleepctl.storage.repository.
+        Repository.log_event``). Never allowed to break the control loop."""
+        try:
+            self.repo.log_event(category, severity, code, message, data)
+        except Exception:
+            pass
 
     @staticmethod
     def _clamp_temp(f) -> float:
@@ -395,6 +414,12 @@ class LiveDashboardDaemon:
                 cause = getattr(exc, "__cause__", None)
                 self._log(f"command {t} failed: {type(exc).__name__}: {exc!r}"
                           + (f" <- {cause!r}" if cause is not None else ""))
+            else:
+                # A device command actually applied: log it to the structured event log (the
+                # "what happened and when" query surface). Best-effort, never raises.
+                if t in ("prime", "power_on", "power_off", "away_on", "away_off",
+                        "set_temp", "stop", "self_test"):
+                    self._emit_event("device", "info", t, f"device command applied: {t}", p)
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
 
@@ -406,6 +431,8 @@ class LiveDashboardDaemon:
         from sleepctl.loop.self_test import run_self_test
 
         self._log(f"self-test starting (mode={mode})")
+        self._emit_event("self_test", "info", "self_test_start",
+                         f"self-test starting (mode={mode})", {"mode": mode})
         # Pause the closed loop so we're the only thing driving the device.
         self.paused = True
 
@@ -444,6 +471,10 @@ class LiveDashboardDaemon:
                 self._log(f"self-test persistence skipped: {exc}")
             self._log(f"self-test done (overall_passed={report.overall_passed}, "
                       f"aborted={report.aborted})")
+            self._emit_event("self_test", "info", "self_test_end",
+                             f"self-test done (overall_passed={report.overall_passed})",
+                             {"mode": mode, "overall_passed": report.overall_passed,
+                              "aborted": report.aborted})
         finally:
             # The battery already powered the side OFF; reflect that and hold so the loop doesn't
             # immediately re-drive. The user presses Power On to resume normal control.
@@ -586,6 +617,10 @@ class LiveDashboardDaemon:
         if th.state != self._thermal_state:
             if th.state == "stalled":
                 self._log(f"⚠ thermal: {th.reason}")
+                self._emit_event("thermal", "warn", "thermal_stalled",
+                                 th.reason or "thermal response stalled",
+                                 {"device_level": frame.device_level,
+                                  "target_level": frame.target_level})
             self._thermal_state = th.state
 
     # ------------------------------------------------------------------ snapshot
@@ -764,6 +799,10 @@ class LiveDashboardDaemon:
             self.cycle.log(frame, decision, now)
             self._capture_wake(decision, frame, now)
             await self._maybe_close_out(decision, now)
+            if decision.state != self._prev_state:
+                self._emit_event("state", "info", "state_transition",
+                                 f"{self._prev_state.value} -> {decision.state.value}",
+                                 {"from": self._prev_state.value, "to": decision.state.value})
             self._prev_state = decision.state
         self._last_decision = decision
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
@@ -824,6 +863,10 @@ class LiveDashboardDaemon:
                 record_efficacy_outcome(
                     self.repo, night_date, wake_events=night.wake_events, deep_pct=deep_pct,
                     efficiency=night.sleep_efficiency, outcome_score=night.outcome_score)
+                self._emit_event("nightly", "info", "nightly_close_out",
+                                 f"nightly close-out ran for {night_date}",
+                                 {"night_date": night_date})
+                self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
             except Exception as exc:
                 self._log(f"nightly close-out skipped: {exc}")
             self._attach_profiles(self.cycle.controller)  # learn from the night just ended
@@ -849,6 +892,10 @@ class LiveDashboardDaemon:
         self._log(f"sleepctl dashboard LIVE daemon started (dry_run={self.dry_run}, "
                   f"control={poll_seconds:g}s, telemetry={telemetry_seconds:g}s)."
                   + ("  [READ-ONLY: no device commands]" if self.dry_run else ""))
+        self._emit_event("lifecycle", "info", "daemon_started",
+                         f"daemon started (dry_run={self.dry_run})",
+                         {"dry_run": self.dry_run, "poll_seconds": poll_seconds,
+                          "telemetry_seconds": telemetry_seconds})
         ticks = 0
         last_control = 0.0
         last_telem = 0.0
@@ -877,6 +924,9 @@ class LiveDashboardDaemon:
                     # back off so we don't hammer a failing API.
                     self._consec_errors += 1
                     self._log(f"tick error #{self._consec_errors}: {exc!r}; holding")
+                    cat, sev = _classify_tick_error(exc)
+                    self._emit_event(cat, sev, "tick_error", repr(exc),
+                                     {"consec_errors": self._consec_errors})
                     try:
                         bridge.write_runtime_state(
                             self.repo.conn, self._snapshot(None, None, error=repr(exc)))
@@ -897,6 +947,8 @@ class LiveDashboardDaemon:
                 await asyncio.sleep(command_poll_seconds)
         finally:
             self._hb_stop.set()
+            self._emit_event("lifecycle", "info", "daemon_stopping",
+                             "daemon stopping; device client closing")
             await self.client.close()
             self._log("sleepctl dashboard LIVE daemon stopped; device client closed.")
 
