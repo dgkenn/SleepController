@@ -171,6 +171,15 @@ A restored DB is a consistent point-in-time snapshot — anything written after 
 taken is lost, but the file itself is never a half-written/corrupt copy. See
 `sleepctl/storage/backup.py` for the implementation.
 
+### Off-box (encrypted, offsite) backup
+
+The backups above are local to this laptop only — if the laptop dies/is lost, they die with
+it. `scripts/backup-encrypted.ps1` (run daily via its own Scheduled Task, separate from the
+watchdog) takes the same consistent snapshot, `age`-encrypts it, and pushes the ciphertext to
+the repo's dedicated `db-backups` branch — safe to publish because it's unreadable without a
+private key that's deliberately kept off this laptop. One-time setup, exact restore commands,
+and the `.run\backup-offsite.result` contract are all in `deploy/BACKUP_SETUP.md`.
+
 ## (b) The dashboard/API does NOT load
 
 You can't hit `/diag` if the API itself is down. Instead, RDP/console into the Windows host
