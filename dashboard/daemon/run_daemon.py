@@ -884,7 +884,6 @@ def main() -> None:
     import asyncio
 
     from sleepctl.adapters.credentials import load_credentials
-    from sleepctl.adapters.eightsleep_cloud import EightSleepClient
     from sleepctl.config import AppConfig
     from app.db import get_repo
     from live_daemon import LiveDashboardDaemon
@@ -898,11 +897,25 @@ def main() -> None:
                         command_poll_seconds=args.command_poll_seconds).run(args.max_ticks)
         return
 
-    client = EightSleepClient(
-        email=creds.email, password=creds.password, timezone=creds.timezone,
-        side=os.environ.get("EIGHTSLEEP_SIDE") or creds.side,
-        client_id=creds.client_id, client_secret=creds.client_secret,
-    )
+    # EIGHTSLEEP_CLIENT=direct (default) uses the bespoke low-latency client; "pyeight"
+    # (or a direct-client import/connect failure) falls back to the pyEight-backed one.
+    # We connect it here (one extra asyncio.run) so a bad direct-client connect is caught
+    # and swapped out BEFORE LiveDashboardDaemon.run() commits to it for the night.
+    _eight_side = os.environ.get("EIGHTSLEEP_SIDE") or creds.side
+    try:
+        from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
+        client = asyncio.run(build_eightsleep_client(
+            creds.email, creds.password, creds.timezone, _eight_side,
+            creds.client_id, creds.client_secret,
+        ))
+    except Exception as exc:
+        print(f"[daemon] eightsleep_direct unavailable ({exc!r}); using pyEight client.",
+              flush=True)
+        from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+        client = EightSleepClient(
+            email=creds.email, password=creds.password, timezone=creds.timezone,
+            side=_eight_side, client_id=creds.client_id, client_secret=creds.client_secret,
+        )
     # Environmental pre-compensation: enable the weather feed unless explicitly disabled.
     weather = None
     if os.environ.get("SLEEPCTL_WEATHER", "1") not in ("0", "false", "off"):

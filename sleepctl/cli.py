@@ -171,7 +171,6 @@ def _cmd_run(args: argparse.Namespace) -> int:
         poll = 0.0  # no real waiting offline
     else:
         from sleepctl.adapters.credentials import load_credentials
-        from sleepctl.adapters.eightsleep_cloud import EightSleepClient
 
         creds = load_credentials(args.credentials)
         if not creds.is_complete():
@@ -179,14 +178,24 @@ def _cmd_run(args: argparse.Namespace) -> int:
                   "(or set EIGHTSLEEP_EMAIL / EIGHTSLEEP_PASSWORD).")
             repo.close()
             return 2
-        client = EightSleepClient(
-            email=creds.email,
-            password=creds.password,
-            timezone=creds.timezone,
-            side=args.side or creds.side,
-            client_id=creds.client_id,
-            client_secret=creds.client_secret,
-        )
+        # EIGHTSLEEP_CLIENT=direct (default) uses the bespoke low-latency client; "pyeight"
+        # (or a direct-client import/connect failure) falls back to the pyEight-backed one.
+        # Connected here (one extra asyncio.run) so a bad connect is caught + swapped BEFORE
+        # LiveDaemon.run() commits to it.
+        _side = args.side or creds.side
+        try:
+            from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
+            client = asyncio.run(build_eightsleep_client(
+                creds.email, creds.password, creds.timezone, _side,
+                creds.client_id, creds.client_secret,
+            ))
+        except Exception as exc:
+            print(f"eightsleep_direct unavailable ({exc!r}); using pyEight client.")
+            from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+            client = EightSleepClient(
+                email=creds.email, password=creds.password, timezone=creds.timezone,
+                side=_side, client_id=creds.client_id, client_secret=creds.client_secret,
+            )
         max_ticks = args.max_ticks
         poll = args.poll_seconds
 
@@ -243,12 +252,21 @@ def _cmd_auth(args: argparse.Namespace) -> int:
     if args.test:
         import asyncio
 
-        from sleepctl.adapters.eightsleep_cloud import EightSleepClient
-
         async def _probe():
-            client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
-                                      creds.client_id, creds.client_secret)
-            await client.connect()
+            # EIGHTSLEEP_CLIENT=direct (default) / "pyeight"; falls back automatically if
+            # the direct client fails to import or connect.
+            try:
+                from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
+                client = await build_eightsleep_client(
+                    creds.email, creds.password, creds.timezone, creds.side,
+                    creds.client_id, creds.client_secret,
+                )
+            except Exception as exc:
+                print(f"eightsleep_direct unavailable ({exc!r}); using pyEight client.")
+                from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+                client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
+                                          creds.client_id, creds.client_secret)
+                await client.connect()
             await client.update()
             print("Connected. Capabilities:", client.capabilities())
             await client.close()
@@ -266,7 +284,6 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
     import asyncio
 
     from sleepctl.adapters.credentials import load_credentials
-    from sleepctl.adapters.eightsleep_cloud import EightSleepClient
 
     creds = load_credentials(args.credentials)
     if not creds.is_complete():
@@ -274,9 +291,20 @@ def _cmd_calibrate(args: argparse.Namespace) -> int:
         return 2
 
     async def _run():
-        client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
-                                  creds.client_id, creds.client_secret)
-        await client.connect()
+        # EIGHTSLEEP_CLIENT=direct (default) / "pyeight"; falls back automatically if the
+        # direct client fails to import or connect.
+        try:
+            from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
+            client = await build_eightsleep_client(
+                creds.email, creds.password, creds.timezone, creds.side,
+                creds.client_id, creds.client_secret,
+            )
+        except Exception as exc:
+            print(f"eightsleep_direct unavailable ({exc!r}); using pyEight client.")
+            from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+            client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
+                                      creds.client_id, creds.client_secret)
+            await client.connect()
         report = await client.probe()  # live per-field Pod 2 capability probe
         frame = client.read_frame()
 
