@@ -1801,3 +1801,141 @@ def guardrail_status(repo) -> dict:
         "findings": gr.get("findings", []),
         "stale": rt.get("stale", True),
     }
+
+
+# ======================================================================================
+# Feature #6: daily health + last-night push ("morning report"). Reuses the SAME diagnostics
+# battery /diag uses (``app.diagnostics.run_diagnostics``) so the phone and the maintainer's
+# /diag never disagree, plus the SAME last-night summary /status already shows. Delivery reuses
+# the existing Web Push infra (``push_sender`` + ``push_subscriptions`` above) -- nothing new to
+# set up on the client side, the same "Enable alerts" subscription covers this too.
+# ======================================================================================
+_MORNING_REPORT_LAST_SENT_KEY = "morning_report_last_sent_date"   # settings_kv: "YYYY-MM-DD"
+_MORNING_REPORT_LAST_CRITICAL_KEY = "morning_report_last_critical_push"  # settings_kv: ISO ts
+_MORNING_REPORT_CRITICAL_COOLDOWN_S = 3600  # an out-of-band DOWN push fires at most once/hour
+
+
+def build_morning_report(repo) -> dict:
+    """{health_verdict, headline, body} for the daily push + the ``GET /diag/morning-report``
+    dashboard view. ``health_verdict``/the underlying checks come straight from
+    ``run_diagnostics`` (the exact same battery ``/diag`` renders as text); the sleep summary
+    comes from the same night-brief ``/status`` uses. Never raises -- diagnostics/night lookups
+    are individually guarded so a bad night row or a diagnostics hiccup degrades the wording
+    instead of breaking the push."""
+    from app.diagnostics import run_diagnostics
+
+    try:
+        report = run_diagnostics(repo, run_dir=bridge.run_dir())
+    except Exception:
+        report = {"verdict": "UNKNOWN", "headline": "diagnostics unavailable", "primary_remedy": None}
+    verdict = report.get("verdict", "UNKNOWN")
+
+    night = None
+    try:
+        nights = repo.recent_nights(1)
+        if nights:
+            night = _night_brief(nights[-1])
+    except Exception:
+        night = None
+
+    if night:
+        parts = []
+        if night.get("total_sleep_min") is not None:
+            parts.append(f"{night['total_sleep_min'] / 60.0:.1f}h sleep")
+        if night.get("wake_events") is not None:
+            parts.append(f"{night['wake_events']} wake-ups")
+        if night.get("sleep_efficiency") is not None:
+            parts.append(f"{night['sleep_efficiency']:.0f}% efficiency")
+        sleep_summary = ", ".join(parts) if parts else "no sleep metrics logged"
+    else:
+        sleep_summary = "no sleep data yet"
+
+    if verdict == "HEALTHY":
+        headline = f"All systems nominal. Last night: {sleep_summary}."
+    else:
+        headline = f"{verdict}: {report.get('headline', 'see /diag')}"
+
+    body_lines = [f"System: {verdict}", f"Last night: {sleep_summary}"]
+    if verdict != "HEALTHY" and report.get("primary_remedy"):
+        body_lines.append(f"Fix: {report['primary_remedy']}")
+
+    return {
+        "health_verdict": verdict,
+        "headline": headline,
+        "body": "\n".join(body_lines),
+        "night": night,
+        "generated_at": report.get("generated_at"),
+    }
+
+
+def _kv_get_json(repo, key: str):
+    import json as _json
+    row = repo.conn.execute("SELECT value FROM settings_kv WHERE key=?", (key,)).fetchone()
+    if not row:
+        return None
+    try:
+        return _json.loads(row["value"])
+    except Exception:
+        return None
+
+
+def _kv_set_json(repo, key: str, value) -> None:
+    import json as _json
+    repo.conn.execute(
+        "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, _json.dumps(value)))
+    repo.conn.commit()
+
+
+def maybe_send_morning_report(repo, force: bool = False) -> dict:
+    """Send the morning-report push, self-throttled so it's safe to call this often (e.g. from
+    a Scheduled Task hitting ``POST /diag/morning-report/send`` every 15-30 min, not just once
+    at dawn): at most ONE routine push per calendar day, PLUS at most one immediate push per
+    hour whenever the live health verdict is DOWN (so a real outage doesn't have to wait for
+    morning) -- covers "allow an immediate push...rate-limited to once per hour" without a
+    second code path. ``force=True`` (an explicit maintainer call) bypasses the throttle, e.g.
+    for testing that push delivery itself works.
+
+    This IS the "once-per-day send" scheduling hook: call it from any external timer that hits
+    the token-gated endpoint; no daemon/background-thread change was needed because the
+    self-throttle makes frequent polling safe and correct."""
+    report = build_morning_report(repo)
+    verdict = report["health_verdict"]
+    now = datetime.now(timezone.utc)
+    today = now.date().isoformat()
+    is_critical = verdict == "DOWN"
+
+    if force:
+        should_send, reason = True, "forced"
+    elif is_critical:
+        last_critical = _kv_get_json(repo, _MORNING_REPORT_LAST_CRITICAL_KEY)
+        age = _MORNING_REPORT_CRITICAL_COOLDOWN_S + 1
+        if last_critical:
+            try:
+                age = (now - datetime.fromisoformat(last_critical)).total_seconds()
+            except Exception:
+                pass
+        should_send, reason = age >= _MORNING_REPORT_CRITICAL_COOLDOWN_S, "critical_now"
+    else:
+        last_sent = _kv_get_json(repo, _MORNING_REPORT_LAST_SENT_KEY)
+        should_send, reason = last_sent != today, "daily"
+
+    if not should_send:
+        return {"sent": False, "reason": "throttled", "trigger": reason, "report": report}
+
+    subs = list_push_subscriptions(repo)
+    title = "SleepCtl: system needs attention" if is_critical else "SleepCtl morning report"
+    result = push_sender.deliver_custom(title=title, body=report["body"], subscriptions=subs,
+                                        tag="sleepctl-morning-report")
+
+    if is_critical:
+        _kv_set_json(repo, _MORNING_REPORT_LAST_CRITICAL_KEY, now.isoformat())
+    else:
+        _kv_set_json(repo, _MORNING_REPORT_LAST_SENT_KEY, today)
+
+    return {
+        "sent": result.ok, "reason": result.reason or "sent", "trigger": reason,
+        "push": {"sent": result.sent, "failed": result.failed},
+        "report": report,
+    }

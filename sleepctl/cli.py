@@ -498,6 +498,35 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if report["verdict"] == "DEGRADED" else 0
 
 
+# ---- one-click repair (safe subset that doesn't need the dashboard API) -------------------
+def _cmd_repair(args: argparse.Namespace) -> int:
+    """Run the safe, idempotent repair battery directly against the DB + ``.run`` dir -- the
+    CLI-only mirror of ``POST /diag/repair`` (see ``sleepctl.repair``). Works even when the
+    dashboard API isn't running: it's the exact same logic, just driven locally instead of over
+    HTTP, so a maintainer with just SSH/RDP access to the box (no API reachable) can still run
+    it."""
+    import json as _json
+
+    from sleepctl.repair import resolve_run_dir, run_repair
+    from sleepctl.storage.repository import Repository
+
+    repo = Repository(args.db)
+    try:
+        report = run_repair(repo.conn, resolve_run_dir(args.db), stuck_minutes=args.stuck_minutes)
+    finally:
+        repo.close()
+
+    if args.json:
+        print(_json.dumps(report, indent=2))
+        return 0
+
+    print(f"== sleepctl repair ({report['ran_at']}) ==")
+    for a in report["actions"]:
+        mark = "[done]" if a["done"] else "[skip]"
+        print(f"{mark} {a['action']}: {a['detail']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sleepctl", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -586,6 +615,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--db", default="sleepctl.db")
     p_doctor.add_argument("--json", action="store_true", help="emit the full report as JSON")
     p_doctor.set_defaults(func=_cmd_doctor)
+
+    p_repair = sub.add_parser(
+        "repair", help="Run safe, idempotent self-repair actions (stuck commands, stale "
+                       "daemon heartbeat, stuck device, stale watchdog alert)")
+    p_repair.add_argument("--db", default="sleepctl.db")
+    p_repair.add_argument("--stuck-minutes", type=int, default=15,
+                          help="pending commands older than this are marked abandoned/applied")
+    p_repair.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    p_repair.set_defaults(func=_cmd_repair)
     return parser
 
 
