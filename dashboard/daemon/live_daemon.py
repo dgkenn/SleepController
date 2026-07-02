@@ -886,6 +886,10 @@ class LiveDashboardDaemon:
                 finally:
                     if due:
                         last_control = loop_now
+                # Liveness heartbeat for the self-diagnosis battery (see run_daemon.py's sync
+                # loop for the same touch — kept independent of the runtime_state DB write so a
+                # DB hiccup can't also blind the "is the daemon alive" check).
+                bridge.write_heartbeat("daemon")
                 if max_ticks is not None and ticks >= max_ticks:
                     break
                 if shutdown_event is not None and shutdown_event.is_set():

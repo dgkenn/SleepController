@@ -8,6 +8,7 @@ keeps control race-free and means a UI/API crash can never disrupt the closed lo
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 
@@ -187,3 +188,28 @@ def write_runtime_state(conn: sqlite3.Connection, snapshot: dict) -> None:
         ),
     )
     conn.commit()
+
+
+# ---- diagnostics: lightweight liveness heartbeats -----------------------------
+# Written to a plain file (NOT the DB) so a SQLite hiccup/lock can't itself make the daemon
+# look dead, and so ``diagnostics.py`` can check freshness with a cheap stat() call. The
+# ``runtime_state.updated`` DB write above is the richer signal; this is the belt-and-suspenders
+# one that's independent of it.
+def run_dir() -> str:
+    """Resolve the ``.run`` directory next to the SQLite DB (or cwd) — same rule the API's
+    ``/diag`` endpoint and ``diagnostics.py`` use, kept in one place so they can't drift."""
+    db = os.environ.get("SLEEPCTL_DB", "")
+    root = os.path.dirname(db) if db else os.getcwd()
+    return os.path.join(root, ".run")
+
+
+def write_heartbeat(name: str) -> None:
+    """Touch ``.run/<name>.heartbeat`` with the current time. Best-effort: a permissions/disk
+    issue here must never take down the control loop that calls it every tick."""
+    try:
+        run = run_dir()
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, f"{name}.heartbeat"), "w", encoding="utf-8") as fh:
+            fh.write(datetime.now(timezone.utc).isoformat())
+    except Exception:
+        pass
