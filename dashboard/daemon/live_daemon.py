@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -836,6 +837,14 @@ class LiveDashboardDaemon:
             self.dry_run = dry_run
         if telemetry_seconds is None:
             telemetry_seconds = self.cfg.tunables.live_telemetry_seconds
+        # Heartbeat from a real OS THREAD, started BEFORE anything else. Unlike an asyncio task, a
+        # thread keeps writing the liveness file even when the event loop is blocked by a synchronous
+        # call (a slow/hung pyEight request, or the ~10-min on-bed self-test) — so the watchdog can
+        # never false-restart a busy-but-healthy daemon. Beats through connect() too.
+        self._hb_stop = threading.Event()
+        self._hb_thread = threading.Thread(target=self._heartbeat_thread, name="daemon-heartbeat",
+                                           daemon=True)
+        self._hb_thread.start()
         await self.client.connect()
         self._log(f"sleepctl dashboard LIVE daemon started (dry_run={self.dry_run}, "
                   f"control={poll_seconds:g}s, telemetry={telemetry_seconds:g}s)."
@@ -843,15 +852,8 @@ class LiveDashboardDaemon:
         ticks = 0
         last_control = 0.0
         last_telem = 0.0
-        _write_daemon_heartbeat()   # first beat immediately so the watchdog sees us alive at once
-        # Beat from an INDEPENDENT background task, not just the control loop: a long blocking op
-        # inside a tick (e.g. the ~10-min on-bed self-test, or a slow cloud call) must not stall the
-        # heartbeat and make the watchdog think we died. The battery yields via `await`, so this
-        # task keeps firing every ~5s throughout it.
-        hb_task = asyncio.ensure_future(self._heartbeat_loop())
         try:
             while True:
-                _write_daemon_heartbeat()   # also beat each loop iteration (belt and suspenders)
                 loop_now = asyncio.get_event_loop().time()
                 due = loop_now - last_control >= poll_seconds
                 telem_due = loop_now - last_telem >= telemetry_seconds
@@ -890,16 +892,14 @@ class LiveDashboardDaemon:
                     break
                 await asyncio.sleep(command_poll_seconds)
         finally:
-            hb_task.cancel()
+            self._hb_stop.set()
             await self.client.close()
             self._log("sleepctl dashboard LIVE daemon stopped; device client closed.")
 
-    async def _heartbeat_loop(self) -> None:
-        """Write the daemon heartbeat every ~5s, independently of the control loop, so a long
-        blocking tick (self-test, slow cloud call) never lets the heartbeat go stale."""
-        try:
-            while True:
-                _write_daemon_heartbeat()
-                await asyncio.sleep(5.0)
-        except asyncio.CancelledError:
-            return
+    def _heartbeat_thread(self) -> None:
+        """Write .run/daemon.heartbeat every ~5s from a dedicated OS thread — immune to the asyncio
+        event loop being blocked by a synchronous call, so the watchdog's liveness signal stays
+        fresh through any long/blocking operation (self-test, hung cloud request)."""
+        _write_daemon_heartbeat()   # beat once immediately (covers a slow connect())
+        while not self._hb_stop.wait(5.0):
+            _write_daemon_heartbeat()
