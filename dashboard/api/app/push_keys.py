@@ -47,7 +47,7 @@ def main() -> int:
         return 1
     print(f"VAPID_PUBLIC_KEY={pub}")
     print(f"VAPID_PRIVATE_KEY={priv}")
-    print("# Paste both into deploy/.env (gitignored) — never commit real keys.")
+    print("# Paste both into deploy/.env (gitignored) -- never commit real keys.")
     return 0
 
 
