@@ -44,6 +44,83 @@ Each check line is formatted as:
 Fails are listed first, then warns, then everything that's fine (`OK`/`INFO`) — so the top of
 the block is always the thing to fix first.
 
+## Deep dives: exactly the data, no summarizing
+
+`/diag` gives you a curated verdict. Sometimes that's not enough — you need the *exact* raw
+bytes of a log, or to know whether the cloud/device itself is actually responding right now,
+independent of whatever the daemon last published. Two more endpoints, gated **exactly like
+`/diag`** (same `DIAG_TOKEN`, 404 on missing/wrong token):
+
+### `GET /api/diag/logs` — raw, filtered log fetch
+
+```
+https://<your-host>/api/diag/logs?token=<DIAG_TOKEN>&file=daemon&lines=300
+```
+
+Returns the last `lines` (default 100, max 1000) lines of the chosen file **verbatim, as
+plain text** — never summarized, never re-worded. `file` must be one of a whitelist (mapped
+internally to the real filename in `.run/`, so there's no path-traversal surface):
+
+| `file`         | actual file           |
+|----------------|------------------------|
+| `daemon`       | `daemon.log`           |
+| `daemon-err`   | `daemon.err`           |
+| `daemon-crash` | `daemon-crash.log`     |
+| `watchdog`     | `watchdog.log`         |
+| `api`          | `api.log`              |
+| `api-err`      | `api.err`              |
+| `web`          | `web.log`              |
+| `web-build`    | `web-build.log`        |
+
+Add `&grep=<pattern>` to filter that tail window (case-insensitive; tried as a Python regex
+first, falls back to a plain substring match if the pattern doesn't compile — so a literal
+string like `[WARN]` always works). The response is capped at ~200KB total.
+
+Examples:
+
+```
+# pull the last 300 lines of daemon.log, raw
+/api/diag/logs?token=<DIAG_TOKEN>&file=daemon&lines=300
+
+# did the watchdog restart anything recently?
+/api/diag/logs?token=<DIAG_TOKEN>&file=watchdog&lines=1000&grep=restart
+```
+
+An unknown `file` value is rejected with `400`; a whitelisted file that doesn't exist on disk
+yet returns the plain-text placeholder `(file not found)` (not an error).
+
+### `GET /api/diag/probe` — live, read-only Eight Sleep round-trip
+
+```
+https://<your-host>/api/diag/probe?token=<DIAG_TOKEN>
+```
+
+Opens a **fresh, separate, read-only** cloud session (distinct from the daemon's) and does
+exactly: `connect()` → a timed `update()` → `read_frame()` + `device_status()` → `close()`.
+It never sends a device command (no heating-level change, no power/away/prime) — use this to
+confirm the cloud/device is actually responding when `/tonight` or `/diag`'s `runtime_state`
+looks stale and you can't tell whether that's the daemon or Eight Sleep's cloud.
+
+Returns JSON:
+
+```json
+{
+  "ok": true,
+  "latency_ms": 812.4,
+  "error": null,
+  "device": {"online": true, "has_water": true, "priming": false, "needs_priming": false},
+  "frame": {"heart_rate": 58, "hrv": 42, "respiratory_rate": 14, "stage": "deep",
+            "bed_temp_f": 91.5, "presence": true, "device_level": 10, "target_level": 10,
+            "data_age_seconds": 3.0},
+  "note": "read-only: opened a brief separate cloud session distinct from the daemon's; sent no device command"
+}
+```
+
+The whole round-trip runs under a hard ~20s timeout and always closes the session, even on
+failure. If credentials are missing, pyEight isn't installed, the cloud call errors, or it
+times out, you still get a `200` with `{"ok": false, "error": "..."}` — this endpoint is
+designed to never 500 on you.
+
 ## (b) The dashboard/API does NOT load
 
 You can't hit `/diag` if the API itself is down. Instead, RDP/console into the Windows host
