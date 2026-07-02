@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
+import time
 from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
@@ -999,3 +1001,188 @@ def diag_events(token: str = "", limit: int = 200, category: str = "", severity:
         severity=severity or None,
         since_iso=since or None,
     )
+
+
+# ---------------------------------------------------------------- remote deep-dive (token-gated)
+# Two "give me the exact data, not a summary" tools for the maintainer, gated identically to
+# /diag (secret DIAG_TOKEN, 404 on missing/wrong token so it's invisible to scanners). /diag's
+# DIAGNOSIS block is a curated, aggregated verdict; these exist for when that's not enough and
+# the maintainer needs the raw material themselves — an exact log slice, or a live device
+# round-trip that bypasses whatever runtime_state currently says.
+def _diag_gate(token: str) -> None:
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+
+# file -> real filename in .run/ (see scripts/windows-{dashboard,watchdog}.ps1 for what writes
+# each one). Whitelisted on purpose -- no arbitrary path is ever accepted, so there's no
+# traversal surface even though this is a public (token-gated) endpoint.
+_DIAG_LOG_FILES = {
+    "daemon": "daemon.log",
+    "daemon-err": "daemon.err",
+    "daemon-crash": "daemon-crash.log",
+    "watchdog": "watchdog.log",
+    "api": "api.log",
+    "api-err": "api.err",
+    "web": "web.log",
+    "web-build": "web-build.log",
+}
+_DIAG_LOGS_MAX_LINES = 1000
+_DIAG_LOGS_MAX_BYTES = 200 * 1024  # ~200KB response cap
+
+
+def _tail_lines_raw(path: str, n: int) -> list[str] | None:
+    """Like ``_tail`` but returns the raw list of lines (not a joined/summarized string), and
+    None (not a placeholder string) when the file doesn't exist -- callers decide how to render
+    "not found" for their format."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            return fh.readlines()[-n:]
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+@app.get("/diag/logs")
+def diag_logs(token: str = "", file: str = "daemon", lines: int = 100, grep: str = ""):
+    """Raw, filtered log tail -- the deliberately UN-summarized counterpart to /diag: exactly
+    the bytes from the file, never paraphrased. Gated exactly like /diag (404 on missing/wrong
+    ``DIAG_TOKEN``).
+
+    Params:
+      - ``file``: one of daemon | daemon-err | daemon-crash | watchdog | api | api-err | web |
+        web-build (whitelisted -> mapped to the real filename in .run/; no arbitrary paths).
+      - ``lines``: how many lines to read from the end of the file before filtering (default
+        100, capped at 1000).
+      - ``grep``: optional case-insensitive filter applied to that tail window. Tried as a
+        Python regex (``re.IGNORECASE``) first; if it doesn't compile, falls back to a plain
+        case-insensitive substring match so a literal string like "[WARN]" always works.
+
+    Returns the matching lines verbatim as ``text/plain`` (never JSON-wrapped, never
+    truncated-per-line) -- capped at ~200KB total so a huge/greedy request can't blow up the
+    response. "(file not found)" / "(no matching lines)" placeholders make an empty result
+    unambiguous."""
+    _diag_gate(token)
+    if file not in _DIAG_LOG_FILES:
+        raise HTTPException(
+            400, f"file must be one of: {', '.join(sorted(_DIAG_LOG_FILES))}"
+        )
+    n = max(1, min(int(lines), _DIAG_LOGS_MAX_LINES))
+    path = os.path.join(_run_dir(), _DIAG_LOG_FILES[file])
+    raw = _tail_lines_raw(path, n)
+    if raw is None:
+        return PlainTextResponse("(file not found)")
+
+    if grep:
+        try:
+            matcher = re.compile(grep, re.IGNORECASE).search
+        except re.error:
+            needle = grep.lower()
+            matcher = lambda ln, _needle=needle: _needle in ln.lower()  # noqa: E731
+        raw = [ln for ln in raw if matcher(ln)]
+
+    if not raw:
+        return PlainTextResponse("(no matching lines)")
+
+    out = "".join(raw)
+    encoded = out.encode("utf-8", errors="replace")
+    if len(encoded) > _DIAG_LOGS_MAX_BYTES:
+        out = "(truncated to the last 200KB)\n" + encoded[-_DIAG_LOGS_MAX_BYTES:].decode(
+            "utf-8", errors="ignore"
+        )
+    return PlainTextResponse(out)
+
+
+def _diag_probe_result(ok: bool, error: str | None = None, latency_ms: float | None = None,
+                       device: dict | None = None, frame: dict | None = None,
+                       note: str | None = None) -> dict:
+    return {"ok": ok, "error": error, "latency_ms": latency_ms, "device": device,
+            "frame": frame, "note": note}
+
+
+async def _run_diag_probe() -> dict:
+    """The actual probe coroutine: connect -> timed update -> read -> close. Isolated from the
+    sync endpoint so it can be driven by asyncio.wait_for with a hard timeout."""
+    from sleepctl.adapters.credentials import load_credentials
+
+    creds = load_credentials()
+    if not creds.is_complete():
+        return _diag_probe_result(
+            False, error="no Eight Sleep credentials configured "
+            "(EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD not set and no credentials.json)",
+            note="never attempted a connection")
+
+    try:
+        from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+    except Exception as exc:
+        return _diag_probe_result(False, error=f"pyEight import failed: {exc}")
+
+    client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
+                              creds.client_id, creds.client_secret)
+    try:
+        await client.connect()
+        t0 = time.monotonic()
+        await client.update()
+        latency_ms = round((time.monotonic() - t0) * 1000.0, 1)
+
+        frame = client.read_frame()
+        device = client.device_status()
+        return _diag_probe_result(
+            True, latency_ms=latency_ms,
+            device={"online": device.get("online"), "has_water": device.get("has_water"),
+                    "priming": device.get("priming"), "needs_priming": device.get("needs_priming")},
+            frame={
+                "heart_rate": frame.heart_rate, "hrv": frame.hrv,
+                "respiratory_rate": frame.respiratory_rate,
+                "stage": frame.stage.value if frame.stage is not None else None,
+                "bed_temp_f": frame.bed_temp_f, "presence": frame.presence,
+                "device_level": frame.device_level, "target_level": frame.target_level,
+                "data_age_seconds": frame.data_age_seconds,
+            },
+            note="read-only: opened a brief separate cloud session distinct from the daemon's; "
+                 "sent no device command",
+        )
+    except Exception as exc:
+        return _diag_probe_result(False, error=f"{type(exc).__name__}: {exc}")
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass  # never let a close-time error mask (or crash past) the probe's real result
+
+
+_DIAG_PROBE_TIMEOUT_S = 20.0
+
+
+@app.get("/diag/probe")
+def diag_probe(token: str = ""):
+    """A fresh, READ-ONLY Eight Sleep cloud round-trip -- bypasses the daemon's (possibly
+    stale) ``runtime_state`` entirely, so it answers "is the cloud/device actually responding
+    right now?" independent of whatever the daemon last published. It opens its own brief,
+    separate cloud session (distinct from the daemon's persistent one) -- fine, since it's
+    read-only: connect() -> timed update() -> read_frame()/device_status() -> close().
+
+    NEVER sends a device command (no set_heating_level / turn_on / prime / anything that
+    writes) -- purely observational. Gated exactly like /diag (404 on missing/wrong
+    ``DIAG_TOKEN``). Defensive by construction: the whole round-trip runs under a hard
+    ``asyncio.wait_for`` timeout so a cloud hang can't wedge the request, ``close()`` always
+    runs (in a ``finally``), and every failure mode (missing creds, pyEight not installed, a
+    cloud/auth error, a timeout) returns ``{"ok": false, "error": ...}`` -- this endpoint is
+    designed to never 500.
+
+    Returns JSON: ``{ok, latency_ms, error, device: {online, has_water, priming,
+    needs_priming}, frame: {heart_rate, hrv, respiratory_rate, stage, bed_temp_f, presence,
+    device_level, target_level, data_age_seconds}, note}`` -- frame/device fields are None
+    when the underlying pyEight property wasn't available, so absence is visible rather than
+    silently dropped."""
+    _diag_gate(token)
+    try:
+        result = asyncio.run(asyncio.wait_for(_run_diag_probe(), timeout=_DIAG_PROBE_TIMEOUT_S))
+    except asyncio.TimeoutError:
+        result = _diag_probe_result(
+            False, error=f"probe timed out after {_DIAG_PROBE_TIMEOUT_S:.0f}s")
+    except Exception as exc:
+        result = _diag_probe_result(False, error=f"probe failed: {type(exc).__name__}: {exc}")
+    return JSONResponse(result)
