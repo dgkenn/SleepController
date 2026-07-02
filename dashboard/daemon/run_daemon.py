@@ -846,6 +846,17 @@ def _env_truthy(name: str) -> bool:
 
 
 def main() -> None:
+    # Windows stdout/stderr default to the cp1252 code page, which cannot encode the emoji /
+    # degree symbols this daemon logs (e.g. "⚠", "°"). An unencodable log line raised
+    # UnicodeEncodeError and killed the control loop — and then its crash handler logged the
+    # exception repr (which still contained the offending char) and died too, crash-looping the
+    # whole daemon every few minutes. Force UTF-8 with errors="replace" so a log line can never
+    # crash the process, regardless of the console/redirect code page.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true",
                     help="drive the REAL Eight Sleep Pod (default: simulator)")

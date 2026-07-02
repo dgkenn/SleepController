@@ -170,8 +170,19 @@ class LiveDashboardDaemon:
 
     # ------------------------------------------------------------------ helpers
     def _log(self, msg: str) -> None:
-        if self.verbose:
+        if not self.verbose:
+            return
+        # Belt-and-suspenders: main() forces UTF-8 stdout, but a log line must NEVER be able to
+        # raise (a UnicodeEncodeError here previously killed the control loop AND its crash
+        # handler, crash-looping the daemon). Fall back to an ASCII-safe render if anything goes
+        # wrong, and swallow even that as a last resort.
+        try:
             print(msg, flush=True)
+        except Exception:
+            try:
+                print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
+            except Exception:
+                pass
 
     def _emit_event(self, category: str, severity: str, code: str, message: str,
                     data: Optional[dict] = None) -> None:
