@@ -264,6 +264,21 @@ CREATE TABLE IF NOT EXISTS efficacy_config (
     enabled INTEGER DEFAULT 0,     -- opt-in: defaults OFF
     block_nights INTEGER DEFAULT 3
 );
+
+-- Structured, queryable event log: "what happened and when" as one query instead of grepping
+-- unstructured text logs. Both daemons emit best-effort rows here at lifecycle/error/state/device
+-- moments (see LiveDashboardDaemon._emit_event / DashboardDaemon._emit_event). severity is one of
+-- info|warn|error|critical. ``data`` is a JSON blob of structured context (params, reasons, etc).
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    category TEXT,
+    severity TEXT,
+    code TEXT,
+    message TEXT,
+    data TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 """
 
 
@@ -274,6 +289,7 @@ _MIGRATIONS = [
     ("steer_events", "succeeded", "INTEGER"),
     ("thermal_calibration", "warmback_levels_per_min", "REAL"),
     ("thermal_calibration", "warmback_lag_min", "REAL"),
+    ("events", "data", "TEXT"),
 ]
 
 

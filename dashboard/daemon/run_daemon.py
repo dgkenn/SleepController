@@ -35,7 +35,7 @@ from sleepctl.adapters.simulator import SimulatorActuator, SimulatorSource  # no
 from sleepctl.config import AppConfig  # noqa: E402
 from sleepctl.controller.controller import SleepController  # noqa: E402
 from sleepctl.loop.cycle import ControlCycle  # noqa: E402
-from sleepctl.models import ContextRecord  # noqa: E402
+from sleepctl.models import ContextRecord, ControllerState  # noqa: E402
 
 
 def _write_daemon_heartbeat() -> None:
@@ -58,6 +58,16 @@ from app.db import get_repo  # noqa: E402
 # How far a single +/- nudge moves the target, and the manual temp clamp (water °F).
 NUDGE_STEP_DEFAULT_F = 1.0
 TEMP_MIN_F, TEMP_MAX_F = cs.TEMP_MIN_F, cs.TEMP_MAX_F
+
+
+def _classify_tick_error(exc: BaseException) -> tuple:
+    """(category, severity) for a tick exception: cloud-flavored errors (RequestError/504/
+    timeout — the common transient Eight Sleep API hiccups) are downgraded to a 'cloud'/'warn'
+    event; everything else is a plain 'error'/'error' event."""
+    msg = repr(exc)
+    if any(s in msg for s in ("RequestError", "504", "timeout", "Timeout")):
+        return "cloud", "warn"
+    return "error", "error"
 
 
 def _parse_wake_dt(wake_time):
@@ -119,6 +129,7 @@ class DashboardDaemon:
         self._wake_last_stage = None
         self._wake_base_window = self.cfg.tunables.wake_window_min  # learned per-user window base
         self._wake_thermal_f = self.cfg.tunables.wake_ramp_temp_f   # tonight's wake-ramp temp
+        self._prev_state = ControllerState.IDLE   # for structured state-transition events
         if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
             try:
                 from sleepctl.adapters.bcg import BridgeWearableSource
@@ -149,6 +160,15 @@ class DashboardDaemon:
     # ---------------------------------------------------------------- commands
     def _clamp_temp(self, f: float) -> float:
         return cs.clamp_temp(f)
+
+    def _emit_event(self, category: str, severity: str, code: str, message: str,
+                    data: dict = None) -> None:
+        """Best-effort structured event log entry (see ``sleepctl.storage.repository.
+        Repository.log_event``). Never allowed to break the control loop."""
+        try:
+            self.repo.log_event(category, severity, code, message, data)
+        except Exception:
+            pass
 
     def _apply_night_type(self, hint: str) -> None:
         """Compute tonight's plan and push the night mode into the controller context so
@@ -262,6 +282,11 @@ class DashboardDaemon:
                 self._comfort_rate(p.get("rating"))
             elif t == "comfort_cal_cancel":
                 self._comfort_cancel()
+            # A device command actually applied: log it to the structured event log (the "what
+            # happened and when" query surface). Best-effort, never raises.
+            if t in ("prime", "power_on", "power_off", "away_on", "away_off",
+                    "set_temp", "stop", "self_test"):
+                self._emit_event("device", "info", t, f"device command applied: {t}", p)
             bridge.mark_applied(self.repo.conn, cmd["id"])
         return changed
 
@@ -309,6 +334,8 @@ class DashboardDaemon:
         """Simulator stand-in for the on-bed battery: exercises the command + result surface so
         the dashboard's bed-test card works in simulator mode. Thermal/water are INFO (no real
         device to validate); sensing reflects the current simulated frame."""
+        self._emit_event("self_test", "info", "self_test_start",
+                         f"self-test starting (mode={mode})", {"mode": mode})
         frame, _ = self._read()
         checks = [
             {"name": "connectivity", "passed": True, "detail": "simulator (healthy)", "metrics": {}},
@@ -332,6 +359,10 @@ class DashboardDaemon:
             bridge.write_self_test(self.repo.conn, self._self_test_report)
         except Exception:
             pass
+        self._emit_event("self_test", "info", "self_test_end",
+                         f"self-test done (overall_passed={self._self_test_report['overall_passed']})",
+                         {"mode": mode,
+                          "overall_passed": self._self_test_report["overall_passed"]})
 
     # ---------------------------------------------------------- onset / nap sessions
     def _start_induce(self) -> None:
@@ -491,15 +522,29 @@ class DashboardDaemon:
                 if alarm is not None:
                     self.actuator.set_alarm(alarm.time, alarm.vibration_power, alarm.thermal_level)
             self.cycle.log(frame, decision, now)
+            transitioned = decision.state != self._prev_state
+            if transitioned:
+                self._emit_event("state", "info", "state_transition",
+                                 f"{self._prev_state.value} -> {decision.state.value}",
+                                 {"from": self._prev_state.value, "to": decision.state.value})
+                self._prev_state = decision.state
             # When a night ends (back to IDLE), resolve pre-cool efficacy and refresh the
             # learned wake + lead-time profiles so prevention improves night over night.
             self._capture_wake(decision, frame, now)
             if decision is not None and decision.state.value.lower() == "idle":
-                self._refresh_profiles()
+                # ``transitioned`` gates the nightly-close-out event to fire once, on the
+                # tick that actually left the prior (non-idle) state — not every idle tick.
+                self._refresh_profiles(nightly_close_out=transitioned)
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
         bridge.write_runtime_state(self.repo.conn, self._snapshot(decision, frame))
 
-    def _refresh_profiles(self) -> None:
+    def _refresh_profiles(self, nightly_close_out: bool = False) -> None:
+        if nightly_close_out:
+            # Sim daemon has no NightlyUpdater (see live_daemon._maybe_close_out) — this
+            # idle-transition refresh is its closest analog to a "night ended" close-out.
+            self._emit_event("nightly", "info", "nightly_close_out",
+                             "nightly close-out ran (profiles refreshed)")
+            self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
         self._flush_wake_log()            # persist last night's wake conditions first
         try:
             from sleepctl.learning.lead_time import build_lead_time_profile
@@ -668,25 +713,30 @@ class DashboardDaemon:
         ticks = 0
         last_control = 0.0
         _write_daemon_heartbeat()   # first beat immediately so the watchdog sees us alive at once
-        while True:
-            _write_daemon_heartbeat()   # reliable file-based liveness signal for the watchdog
-            now = time.monotonic()
-            try:
-                if now - last_control >= self.poll_seconds:
-                    self.control_tick()
-                    last_control = now
-                    ticks += 1
-                else:
-                    self.command_tick()
-            except Exception as exc:  # keep the daemon alive; surface via stale state
-                print(f"daemon tick error: {exc}", flush=True)
-            # Liveness heartbeat for the self-diagnosis battery (dashboard/api/app/diagnostics.py):
-            # touched every loop iteration regardless of tick outcome, so a stuck DB/device call
-            # doesn't also blind the "is the daemon alive" check.
-            bridge.write_heartbeat("daemon")
-            if max_ticks is not None and ticks >= max_ticks:
-                break
-            time.sleep(self.command_poll_seconds)
+        self._emit_event("lifecycle", "info", "daemon_started",
+                         f"daemon started (simulate={self.simulate})",
+                         {"simulate": self.simulate, "poll_seconds": self.poll_seconds})
+        try:
+            while True:
+                _write_daemon_heartbeat()   # reliable file-based liveness signal for the watchdog
+                now = time.monotonic()
+                try:
+                    if now - last_control >= self.poll_seconds:
+                        self.control_tick()
+                        last_control = now
+                        ticks += 1
+                    else:
+                        self.command_tick()
+                except Exception as exc:  # keep the daemon alive; surface via stale state
+                    print(f"daemon tick error: {exc}", flush=True)
+                    cat, sev = _classify_tick_error(exc)
+                    self._emit_event(cat, sev, "tick_error", repr(exc))
+                bridge.write_heartbeat("daemon")   # 2nd liveness signal for the diagnosis battery
+                if max_ticks is not None and ticks >= max_ticks:
+                    break
+                time.sleep(self.command_poll_seconds)
+        finally:
+            self._emit_event("lifecycle", "info", "daemon_stopping", "daemon stopping")
 
 
 def _env_truthy(name: str) -> bool:
