@@ -2017,3 +2017,37 @@ def diag_update_status(token: str = ""):
         return JSONResponse({"available": True, "value": parsed})
     except Exception:
         return PlainTextResponse(raw)
+
+
+# ---- alerts: nighttime failure push ----------------------------------------------------
+# A device gone offline, an empty water reservoir, a wedged command queue, or the controller
+# gone quiet while someone's actually in bed must page the phone immediately, not wait for the
+# user to notice by being uncomfortable at 3am -- see ``services.check_and_alert_failures`` for
+# the detection + live/night gating + per-condition hourly-rate-limited push (both daemons call
+# it every control tick; this endpoint just re-exposes the same check for the web app + a
+# maintainer verification tool).
+@app.get("/alerts/active")
+def alerts_active(repo=Depends(repo_dep), user: str = AuthDep):
+    """Current nighttime-failure conditions (device offline, empty reservoir, a wedged command
+    queue, or the controller gone quiet while someone's in bed) for the web app's banner --
+    session-auth-gated like the rest of the dashboard reads. Re-runs
+    ``services.check_and_alert_failures``, which is self-throttled (at most one push per
+    condition per hour) and only pushes when it's live + night context, so polling this from the
+    web app is safe/idempotent -- same as every other alerts/status read in this file."""
+    return {"active": services.check_and_alert_failures(repo)}
+
+
+@app.post("/diag/action/test-alert")
+def diag_action_test_alert(token: str = "", repo=Depends(repo_dep)):
+    """Token-gated: send a single TEST nighttime-failure push end-to-end so delivery can be
+    verified without waiting for a real 3am failure -- same ``push_sender.deliver_custom`` path
+    real conditions use, but bypasses the live/night gate and the per-condition throttle.
+    Gated identically to ``/diag`` (secret DIAG_TOKEN, 404 on missing/wrong token)."""
+    _diag_gate(token)
+    result = services.send_test_night_alert(repo)
+    try:
+        repo.log_event("remote_action", "info", "test_alert_request",
+                       f"test nighttime alert push requested (sent={result['sent']})", result)
+    except Exception:
+        pass
+    return {"ok": result["ok"], "sent": result["sent"], "verify_with": "/alerts/active"}
