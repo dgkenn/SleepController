@@ -638,6 +638,43 @@ class Repository:
         ).fetchone()
         return dict(row) if row else None
 
+    # ---- randomized efficacy MICRO-trials (sleepctl.ml.efficacy_trial) -------
+    def assign_efficacy_trial_night(self, night_date: str, arm: str, eligible: bool,
+                                    seed: Optional[float] = None) -> None:
+        """Persist tonight's micro-trial arm assignment ('active'|'sham') + whether the night
+        was eligible for randomization + the deterministic draw used. Idempotent: a night's
+        assignment must not change once made, so this never overwrites an existing row."""
+        self.conn.execute(
+            "INSERT INTO efficacy_trials (night_date, arm, eligible, seed, resolved) "
+            "VALUES (?,?,?,?,0) ON CONFLICT(night_date) DO NOTHING",
+            (night_date, arm, int(bool(eligible)), seed),
+        )
+        self.conn.commit()
+
+    def record_efficacy_trial_outcome(self, night_date: str, wake_events=None, deep_pct=None,
+                                      hrv=None, efficiency=None, outcome_score=None) -> None:
+        """Record tonight's measured outcome against its already-assigned micro-trial arm
+        (no-op if the night was never assigned one)."""
+        self.conn.execute(
+            "UPDATE efficacy_trials SET wake_events=?, deep_pct=?, hrv=?, efficiency=?, "
+            "outcome_score=?, resolved=1 WHERE night_date=?",
+            (wake_events, deep_pct, hrv, efficiency, outcome_score, night_date),
+        )
+        self.conn.commit()
+
+    def efficacy_trial_rows(self, resolved_only: bool = False) -> list:
+        q = "SELECT * FROM efficacy_trials"
+        if resolved_only:
+            q += " WHERE resolved=1"
+        q += " ORDER BY night_date ASC"
+        return [dict(r) for r in self.conn.execute(q).fetchall()]
+
+    def efficacy_trial_night(self, night_date: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM efficacy_trials WHERE night_date=?", (night_date,)
+        ).fetchone()
+        return dict(row) if row else None
+
     def backfill_action_rewards(self) -> None:
         """Set each action's reward = mean outcome_score of the nights its version produced.
 

@@ -117,6 +117,7 @@ class LiveDashboardDaemon:
         self._last_decision = None  # reused by the fast telemetry tick between control ticks
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
         self.efficacy_arm = None  # tonight's standing efficacy-trial arm, if the trial is enabled
+        self.efficacy_trial_arm = None  # tonight's randomized efficacy MICRO-trial arm, if any
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
@@ -301,6 +302,30 @@ class LiveDashboardDaemon:
             self.cycle.controller.set_night_targets(plan.targets, plan.est_sleep_min)
         except Exception as exc:
             self._log(f"night-type planning skipped: {exc}")
+        # Night TYPE is only known now (plan_night just classified it) -- the randomized efficacy
+        # micro-trial's eligibility gate needs that, so it's applied here, not at daemon start-up.
+        self._apply_efficacy_micro_trial()
+
+    def _apply_efficacy_micro_trial(self) -> None:
+        """Randomized efficacy MICRO-trial (on by default, conservative): assign 'active' vs
+        'sham' -- eligibility-gated so short/recovery/nap nights ALWAYS run active -- and on a
+        sham night force a neutral hold via the EXISTING controller setters (do-no-harm, same
+        pattern as the standing trial in ``_attach_profiles``). Applied AFTER the standing trial
+        so a HELD night from that (older, coarser) system still wins if both are ever enabled at
+        once; a SHAM night here is equally conservative either way."""
+        try:
+            from sleepctl.ml.efficacy_trial import apply_trial_arm
+            base = self.cycle.controller.thermal.profile
+            context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
+            prof, info = apply_trial_arm(
+                self.repo, self.cfg, self.cycle.controller,
+                datetime.now().date().isoformat(), context, base)
+            self.cycle.controller.set_setpoints(prof)
+            self.efficacy_trial_arm = info
+            self._log(f"efficacy micro-trial: tonight is {info['arm']} "
+                     f"(eligible={info['eligible']})")
+        except Exception as exc:
+            self._log(f"efficacy micro-trial apply skipped: {exc}")
 
     # ------------------------------------------------------------------ device
     async def _set_level(self, level: int) -> None:
@@ -938,6 +963,14 @@ class LiveDashboardDaemon:
                 record_efficacy_outcome(
                     self.repo, night_date, wake_events=night.wake_events, deep_pct=deep_pct,
                     efficiency=night.sleep_efficiency, outcome_score=night.outcome_score)
+                # Record tonight's outcome against whichever arm the randomized efficacy
+                # MICRO-trial assigned (no-op if this night was never assigned one -- e.g. the
+                # daemon restarted mid-night before `_apply_night_type` ran).
+                from sleepctl.ml.efficacy_trial import record_trial_outcome
+                record_trial_outcome(
+                    self.repo, night_date, wake_events=night.wake_events, deep_pct=deep_pct,
+                    hrv=night.avg_hrv, efficiency=night.sleep_efficiency,
+                    outcome_score=night.outcome_score)
                 self._emit_event("nightly", "info", "nightly_close_out",
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})
