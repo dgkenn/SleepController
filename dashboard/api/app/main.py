@@ -1232,3 +1232,135 @@ def diagnostics_events(limit: int = 200, category: str = "", severity: str = "",
         )
     except Exception:
         return []
+
+
+# ==============================================================================================
+# ---- diagnostics: one-click repair / remote recovery / morning report ----
+# Everything below is gated exactly like /diag / /diag/logs / /diag/probe (secret DIAG_TOKEN,
+# constant-time compare via ``_diag_gate``, 404 on missing/wrong token -- invisible to
+# scanners), with one extra rule for the remote-ACTION endpoints: every parameter is checked
+# against a hardcoded allowlist (400 on anything else) and every action is logged to the
+# structured events table (``category="remote_action"``) for an audit trail. No arbitrary
+# command execution, no path parameters, no shell -- only fixed flag-file writes and fixed safe
+# command enqueues (``sleepctl.repair.SAFE_REPAIR_COMMANDS`` / ``bridge.VALID_COMMANDS``).
+# ==============================================================================================
+@app.post("/diag/repair")
+def diag_repair(token: str = "", repo=Depends(repo_dep)):
+    """One-click repair: runs the small, safe, idempotent self-healing battery from
+    ``sleepctl.repair`` (the SAME logic the standalone ``sleepctl repair`` CLI uses) --
+    (a) clears a stuck pending-commands queue, (b) re-enqueues a ``prime``/``safe_default`` if
+    the device looks stuck, (c) requests a daemon restart via the ``.run/restart.request``
+    protocol if its heartbeat is stale, (d) clears a stale ``.run/watchdog.alert`` only when
+    nothing currently looks like it's storming. Returns a JSON report with one
+    ``{action, done, detail}`` entry per sub-action. Every sub-action only ever enqueues a
+    command from ``sleepctl.repair.SAFE_REPAIR_COMMANDS`` (a subset of ``bridge.VALID_COMMANDS``)
+    or writes the two well-known ``.run`` flag files the watchdog already consumes -- never an
+    arbitrary/unsafe device command. Safe to call repeatedly (each action is independently
+    idempotent; see ``sleepctl/repair.py``)."""
+    _diag_gate(token)
+    from sleepctl.repair import run_repair
+
+    report = run_repair(repo.conn, _run_dir())
+    try:
+        done = [a["action"] for a in report["actions"] if a["done"]]
+        repo.log_event("repair", "info", "diag_repair", "one-click repair run",
+                       {"actions_done": done})
+    except Exception:
+        pass  # the events log is best-effort; must never break the repair response
+    return report
+
+
+# Hardcoded allowlists -- the ONLY values these remote-action endpoints will ever accept.
+_RESTART_TARGETS = {"daemon", "api", "web", "all"}
+
+
+@app.post("/diag/action/restart")
+def diag_action_restart(token: str = "", target: str = "", repo=Depends(repo_dep)):
+    """Token-gated remote recovery: request a component restart WITHOUT RDP/SSH. Writes
+    ``.run/restart.request`` = ``target`` -- the ONLY mechanism this API uses to restart
+    anything; it never kills a process itself. The already-deployed
+    ``scripts/windows-watchdog.ps1`` polls for this file each supervise tick, force-stops the
+    named component's process(es), deletes the flag, then lets its normal (storm-aware)
+    supervise loop bring it back up.
+
+    ``target`` MUST be one of daemon|api|web|all (hardcoded allowlist) -- anything else is a
+    400, not a passthrough. Gated identically to ``/diag`` (404 on missing/wrong token)."""
+    _diag_gate(token)
+    if target not in _RESTART_TARGETS:
+        raise HTTPException(400, f"target must be one of: {', '.join(sorted(_RESTART_TARGETS))}")
+
+    run = _run_dir()
+    try:
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "restart.request"), "w", encoding="utf-8") as fh:
+            fh.write(target)
+    except Exception as exc:
+        raise HTTPException(500, f"could not write restart.request: {exc}") from exc
+
+    try:
+        repo.log_event("remote_action", "warn", "restart_request",
+                       f"remote restart requested: target={target}", {"target": target})
+    except Exception:
+        pass
+    return {"requested": target}
+
+
+@app.post("/diag/action/reconnect")
+def diag_action_reconnect(token: str = "", repo=Depends(repo_dep)):
+    """Token-gated remote recovery: enqueue a benign ``safe_default`` re-init so a wedged Eight
+    Sleep cloud session gets re-established on the daemon's next control tick -- no restart, no
+    interruption of the daemon process itself, just the same command an idle/paused bed already
+    accepts. De-duped against an already-pending ``safe_default`` so repeated calls (e.g. an
+    impatient maintainer double-tapping the button) don't pile up the queue. Gated identically
+    to ``/diag``."""
+    _diag_gate(token)
+    existing = repo.conn.execute(
+        "SELECT 1 FROM commands WHERE type='safe_default' AND status='pending' LIMIT 1"
+    ).fetchone()
+    if existing:
+        command_id = None
+        detail = "a 'safe_default' command is already pending; not duplicating"
+    else:
+        command_id = bridge.enqueue_command(repo.conn, "safe_default")
+        detail = "enqueued 'safe_default'"
+
+    try:
+        repo.log_event("remote_action", "info", "reconnect_request", detail,
+                       {"command_id": command_id})
+    except Exception:
+        pass
+    return {"reconnect_requested": True, "command_id": command_id, "detail": detail}
+
+
+# ---- morning report (Feature #6): daily health + last-night push --------------------------
+@app.get("/diag/morning-report")
+def diag_morning_report_view(repo=Depends(repo_dep), user: str = AuthDep):
+    """Read-only view of today's morning report (health verdict + last-night summary) for the
+    dashboard UI -- auth-gated like every other dashboard read (session cookie/JWT), NOT the
+    DIAG_TOKEN (this is normal in-app content, not a maintainer-only remote tool). Building it
+    is just re-running the same pure ``services.build_morning_report``; it does not send a push
+    or touch the once-per-day throttle."""
+    return services.build_morning_report(repo)
+
+
+@app.post("/diag/morning-report/send")
+def diag_morning_report_send(token: str = "", force: bool = False, repo=Depends(repo_dep)):
+    """Send the daily morning-report push. Token-gated (like the other remote-action endpoints)
+    so a Windows Scheduled Task / cron on the box (or the watchdog) can hit it --
+    ``POST /diag/morning-report/send?token=...`` -- without any dashboard session. This IS the
+    "once-per-day send" scheduling hook chosen for this feature: it is self-throttling
+    (``services.maybe_send_morning_report``), so it's safe -- and RECOMMENDED -- to schedule it
+    to run every 15-30 minutes rather than trying to hit exactly one precise time each morning;
+    the throttle collapses that into at most one routine push per calendar day, PLUS at most one
+    immediate push per hour whenever the live health verdict is DOWN (so a real outage doesn't
+    have to wait for morning). ``force=true`` bypasses the throttle for manual testing that
+    push delivery itself works (still requires the token)."""
+    _diag_gate(token)
+    result = services.maybe_send_morning_report(repo, force=force)
+    try:
+        repo.log_event("morning_report", "info", "morning_report_send",
+                       f"sent={result['sent']} reason={result['reason']} trigger={result['trigger']}",
+                       {"sent": result["sent"], "verdict": result["report"]["health_verdict"]})
+    except Exception:
+        pass
+    return result

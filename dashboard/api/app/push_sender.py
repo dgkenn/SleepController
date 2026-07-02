@@ -139,3 +139,39 @@ def _looks_stale(exc: Exception) -> bool:
     resp = getattr(exc, "response", None)
     status = getattr(resp, "status_code", None)
     return status in (404, 410)
+
+
+# ---- generalized title/body push (e.g. the morning report -- not an "issue") ----------------
+def build_custom_payload(title: str, body: str, tag: str = "sleepctl-report",
+                         url: str = "/") -> str:
+    return json.dumps({"title": title, "body": body, "tag": tag, "severity": "info", "url": url})
+
+
+def deliver_custom(title: str, body: str, subscriptions: list[dict[str, Any]],
+                   tag: str = "sleepctl-report",
+                   transport: PushTransport | None = None) -> PushResult:
+    """Send an arbitrary title/body push (e.g. the daily morning report) to every subscription
+    -- same delivery mechanics/transport seam as :func:`deliver`, just not gated behind the
+    "issue" shape (no severity/code de-dupe decision here; the caller -- ``services.py``'s
+    once-per-day/once-per-hour throttle -- already decided this send should happen)."""
+    if not vapid_configured():
+        return PushResult(ok=False, reason="vapid_not_configured")
+    if not subscriptions:
+        return PushResult(ok=False, reason="no_subscriptions")
+
+    transport = transport or WebPushTransport()
+    payload = build_custom_payload(title, body, tag)
+    claims = {"sub": settings.vapid_subject}
+
+    sent = failed = stale = 0
+    for sub in subscriptions:
+        try:
+            transport.send(sub, payload, settings.vapid_private_key, claims)
+            sent += 1
+        except Exception as exc:  # pywebpush.WebPushException or any transport error
+            failed += 1
+            if _looks_stale(exc):
+                stale += 1
+
+    return PushResult(ok=sent > 0, sent=sent, failed=failed, stale_removed=stale,
+                       reason="" if sent else "all_failed")
