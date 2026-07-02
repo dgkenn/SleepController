@@ -40,6 +40,16 @@ app.add_middleware(
 @app.on_event("startup")
 def _startup() -> None:
     ensure_bootstrap_user()
+    # Optional: connect the work-shift calendar from CALENDAR_ICS_URL (deploy/.env) without the UI.
+    try:
+        repo = get_repo()
+        try:
+            if services.seed_calendar_from_env(repo):
+                print("calendar: seeded ICS feed from CALENDAR_ICS_URL", flush=True)
+        finally:
+            repo.close()
+    except Exception as exc:
+        print(f"calendar env-seed skipped: {exc}", flush=True)
     _start_health_watchdog()
 
 

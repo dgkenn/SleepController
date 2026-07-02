@@ -1687,6 +1687,23 @@ def calendar_config_update(repo, values: dict) -> dict:
     return calendar_config_view(repo)
 
 
+def seed_calendar_from_env(repo) -> bool:
+    """Connect the work-shift calendar from a ``CALENDAR_ICS_URL`` env var (put in deploy/.env) so
+    it can be configured WITHOUT the dashboard UI. Runs once at startup: seeds the config only if
+    the env var is set AND no URL is configured yet, so a later change/disconnect made in the UI is
+    never clobbered on the next boot. The URL is user config (kept in settings_kv, masked on
+    read-back, never logged) — do NOT hardcode it in the repo; it belongs in the gitignored
+    deploy/.env. Returns True if it seeded."""
+    import os
+    url = (os.environ.get("CALENDAR_ICS_URL") or "").strip()
+    if not url:
+        return False
+    if _get_calendar_config(repo).get("ics_url"):
+        return False  # already configured (e.g. via the UI) — respect it
+    calendar_config_update(repo, {"enabled": True, "ics_url": url})
+    return True
+
+
 _ICS_SOURCE_CACHE: dict = {}
 
 
