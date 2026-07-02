@@ -371,9 +371,58 @@ class TestDeviceStatus:
             "priming": False,
             "needs_priming": False,
             "temp_available": True,
+            "last_prime": None,
+            "last_low_water": None,
+            "device_level": None,
+            "device_target_level": None,
+            "now_heating": None,
+            "now_cooling": None,
+            "external_schedule": None,
             "alarm": None,
             "simulated": False,
         }
+
+    def test_parses_new_capacity_and_schedule_fields(self):
+        device_data = {
+            "online": True,
+            "hasWater": True,
+            "priming": False,
+            "needsPriming": False,
+            "isTemperatureAvailable": True,
+            "lastPrime": "2026-07-02T01:00:00+00:00",
+            "lastLowWater": "2026-07-01T23:00:00+00:00",
+            "leftHeatingLevel": 42,
+            "leftTargetHeatingLevel": 80,
+            "leftNowHeating": False,
+            "leftNowCooling": True,
+            "leftKelvin": {"currentActivity": "schedule", "currentTargetLevel": 55,
+                          "active": True},
+            # right-side fields must NOT leak into a left-side client's status
+            "rightHeatingLevel": -99,
+        }
+        client = _make_client(user=_fake_user(alarms=[]), eight=_fake_eight(device_data=device_data))
+        status = client.device_status()
+        assert status["last_prime"] == "2026-07-02T01:00:00+00:00"
+        assert status["last_low_water"] == "2026-07-01T23:00:00+00:00"
+        assert status["device_level"] == 42
+        assert status["device_target_level"] == 80
+        assert status["now_heating"] is False
+        assert status["now_cooling"] is True
+        assert status["external_schedule"] == {
+            "activity": "schedule", "target_level": 55, "active": True,
+        }
+
+    def test_right_side_client_reads_right_prefixed_fields(self):
+        device_data = {"rightHeatingLevel": 7, "rightTargetHeatingLevel": 10,
+                       "rightNowHeating": True, "rightNowCooling": False,
+                       "leftHeatingLevel": -1}
+        client = _make_client(user=_fake_user(alarms=[]), eight=_fake_eight(device_data=device_data))
+        client.side = "right"
+        status = client.device_status()
+        assert status["device_level"] == 7
+        assert status["device_target_level"] == 10
+        assert status["now_heating"] is True
+        assert status["now_cooling"] is False
 
     def test_missing_device_data_keys_default_to_none(self):
         client = _make_client(user=_fake_user(alarms=[]), eight=_fake_eight(device_data={}))
@@ -383,6 +432,13 @@ class TestDeviceStatus:
         assert status["priming"] is None
         assert status["needs_priming"] is None
         assert status["temp_available"] is None
+        assert status["last_prime"] is None
+        assert status["last_low_water"] is None
+        assert status["device_level"] is None
+        assert status["device_target_level"] is None
+        assert status["now_heating"] is None
+        assert status["now_cooling"] is None
+        assert status["external_schedule"] is None
         assert status["simulated"] is False
 
     def test_device_data_property_raising_is_tolerated(self):

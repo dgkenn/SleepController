@@ -340,13 +340,110 @@ def test_all_expected_checks_present(repo, run_dir, tmp_path, monkeypatch):
     expected = {
         "version", "daemon_heartbeat", "watchdog_heartbeat", "api", "web",
         "runtime_state_fresh", "device_water", "device_online", "priming",
-        "thermal_response", "live_mode", "cloud_errors", "recent_errors",
+        "thermal_response", "thermal_capacity", "external_conflict", "frozen_telemetry",
+        "live_mode", "cloud_errors", "recent_errors",
         "eight_sleep_creds", "calendar", "shift", "log_sizes",
     }
     assert expected <= {c["id"] for c in report["checks"]}
     for c in report["checks"]:
         assert c["status"] in ("ok", "warn", "fail", "info")
         assert isinstance(c["detail"], str) and c["detail"]
+
+
+# ------------------------------------------------------------------ water-loop/capacity/conflict/frozen (new)
+def _record_history_row(repo, ts, target_level=None, bed_temp_f=None, device=None,
+                        device_level=None, device_target_level=None):
+    repo.record_state_snapshot({
+        "ts": ts.isoformat(), "state": "COOLING", "mode": "auto",
+        "target_temp_f": 65.0, "bed_temp_f": bed_temp_f, "room_temp_f": 66.0,
+        "stage": "deep", "confidence": 0.8, "target_level": target_level,
+        "daemon_alive": True,
+        "extra": {"device_level": device_level, "device_target_level": device_target_level,
+                  "device": device or {}},
+    })
+
+
+def test_thermal_health_checks_ok_by_default(repo, run_dir, tmp_path, monkeypatch):
+    # No state_history rows at all -- must degrade to "ok"/"info", never a false positive.
+    _seed_runtime_state(repo)
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+    for check_id in ("thermal_capacity", "external_conflict", "frozen_telemetry"):
+        c = _by_id(report, check_id)
+        assert c["status"] in ("ok", "info")
+
+
+def test_stuck_prime_history_produces_degraded_verdict_and_playbook_match(
+        repo, run_dir, tmp_path, monkeypatch):
+    now = datetime.now()
+    for i in range(10):
+        ts = now - timedelta(minutes=9 - i)
+        _record_history_row(repo, ts, target_level=0, bed_temp_f=70.0,
+                            device={"priming": True})
+    _seed_runtime_state(repo, device={
+        "online": True, "has_water": True, "priming": True, "needs_priming": False,
+        "last_prime": (now - timedelta(hours=2)).isoformat(),
+    })
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+
+    c = _by_id(report, "thermal_capacity")
+    assert c["status"] == "fail"
+    assert "stuck_prime" in c["detail"]
+    assert report["verdict"] == "DEGRADED"
+
+    matches = {m["id"] for m in report["playbook_matches"]}
+    assert "stuck_prime" in matches
+
+
+def test_reduced_capacity_history_flags_air_bound(repo, run_dir, tmp_path, monkeypatch):
+    now = datetime.now()
+    for i in range(8):
+        ts = now - timedelta(minutes=7 - i)
+        # strong cool command, but device_level and bed_temp barely move -> air-bound
+        _record_history_row(repo, ts, target_level=-90, bed_temp_f=69.5 + (i % 2) * 0.1,
+                            device_level=88 - i, device={"priming": False})
+    _seed_runtime_state(repo, device={"online": True, "has_water": True, "priming": False,
+                                      "needs_priming": False})
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+
+    c = _by_id(report, "thermal_capacity")
+    assert c["status"] == "fail"
+    assert "reduced_capacity" in c["detail"]
+    assert report["verdict"] == "DEGRADED"
+
+    matches = {m["id"] for m in report["playbook_matches"]}
+    assert "air_bound_loop" in matches
+
+
+def test_frozen_telemetry_history_flags_and_matches_playbook(repo, run_dir, tmp_path, monkeypatch):
+    now = datetime.now()
+    for i in range(9):
+        ts = now - timedelta(minutes=8 - i)
+        _record_history_row(repo, ts, target_level=-80, bed_temp_f=68.0, device_level=42)
+    _seed_runtime_state(repo)
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+
+    c = _by_id(report, "frozen_telemetry")
+    assert c["status"] == "fail"
+    assert report["verdict"] == "DEGRADED"
+
+    matches = {m["id"] for m in report["playbook_matches"]}
+    assert "frozen_telemetry" in matches
+
+
+def test_external_schedule_conflict_flags_and_matches_playbook(repo, run_dir, tmp_path, monkeypatch):
+    _seed_runtime_state(repo, device={
+        "online": True, "has_water": True, "priming": False, "needs_priming": False,
+        "external_schedule": {"activity": "schedule", "target_level": 55, "active": True},
+    })
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+
+    c = _by_id(report, "external_conflict")
+    assert c["status"] == "warn"
+    assert "external_setpoint_conflict" in c["detail"]
+    assert report["verdict"] == "DEGRADED"
+
+    matches = {m["id"] for m in report["playbook_matches"]}
+    assert "external_schedule_conflict" in matches
 
 
 # ------------------------------------------------------------------ /diag wiring (API)

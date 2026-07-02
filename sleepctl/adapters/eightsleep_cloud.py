@@ -334,14 +334,41 @@ class EightSleepClient:
 
     def device_status(self) -> dict:  # pragma: no cover - requires live device
         """Live device health for the dashboard (online, water, priming state) + the device's own
-        first alarm (so the dashboard can verify a smart-wake actually landed on the Pod)."""
+        first alarm (so the dashboard can verify a smart-wake actually landed on the Pod).
+
+        Also surfaces the richer per-side fields pyEight exposes but the dashboard previously
+        never captured — added for the water-loop/capacity + external-conflict health monitors
+        (``sleepctl.diagnostics_thermal``): ``last_prime``/``last_low_water`` (ISO timestamps,
+        so a STUCK prime or a LOW-WATER event can be timed), ``device_level``/
+        ``device_target_level`` (the actual vs commanded plate level, for detecting an
+        air-bound/reduced-capacity loop), ``now_heating``/``now_cooling`` (is the pump actually
+        running right now), and ``external_schedule`` (the device's own schedule-state object —
+        a non-empty ``activity=="schedule"`` means the Eight Sleep app's own schedule/Autopilot
+        is holding a target that can fight this controller). Every field defaults to None when
+        missing so older firmware / a Pod that doesn't expose these degrades gracefully."""
         d = _safe(lambda: self._eight.device_data, {}) or {}
+        prefix = "left" if self.side == "left" else "right"
+        kelvin = d.get(f"{prefix}Kelvin")
+        external_schedule = None
+        if isinstance(kelvin, dict):
+            external_schedule = {
+                "activity": kelvin.get("currentActivity"),
+                "target_level": kelvin.get("currentTargetLevel"),
+                "active": kelvin.get("active"),
+            }
         return {
             "online": d.get("online"),
             "has_water": d.get("hasWater"),
             "priming": d.get("priming"),
             "needs_priming": d.get("needsPriming"),
             "temp_available": d.get("isTemperatureAvailable"),
+            "last_prime": d.get("lastPrime"),
+            "last_low_water": d.get("lastLowWater"),
+            "device_level": d.get(f"{prefix}HeatingLevel"),
+            "device_target_level": d.get(f"{prefix}TargetHeatingLevel"),
+            "now_heating": d.get(f"{prefix}NowHeating"),
+            "now_cooling": d.get(f"{prefix}NowCooling"),
+            "external_schedule": external_schedule,
             "alarm": self._alarm_readback(),
             "simulated": False,
         }

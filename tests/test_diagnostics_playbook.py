@@ -119,6 +119,8 @@ def test_playbook_catalog_covers_seeded_ids_and_has_unique_ids():
         "water_reservoir_empty", "watchdog_restart_storm", "daemon_heartbeat_stale",
         "dry_run_left_on", "pyeight_auth_failure", "no_credentials_configured",
         "db_locked", "port_in_use", "calendar_ics_unreachable", "device_offline",
+        "stuck_prime", "air_bound_loop", "low_water_reservoir",
+        "external_schedule_conflict", "frozen_telemetry",
     }
     catalog = playbook_catalog()
     ids = [e["id"] for e in catalog]
@@ -127,3 +129,64 @@ def test_playbook_catalog_covers_seeded_ids_and_has_unique_ids():
     assert len(catalog) == len(PLAYBOOK)
     for entry in catalog:
         assert _REQUIRED_MATCH_KEYS.issubset(entry.keys())
+
+
+# ------------------------------------------------------------------ water-loop/capacity (new)
+def test_stuck_prime_matches_thermal_capacity_check():
+    result = {"checks": [
+        _check("thermal_capacity", "fail",
+               "stuck_prime: the Pod has been priming continuously for 9.0 min without "
+               "completing."),
+    ]}
+    matches = match_playbook(result, env={})
+    assert any(m["id"] == "stuck_prime" for m in matches)
+    assert not any(m["id"] == "air_bound_loop" for m in matches)
+
+
+def test_air_bound_loop_matches_reduced_capacity_check():
+    result = {"checks": [
+        _check("thermal_capacity", "fail",
+               "reduced_capacity: commanded a strong cool target but device_level barely "
+               "moved — reduced heat-transfer capacity."),
+    ]}
+    matches = match_playbook(result, env={})
+    assert any(m["id"] == "air_bound_loop" for m in matches)
+    assert not any(m["id"] == "stuck_prime" for m in matches)
+
+
+def test_low_water_reservoir_matches_thermal_capacity_check():
+    result = {"checks": [
+        _check("thermal_capacity", "warn", "low_water: the device reports needs_priming=true."),
+    ]}
+    matches = match_playbook(result, env={})
+    assert any(m["id"] == "low_water_reservoir" for m in matches)
+
+
+def test_external_schedule_conflict_matches_external_conflict_check():
+    result = {"checks": [
+        _check("external_conflict", "warn",
+               "external_setpoint_conflict: the device's own schedule is active."),
+    ]}
+    matches = match_playbook(result, env={})
+    assert any(m["id"] == "external_schedule_conflict" for m in matches)
+
+
+def test_frozen_telemetry_matches_frozen_telemetry_check():
+    result = {"checks": [
+        _check("frozen_telemetry", "fail",
+               "frozen_telemetry: bed_temp_f and device_level are byte-for-byte unchanged."),
+    ]}
+    matches = match_playbook(result, env={})
+    assert any(m["id"] == "frozen_telemetry" for m in matches)
+
+
+def test_clean_thermal_checks_produce_no_new_matches():
+    result = {"checks": [
+        _check("thermal_capacity", "ok", "no water-loop/thermal-capacity issue detected."),
+        _check("external_conflict", "ok", "no external-controller conflict detected."),
+        _check("frozen_telemetry", "ok", "telemetry is updating normally."),
+    ]}
+    matches = match_playbook(result, env={})
+    new_ids = {"stuck_prime", "air_bound_loop", "low_water_reservoir",
+              "external_schedule_conflict", "frozen_telemetry"}
+    assert not (new_ids & {m["id"] for m in matches})
