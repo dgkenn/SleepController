@@ -122,3 +122,72 @@ def test_insights_parameters_includes_calibration_when_present(auth_client):
     assert "heat_f_per_min" in names
     assert "comfort_neutral_f" in names
     assert "resting_hr_hrv" in names
+
+
+# ---- /insights/wake-patterns: the 3AM WAKE targeted analysis --------------------------------
+
+def test_wake_patterns_requires_auth():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    fresh = TestClient(app)
+    assert fresh.get("/insights/wake-patterns").status_code == 401
+
+
+def test_wake_patterns_shape(auth_client):
+    r = auth_client.get("/insights/wake-patterns")
+    assert r.status_code == 200
+    body = r.json()
+    assert set(body) >= {
+        "lookback_nights", "n_nights_available", "bin_minutes",
+        "recurring_windows", "n_recurring_windows", "note",
+    }
+    assert isinstance(body["recurring_windows"], list)
+    assert body["n_recurring_windows"] == len(body["recurring_windows"])
+    # the shared seed only populates nightly_summaries/context, not raw_samples, so there's no
+    # awakening history yet -- the report must degrade gracefully, not error.
+    assert body["recurring_windows"] == []
+
+
+def test_wake_patterns_lookback_param_is_clamped(auth_client):
+    r = auth_client.get("/insights/wake-patterns?lookback_nights=999999")
+    assert r.status_code == 200
+    assert r.json()["lookback_nights"] == 365
+    r2 = auth_client.get("/insights/wake-patterns?lookback_nights=0")
+    assert r2.status_code == 200
+    assert r2.json()["lookback_nights"] == 1
+
+
+def test_wake_patterns_reflects_a_recurring_logged_awakening(auth_client):
+    from datetime import datetime, timedelta
+
+    from app.db import get_repo
+    from sleepctl.models import SensorFrame, SleepStage
+
+    repo = get_repo()
+    try:
+        base = datetime.now() - timedelta(days=5)
+        for i in range(5):
+            d = (base + timedelta(days=i)).date().isoformat()
+            repo.conn.execute(
+                "INSERT OR REPLACE INTO nightly_summaries (date) VALUES (?)", (d,))
+            repo.conn.commit()
+            wake_ts = datetime.fromisoformat(d) + timedelta(days=1, hours=3, minutes=10)
+            pre = SensorFrame(timestamp=wake_ts - timedelta(minutes=5), stage=SleepStage.REM,
+                              stage_confidence=0.85, heart_rate=55, hrv=60,
+                              respiratory_rate=14, movement=0.05, presence=True,
+                              bed_temp_f=70.0, room_temp_f=67.0, data_age_seconds=5.0)
+            repo.log_sample(pre, "maintenance", False, d)
+            wake = SensorFrame(timestamp=wake_ts, stage=SleepStage.AWAKE, stage_confidence=0.85,
+                               heart_rate=68, hrv=45, respiratory_rate=16, movement=0.4,
+                               presence=True, bed_temp_f=70.0, room_temp_f=67.0,
+                               data_age_seconds=5.0)
+            repo.log_sample(wake, "maintenance", True, d)
+    finally:
+        repo.close()
+
+    body = auth_client.get("/insights/wake-patterns?lookback_nights=30").json()
+    assert body["n_recurring_windows"] >= 1
+    w = body["recurring_windows"][0]
+    assert w["window"]["label"].startswith("03:00")
+    assert w["window"]["stage_exited"] == "rem"
+    assert w["window"]["nights_woke"] == 5

@@ -230,6 +230,21 @@ class Tunables:
     # start to set the auto-wake alarm — time to get up, ready, and out the door. Night shifts
     # don't get a morning alarm at all (the daytime-sleep/banking plan handles those instead).
     shift_prep_buffer_min: int = 90
+    # --- 3AM WAKE targeted analysis: personal recurring-wake-window pre-emption -----------
+    # Gated, OPTIONAL pre-emption keyed off ``sleepctl.analysis.wake_patterns.
+    # wake_analysis_report``'s recurring-window findings (clock-time bins where THIS user
+    # disproportionately wakes, learned from their own logged history). Conservative by
+    # design: it only ever ADDS one more vote to the existing settle-cool pre-emption union
+    # (wake-risk OR precursor-drift OR micro-arousal) in ``SleepController.decide`` -- never
+    # replaces those signals -- and it stays completely silent (log-only, no thermal effect)
+    # until BOTH the minimum-nights and confidence gates clear. Whatever nudge it does apply
+    # still runs through the same slew-limit / variability-cap / 55-110°F clamp as every other
+    # thermal move (see ``ThermalController``), plus its own small dedicated cap below.
+    wake_window_preempt_enabled: bool = True
+    wake_window_preempt_min_nights: int = 10          # nights of monitored data required in-window
+    wake_window_preempt_confidence_min: float = 0.55  # cluster confidence required to act
+    wake_window_preempt_lead_min: float = 20.0        # start smoothing this long before the window
+    wake_window_preempt_max_f: float = 0.5            # hard cap on the extra pre-emptive nudge
 
 
 @dataclass
