@@ -37,6 +37,20 @@ from sleepctl.controller.controller import SleepController  # noqa: E402
 from sleepctl.loop.cycle import ControlCycle  # noqa: E402
 from sleepctl.models import ContextRecord  # noqa: E402
 
+
+def _write_daemon_heartbeat() -> None:
+    """Touch .run/daemon.heartbeat so the watchdog detects liveness by a FILE (mtime), not an
+    unreliable process query that flaps in the scheduled-task context."""
+    try:
+        db = os.environ.get("SLEEPCTL_DB", "")
+        root = os.path.dirname(db) if db else os.getcwd()
+        run = os.path.join(root, ".run")
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "daemon.heartbeat"), "w") as fh:
+            fh.write(str(time.time()))
+    except Exception:
+        pass
+
 import command_spec as cs  # noqa: E402
 from app import bridge  # noqa: E402
 from app.db import get_repo  # noqa: E402
@@ -653,7 +667,9 @@ class DashboardDaemon:
     def run(self, max_ticks=None) -> None:
         ticks = 0
         last_control = 0.0
+        _write_daemon_heartbeat()   # first beat immediately so the watchdog sees us alive at once
         while True:
+            _write_daemon_heartbeat()   # reliable file-based liveness signal for the watchdog
             now = time.monotonic()
             try:
                 if now - last_control >= self.poll_seconds:
