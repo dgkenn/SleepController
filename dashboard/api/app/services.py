@@ -1939,3 +1939,198 @@ def maybe_send_morning_report(repo, force: bool = False) -> dict:
         "push": {"sent": result.sent, "failed": result.failed},
         "report": report,
     }
+
+
+# ============================================================================
+# Nighttime failure push: a device gone offline, an empty water reservoir, a wedged
+# command queue, or the daemon's own data going stale while someone is actually in bed
+# are exactly the failures a resident must not discover by lying there uncomfortable at
+# 3am. Fired from the DAEMON TICK (both live_daemon.py and run_daemon.py) rather than
+# piggy-backed on an API request like the health-monitor alerts above -- nobody has the
+# web app open to generate a request at 3am, so a request-driven-only check would
+# silently never fire overnight. Delivery/throttle mirror the morning report above:
+# ``push_sender.deliver_custom`` + a settings_kv last-sent timestamp per condition,
+# auto-cleared the moment the condition resolves so a recurrence re-alerts instead of
+# waiting out the rest of the hour.
+# ============================================================================
+_STUCK_COMMAND_THRESHOLD_S = 600     # oldest pending command older than this -> queue looks wedged
+_STALE_AT_NIGHT_THRESHOLD_S = 300    # runtime_state older than this WHILE someone's in bed -> quiet loop
+_NIGHT_FAILURE_RATE_LIMIT_S = 3600   # at most one push per condition per hour
+_NIGHT_WINDOW_START_HOUR = 21        # fallback "probably asleep" window (21:00-09:00) for when
+_NIGHT_WINDOW_END_HOUR = 9           # bed presence isn't (yet) known, e.g. right at lights-out
+_NIGHT_FAILURE_CODES = {"device_offline", "reservoir_empty", "stuck_commands", "data_stale_at_night"}
+_NIGHT_FAILURE_LAST_SENT_PREFIX = "night_failure_last_sent__"  # + code -> settings_kv: ISO ts
+
+
+def _in_night_window(now: datetime) -> bool:
+    """True during the configured night hours (default 21:00-09:00, wrapping past midnight) --
+    the fallback "probably asleep" signal for when bed presence isn't available (e.g. right at
+    lights-out, before the Pod has detected anyone lying down). A standalone, monkeypatchable
+    seam so tests can force day/night context deterministically instead of depending on the
+    wall clock at whatever moment the suite happens to run."""
+    h = now.hour
+    if _NIGHT_WINDOW_START_HOUR <= _NIGHT_WINDOW_END_HOUR:
+        return _NIGHT_WINDOW_START_HOUR <= h < _NIGHT_WINDOW_END_HOUR
+    return h >= _NIGHT_WINDOW_START_HOUR or h < _NIGHT_WINDOW_END_HOUR
+
+
+def _oldest_pending_command_age_s(repo, now: datetime) -> "float | None":
+    row = repo.conn.execute(
+        "SELECT ts FROM commands WHERE status='pending' ORDER BY id ASC LIMIT 1"
+    ).fetchone()
+    if not row or not row["ts"]:
+        return None
+    try:
+        ts = datetime.fromisoformat(row["ts"])
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds()
+    except Exception:
+        return None
+
+
+def _detect_failure_conditions(rt: dict, repo, now: datetime) -> list[dict]:
+    """Detection of the four nighttime-failure conditions from ``runtime_state`` (+ one indexed
+    read of the pending-commands queue) -- independent of whether it's currently "night" or
+    live; that gating belongs to the caller (``check_and_alert_failures``) so this stays simple
+    to unit test against a hand-built runtime_state, the same way
+    ``health_monitor.evaluate_health`` does. Returns ``{code, severity, title, body}`` dicts."""
+    extra = rt.get("extra") or {}
+    device = extra.get("device") or {}
+    if not isinstance(device, dict):
+        device = {}
+    out: list[dict] = []
+
+    if device.get("online") is False or extra.get("device_error"):
+        detail = extra.get("device_error") or "the bed/hub is reporting offline"
+        out.append({
+            "code": "device_offline", "severity": "critical",
+            "title": "Bed alert: device offline",
+            "body": f"The controller can't reach the bed ({detail}). It won't heat or cool "
+                    "until this clears.",
+        })
+
+    if device.get("has_water") is False:
+        out.append({
+            "code": "reservoir_empty", "severity": "critical",
+            "title": "Bed alert: water reservoir empty",
+            "body": "The water reservoir is empty — the bed can't heat/cool. Refill and prime.",
+        })
+
+    stuck_age = _oldest_pending_command_age_s(repo, now)
+    if stuck_age is not None and stuck_age >= _STUCK_COMMAND_THRESHOLD_S:
+        out.append({
+            "code": "stuck_commands", "severity": "critical",
+            "title": "Bed alert: commands not applying",
+            "body": f"A command has been queued for {int(stuck_age // 60)} min without being "
+                    "applied — the controller may be wedged.",
+        })
+
+    bed_presence = bool(extra.get("bed_presence"))
+    data_age = None
+    if rt.get("updated"):
+        try:
+            ts = datetime.fromisoformat(rt["updated"])
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            data_age = (now - ts).total_seconds()
+        except Exception:
+            data_age = None
+    if bed_presence and data_age is not None and data_age >= _STALE_AT_NIGHT_THRESHOLD_S:
+        out.append({
+            "code": "data_stale_at_night", "severity": "critical",
+            "title": "Bed alert: controller gone quiet",
+            "body": f"You're in bed but the controller hasn't reported in {int(data_age // 60)} "
+                    "min — the loop may have stalled.",
+        })
+
+    return out
+
+
+def check_and_alert_failures(repo) -> list[dict]:
+    """The nighttime-failure detector + pusher. Meant to be called on every daemon tick (both
+    daemons) so a silent failure gets a phone push even with no browser tab open to drive the
+    request-based health monitor above -- and it's cheap/idempotent enough to also back
+    ``GET /alerts/active`` for the web app's banner.
+
+    Gated on it actually mattering: LIVE mode (not the simulator/dry-run) AND "night context"
+    (bed presence, or within the configured night window -- see ``_in_night_window``). Outside
+    that gate the conditions are still logged via ``repo.log_event`` for forensics, but NOTHING
+    is pushed and this returns an EMPTY list -- a bed offline at noon with nobody near it isn't
+    a 3am emergency.
+
+    Each condition pushes at most once per hour (persisted via the same settings_kv
+    last-sent-timestamp pattern the morning report throttle uses) and that throttle is cleared
+    the instant the condition is no longer active, so a recurrence re-alerts immediately instead
+    of waiting out the rest of the hour."""
+    rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    extra = rt.get("extra") or {}
+    now = datetime.now(timezone.utc)
+
+    conditions = _detect_failure_conditions(rt, repo, now)
+    active_codes = {c["code"] for c in conditions}
+
+    # Auto-clear any per-condition throttle whose condition is no longer active, so the NEXT
+    # time it appears it re-alerts right away rather than waiting out the rest of the hour.
+    for code in _NIGHT_FAILURE_CODES - active_codes:
+        key = _NIGHT_FAILURE_LAST_SENT_PREFIX + code
+        if _kv_get_json(repo, key):
+            _kv_set_json(repo, key, None)
+
+    live = bool(extra.get("live", False))
+    dry_run = bool(extra.get("dry_run", False))
+    bed_presence = bool(extra.get("bed_presence"))
+    night_context = bed_presence or _in_night_window(now)
+    matters = live and not dry_run and night_context
+
+    if not matters:
+        for cond in conditions:
+            try:
+                repo.log_event("alert", "info", cond["code"],
+                               f"(not paging: outside live/night gate) {cond['body']}", cond)
+            except Exception:
+                pass
+        return []
+
+    subs = None
+    for cond in conditions:
+        key = _NIGHT_FAILURE_LAST_SENT_PREFIX + cond["code"]
+        last_sent = _kv_get_json(repo, key)
+        should_push = True
+        if last_sent:
+            try:
+                age = (now - datetime.fromisoformat(last_sent)).total_seconds()
+                should_push = age >= _NIGHT_FAILURE_RATE_LIMIT_S
+            except Exception:
+                should_push = True
+        try:
+            repo.log_event("alert", "warn" if should_push else "info", cond["code"],
+                           cond["body"], cond)
+        except Exception:
+            pass
+        if should_push:
+            if subs is None:
+                subs = list_push_subscriptions(repo)
+            push_sender.deliver_custom(title=cond["title"], body=cond["body"],
+                                       subscriptions=subs, tag=f"sleepctl-night-{cond['code']}")
+            _kv_set_json(repo, key, now.isoformat())
+
+    return conditions
+
+
+def send_test_night_alert(repo) -> dict:
+    """Send a single TEST nighttime-failure push end-to-end (bypassing the live/night gate and
+    the per-condition throttle) so delivery can be verified without waiting for a real failure
+    or faking runtime_state -- same delivery path (``push_sender.deliver_custom``) real
+    conditions use. Backs ``POST /diag/action/test-alert``."""
+    subs = list_push_subscriptions(repo)
+    result = push_sender.deliver_custom(
+        title="SleepCtl test alert",
+        body="Test of the nighttime failure push — if this arrived, delivery works.",
+        subscriptions=subs, tag="sleepctl-night-test")
+    try:
+        repo.log_event("alert", "info", "test_alert", "test nighttime failure push sent",
+                       {"sent": result.sent, "failed": result.failed, "ok": result.ok})
+    except Exception:
+        pass
+    return {"ok": result.ok, "sent": result.sent}

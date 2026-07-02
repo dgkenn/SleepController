@@ -731,6 +731,19 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._log(f"db backup skipped: {exc}")
 
+    def _check_failure_alerts(self) -> None:
+        """Nighttime failure push: an offline bed, empty reservoir, wedged command queue, or a
+        stalled control loop should page the phone before the user finds out by being
+        uncomfortable at 3am -- see ``app.services.check_and_alert_failures`` for the detection +
+        live/night gating + per-condition hourly rate limit. Called once per control tick
+        (~poll_seconds, default 60s -- fine cadence for a per-condition-throttled push).
+        Best-effort: a push/DB hiccup here must never affect the control loop."""
+        try:
+            from app import services
+            services.check_and_alert_failures(self.repo)
+        except Exception as exc:
+            self._log(f"failure-alert check skipped: {exc}")
+
     def _refresh_hue(self) -> None:
         """(Re)build the Hue dawn driver from the stored config; toggle the orchestrator's light
         ramp accordingly. Rebuilds only when the config changes."""
@@ -862,6 +875,7 @@ class LiveDashboardDaemon:
         bridge.write_runtime_state(self.repo.conn, snapshot)
         self._record_state_history(snapshot)
         self.blackbox.record(self._blackbox_entry(decision, frame))
+        self._check_failure_alerts()
 
     async def command_tick(self) -> bool:
         """Fast path for realtime control: apply queued overrides and snapshot now.

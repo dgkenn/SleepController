@@ -519,6 +519,20 @@ class DashboardDaemon:
         except Exception as exc:
             print(f"db backup skipped: {exc}", flush=True)
 
+    def _check_failure_alerts(self) -> None:
+        """Nighttime failure push: an offline bed, empty reservoir, wedged command queue, or a
+        stalled control loop should page the phone before the user finds out by being
+        uncomfortable at 3am -- see ``app.services.check_and_alert_failures`` for the detection +
+        live/night gating + per-condition hourly rate limit. Called once per control tick (this
+        sim daemon's ``extra.live`` is always False, so the gate keeps simulated failures from
+        ever paging a phone). Best-effort: a push/DB hiccup here must never affect the control
+        loop."""
+        try:
+            from app import services
+            services.check_and_alert_failures(self.repo)
+        except Exception as exc:
+            print(f"failure-alert check skipped: {exc}", flush=True)
+
     # ---------------------------------------------------------------- cycles
     def _read(self):
         frame = self.source.read_frame()
@@ -591,6 +605,7 @@ class DashboardDaemon:
         bridge.write_runtime_state(self.repo.conn, snapshot)
         self._record_state_history(snapshot)
         self.blackbox.record(self._blackbox_entry(decision, frame))
+        self._check_failure_alerts()
 
     def _refresh_profiles(self, nightly_close_out: bool = False) -> None:
         if nightly_close_out:
