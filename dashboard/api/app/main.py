@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app import bridge, services
@@ -78,9 +78,12 @@ def _run_dir() -> str:
     return os.path.join(root, ".run")
 
 
-@app.get("/diag", response_class=PlainTextResponse)
-def diag(token: str = "", repo=Depends(repo_dep)):
-    """Read-only remote diagnostics: device/live status + the daemon log tails, as plain text.
+@app.get("/diag")
+def diag(token: str = "", format: str = "", repo=Depends(repo_dep)):
+    """Read-only remote diagnostics: a structured DIAGNOSIS (what's wrong + the fix) followed
+    by device/live status + the daemon log tails, as plain text — or the full structured dict
+    as JSON with ``?format=json`` (lossless; the plaintext is derived from the same dict, so
+    reach for JSON when you need to parse/grep it precisely instead of the summarized text).
 
     Gated by a secret ``DIAG_TOKEN`` (env). Returns 404 when the token is missing/wrong or the
     feature is disabled, so it's invisible to scanners. Contains NO credentials — only status +
@@ -89,6 +92,13 @@ def diag(token: str = "", repo=Depends(repo_dep)):
     expected = os.environ.get("DIAG_TOKEN")
     if not expected or not token or not secrets.compare_digest(token, expected):
         raise HTTPException(404, "not found")
+
+    from app.diagnostics import render_diagnosis_text, run_diagnostics
+    run = _run_dir()
+    report = run_diagnostics(repo, run_dir=run)
+
+    if format == "json":
+        return JSONResponse(report)
 
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
     extra = rt.get("extra") or {}
@@ -107,13 +117,13 @@ def diag(token: str = "", repo=Depends(repo_dep)):
         f"thermal_health={json.dumps(extra.get('thermal_health'))}",
         f"device_error={extra.get('device_error')}",
     ]
-    run = _run_dir()
-    out = "\n".join(status_lines)
+    out = render_diagnosis_text(report)
+    out += "\n\n" + "\n".join(status_lines)
     out += "\n\n=== daemon-crash.log (last 40) ===\n" + _tail(os.path.join(run, "daemon-crash.log"), 40)
     out += "\n\n=== daemon.log (last 60) ===\n" + _tail(os.path.join(run, "daemon.log"), 60)
     out += "\n\n=== daemon.err (last 40) ===\n" + _tail(os.path.join(run, "daemon.err"), 40)
     out += "\n\n=== watchdog.log (last 20) ===\n" + _tail(os.path.join(run, "watchdog.log"), 20)
-    return out
+    return PlainTextResponse(out)
 
 
 # ------------------------------------------------------------------ models

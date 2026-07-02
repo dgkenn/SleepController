@@ -680,6 +680,10 @@ class DashboardDaemon:
                     self.command_tick()
             except Exception as exc:  # keep the daemon alive; surface via stale state
                 print(f"daemon tick error: {exc}", flush=True)
+            # Liveness heartbeat for the self-diagnosis battery (dashboard/api/app/diagnostics.py):
+            # touched every loop iteration regardless of tick outcome, so a stuck DB/device call
+            # doesn't also blind the "is the daemon alive" check.
+            bridge.write_heartbeat("daemon")
             if max_ticks is not None and ticks >= max_ticks:
                 break
             time.sleep(self.command_poll_seconds)
