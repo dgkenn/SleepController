@@ -92,6 +92,11 @@ class SleepController:
 
         self._bed_entry_time: Optional[datetime] = None
         self._sleep_onset_time: Optional[datetime] = None  # accurate fall-asleep time
+        # The onset cascade (cold-settle -> warm pulse -> cool) runs on a clock that starts when
+        # INDUCTION begins -- NOT bed-entry. Pressing "help me fall asleep" after lying awake a
+        # while must restart the cascade at phase 1, so we track induction entry separately.
+        self._induction_entered_at: Optional[datetime] = None
+        self._induction_restart = False  # set by set_session('induce') -> restart the cascade
         self._last_target_f: float = cfg.tunables.neutral_temp_f
         # Session mode: "night" | "induce" | "nap_power" | "nap_cycle". Power naps keep the bed
         # light so slow-wave sleep (and its grogginess on waking) doesn't set in.
@@ -307,8 +312,15 @@ class SleepController:
                 self.wake_orch.reset()
                 self._reset_architecture()
             intent = ThermalIntent.NEUTRAL
+            self._induction_entered_at = None  # left induction -> next entry restarts the cascade
         elif state is ControllerState.INDUCTION:
-            intent = self.induction.step(frame, objective, minutes_in_bed)
+            # Start (or restart, on a fresh "help me fall asleep" press) the cascade clock so
+            # phase 1 (cold settle) always begins NOW, regardless of how long you've been in bed.
+            if self._induction_restart or self._induction_entered_at is None:
+                self._induction_entered_at = now
+                self._induction_restart = False
+            induction_minutes = (now - self._induction_entered_at).total_seconds() / 60.0
+            intent = self.induction.step(frame, objective, induction_minutes)
         elif state is ControllerState.MAINTENANCE:
             # In-night architecture steering: compare the realized deep/REM curve to tonight's
             # personalized ideal and, when behind on deep + light + wake-risk LOW, nudge deeper —
@@ -439,10 +451,13 @@ class SleepController:
         # (the exact bug: session_mode='induce' but state stuck IDLE). Jump straight into
         # INDUCTION from IDLE/CALIBRATION so the onset thermal cascade runs open-loop right away;
         # confirmed onset (once physiology arrives) then hands off to MAINTENANCE as usual.
-        if self.session_mode in ("induce", "nap_power", "nap_cycle") and \
-                self.sm.state in (ControllerState.IDLE, ControllerState.CALIBRATION):
-            self.sm.state = ControllerState.INDUCTION
-            self.sm.reason = "induction forced on user request (help me fall asleep)"
+        if self.session_mode in ("induce", "nap_power", "nap_cycle"):
+            # Restart the onset cascade clock so cold-settle begins NOW on every press, even if
+            # already in INDUCTION or lying awake in bed for a while.
+            self._induction_restart = True
+            if self.sm.state in (ControllerState.IDLE, ControllerState.CALIBRATION):
+                self.sm.state = ControllerState.INDUCTION
+                self.sm.reason = "induction forced on user request (help me fall asleep)"
 
     def preemption_summary(self) -> dict:
         """Live predictive-pre-emption state for the dashboard: is the controller actively
