@@ -235,10 +235,15 @@ def detect_external_conflict(device: dict, history: list[dict]) -> dict:
 
     Returns ``{"status": "external_setpoint_conflict"|"ok"|"insufficient_data", "reason",
     "remedy"}``. Two independent signals, checked in order:
-      1. the device's own schedule-state object reports an active schedule
-         (``external_schedule.activity == "schedule"`` / ``.active`` truthy), or
+      1. the device's own schedule is active AND its target level DISAGREES with what we
+         commanded (a schedule/other app holding a different setpoint), or
       2. the device's *accepted* target level repeatedly disagrees with what WE commanded
          over several recent samples (a schedule/other app silently overriding it).
+
+    Note: ``external_schedule.activity`` reads ``"schedule"`` on the Pod whenever ANY smart
+    session is active -- including when that session is faithfully HONORING our commanded
+    override (its ``target_level`` == ours). An active schedule is therefore not a conflict
+    by itself; it only conflicts when its target disagrees with ours.
     """
     device = device or {}
     rows = _sorted_by_time(history or [])
@@ -247,15 +252,24 @@ def detect_external_conflict(device: dict, history: list[dict]) -> dict:
     if isinstance(schedule, dict) and (schedule.get("activity") == "schedule"
                                         or schedule.get("active") is True):
         target = schedule.get("target_level")
-        held = f" (holding ~{target})" if target is not None else ""
-        return _result(
-            "external_setpoint_conflict",
-            f"the device's own schedule is active (activity={schedule.get('activity')!r}"
-            + (f", target_level={target}" if target is not None else "") + ").",
-            f"The Eight Sleep app's own schedule (or another controller) is fighting the "
-            f"setpoint{held}. Turn off the schedule/Autopilot in the Eight Sleep app so this "
-            "controller has sole control.",
-        )
+        # our most recently commanded level (freshest history row that has one)
+        commanded = next((r.get("target_level") for r in reversed(rows)
+                          if isinstance(r.get("target_level"), (int, float))), None)
+        honoring = (isinstance(target, (int, float)) and commanded is not None
+                    and abs(target - commanded) < CONFLICT_LEVEL_DELTA)
+        if not honoring:
+            held = f" (holding ~{target})" if target is not None else ""
+            return _result(
+                "external_setpoint_conflict",
+                f"the device's own schedule is active (activity={schedule.get('activity')!r}"
+                + (f", target_level={target}" if target is not None else "")
+                + (f") and disagrees with our commanded {commanded}." if commanded is not None else ")."),
+                f"The Eight Sleep app's own schedule (or another controller) is fighting the "
+                f"setpoint{held}. Turn off the schedule/Autopilot in the Eight Sleep app so this "
+                "controller has sole control.",
+            )
+        # schedule is active but honoring our override -> not a conflict; fall through to the
+        # multi-sample disagreement check below (which returns ok / insufficient_data).
 
     if len(rows) < MIN_HISTORY_SAMPLES:
         return _result(

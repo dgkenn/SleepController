@@ -198,6 +198,31 @@ def test_schedule_activity_flags_external_conflict():
     assert "autopilot" in result["remedy"].lower() or "schedule" in result["remedy"].lower()
 
 
+def test_active_schedule_honoring_our_override_is_not_a_conflict():
+    # On the Pod activity reads 'schedule' whenever a smart session is active -- including
+    # when that session is faithfully applying OUR commanded override. Target == our command
+    # -> not a conflict (the false positive we hit live: schedTarget=-44 == our -44).
+    device = {"external_schedule": {"activity": "schedule", "target_level": -44, "active": True}}
+    history = [
+        _row(i, target_level=-44, bed_temp_f=70.0, device_target_level=-44)
+        for i in range(0, 8)
+    ]
+    result = detect_external_conflict(device, history)
+    assert result["status"] == "ok"
+
+
+def test_active_schedule_disagreeing_with_command_still_flags():
+    # schedule active AND its target is far from what we commanded -> real conflict.
+    device = {"external_schedule": {"activity": "schedule", "target_level": 55, "active": True}}
+    history = [
+        _row(i, target_level=-44, bed_temp_f=70.0, device_target_level=-44)
+        for i in range(0, 8)
+    ]
+    result = detect_external_conflict(device, history)
+    assert result["status"] == "external_setpoint_conflict"
+    assert "55" in result["reason"]
+
+
 def test_no_schedule_and_no_disagreement_is_ok():
     device = {"external_schedule": {"activity": "none", "active": False}}
     history = [
