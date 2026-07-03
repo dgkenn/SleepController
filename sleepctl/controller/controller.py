@@ -432,6 +432,17 @@ class SleepController:
         if keep_light is None:
             keep_light = mode in ("nap_power",)
         self.session_keep_light = bool(keep_light)
+        # "Help me fall asleep" / nap modes FORCE an induction session immediately. The user
+        # explicitly asked to be put to sleep NOW, so we must not wait for cloud PRESENCE to flip
+        # True -- on Eight Sleep presence is derived from a sleep SESSION, which only opens
+        # retroactively AFTER onset, so a presence-gated induction would never fire pre-sleep
+        # (the exact bug: session_mode='induce' but state stuck IDLE). Jump straight into
+        # INDUCTION from IDLE/CALIBRATION so the onset thermal cascade runs open-loop right away;
+        # confirmed onset (once physiology arrives) then hands off to MAINTENANCE as usual.
+        if self.session_mode in ("induce", "nap_power", "nap_cycle") and \
+                self.sm.state in (ControllerState.IDLE, ControllerState.CALIBRATION):
+            self.sm.state = ControllerState.INDUCTION
+            self.sm.reason = "induction forced on user request (help me fall asleep)"
 
     def preemption_summary(self) -> dict:
         """Live predictive-pre-emption state for the dashboard: is the controller actively
