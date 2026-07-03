@@ -564,7 +564,9 @@ class EightSleepDirectClient:
             "tz": self.timezone,
             "from": (today - timedelta(days=1)).isoformat(),
             "to": (today + timedelta(days=1)).isoformat(),
-            "include-main": "false",
+            # The API rejects requesting BOTH include-main and include-all-sessions
+            # (HTTP 400 "Should only request one ...") -- which silently emptied physiology
+            # on every poll. Request all sessions (covers naps + the main night session).
             "include-all-sessions": "true",
             "model-version": "v2",
         }
