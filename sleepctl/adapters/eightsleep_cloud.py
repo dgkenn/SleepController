@@ -198,8 +198,12 @@ class EightSleepClient:
         age = (now - self._last_update).total_seconds() if self._last_update else None
 
         # Every property read is wrapped: on a Pod 2 some fields may be missing or raise.
-        bed_temp = _safe(lambda: user.current_bed_temp)
-        bed_temp_f = bed_temp if _looks_like_fahrenheit(bed_temp) else self._convert_bed_temp(bed_temp)
+        # IMPORTANT: pyEight's ``user.current_bed_temp`` is DERIVED from the commanded device
+        # level (heating_level_to_temp(currentDeviceLevel)), NOT a thermistor reading. Feeding it
+        # to the closed loop makes the loop read its own command back as "temperature" (circular).
+        # Use the genuinely SENSED tempBedC from the trends session timeseries instead, or None
+        # (None -> the controller falls to safe open-loop control, never closes on a fake signal).
+        bed_temp_f = self._sensed_bed_temp_f(user)
 
         return SensorFrame(
             timestamp=self._last_update or now,
@@ -225,6 +229,29 @@ class EightSleepClient:
             return None
         try:
             return conv(raw, "f")
+        except Exception:
+            return None
+
+    def _sensed_bed_temp_f(self, user):  # pragma: no cover - requires live device
+        """Genuinely SENSED bed temperature from the trends session timeseries (tempBedC, °C),
+        converted to °F. Returns None when no session/sample exists (first ~15-30 min each night,
+        or bed off) so the controller falls to open-loop rather than closing on a fake signal.
+        NEVER returns the level-derived ``current_bed_temp`` (that is a circular artifact)."""
+        try:
+            trends = getattr(user, "trends", None) or []
+            if not trends:
+                return None
+            sessions = trends[-1].get("sessions") or []
+            if not sessions:
+                return None
+            ts = sessions[-1].get("timeseries") or {}
+            arr = ts.get("tempBedC")
+            if not arr:
+                return None
+            bed_c = arr[-1][1]
+            if bed_c is None:
+                return None
+            return bed_c * 9.0 / 5.0 + 32.0
         except Exception:
             return None
 

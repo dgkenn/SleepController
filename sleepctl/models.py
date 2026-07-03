@@ -88,9 +88,14 @@ class SensorFrame:
     bed_temp_f: Optional[float] = None
     room_temp_f: Optional[float] = None
     commanded_level: Optional[int] = None  # last -100..100 device level sent
-    # Thermal-state truth from the Hub's own water-side reading (NOT bed_temp_f, which is a
-    # cover-side sensor that tracks ambient air — verified live to be an artifact). device_level
-    # is the actual achieved level (currentDeviceLevel/heating_level); target_level is the goal.
+    # ``bed_temp_f`` is the genuinely SENSED cover/bed temperature (trends ``tempBedC``), used as
+    # the closed-loop feedback signal -- but it is session-gated (None for the first ~15-30 min
+    # each night and whenever no sleep session is open), so the controller falls to open-loop when
+    # it is None. It must NEVER be populated from the level-derived pyEight ``current_bed_temp``
+    # (that value just echoes the command back -> circular). ``device_level`` is a DIFFERENT thing:
+    # the actual achieved water-side level (currentDeviceLevel/heating_level), used ONLY to verify
+    # the actuator responded to a command (the thermal-health / frozen-telemetry checks) -- it is
+    # the command echo, so it must never be used as the feedback signal. ``target_level`` is the goal.
     device_level: Optional[int] = None
     target_level: Optional[int] = None
     data_age_seconds: Optional[float] = None

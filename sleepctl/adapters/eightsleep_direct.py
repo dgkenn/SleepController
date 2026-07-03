@@ -102,6 +102,10 @@ DEFAULT_TOKEN_CACHE_PATH = Path.home() / ".config" / "sleepctl" / "eight_token.j
 
 TOKEN_EXPIRY_BUFFER_S = 300.0   # re-auth if the cached token expires within 5 min
 DEFAULT_PHYSIOLOGY_INTERVAL_S = 60.0
+# Sensed physiology (trends timeseries) is per-minute + laggy. Beyond this age we treat a sensed
+# sample as too old to close the thermal loop on -> null it so control falls to safe open-loop.
+# Matches the pyEight bed-presence 10-min window: a sample older than this is not "now".
+PHYSIOLOGY_STALE_S = 600.0
 DEFAULT_MIN_REQUEST_INTERVAL_S = 0.15
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_TIMEOUT_S = 20.0
@@ -588,28 +592,33 @@ class EightSleepDirectClient:
         target_level = device.get(f"{side}TargetHeatingLevel")
 
         sample_dt = _parse_iso(phys.get("sample_time"))
-        if sample_dt is not None:
-            age = (now_utc - sample_dt).total_seconds()
-        elif self._physiology_ts is not None:
-            age = (now - self._physiology_ts).total_seconds()
-        else:
-            age = None
+        # SENSED-physiology freshness. The trends pipeline is session-gated: it is EMPTY for the
+        # first ~15-30 min each night (no session yet) and can go stale if a session ends. We must
+        # never close the thermal loop on absent/stale sensed data, so we gate every sensed field
+        # on the age of its own sample. When not fresh -> null the sensed fields; the controller
+        # then falls to safe OPEN-LOOP control (induction/maintenance targets still applied) rather
+        # than either (a) closing on a stale/fake signal or (b) hard-freezing. ``data_age_seconds``
+        # reports DEVICE freshness (poll recency), which is what should gate a true telemetry-freeze
+        # HOLD -- distinct from "no session yet", which is normal and must not freeze induction.
+        phys_fresh = sample_dt is not None and (now_utc - sample_dt).total_seconds() <= PHYSIOLOGY_STALE_S
+        device_age = (now - self._last_update).total_seconds() if self._last_update else None
 
         return SensorFrame(
             timestamp=self._physiology_ts or now,
-            stage=map_stage(phys.get("stage")),
+            stage=map_stage(phys.get("stage")) if phys_fresh else map_stage(None),
             stage_confidence=None,
-            heart_rate=phys.get("heart_rate"),
-            hrv=phys.get("hrv"),
-            respiratory_rate=phys.get("respiratory_rate"),
+            heart_rate=phys.get("heart_rate") if phys_fresh else None,
+            hrv=phys.get("hrv") if phys_fresh else None,
+            respiratory_rate=phys.get("respiratory_rate") if phys_fresh else None,
             movement=None,
             presence=self._presence(now_utc),
-            bed_temp_f=_c_to_f(phys.get("bed_temp_c")),
-            room_temp_f=_c_to_f(phys.get("room_temp_c")),
+            # SENSED tempBedC/tempRoomC only when fresh; else None -> open-loop (never circular).
+            bed_temp_f=_c_to_f(phys.get("bed_temp_c")) if phys_fresh else None,
+            room_temp_f=_c_to_f(phys.get("room_temp_c")) if phys_fresh else None,
             commanded_level=device_level,
             device_level=device_level,
             target_level=target_level,
-            data_age_seconds=age,
+            data_age_seconds=device_age,
         )
 
     def device_status(self) -> dict:
@@ -673,6 +682,26 @@ class EightSleepDirectClient:
         data = await self._request("GET", url)
         smart = (data or {}).get("smart", {}) or {}
         smart[sleep_stage] = self._clamp(level)
+        await self._request("PUT", url, json_body={"smart": smart})
+
+    async def set_autopilot(self, enabled: bool) -> None:
+        """Enable/disable Eight Sleep's Autopilot schedule for this side.
+
+        Autopilot's dynamic *bedtime* engine (``currentState.type == 'smart:bedtime'``)
+        continuously re-writes ``currentLevel`` to its own escalating targets, which
+        overrides our commands within ~45 s. Setting ``smart.enabled = false`` is the
+        validated way to take exclusive control **while the pod keeps actuating** --
+        unlike away mode, which idles the device (target 0, no heating). Steering the
+        static stage levels (``bedTimeLevel`` etc.) does *not* work: the dynamic engine
+        ignores them and reasserts its own target (verified live).
+
+        Stage levels are preserved (we GET the current ``smart`` object and only flip
+        ``enabled``), so re-enabling restores the user's Autopilot exactly.
+        """
+        url = f"{APP_API_URL}/users/{self._user_id}/temperature"
+        data = await self._request("GET", url)
+        smart = dict((data or {}).get("smart", {}) or {})
+        smart["enabled"] = bool(enabled)
         await self._request("PUT", url, json_body={"smart": smart})
 
     async def turn_on_side(self) -> None:

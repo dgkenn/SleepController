@@ -227,6 +227,7 @@ class TestReadFrame:
             "sample_time": now_iso,
         }
         client._device = {"leftHeatingLevel": 10, "leftTargetHeatingLevel": 15}
+        client._last_update = datetime.now()  # device freshness drives data_age
 
         frame = client.read_frame()
 
@@ -234,25 +235,34 @@ class TestReadFrame:
         assert frame.hrv == 71
         assert frame.respiratory_rate == 13.2
         assert frame.stage is SleepStage.DEEP
+        # Fresh sensed sample -> sensed tempBedC feeds the frame (closed-loop input).
         assert frame.bed_temp_f == pytest.approx(77.0)
         assert frame.room_temp_f == pytest.approx(68.0)
         assert frame.device_level == 10
         assert frame.target_level == 15
         assert frame.commanded_level == 10
         assert frame.presence is True
+        # data_age now reflects DEVICE poll freshness (not the physiology sample age).
         assert frame.data_age_seconds is not None
         assert frame.data_age_seconds < 5.0
 
-    def test_stale_sample_reports_large_age_and_no_presence(self):
+    def test_stale_sample_nulls_sensed_fields_and_no_presence(self):
+        # A >10-min-old sensed sample must NOT feed the closed loop: sensed physiology is nulled
+        # (-> controller falls to safe open-loop), while data_age reflects DEVICE freshness so a
+        # healthy connection is not mistaken for a telemetry freeze.
         client = _make_client()
         old_iso = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
         client._physiology = {"heart_rate": 60, "hrv": 65, "respiratory_rate": 14.0,
-                              "bed_temp_c": 26.0, "room_temp_c": None, "stage": "light",
+                              "bed_temp_c": 26.0, "room_temp_c": 20.0, "stage": "light",
                               "sample_time": old_iso}
+        client._last_update = datetime.now()
         frame = client.read_frame()
-        assert frame.data_age_seconds > 3000
-        assert frame.presence is False   # >10 min since last HR sample
+        assert frame.presence is False       # >10 min since last HR sample
+        assert frame.bed_temp_f is None      # stale sensed temp is NOT fed to the loop
         assert frame.room_temp_f is None
+        assert frame.heart_rate is None
+        assert frame.stage is SleepStage.UNKNOWN
+        assert frame.data_age_seconds is not None and frame.data_age_seconds < 5.0
 
     def test_no_physiology_yet_yields_none_age_and_unknown_stage(self):
         client = _make_client()
