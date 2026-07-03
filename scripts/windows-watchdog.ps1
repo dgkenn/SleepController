@@ -108,6 +108,26 @@ function Stop-ComponentProcesses([string]$component) {
         }
     }
 }
+# --- watchdog self-restart --------------------------------------------------------------------
+# The per-component restart above can cycle api/web/daemon but NOT the supervisor itself, so a
+# change to THIS script (windows-watchdog.ps1) can't take effect remotely without a manual kill.
+# Restart-Watchdog closes that gap. MECHANISM CHOSEN: exit non-zero and let the Scheduled Task
+# ("SleepController" from windows-always-on.ps1: RestartCount 999 / 1-min RestartInterval,
+# -MultipleInstances IgnoreNew) relaunch a fresh watchdog from disk.
+#
+# We deliberately do NOT Start-Process a replacement watchdog ourselves and exit 0. That would
+# work once, but exit 0 reads to the Scheduled Task as "the action succeeded/finished", so the
+# task would stop supervising -- silently disabling its RestartCount-999 crash-recovery safety
+# net for every FUTURE watchdog crash until the next reboot, AND the self-spawned watchdog would
+# no longer be the task-tracked process. Delegating to the task instead keeps that safety net
+# fully intact and guarantees a single instance (IgnoreNew drops any overlapping trigger).
+# Cost: api/daemon/web run unsupervised for up to ~1 min (the RestartInterval) -- acceptable,
+# because they are independent Start-Process children that keep serving during the gap; the
+# relaunched watchdog then adopts/cycles them onto the new code via its normal startup sweep.
+function Restart-Watchdog {
+    Log "watchdog self-restart requested -- exiting (exit 1) so the Scheduled Task relaunches this script fresh from disk"
+    exit 1
+}
 function Handle-RestartRequest {
     if (-not (Test-Path $script:restartRequestFile)) { return }
     $target = $null
@@ -120,10 +140,12 @@ function Handle-RestartRequest {
             Stop-ComponentProcesses "api"; Stop-ComponentProcesses "web"; Stop-ComponentProcesses "daemon"
             $script:daemonGraceUntil = (Get-Date)   # let Ensure-Daemon re-judge immediately, no grace wait
         }
-        "api"    { Stop-ComponentProcesses "api" }
-        "web"    { Stop-ComponentProcesses "web" }
-        "daemon" { Stop-ComponentProcesses "daemon"; $script:daemonGraceUntil = (Get-Date) }
-        default  { Log "restart requested: unknown target '$target' -- ignoring" }
+        "api"      { Stop-ComponentProcesses "api" }
+        "web"      { Stop-ComponentProcesses "web" }
+        "daemon"   { Stop-ComponentProcesses "daemon"; $script:daemonGraceUntil = (Get-Date) }
+        "watchdog" { Restart-Watchdog }
+        "self"     { Restart-Watchdog }
+        default    { Log "restart requested: unknown target '$target' -- ignoring" }
     }
 }
 
@@ -235,6 +257,94 @@ function Handle-UpdateRequest {
                 timestamp = (Get-Date -Format o); branch = $branch; git_ok = $false
                 git_output = "$_"; validate_verdict = "ERROR"; restarted = $false
                 summary = "self-update handler crashed: $_"
+            }
+        } catch {}
+    }
+}
+
+# --- remote web-rebuild hook (Claude operator console) ----------------------------------------
+# A token-gated API endpoint (POST /diag/action/rebuild-web) writes .run\webbuild.request -- the
+# API NEVER runs npm or a shell itself, it only touches this one flag file. This is the watchdog
+# side: each supervise tick, if the flag is present, delete it and run the Next.js PRODUCTION
+# build (`npm run build`) in dashboard\web. CRUCIAL GUARD: web is NOT touched until the build
+# exits 0 -- a FAILED build leaves the currently-serving web process completely untouched (no
+# downtime on a bad build). Only on a green build do we Stop-ComponentProcesses "web" so the
+# supervise loop relaunches `next start` on the fresh .next. Whatever happens is recorded to
+# .run\webbuild.result for GET /diag/webbuild-status, appended to web-build.log, and failures are
+# logged CRITICAL + raise .run\watchdog.alert. Best-effort by construction: a crash here must
+# never take down the supervise loop that keeps api/daemon/web alive. PS 5.1 compatible.
+$script:webBuildRequestFile = Join-Path $run "webbuild.request"
+$script:webBuildResultFile = Join-Path $run "webbuild.result"
+
+function Write-WebBuildResult($record) {
+    try {
+        ($record | ConvertTo-Json -Depth 5) | Set-Content -Path $script:webBuildResultFile -Encoding UTF8
+    } catch {
+        Log "WARN: could not write webbuild.result: $_"
+    }
+}
+
+function Handle-WebBuildRequest {
+    if (-not (Test-Path $script:webBuildRequestFile)) { return }
+    # delete the flag immediately -- a stuck/re-created flag must never loop a build forever
+    Remove-Item -Path $script:webBuildRequestFile -Force -ErrorAction SilentlyContinue
+
+    try {
+        Log "remote web rebuild requested -- running production 'npm run build' in dashboard\web"
+        $ts = Get-Date -Format o
+        $webDir = Join-Path $Root "dashboard\web"
+        $stdoutFile = Join-Path $run "webbuild.out"
+        $stderrFile = Join-Path $run "webbuild.err"
+
+        # Run the build in its own working directory via Start-Process -Wait (do NOT Set-Location
+        # here -- the supervise loop launches api/daemon with paths relative to $Root, so mutating
+        # this process's cwd would break their relaunch). Blocks for the build's duration.
+        $proc = Start-Process -FilePath $npm -ArgumentList @("run", "build") `
+            -WorkingDirectory $webDir -WindowStyle Hidden -PassThru -Wait `
+            -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
+        $buildExit = $proc.ExitCode
+        if ($null -eq $buildExit) { $buildExit = -1 }   # PS 5.1: guard against a null ExitCode
+
+        $outText = ""
+        try { $outText = (Get-Content -Path $stdoutFile -Raw -ErrorAction SilentlyContinue) } catch {}
+        $errText = ""
+        try { $errText = (Get-Content -Path $stderrFile -Raw -ErrorAction SilentlyContinue) } catch {}
+        $combined = "$outText`n$errText"
+        # keep the running history in web-build.log (what /diag/logs?file=web-build tails)
+        Add-Content -Path (Join-Path $run "web-build.log") `
+            -Value ("=== remote rebuild {0} (exit={1}) ===`n{2}" -f $ts, $buildExit, $combined)
+
+        $outputTail = $combined
+        if ($outputTail.Length -gt 4000) {
+            $outputTail = $outputTail.Substring($outputTail.Length - 4000)
+        }
+
+        $ok = ($buildExit -eq 0)
+        if ($ok) {
+            # Build succeeded on the FRESH source -- only NOW cycle web so `next start` picks up
+            # the new .next. Reuse the existing restart plumbing: the supervise loop below sees
+            # port 3000 quiet and relaunches web via Start-Web. Web was never touched before this
+            # point, so a failed build (handled in the else) leaves the current web serving.
+            Stop-ComponentProcesses "web"
+            $summary = "web rebuild succeeded (exit=0) -- restarting web onto the fresh build"
+            Log "web rebuild: $summary"
+        } else {
+            $summary = "web rebuild FAILED (exit=$buildExit) -- leaving the current web serving untouched"
+            Log "CRITICAL: web rebuild: $summary"
+            Write-Alert "web rebuild FAILED (exit=$buildExit) -- see .run\webbuild.result / web-build.log"
+        }
+
+        Write-WebBuildResult @{
+            timestamp = $ts; exit_code = $buildExit; ok = $ok
+            output = $outputTail; summary = $summary
+        }
+    } catch {
+        Log "CRITICAL: web rebuild handler crashed: $_"
+        Write-Alert "web rebuild handler crashed: $_"
+        try {
+            Write-WebBuildResult @{
+                timestamp = (Get-Date -Format o); exit_code = -1; ok = $false
+                output = "$_"; summary = "web rebuild handler crashed: $_"
             }
         } catch {}
     }
@@ -418,6 +528,9 @@ while ($true) {
     # of waiting for the next ~15s tick.
     Handle-UpdateRequest
     Handle-RestartRequest
+    # Web rebuild AFTER restart handling: on a green build it stops web here, and the web check
+    # below (same tick) relaunches it on the fresh .next. A failed build never touches web.
+    Handle-WebBuildRequest
 
     if (-not (Port-Alive 8000)) {
         if (Test-CanRestart "api") {

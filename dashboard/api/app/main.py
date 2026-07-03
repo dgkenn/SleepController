@@ -1347,6 +1347,33 @@ def diag_action_restart(token: str = "", target: str = "", repo=Depends(repo_dep
     return {"requested": target, "verify_with": _verify_with(token)}  # append-only retrofit
 
 
+@app.post("/diag/action/restart-watchdog")
+def diag_action_restart_watchdog(token: str = "", repo=Depends(repo_dep)):
+    """Token-gated remote reload of the WATCHDOG ITSELF -- the one thing the per-component
+    ``/diag/action/restart`` can't do (it cycles api/web/daemon, but not the supervisor, so a
+    change to ``scripts/windows-watchdog.ps1`` needs a manual kill without this). Writes
+    ``.run/restart.request`` = ``watchdog``; the watchdog's ``Handle-RestartRequest`` consumes it
+    each supervise tick and exits non-zero so its Scheduled Task ("SleepController",
+    RestartCount 999) relaunches a fresh watchdog from disk on the new code. This API never kills
+    a process itself -- it only writes the one flag file. Gated identically to ``/diag`` (404 on
+    missing/wrong token)."""
+    _diag_gate(token)
+    run = _run_dir()
+    try:
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "restart.request"), "w", encoding="utf-8") as fh:
+            fh.write("watchdog")
+    except Exception as exc:
+        raise HTTPException(500, f"could not write restart.request: {exc}") from exc
+
+    try:
+        repo.log_event("remote_action", "warn", "restart_watchdog_request",
+                       "remote watchdog self-restart requested", {"target": "watchdog"})
+    except Exception:
+        pass
+    return {"requested": "watchdog", "verify_with": _verify_with(token)}  # append-only retrofit
+
+
 @app.post("/diag/action/reconnect")
 def diag_action_reconnect(token: str = "", repo=Depends(repo_dep)):
     """Token-gated remote recovery: enqueue a benign ``safe_default`` re-init so a wedged Eight
@@ -1818,6 +1845,23 @@ _DIAG_MANIFEST: list[dict] = [
                     "never runs git or a shell itself. See docs/CLAUDE_REMOTE_OPS.md for the "
                     "threat model.",
      "example": "POST /diag/action/update?token=..."},
+    {"method": "POST", "path": "/diag/action/restart-watchdog", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Reload the watchdog itself: writes .run/restart.request = 'watchdog' so the "
+                    "watchdog exits and its Scheduled Task relaunches fresh code from disk (the "
+                    "per-component restart can't cycle the supervisor).",
+     "example": "POST /diag/action/restart-watchdog?token=..."},
+    {"method": "POST", "path": "/diag/action/rebuild-web", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Rebuild the Next.js production build remotely: writes .run/webbuild.request; "
+                    "the watchdog runs 'npm run build' and cycles web ONLY on a green build "
+                    "(a failed build leaves the current web serving).",
+     "example": "POST /diag/action/rebuild-web?token=..."},
+    {"method": "GET", "path": "/diag/webbuild-status", "gate": "DIAG_TOKEN",
+     "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
+     "description": "Outcome of the last remote web rebuild (.run/webbuild.result: exit_code, ok, "
+                    "output tail, summary).",
+     "example": "GET /diag/webbuild-status?token=..."},
     {"method": "GET", "path": "/diag/update-status", "gate": "DIAG_TOKEN",
      "params": [{"name": "token", "required": True, "description": "DIAG_TOKEN"}],
      "description": "The watchdog-written .run/update.result record from the last self-update "
@@ -1896,7 +1940,8 @@ _DIAG_COVERAGE: dict[str, dict] = {
     "10": {"feature": "48h+ runtime-state trend", "endpoint": "GET /diag/history  (and /diag/all.state_history_recent)"},
     "11": {"feature": "Connectivity/heartbeats + a live cloud probe",
            "endpoint": "GET /diag/probe  (and /diag/all.heartbeats)"},
-    "12": {"feature": "Token-gated remote actions (restart/reconnect/self-test/backup/update)",
+    "12": {"feature": "Token-gated remote actions (restart/reconnect/self-test/backup/update/"
+                       "restart-watchdog/rebuild-web)",
            "endpoint": "POST /diag/action/*"},
 }
 
@@ -2050,6 +2095,69 @@ def diag_update_status(token: str = ""):
                                        "(.run/update.result not found)"})
     except Exception as exc:
         return JSONResponse({"available": False, "detail": f"could not read update.result: {exc}"})
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            parsed.setdefault("available", True)
+            return JSONResponse(parsed)
+        return JSONResponse({"available": True, "value": parsed})
+    except Exception:
+        return PlainTextResponse(raw)
+
+
+# ---------------------------------------------------------------- remote web rebuild
+# Same flag-file protocol as self-update, but for the Next.js PRODUCTION build (which otherwise
+# goes stale -- a persistent DEGRADED warning -- with no remote trigger). This endpoint NEVER
+# runs npm or a shell; it only writes ``.run/webbuild.request``. The watchdog
+# (``scripts/windows-watchdog.ps1``'s ``Handle-WebBuildRequest``) runs ``npm run build`` in
+# ``dashboard/web`` and only cycles the web component onto the fresh ``.next`` on a green build --
+# a failed build leaves the current web serving untouched.
+@app.post("/diag/action/rebuild-web")
+def diag_action_rebuild_web(token: str = "", repo=Depends(repo_dep)):
+    """Request a remote refresh of the Next.js production build. Writes
+    ``.run/webbuild.request`` -- this endpoint does NOT run npm itself; the watchdog consumes the
+    flag each supervise tick, runs ``npm run build`` in ``dashboard/web``, and ONLY on a
+    successful build cycles web onto the fresh ``.next`` (a failed build leaves the current web
+    serving, no downtime). Fixes the stale-PWA DEGRADED warning without RDP/a manual rebuild.
+    Poll ``GET /diag/webbuild-status`` for the outcome. Gated exactly like ``/diag``."""
+    _diag_gate(token)
+    run = _run_dir()
+    try:
+        os.makedirs(run, exist_ok=True)
+        with open(os.path.join(run, "webbuild.request"), "w", encoding="utf-8") as fh:
+            fh.write(datetime.now(timezone.utc).isoformat())
+    except Exception as exc:
+        raise HTTPException(500, f"could not write webbuild.request: {exc}") from exc
+
+    try:
+        repo.log_event("remote_action", "warn", "rebuild_web_request",
+                       "remote web production rebuild requested", {})
+    except Exception:
+        pass
+    return _action_result("rebuild-web", {"requested": True}, token,
+                          verify_path="/diag/webbuild-status")
+
+
+@app.get("/diag/webbuild-status")
+def diag_webbuild_status(token: str = ""):
+    """The watchdog-written outcome of the last remote web rebuild -- ``.run/webbuild.result``
+    (JSON: ``timestamp``, ``exit_code``, ``ok``, ``output`` (tail), ``summary``). Returns
+    ``{"available": false, "detail": ...}`` if no rebuild has ever been requested/completed yet,
+    or the raw text if the result file isn't valid JSON for some reason (never 500s). Gated
+    exactly like ``/diag``."""
+    _diag_gate(token)
+    path = os.path.join(_run_dir(), "webbuild.result")
+    try:
+        # utf-8-sig: the watchdog writes this with PowerShell's `Set-Content -Encoding UTF8`
+        # (BOM-prefixed); -sig strips it if present (harmless no-op otherwise).
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            raw = fh.read()
+    except FileNotFoundError:
+        return JSONResponse({"available": False,
+                             "detail": "no web rebuild has been requested/completed yet "
+                                       "(.run/webbuild.result not found)"})
+    except Exception as exc:
+        return JSONResponse({"available": False, "detail": f"could not read webbuild.result: {exc}"})
     try:
         parsed = json.loads(raw)
         if isinstance(parsed, dict):

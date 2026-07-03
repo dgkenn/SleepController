@@ -332,3 +332,125 @@ def test_diag_update_status_reads_the_watchdog_written_result(client, monkeypatc
     assert body["validate_verdict"] == "PASS"
     assert body["restarted"] is True
     os.remove(result_path)
+
+
+# --------------------------------------------------- POST /diag/action/restart-watchdog
+def test_diag_action_restart_watchdog_requires_token(client, monkeypatch):
+    monkeypatch.delenv("DIAG_TOKEN", raising=False)
+    assert client.post("/diag/action/restart-watchdog").status_code == 404
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    assert client.post("/diag/action/restart-watchdog").status_code == 404
+    assert client.post("/diag/action/restart-watchdog?token=nope").status_code == 404
+
+
+def test_diag_action_restart_watchdog_writes_watchdog_flag(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    flag = os.path.join(_run_dir(), "restart.request")
+    _remove(flag)
+
+    r = client.post("/diag/action/restart-watchdog?token=s3cret-xyz")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["requested"] == "watchdog"
+    assert body["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert os.path.exists(flag)
+    assert open(flag, encoding="utf-8").read().strip() == "watchdog"
+    _remove(flag)
+
+
+def test_diag_action_restart_watchdog_logs_a_remote_action_event(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    flag = os.path.join(_run_dir(), "restart.request")
+    _remove(flag)
+
+    client.post("/diag/action/restart-watchdog?token=s3cret-xyz")
+    r = client.get("/diag/events?token=s3cret-xyz&category=remote_action&limit=10")
+    assert r.status_code == 200
+    assert any(row["code"] == "restart_watchdog_request" for row in r.json())
+    _remove(flag)
+
+
+# --------------------------------------------------- POST /diag/action/rebuild-web
+def test_diag_action_rebuild_web_requires_token(client, monkeypatch):
+    monkeypatch.delenv("DIAG_TOKEN", raising=False)
+    assert client.post("/diag/action/rebuild-web").status_code == 404
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    assert client.post("/diag/action/rebuild-web").status_code == 404
+    assert client.post("/diag/action/rebuild-web?token=nope").status_code == 404
+
+
+def test_diag_action_rebuild_web_writes_webbuild_request(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    flag = os.path.join(_run_dir(), "webbuild.request")
+    _remove(flag)
+
+    r = client.post("/diag/action/rebuild-web?token=s3cret-xyz")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["action"] == "rebuild-web"
+    assert body["result"]["requested"] is True
+    assert body["verify_with"] == "/diag/webbuild-status?token=s3cret-xyz"
+    assert os.path.exists(flag)
+    _remove(flag)
+
+
+def test_diag_action_rebuild_web_logs_a_remote_action_event(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    flag = os.path.join(_run_dir(), "webbuild.request")
+    _remove(flag)
+
+    client.post("/diag/action/rebuild-web?token=s3cret-xyz")
+    r = client.get("/diag/events?token=s3cret-xyz&category=remote_action&limit=10")
+    assert r.status_code == 200
+    assert any(row["code"] == "rebuild_web_request" for row in r.json())
+    _remove(flag)
+
+
+# --------------------------------------------------- GET /diag/webbuild-status
+def test_diag_webbuild_status_requires_token(client, monkeypatch):
+    monkeypatch.delenv("DIAG_TOKEN", raising=False)
+    assert client.get("/diag/webbuild-status").status_code == 404
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    assert client.get("/diag/webbuild-status?token=nope").status_code == 404
+
+
+def test_diag_webbuild_status_no_result_yet(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    result_path = os.path.join(_run_dir(), "webbuild.result")
+    _remove(result_path)
+
+    r = client.get("/diag/webbuild-status?token=s3cret-xyz")
+    assert r.status_code == 200
+    assert r.json()["available"] is False
+
+
+def test_diag_webbuild_status_reads_the_watchdog_written_result(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    run = _run_dir()
+    os.makedirs(run, exist_ok=True)
+    result_path = os.path.join(run, "webbuild.result")
+    record = {
+        "timestamp": "2026-07-02T05:00:00+00:00", "exit_code": 0, "ok": True,
+        "output": "> next build\nCompiled successfully", "summary": "web rebuild succeeded",
+    }
+    with open(result_path, "w", encoding="utf-8") as fh:
+        json.dump(record, fh)
+
+    r = client.get("/diag/webbuild-status?token=s3cret-xyz")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["available"] is True
+    assert body["exit_code"] == 0
+    assert body["ok"] is True
+    os.remove(result_path)
+
+
+# --------------------------------------------------- manifest lists the new endpoints
+def test_diag_manifest_lists_the_new_remote_ops_endpoints(client, monkeypatch):
+    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
+    r = client.get("/diag/manifest?token=s3cret-xyz")
+    assert r.status_code == 200
+    paths = {e["path"] for e in r.json()["diag_endpoints"]}
+    assert {"/diag/action/restart-watchdog", "/diag/action/rebuild-web",
+            "/diag/webbuild-status"} <= paths
