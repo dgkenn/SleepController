@@ -660,6 +660,14 @@ class SleepController:
         """Apply tonight's learned (per-mode, explored) onset warm nudge to the induction phase."""
         self.thermal.set_onset_warm(warm_f)
 
+    def set_onset_cold_settle(self, cold_f: float) -> None:
+        """Apply tonight's learned (per-mode, explored) really-cold onset opener target."""
+        self.thermal.set_onset_cold_settle(cold_f)
+
+    def set_warm_pulse_arm(self, on: bool) -> None:
+        """Arm/disarm tonight's brief onset warm pulse (the induction A/B toggle)."""
+        self.induction.set_warm_pulse_arm(on)
+
     def set_wake_window(self, minutes: int) -> None:
         """The time selector sets the per-night smart-wake window ceiling (choose_wake_window)."""
         self.wake_orch.cfg.window_min = max(1, int(minutes))

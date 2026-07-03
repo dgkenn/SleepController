@@ -59,11 +59,24 @@ class ThermalController:
         # Learnable onset warm-nudge (°F above neutral during induction). Personalized per-mode by
         # the onset learner from measured sleep-onset latency; bounded by the comfort cap.
         self.onset_warm_f: float = cfg.tunables.onset_warm_nudge_f
+        # Learnable really-cold induction opener target (absolute °F). Seeded from the profile;
+        # personalized by the cold-settle learner from measured sleep-onset latency.
+        self.onset_cold_settle_f: float = getattr(
+            self.profile, "onset_cold_settle_f", cfg.tunables.onset_cold_settle_temp_f)
 
     def set_onset_warm(self, warm_f: float) -> None:
         """Set the learned onset warm nudge, clamped to the comfort cap (never overheats)."""
         cap = self.cfg.tunables.onset_warm_comfort_cap_f
         self.onset_warm_f = max(0.0, min(cap, float(warm_f or 0.0)))
+
+    def set_onset_cold_settle(self, cold_f: float) -> None:
+        """Set the learned really-cold onset opener target, clamped to the cold-settle bounds so
+        it stays genuinely cold but never unsafe."""
+        from sleepctl.learning.onset_tuning import COLD_SETTLE_BOUNDS
+        lo, hi = COLD_SETTLE_BOUNDS
+        if cold_f is None:
+            return
+        self.onset_cold_settle_f = max(lo, min(hi, float(cold_f)))
 
     def set_response_lag(self, minutes: float) -> None:
         """Update the learned actuation latency the control loop anticipates."""
@@ -145,6 +158,12 @@ class ThermalController:
             # again once asleep. The hot-sleeper cool bias is intentionally NOT applied here.
             nudge = min(self.onset_warm_f, t.onset_warm_comfort_cap_f)
             target = p.neutral_f + nudge
+        elif intent is ThermalIntent.ONSET_COLD_SETTLE:
+            # Really-cold opener: shed the hot sleeper's heat and prime peripheral
+            # vasoconstriction so the later warm pulse produces a stronger vasodilation contrast.
+            # It's already cold, so the hot-sleeper cool bias is intentionally NOT applied — only
+            # the forecast-driven ambient bias, like the other intents.
+            target = self.onset_cold_settle_f + self.ambient_bias_f
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)
         elif intent is ThermalIntent.STABILIZE:
@@ -157,6 +176,7 @@ class ThermalController:
         if objective is NightObjective.DAMAGE_CONTROL and intent in (
             ThermalIntent.INDUCTION_COOL,
             ThermalIntent.DEEP_BIAS_COOL,
+            ThermalIntent.ONSET_COLD_SETTLE,
         ):
             target = (target + neutral) / 2.0
 
