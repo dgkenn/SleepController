@@ -902,56 +902,72 @@ def main() -> None:
     # We connect it here (one extra asyncio.run) so a bad direct-client connect is caught
     # and swapped out BEFORE LiveDashboardDaemon.run() commits to it for the night.
     _eight_side = os.environ.get("EIGHTSLEEP_SIDE") or creds.side
-    try:
-        from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
-        client = asyncio.run(build_eightsleep_client(
-            creds.email, creds.password, creds.timezone, _eight_side,
-            creds.client_id, creds.client_secret,
-        ))
-    except Exception as exc:
-        print(f"[daemon] eightsleep_direct unavailable ({exc!r}); using pyEight client.",
-              flush=True)
-        from sleepctl.adapters.eightsleep_cloud import EightSleepClient
-        client = EightSleepClient(
-            email=creds.email, password=creds.password, timezone=creds.timezone,
-            side=_eight_side, client_id=creds.client_id, client_secret=creds.client_secret,
-        )
-    # Environmental pre-compensation: enable the weather feed unless explicitly disabled.
-    weather = None
-    if os.environ.get("SLEEPCTL_WEATHER", "1") not in ("0", "false", "off"):
+    _daemon_ref: dict = {}
+
+    async def _run_live():
+        # Build/validate the client ON THE DAEMON'S OWN EVENT LOOP. Previously the pre-connect used
+        # a SEPARATE ``asyncio.run(build_eightsleep_client(...))``, which created the aiohttp
+        # ClientSession on a loop that was then CLOSED -- so the very first request inside the
+        # daemon's loop raised ``RuntimeError: Event loop is closed`` and killed the control loop
+        # silently (the heartbeat thread kept beating, so the watchdog never restarted it and the
+        # bed went uncontrolled). Building the client in the same loop the daemon runs on fixes it.
+        # build_eightsleep_client already does the direct->pyEight fallback internally; the outer
+        # except here only covers a hard import failure of the direct client.
         try:
-            from sleepctl.adapters.weather import OpenMeteoWeather
-            lat = float(os.environ.get("SLEEPCTL_LAT", "42.3601"))
-            lon = float(os.environ.get("SLEEPCTL_LON", "-71.0589"))
-            weather = OpenMeteoWeather(latitude=lat, longitude=lon)
+            from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
+            client = await build_eightsleep_client(
+                creds.email, creds.password, creds.timezone, _eight_side,
+                creds.client_id, creds.client_secret,
+            )
         except Exception as exc:
-            print(f"[daemon] weather pre-compensation disabled: {exc}", flush=True)
-    # Phone/independent-sensor fusion: the API writes the latest iPhone-accelerometer-derived
-    # sample to the bridge; the daemon overlays its sub-minute movement onto the Pod frame.
-    repo = get_repo()
-    wearable = None
-    if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
-        try:
-            from sleepctl.adapters.bcg import BridgeWearableSource
-            wearable = BridgeWearableSource(repo)
-        except Exception as exc:
-            print(f"[daemon] phone-sensor fusion disabled: {exc}", flush=True)
-    daemon = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=dry_run,
-                                 weather=weather, wearable=wearable)
+            print(f"[daemon] eightsleep_direct unavailable ({exc!r}); using pyEight client.",
+                  flush=True)
+            from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+            client = EightSleepClient(
+                email=creds.email, password=creds.password, timezone=creds.timezone,
+                side=_eight_side, client_id=creds.client_id, client_secret=creds.client_secret,
+            )
+        # Environmental pre-compensation: enable the weather feed unless explicitly disabled.
+        weather = None
+        if os.environ.get("SLEEPCTL_WEATHER", "1") not in ("0", "false", "off"):
+            try:
+                from sleepctl.adapters.weather import OpenMeteoWeather
+                lat = float(os.environ.get("SLEEPCTL_LAT", "42.3601"))
+                lon = float(os.environ.get("SLEEPCTL_LON", "-71.0589"))
+                weather = OpenMeteoWeather(latitude=lat, longitude=lon)
+            except Exception as exc:
+                print(f"[daemon] weather pre-compensation disabled: {exc}", flush=True)
+        # Phone/independent-sensor fusion: the API writes the latest iPhone-accelerometer-derived
+        # sample to the bridge; the daemon overlays its sub-minute movement onto the Pod frame.
+        repo = get_repo()
+        wearable = None
+        if os.environ.get("SLEEPCTL_PHONE_SENSOR", "1") not in ("0", "false", "off"):
+            try:
+                from sleepctl.adapters.bcg import BridgeWearableSource
+                wearable = BridgeWearableSource(repo)
+            except Exception as exc:
+                print(f"[daemon] phone-sensor fusion disabled: {exc}", flush=True)
+        daemon = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=dry_run,
+                                     weather=weather, wearable=wearable)
+        _daemon_ref["d"] = daemon
+        await daemon.run(poll_seconds=args.poll_seconds,
+                         command_poll_seconds=args.command_poll_seconds,
+                         telemetry_seconds=args.telemetry_seconds,
+                         max_ticks=args.max_ticks)
+
     # Durable crash/exit journal: the watchdog overwrites daemon.log/.err on every restart, so a
     # crash-loop leaves no trace. Append the real reason (a clean loop-exit OR a full traceback)
     # to .run/daemon-crash.log, which the /diag endpoint surfaces remotely.
     try:
-        asyncio.run(daemon.run(poll_seconds=args.poll_seconds,
-                               command_poll_seconds=args.command_poll_seconds,
-                               telemetry_seconds=args.telemetry_seconds,
-                               max_ticks=args.max_ticks))
+        asyncio.run(_run_live())
         _crash_journal("run() RETURNED cleanly (control loop ended unexpectedly)")
     except BaseException as exc:  # noqa: BLE001 - we re-raise; just want the reason on disk
         import traceback
         _crash_journal(f"run() raised {type(exc).__name__}:\n{traceback.format_exc()}")
         try:
-            daemon.blackbox.dump_crash()   # preserve the ~200 ticks leading up to this crash
+            _d = _daemon_ref.get("d")
+            if _d is not None:
+                _d.blackbox.dump_crash()   # preserve the ~200 ticks leading up to this crash
         except Exception:
             pass
         raise
