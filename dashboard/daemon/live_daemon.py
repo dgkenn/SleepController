@@ -126,6 +126,8 @@ class LiveDashboardDaemon:
         self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
         self._wake_thermal_f = cfg.tunables.wake_ramp_temp_f   # tonight's wake-ramp temperature
         self._onset_warm_f = cfg.tunables.onset_warm_nudge_f   # tonight's learned onset warmth
+        self._onset_cold_settle_f = cfg.tunables.onset_cold_settle_temp_f  # tonight's cold opener
+        self._warm_pulse_on = True     # tonight's A/B: run the brief warm pulse (user opted in)
         self._deepen_policy = None     # learned deepening-response policy (do-no-harm gate)
         self._precursor_profile = None  # learned personalized awakening-precursor trajectory
         self._last_history_ts = 0.0    # monotonic clock: throttles state_history writes
@@ -240,12 +242,21 @@ class LiveDashboardDaemon:
             self._wake_base_window = tuning.window_min
             # Personalized ONSET maneuver (warm nudge for fastest onset, per night-type) + explore.
             from sleepctl.learning.onset_tuning import (
-                learn_onset, next_onset_warm_f, onset_records)
+                decide_warm_pulse, learn_cold_settle, learn_onset, next_cold_settle_f,
+                next_onset_warm_f, onset_records)
+            yday = datetime.now().timetuple().tm_yday
             ons = learn_onset(onset_records(self.repo),
                               base_f=self.cfg.tunables.onset_warm_nudge_f, mode=mode)
-            self._onset_warm_f = next_onset_warm_f(ons.onset_warm_f,
-                                                   datetime.now().timetuple().tm_yday)
+            self._onset_warm_f = next_onset_warm_f(ons.onset_warm_f, yday)
             controller.set_onset_warm(self._onset_warm_f)
+            # 3-phase onset opener: learn the really-cold depth (per night-type) + explore, and
+            # A/B whether tonight runs the brief warm pulse (both arms keep getting sampled).
+            cs = learn_cold_settle(onset_records(self.repo),
+                                   base_f=self.cfg.tunables.onset_cold_settle_temp_f, mode=mode)
+            self._onset_cold_settle_f = next_cold_settle_f(cs.onset_cold_settle_f, yday)
+            controller.set_onset_cold_settle(self._onset_cold_settle_f)
+            self._warm_pulse_on, _ = decide_warm_pulse(onset_records(self.repo), yday)
+            controller.set_warm_pulse_arm(self._warm_pulse_on)
             # Deepening-response: gate tonight's deepen actuation on the learned do-no-harm policy
             # and the n-of-1 control schedule (does cooling actually deepen you, without waking you?).
             from sleepctl.learning.deepening import (
@@ -709,6 +720,11 @@ class LiveDashboardDaemon:
                       "shift_plan": self.shift_plan,
                       "self_test": getattr(self, "_self_test_report", None),
                       "comfort_cal": self._comfort_snapshot(),
+                      # Tonight's induction program (cold opener depth, warm-nudge magnitude, and
+                      # whether the brief warm pulse is armed) so the dashboard can show it.
+                      "onset_warm_f": getattr(self, "_onset_warm_f", None),
+                      "onset_cold_settle_f": getattr(self, "_onset_cold_settle_f", None),
+                      "warm_pulse_on": getattr(self, "_warm_pulse_on", None),
                       "device_error": error,
                       "data_age_s": round(frame.data_age_seconds, 1)
                       if frame is not None and frame.data_age_seconds is not None else None,
@@ -851,6 +867,8 @@ class LiveDashboardDaemon:
                 "forced": forced, "p_wake": la.get("p_wake"),
                 "wake_thermal_f": self._wake_thermal_f,
                 "onset_warm_f": getattr(self, "_onset_warm_f", None),
+                "onset_cold_settle_f": getattr(self, "_onset_cold_settle_f", None),
+                "warm_pulse_on": getattr(self, "_warm_pulse_on", None),
                 "night_type": getattr(self.context, "night_type", None)}
 
     def _flush_wake_log(self) -> None:

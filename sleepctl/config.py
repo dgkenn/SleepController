@@ -78,6 +78,15 @@ class Tunables:
     # asleep. ``onset_warm_nudge_f`` is °F above neutral; the cap bounds it.
     onset_warm_nudge_f: float = 1.0
     onset_warm_comfort_cap_f: float = 2.0
+    # 3-phase onset induction (cold settle -> brief warm pulse -> consolidate cool). The opener
+    # drives the bed genuinely cold to shed a hot sleeper's heat and prime peripheral
+    # vasoconstriction, so the brief warm pulse yields a stronger vasodilation contrast (core-temp
+    # drop -> sleepiness); it then cools again to consolidate. Durations are minutes-in-bed; on a
+    # short night (DAMAGE_CONTROL) both phases are compressed (see induction.py). The really-cold
+    # target itself lives on the learnable SetpointProfile as ``onset_cold_settle_f``.
+    induction_cold_settle_min: int = 12
+    induction_warm_pulse_min: int = 10
+    onset_cold_settle_temp_f: float = 60.0  # really-cold opener target (seeds the profile)
     # Nap mode thresholds (literature-backed: Brooks & Lack 2006; Patterson 2023).
     nap_power_max_min: int = 25      # <= this -> power nap (stay light, avoid SWS, cap wake)
     nap_cycle_min_min: int = 60      # >= this (up to ~110) -> full-cycle nap, smart-wake light
@@ -301,6 +310,7 @@ class AppConfig:
             rem_warm_offset_f=t.rem_warm_offset_f,
             wake_ramp_f=t.wake_ramp_temp_f,
             composite_bed_weight=t.composite_bed_weight,
+            onset_cold_settle_f=t.onset_cold_settle_temp_f,
             version=0,
             source="default",
         )

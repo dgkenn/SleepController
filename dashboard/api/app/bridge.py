@@ -105,16 +105,21 @@ def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:
     with the morning grogginess check-in to personalize the wake tuning."""
     conn.execute(
         """INSERT INTO wake_log (date, woke_from_stage, minutes_early, window_min, forced,
-            p_wake, wake_thermal_f, created, onset_warm_f, night_type)
-            VALUES (?,?,?,?,?,?,?,?,?,?)
+            p_wake, wake_thermal_f, created, onset_warm_f, night_type,
+            onset_cold_settle_f, warm_pulse_on)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
         ON CONFLICT(date) DO UPDATE SET
          woke_from_stage=excluded.woke_from_stage, minutes_early=excluded.minutes_early,
          window_min=excluded.window_min, forced=excluded.forced, p_wake=excluded.p_wake,
          wake_thermal_f=excluded.wake_thermal_f, created=excluded.created,
-         onset_warm_f=excluded.onset_warm_f, night_type=excluded.night_type""",
+         onset_warm_f=excluded.onset_warm_f, night_type=excluded.night_type,
+         onset_cold_settle_f=excluded.onset_cold_settle_f,
+         warm_pulse_on=excluded.warm_pulse_on""",
         (row.get("date"), row.get("woke_from_stage"), row.get("minutes_early"),
          row.get("window_min"), 1 if row.get("forced") else 0, row.get("p_wake"),
-         row.get("wake_thermal_f"), _now(), row.get("onset_warm_f"), row.get("night_type")))
+         row.get("wake_thermal_f"), _now(), row.get("onset_warm_f"), row.get("night_type"),
+         row.get("onset_cold_settle_f"),
+         None if row.get("warm_pulse_on") is None else (1 if row.get("warm_pulse_on") else 0)))
     conn.commit()
 
 

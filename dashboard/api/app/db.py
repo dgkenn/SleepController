@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS wake_log (
     date TEXT PRIMARY KEY,
     woke_from_stage TEXT, minutes_early REAL, window_min INTEGER,
     forced INTEGER, p_wake REAL, wake_thermal_f REAL, created TEXT,
-    onset_warm_f REAL, night_type TEXT
+    onset_warm_f REAL, night_type TEXT,
+    onset_cold_settle_f REAL, warm_pulse_on INTEGER
 );
 CREATE TABLE IF NOT EXISTS push_subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,6 +95,8 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
 _MIGRATIONS = [
     ("wake_log", "onset_warm_f", "REAL"),
     ("wake_log", "night_type", "TEXT"),
+    ("wake_log", "onset_cold_settle_f", "REAL"),
+    ("wake_log", "warm_pulse_on", "INTEGER"),
 ]
 
 
