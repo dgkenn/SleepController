@@ -222,6 +222,14 @@ class LiveDashboardDaemon:
                     thermal.set_measured_rates(cal.get("cool_levels_per_min"),
                                                cal.get("heat_levels_per_min"))
                 controller.set_measured_thermal(cal.get("cool_lag_min"), cal.get("heat_lag_min"))
+            # Reach-time (traverse) model: prefers the measured self-test rates and the continuous
+            # thermal_samples dataset. Makes the onset cascade's warm-pulse phase long enough to be
+            # felt (warming-from-cold is slow) and widens — never shortens — the wake warm-up runway.
+            try:
+                from sleepctl.controller.thermal_latency import ThermalLatencyModel
+                controller.set_induction_latency(ThermalLatencyModel.from_repo(self.repo))
+            except Exception as exc:
+                self._log(f"induction latency skipped: {exc}")
             # In-bed resting-physiology baseline → arousal/wake-risk anchor.
             controller.set_resting_baseline(self.repo.get_resting_baseline())
             # Personal comfort mapping → the controller's neutral is what YOU feel neutral, not the

@@ -20,13 +20,22 @@ near neutral 0 ≈ 81 °F).
 | Warm, near neutral | 74 → 79 °F (−31 → −8) | 6.7 min | ~0.75 | ~3.4 | 80 °F run 6:10–6:17 ET |
 | Warm, big gap from cold | 68 → 74 °F (−54 → −31) | ~3 min | ~2.0 | ~7.7 | 80 °F run 6:07–6:10 ET |
 | Warm **from very cold** | 59 → 66 °F (−85 → −68) | ~13 min | ~0.5 | ~1.3 | cascade warm-pulse 5:29–5:41 |
-| **Cool** | 63 → 60 °F (−75 → −84) | ~11 min | ~0.3 | ~0.8 | cold-settle @ cmd −93, 5:16–5:27 |
+| **Cool, near neutral** | 83.8 → 78.1 °F (+10 → −12) | 14.3 min | ~0.40 | ~1.5 | max-cool run 9:11–9:26 ET (roughly linear) |
+| **Cool, already cold** | 63 → 60 °F (−75 → −84) | ~11 min | ~0.3 | ~0.8 | cold-settle @ cmd −93, 5:16–5:27 |
+
+> **Now auto-captured.** As of the `thermal_samples` table (daemon writes a row every control
+> tick the bed is actively heating/cooling — ts, device_level, target_level, signed delta,
+> direction, room_temp_f, state, session_mode), these curves accumulate continuously and can be
+> pulled via `GET /diag/thermal-samples`. The measurements below were the manual bootstrap; the
+> live dataset supersedes and extends them (and will gain `room_temp_f` once tracking is active).
 
 ## What the numbers say
 
-1. **Warming ≫ cooling.** Warming near neutral is ~4 levels/min (~1 °F/min); cooling is
-   ~0.8 levels/min (~0.3 °F/min) — **warming is 3–5× faster**. Any lead-time / pre-compensation
-   model must be **asymmetric** (allow much more runway to cool than to warm).
+1. **Warming ≫ cooling.** Warming near neutral is ~4 levels/min (~1.1 °F/min); cooling near
+   neutral is ~1.5 levels/min (~0.4 °F/min), decaying to ~0.8 levels/min once the bed is
+   already cold — so **warming is ~2.7× faster near neutral and up to ~5× faster vs cold-end
+   cooling**. Any lead-time / pre-compensation model must be **asymmetric** (allow much more
+   runway to cool than to warm) AND scale the cool runway with how cold the bed already is.
 2. **Cooling is hardware-capped, not command-capped.** Commanding a very aggressive −93 still
    only moved the actual level ~0.8 levels/min. Over-driving the cool command does **not** speed
    it up (ambient heat-rejection ceiling). (This is why the "overdrive-then-cut" idea only has
