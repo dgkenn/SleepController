@@ -678,6 +678,32 @@ class LiveDashboardDaemon:
                                   "target_level": frame.target_level})
             self._thermal_state = th.state
 
+        # Persist a timestamped thermal-response sample ONLY while the bed is really actuating
+        # toward a target (a genuine heat/cool event). Skips OFF/paused/away and skips ticks
+        # parked at setpoint (|delta| <= 3) to keep the dataset lean. Best-effort: wrapped so a
+        # logging failure never disrupts control. Called from both the control (~60s) and
+        # command ticks — a few samples/min during a move is exactly the resolution we want.
+        try:
+            if (self.power_on and not self.paused and not self.away and frame is not None
+                    and frame.target_level is not None and frame.device_level is not None):
+                delta = frame.target_level - frame.device_level
+                direction = "heating" if delta > 3 else ("cooling" if delta < -3 else "hold")
+                if direction != "hold":
+                    state = self._prev_state.value if self._prev_state is not None else None
+                    bridge.record_thermal_sample(self.repo.conn, {
+                        "ts": now.isoformat(),
+                        "device_level": frame.device_level,
+                        "target_level": frame.target_level,
+                        "delta_level": delta,
+                        "direction": direction,
+                        "bed_temp_f": frame.bed_temp_f,
+                        "room_temp_f": frame.room_temp_f,
+                        "state": state,
+                        "session_mode": self.session_mode,
+                    })
+        except Exception as exc:
+            self._log(f"thermal sample skipped: {exc}")
+
     # ------------------------------------------------------------------ snapshot
     def _snapshot(self, decision, frame, error: Optional[str] = None) -> dict:
         target = decision.target_temp_f if decision else None

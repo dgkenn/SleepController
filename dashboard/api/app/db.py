@@ -84,6 +84,22 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     endpoint TEXT UNIQUE, p256dh TEXT, auth TEXT, created TEXT
 );
+-- Timestamped thermal-response samples captured every control tick WHILE the bed is actively
+-- heating/cooling toward a target (|target-device| > 3). Feeds fine-tuning of the controller's
+-- lead-time / pre-compensation model; parked-at-setpoint ticks are skipped to keep it lean.
+CREATE TABLE IF NOT EXISTS thermal_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    device_level INTEGER,      -- actual Pod water-side level
+    target_level INTEGER,      -- commanded/accepted target level
+    delta_level INTEGER,       -- target_level - device_level (signed gap; +=needs warming, -=needs cooling)
+    direction TEXT,            -- 'heating' | 'cooling' | 'hold'
+    bed_temp_f REAL,
+    room_temp_f REAL,          -- key for the ambient-limited cooling model
+    state TEXT,                -- controller state (induction/maintenance/...)
+    session_mode TEXT          -- night | induce | nap_*
+);
+CREATE INDEX IF NOT EXISTS idx_thermal_samples_ts ON thermal_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);

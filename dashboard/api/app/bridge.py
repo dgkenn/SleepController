@@ -123,6 +123,33 @@ def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:
     conn.commit()
 
 
+def record_thermal_sample(conn: sqlite3.Connection, row: dict) -> None:
+    """Append one thermal-response sample (bed actively heating/cooling toward a target). Feeds
+    later fine-tuning of the controller's lead-time / pre-compensation model. Best-effort: a
+    logging failure here must NEVER raise into the control loop that calls it every tick."""
+    try:
+        conn.execute(
+            """INSERT INTO thermal_samples
+                (ts, device_level, target_level, delta_level, direction,
+                 bed_temp_f, room_temp_f, state, session_mode)
+                VALUES (?,?,?,?,?,?,?,?,?)""",
+            (row.get("ts"), row.get("device_level"), row.get("target_level"),
+             row.get("delta_level"), row.get("direction"), row.get("bed_temp_f"),
+             row.get("room_temp_f"), row.get("state"), row.get("session_mode")),
+        )
+        conn.commit()
+    except Exception:
+        pass  # never disrupt the control loop over a telemetry write
+
+
+def recent_thermal_samples(conn: sqlite3.Connection, limit: int = 500) -> list:
+    """Most-recent thermal samples (ts DESC) as dicts, for export/inspection/fine-tuning."""
+    rows = conn.execute(
+        "SELECT * FROM thermal_samples ORDER BY ts DESC LIMIT ?", (limit,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def read_wake_logs(conn: sqlite3.Connection, limit: int = 30) -> list:
     rows = conn.execute("SELECT * FROM wake_log ORDER BY date DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]
