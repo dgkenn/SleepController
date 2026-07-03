@@ -244,6 +244,8 @@ class TestReadFrame:
             bed_presence=True,
             heating_level=15,
             target_heating_level=20,
+            # SENSED tempBedC lives in the trends session timeseries (28°C -> 82.4°F).
+            trends=[{"sessions": [{"timeseries": {"tempBedC": [["2026-07-03T01:00:00Z", 28.0]]}}]}],
         )
         eight = _fake_eight()
         last_update = datetime.now() - timedelta(seconds=12)
@@ -257,25 +259,26 @@ class TestReadFrame:
         assert frame.hrv == 72
         assert frame.respiratory_rate == 14.1
         assert frame.presence is True
-        assert frame.bed_temp_f == pytest.approx(84.0)  # 80 + 40/10 via fake converter
+        # bed_temp_f comes from the SENSED tempBedC trend, NOT the level-derived current_bed_temp.
+        assert frame.bed_temp_f == pytest.approx(82.4)
         assert frame.room_temp_f == 69.0
         assert frame.commanded_level == 15
         assert frame.device_level == 15
         assert frame.target_level == 20
         assert frame.data_age_seconds == pytest.approx(12.0, abs=1.0)
 
-    def test_bed_temp_already_fahrenheit_skips_conversion(self):
-        # If current_bed_temp already looks like a plausible Fahrenheit reading,
-        # read_frame should NOT run it through the raw->degrees converter.
+    def test_ignores_level_derived_bed_temp_when_no_session(self):
+        # The level-derived current_bed_temp (a circular artifact) must NEVER reach bed_temp_f.
+        # With no trends session, bed_temp_f is None so the controller falls to safe open-loop.
         def exploding_convert(raw, unit):
-            raise AssertionError("should not be called when value already looks like F")
+            raise AssertionError("converter must not be called on the level-derived value")
 
-        user = _fake_user(current_bed_temp=82.0)
+        user = _fake_user(current_bed_temp=82.0)  # would be used by the OLD circular code
         eight = _fake_eight(convert=exploding_convert)
         client = _make_client(user=user, eight=eight, last_update=datetime.now())
 
         frame = client.read_frame()
-        assert frame.bed_temp_f == 82.0
+        assert frame.bed_temp_f is None
 
     def test_raises_if_no_user_connected(self):
         client = _make_client(user=None, eight=_fake_eight())
