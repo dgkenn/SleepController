@@ -207,6 +207,30 @@ class TestDeviceStatus:
         assert status["now_cooling"] is False
         assert status["external_schedule"] == {"activity": None, "target_level": None, "active": None}
 
+    def test_side_resolution_never_returns_non_physical_side(self):
+        # away mode makes currentDevice.side report 'away'; 'solo' for a single-occupant
+        # pod. Both must collapse to a real key prefix ('left') or every device read
+        # targets a non-existent key (awayTargetHeatingLevel -> None) and the whole
+        # controller goes blind. This was the live actuation-blindness root cause.
+        client = _make_client()
+        for bad in ("away", "solo", "both", "", None):
+            client.side = bad
+            assert client._corrected_side() in ("left", "right")
+            assert client._corrected_side() == "left"
+        client.side = "right"
+        assert client._corrected_side() == "right"
+
+    def test_reads_use_left_keys_even_when_side_is_away(self):
+        client = _make_client()
+        client.side = "away"  # simulate away-mode side poisoning
+        payload = self._device_payload()
+        payload["leftTargetHeatingLevel"] = -20
+        client._device = payload
+        status = client.device_status()
+        # resolves to left*, so it sees the real cooling target rather than None
+        assert status["device_target_level"] == -20
+        assert status["now_cooling"] is True
+
 
 # --------------------------------------------------------------------------------------
 # (c) read_frame() builds a correct SensorFrame incl. bed_temp F conversion + data age

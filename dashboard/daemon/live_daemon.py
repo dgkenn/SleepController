@@ -105,6 +105,7 @@ class LiveDashboardDaemon:
         self.paused = False
         self.power_on = True
         self.away = False
+        self._away_heal_mono = 0.0  # throttle for the away self-heal read (see _heal_away)
         self.manual_target_f: Optional[float] = None
         self.last_target_f: Optional[float] = None
         self.wake = None
@@ -864,9 +865,34 @@ class LiveDashboardDaemon:
         finally:
             self._pending_wake, self._wake_last_stage = None, None
 
+    async def _heal_away(self) -> None:
+        """Keep away mode OFF unless the *user* commanded it. Away idles the pod to
+        target 0 and blinds side resolution; Eight Sleep's own app/Autopilot can turn
+        it on out from under us. Throttled to one authoritative read every ~5 min.
+        No-op in dry-run and for clients without away introspection (e.g. simulator)."""
+        if self.dry_run or self.away:
+            return  # user-commanded away is honored; dry-run never writes
+        if not hasattr(self.client, "is_away"):
+            return
+        mono = asyncio.get_event_loop().time()
+        if mono - getattr(self, "_away_heal_mono", 0.0) < 300.0:
+            return
+        self._away_heal_mono = mono
+        try:
+            if await self.client.is_away():
+                await self.client.set_away_mode(False)
+                if hasattr(self.client, "turn_on_side"):
+                    await self.client.turn_on_side()
+                self._log("away mode was ON without a user command -> cleared (pod re-enabled).")
+                self._emit_event("device", "warn", "away_auto_cleared",
+                                 "away mode was enabled externally; auto-cleared", {})
+        except Exception as exc:  # never let self-heal wedge the loop
+            self._log(f"away self-heal skipped: {exc!r}")
+
     # ------------------------------------------------------------------ cycles
     async def control_tick(self) -> None:
         await self._apply_commands()
+        await self._heal_away()
         # Comfort calibration owns the bed while active: hold the current step and publish state,
         # bypassing the normal control decision (you're rating settled temperatures).
         if getattr(self, "comfort", None) is not None and not self.comfort.done:
@@ -1022,6 +1048,11 @@ class LiveDashboardDaemon:
                                  "Autopilot disabled for exclusive control", {})
             except Exception as exc:  # pragma: no cover - network dependent
                 self._log(f"WARNING: could not disable Autopilot: {exc!r}")
+        # Away mode idles the pod to target 0 (bed does nothing) and poisons side
+        # resolution. Something outside our control (Eight Sleep's own app/Autopilot)
+        # can enable it -- so the daemon owns this flag: unless the *user* commanded
+        # away, ensure it is OFF at startup and keep it off each tick (see _heal_away).
+        await self._heal_away()
         self._log(f"sleepctl dashboard LIVE daemon started (dry_run={self.dry_run}, "
                   f"control={poll_seconds:g}s, telemetry={telemetry_seconds:g}s)."
                   + ("  [READ-ONLY: no device commands]" if self.dry_run else ""))
