@@ -283,10 +283,46 @@ def test_cloud_errors_detected_in_daemon_log(repo, run_dir, tmp_path, monkeypatc
 
 
 def test_recent_errors_surfaces_crash_log(repo, run_dir, tmp_path, monkeypatch):
+    # A crash that just happened (crash log mtime ~ now) + healthy daemon -> still FAIL.
     _seed_runtime_state(repo)
     with open(os.path.join(run_dir, "daemon-crash.log"), "w", encoding="utf-8") as fh:
         fh.write("2026-07-02T00:00:00 run() raised RuntimeError: boom\n")
     report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+    c = _by_id(report, "recent_errors")
+    assert c["status"] == "fail"
+    assert "boom" in c["detail"]
+
+
+def test_recent_errors_stale_crash_with_healthy_daemon_is_ok(repo, run_dir, tmp_path, monkeypatch):
+    # A crash from well before the window, and the daemon has been healthy since: the append-
+    # only crash log must NOT pin the diagnosis to FAIL forever -- it should pass as OK.
+    _seed_runtime_state(repo)
+    crash = os.path.join(run_dir, "daemon-crash.log")
+    with open(crash, "w", encoding="utf-8") as fh:
+        fh.write("EightSleepRequestError: GET .../users/me failed: "
+                 "RuntimeError('Event loop is closed')\n")
+    old = time.time() - (diagnostics.RECENT_CRASH_WINDOW_S + 3600)  # ~1h past the window
+    os.utime(crash, (old, old))
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)  # fresh heartbeats
+    c = _by_id(report, "recent_errors")
+    assert c["status"] == "ok"
+    assert "stale" in c["detail"] and "daemon healthy" in c["detail"]
+    assert c["remedy"] is None
+
+
+def test_recent_errors_stale_crash_but_daemon_down_is_fail(repo, run_dir, tmp_path, monkeypatch):
+    # Same old crash, but the daemon heartbeat is now stale -> still a live problem -> FAIL.
+    _seed_runtime_state(repo)
+    crash = os.path.join(run_dir, "daemon-crash.log")
+    with open(crash, "w", encoding="utf-8") as fh:
+        fh.write("2026-07-02T00:00:00 run() raised RuntimeError: boom\n")
+    old = time.time() - (diagnostics.RECENT_CRASH_WINDOW_S + 3600)
+    os.utime(crash, (old, old))
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+    # make the daemon heartbeat stale AFTER the "fresh" helper, then re-run
+    _touch(os.path.join(run_dir, "daemon.heartbeat"),
+           age_s=diagnostics.DAEMON_HEARTBEAT_STALE_S + 30)
+    report = diagnostics.run_diagnostics(repo, run_dir=run_dir)
     c = _by_id(report, "recent_errors")
     assert c["status"] == "fail"
     assert "boom" in c["detail"]

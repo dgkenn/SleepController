@@ -36,6 +36,11 @@ WATCHDOG_HEARTBEAT_STALE_S = 60   # watchdog writes .run/watchdog.heartbeat roug
 LOG_SIZE_WARN_BYTES = 50 * 1024 * 1024  # 50MB — a runaway/looping log
 CLOUD_ERROR_TAIL_LINES = 500
 CLOUD_ERROR_WARN_COUNT = 10   # >= this many hits in the tail -> treat as a real outage (fail)
+# daemon-crash.log is append-only/historical, so its LAST line can be a crash from hours ago
+# that was already recovered from. Only treat a crash as a live FAIL when the crash log was
+# modified within this window (or the daemon heartbeat is currently stale) -- otherwise a long-
+# fixed crash would pin the whole diagnosis to DEGRADED forever.
+RECENT_CRASH_WINDOW_S = 15 * 60   # 15 min
 CLOUD_ERROR_PATTERNS = (
     "RequestError", " 504", "Timeout", "timeout", "ConnectionError", "ClientError",
 )
@@ -457,23 +462,39 @@ def _check_cloud_errors(run_dir: str) -> dict:
                  "if this persists, check status.eightsleep.com")
 
 
-def _check_recent_errors(run_dir: str) -> dict:
+def _check_recent_errors(run_dir: str, now: float, daemon_heartbeat_age: float | None) -> dict:
     err_lines = [l for l in (_tail_lines(os.path.join(run_dir, "daemon.err"), 200) or [])
                  if l.strip()]
-    crash_lines = [l for l in (_tail_lines(os.path.join(run_dir, "daemon-crash.log"), 200) or [])
-                   if l.strip()]
+    crash_path = os.path.join(run_dir, "daemon-crash.log")
+    crash_lines = [l for l in (_tail_lines(crash_path, 200) or []) if l.strip()]
     if not err_lines and not crash_lines:
         return _check("recent_errors", "Recent daemon errors", "ok",
                       "daemon.err and daemon-crash.log are empty", None)
+
+    # A crash is only a live problem if it is RECENT (crash log touched within the window) or
+    # the daemon is currently unhealthy (heartbeat stale/missing). daemon-crash.log is append-
+    # only history, so an old-but-recovered crash must not FAIL a daemon that's healthy now.
+    daemon_healthy = (daemon_heartbeat_age is not None
+                      and daemon_heartbeat_age <= DAEMON_HEARTBEAT_STALE_S)
     parts = []
-    status = "warn"
+    status = "warn" if err_lines else "ok"
+    remedy = None
     if crash_lines:
-        parts.append(f"daemon-crash.log last: {crash_lines[-1].strip()[:300]}")
-        status = "fail"
+        last = crash_lines[-1].strip()[:300]
+        crash_age = _file_age_s(crash_path, now)  # None if unreadable -> treat as recent
+        crash_recent = crash_age is None or crash_age <= RECENT_CRASH_WINDOW_S
+        if crash_recent or not daemon_healthy:
+            parts.append(f"daemon-crash.log last: {last}")
+            status = "fail"
+            remedy = "read the daemon.err/daemon-crash.log tails below for the full traceback"
+        else:
+            parts.append(f"last crash {crash_age / 60:.0f}m ago "
+                         f"(stale; daemon healthy since): {last}")
     if err_lines:
         parts.append(f"daemon.err last: {err_lines[-1].strip()[:300]}")
-    return _check("recent_errors", "Recent daemon errors", status, " | ".join(parts),
-                 "read the daemon.err/daemon-crash.log tails below for the full traceback")
+        if remedy is None:
+            remedy = "read the daemon.err/daemon-crash.log tails below for the full traceback"
+    return _check("recent_errors", "Recent daemon errors", status, " | ".join(parts), remedy)
 
 
 def _check_log_sizes(run_dir: str) -> dict:
@@ -612,7 +633,9 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("frozen_telemetry", "Frozen telemetry", lambda: _check_frozen_telemetry(repo))
     add("live_mode", "Live / dry-run mode", lambda: _check_live_mode(extra))
     add("cloud_errors", "Eight Sleep cloud errors", lambda: _check_cloud_errors(run_dir))
-    add("recent_errors", "Recent daemon errors", lambda: _check_recent_errors(run_dir))
+    daemon_hb_age = _file_age_s(os.path.join(run_dir, "daemon.heartbeat"), now)
+    add("recent_errors", "Recent daemon errors",
+        lambda: _check_recent_errors(run_dir, now, daemon_hb_age))
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("calendar", "Work calendar (ICS)", lambda: _check_calendar(repo))
     add("shift", "Shift plan", lambda: _check_shift(repo))
