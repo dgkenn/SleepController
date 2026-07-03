@@ -308,7 +308,13 @@ class EightSleepDirectClient:
                 "Finish setup in the Eight Sleep app first, then retry."
             )
         self._device_id = str(device_id)
-        self.side = current_device.get("side") or self.side
+        # Only adopt the API's side when it is a real physical side. It also
+        # returns ``solo``/``away`` (away mode), which must NOT overwrite the
+        # configured physical side -- otherwise device reads target keys that do
+        # not exist and the controller goes blind (see _corrected_side).
+        api_side = (current_device.get("side") or "").lower()
+        if api_side in ("left", "right"):
+            self.side = api_side
         if self._token is not None and self._token.user_id:
             self._user_id = self._token.user_id
         else:
@@ -479,7 +485,17 @@ class EightSleepDirectClient:
 
     # ------------------------------------------------------------------ fast path: device
     def _corrected_side(self) -> str:
-        return "left" if self.side.lower() == "solo" else self.side
+        """Resolve to a real physical device key prefix (``left``/``right``).
+
+        The device only ever exposes ``left*``/``right*`` heating keys. But
+        ``currentDevice.side`` can report non-physical values -- ``solo`` (single
+        occupant) and, critically, ``away`` while away mode is active. Returning
+        those verbatim makes every read target a key that does not exist
+        (``awayTargetHeatingLevel`` -> ``None``), silently blinding the whole
+        controller. Anything that is not ``left``/``right`` collapses to ``left``
+        (the primary key on a solo pod)."""
+        s = (self.side or "").lower()
+        return s if s in ("left", "right") else "left"
 
     async def update_device(self) -> None:
         """Fast device-state GET (~150ms live; rate-limit-tolerant at a few-second cadence).
@@ -711,6 +727,18 @@ class EightSleepDirectClient:
     async def turn_off_side(self) -> None:
         url = f"{APP_API_URL}/users/{self._user_id}/temperature"
         await self._request("PUT", url, json_body={"currentState": {"type": "off"}})
+
+    async def is_away(self) -> Optional[bool]:
+        """Authoritative away-mode read (``GET /away-mode -> isAway``). Returns
+        ``None`` on error so callers can distinguish 'unknown' from 'not away'.
+        Away mode idles the pod to target 0 and makes ``currentDevice.side``
+        report ``away``, so the daemon uses this to self-heal an away flag it
+        never set (e.g. Eight Sleep's own app/Autopilot enabling it)."""
+        try:
+            data = await self._request("GET", f"{APP_API_URL}/users/{self._user_id}/away-mode")
+        except EightSleepRequestError:
+            return None
+        return bool((data or {}).get("isAway")) if isinstance(data, dict) else None
 
     async def set_away_mode(self, enabled: bool) -> None:
         action = "start" if enabled else "end"
