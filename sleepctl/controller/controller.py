@@ -24,6 +24,8 @@ from sleepctl.controller.smart_wake import SmartWakeRoutine
 from sleepctl.controller.state_machine import SleepStateMachine
 from sleepctl.controller.wake_risk import WakeRiskAssessor
 from sleepctl.controller.thermal import ThermalController
+from sleepctl.controller.thermal_latency import ThermalLatencyModel
+from sleepctl.controller.calibration import fahrenheit_to_level
 from sleepctl.controller.wake_detection import WakeDetector
 from sleepctl.models import (
     ContextRecord,
@@ -76,6 +78,9 @@ class SleepController:
         # wake warm-up runway so the bed is actually warm by the wake time.
         self.measured_cool_lag_min: Optional[float] = None
         self.measured_heat_lag_min: Optional[float] = None
+        # Reach-time (traverse) model built from measured rates/lags; feeds the induction cascade's
+        # phase sizing and (widening-only) the wake warm-up runway. None until the daemon supplies it.
+        self.induction_latency: Optional[ThermalLatencyModel] = None
         # Measured resting-physiology baseline (quiet-and-awake in bed): {hr, hrv, rr, movement}.
         # Anchors the arousal/wake-risk baselines early in the night (see _sleep_baseline).
         self.resting_baseline: Optional[dict] = None
@@ -320,6 +325,9 @@ class SleepController:
                 self._induction_entered_at = now
                 self._induction_restart = False
             induction_minutes = (now - self._induction_entered_at).total_seconds() / 60.0
+            # Refresh the cascade's phase target levels from tonight's live thermal targets so the
+            # reach-aware warm-pulse sizing uses the actual cold/warm/consolidate levels.
+            self._sync_induction_phase_levels(objective)
             intent = self.induction.step(frame, objective, induction_minutes)
         elif state is ControllerState.MAINTENANCE:
             # In-night architecture steering: compare the realized deep/REM curve to tonight's
@@ -615,13 +623,74 @@ class SleepController:
             return round(max(base, self.measured_cool_lag_min + 2.0), 1)
         return base
 
+    def set_induction_latency(self, model: Optional[ThermalLatencyModel]) -> None:
+        """Attach the reach-time model (built by the daemon from the repo) so the induction cascade
+        sizes its warm-pulse phase to the bed's real warm-from-cold speed. None-safe; also refreshes
+        the wake warm-up lead in case the model widens it (never shortens — see ``warm_lead_min``)."""
+        self.induction_latency = model
+        try:
+            self.induction.set_latency(model)
+        except Exception:
+            pass
+        try:
+            self.wake_orch.set_warm_lead(self.warm_lead_min())
+        except Exception:
+            pass
+
+    def _sync_induction_phase_levels(self, objective) -> None:
+        """Compute the device levels of the three onset phases (cold-settle, warm-pulse,
+        consolidate) from tonight's live thermal targets and hand them to the induction routine so
+        its reach-aware pulse sizing is grounded in the real targets. Defensive: never raises."""
+        try:
+            hot = self.cfg.profile.hot_sleeper
+            cold_f = self.thermal.target_for(ThermalIntent.ONSET_COLD_SETTLE, objective, hot)
+            warm_f = self.thermal.target_for(ThermalIntent.ONSET_WARM, objective, hot)
+            cool_f = self.thermal.target_for(ThermalIntent.INDUCTION_COOL, objective, hot)
+            self.induction.set_phase_levels(
+                fahrenheit_to_level(cold_f),
+                fahrenheit_to_level(warm_f),
+                fahrenheit_to_level(cool_f),
+            )
+        except Exception:
+            pass
+
     def warm_lead_min(self) -> Optional[float]:
         """How many minutes before the wake deadline the warming ramp should begin so the bed is
         actually warm by then — the measured heat-lag (+2 min margin), or None if uncalibrated.
-        Consumed by the wake orchestrator to widen a too-short warm-up runway."""
+        Consumed by the wake orchestrator to widen a too-short warm-up runway.
+
+        Widening-only reach-awareness: when a latency model AND the current + wake-target levels are
+        available, the traverse term can only ENLARGE the runway (``max`` with the lag-based value),
+        never shrink it — so we never wake the user late, only start warming earlier for a big gap."""
+        base: Optional[float] = None
         if self.measured_heat_lag_min:
-            return round(self.measured_heat_lag_min + 2.0, 1)
-        return None
+            base = round(self.measured_heat_lag_min + 2.0, 1)
+        reach = self._wake_reach_lead()
+        if base is None and reach is None:
+            return None
+        return round(max(base or 0.0, reach or 0.0), 1)
+
+    def _wake_reach_lead(self) -> Optional[float]:
+        """Reach-based wake warm-up lead (current level -> wake-ramp target) if both the latency
+        model and the levels are available; else None so ``warm_lead_min`` keeps today's value."""
+        model = self.induction_latency
+        if model is None:
+            return None
+        try:
+            cur_f = self._last_target_f
+            if cur_f is None:
+                return None
+            hot = self.cfg.profile.hot_sleeper
+            wake_f = self.thermal.target_for(
+                ThermalIntent.WAKE_RAMP, NightObjective.OPTIMIZE, hot)
+            cur_level = fahrenheit_to_level(cur_f)
+            wake_level = fahrenheit_to_level(wake_f)
+            # Only a WARMING gap needs a longer runway; a cool/no-op gap returns 0 and is ignored.
+            if wake_level <= cur_level:
+                return None
+            return round(model.lead_minutes(cur_level, wake_level), 1)
+        except Exception:
+            return None
 
     def set_steer_policy(self, actuate: bool) -> None:
         """Set whether tonight ACTUATES the deepen nudge (learned do-no-harm gate + the n-of-1
