@@ -159,10 +159,10 @@ class ThermalController:
             nudge = min(self.onset_warm_f, t.onset_warm_comfort_cap_f)
             target = p.neutral_f + nudge
         elif intent is ThermalIntent.ONSET_COLD_SETTLE:
-            # Really-cold opener: shed the hot sleeper's heat and prime peripheral
-            # vasoconstriction so the later warm pulse produces a stronger vasodilation contrast.
-            # It's already cold, so the hot-sleeper cool bias is intentionally NOT applied — only
-            # the forecast-driven ambient bias, like the other intents.
+            # LEGACY intent, no longer part of the on-demand induction cascade (which now leads with
+            # a warm nudge per the onset science — see induction.py). Retained only so any stored
+            # decision/target referencing it still resolves. It's already cold, so the hot-sleeper
+            # cool bias is intentionally NOT applied — only the forecast-driven ambient bias.
             target = self.onset_cold_settle_f + self.ambient_bias_f
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)
