@@ -638,16 +638,16 @@ class SleepController:
             pass
 
     def _sync_induction_phase_levels(self, objective) -> None:
-        """Compute the device levels of the three onset phases (cold-settle, warm-pulse,
-        consolidate) from tonight's live thermal targets and hand them to the induction routine so
-        its reach-aware pulse sizing is grounded in the real targets. Defensive: never raises."""
+        """Compute the device levels of the warm-first onset phases from tonight's live thermal
+        targets and hand them to the induction routine so its reach-aware pulse sizing is grounded
+        in the real targets. The warm-first cascade starts near the consolidate/neutral level (not a
+        cold floor), so that level is the reach baseline. Defensive: never raises."""
         try:
             hot = self.cfg.profile.hot_sleeper
-            cold_f = self.thermal.target_for(ThermalIntent.ONSET_COLD_SETTLE, objective, hot)
             warm_f = self.thermal.target_for(ThermalIntent.ONSET_WARM, objective, hot)
             cool_f = self.thermal.target_for(ThermalIntent.INDUCTION_COOL, objective, hot)
             self.induction.set_phase_levels(
-                fahrenheit_to_level(cold_f),
+                fahrenheit_to_level(cool_f),   # reach baseline: warm-first starts near cool/neutral
                 fahrenheit_to_level(warm_f),
                 fahrenheit_to_level(cool_f),
             )

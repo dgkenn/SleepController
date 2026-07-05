@@ -1,4 +1,4 @@
-"""On-demand onset induction (cold->warm->cool cascade) + nap strategy."""
+"""On-demand onset induction (warm->cool cascade) + nap strategy."""
 
 from datetime import datetime
 
@@ -15,51 +15,48 @@ def _frame(stage=SleepStage.AWAKE):
                        bed_temp_f=72.0, room_temp_f=68.0, presence=True, data_age_seconds=5)
 
 
-# ---- onset induction: cold -> warm -> cool -------------------------------
-def test_induction_cold_then_warm_then_cool():
+# ---- onset induction: warm -> cool (warming speeds onset; never opens cold) --
+def test_induction_warm_then_cool():
     cfg = AppConfig.default()
     ind = InductionRoutine(cfg)
-    cold_min = cfg.tunables.induction_cold_settle_min
     warm_min = cfg.tunables.induction_warm_pulse_min
-    # opener -> really cold
+    # opener -> gentle warm nudge (cutaneous warming speeds onset), NOT a cold blast
     assert ind.step(_frame(), NightObjective.OPTIMIZE, minutes_in_bed=1) \
-        is ThermalIntent.ONSET_COLD_SETTLE
-    # middle window -> brief warm pulse
-    assert ind.step(_frame(), NightObjective.OPTIMIZE, minutes_in_bed=cold_min + 1) \
         is ThermalIntent.ONSET_WARM
-    # after the pulse -> consolidate cool
+    # after the warm nudge -> consolidate cool
     assert ind.step(_frame(), NightObjective.OPTIMIZE,
-                    minutes_in_bed=cold_min + warm_min + 1) is ThermalIntent.INDUCTION_COOL
+                    minutes_in_bed=warm_min + 1) is ThermalIntent.INDUCTION_COOL
 
 
-def test_induction_without_warm_pulse_goes_cold_then_cool():
+def test_induction_never_opens_cold():
+    """Regression: pressing 'help me fall asleep' must not freeze the user with a cold opener."""
+    cfg = AppConfig.default()
+    ind = InductionRoutine(cfg)
+    for m in (0.1, 1, 3, 5):
+        assert ind.step(_frame(), NightObjective.OPTIMIZE, minutes_in_bed=m) \
+            is not ThermalIntent.ONSET_COLD_SETTLE
+
+
+def test_induction_without_warm_pulse_is_cool_only():
     cfg = AppConfig.default()
     ind = InductionRoutine(cfg)
     ind.set_warm_pulse_arm(False)
-    cold_min = cfg.tunables.induction_cold_settle_min
-    # opener still cold...
+    # with the warm pulse disarmed the cascade cools from the very start (no cold opener either)
     assert ind.step(_frame(), NightObjective.OPTIMIZE, minutes_in_bed=1) \
-        is ThermalIntent.ONSET_COLD_SETTLE
-    # ...but the middle window skips the warm pulse and cools straight through
-    assert ind.step(_frame(), NightObjective.OPTIMIZE, minutes_in_bed=cold_min + 1) \
         is ThermalIntent.INDUCTION_COOL
 
 
-def test_induction_damage_control_compresses_the_opening_phases():
+def test_induction_damage_control_compresses_the_warm_opener():
     cfg = AppConfig.default()
     ind = InductionRoutine(cfg)
-    cold_min = cfg.tunables.induction_cold_settle_min
     warm_min = cfg.tunables.induction_warm_pulse_min
-    # On a short night both phases halve, so where a full night is still cold the short night has
-    # already moved on to the warm pulse.
-    mid = cold_min / 2.0 + 0.5
+    # On a short night the warm opener halves, so where a full night is still warming the short
+    # night has already moved on to the deepening cool.
+    mid = warm_min / 2.0 + 0.5
     assert ind.step(_frame(), NightObjective.DAMAGE_CONTROL, minutes_in_bed=mid) \
-        is ThermalIntent.ONSET_WARM
+        is ThermalIntent.INDUCTION_COOL
     assert ind.step(_frame(), NightObjective.OPTIMIZE, minutes_in_bed=mid) \
-        is ThermalIntent.ONSET_COLD_SETTLE
-    # past both compressed phases -> cool
-    assert ind.step(_frame(), NightObjective.DAMAGE_CONTROL,
-                    minutes_in_bed=(cold_min + warm_min) / 2.0 + 1) is ThermalIntent.INDUCTION_COOL
+        is ThermalIntent.ONSET_WARM
 
 
 def test_onset_warm_target_is_above_neutral_and_capped():

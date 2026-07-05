@@ -1,15 +1,23 @@
 """Wind-down + sleep-onset induction.
 
-Onset is induced with a 3-phase **cold -> warm -> cool** cascade, tuned for a hot sleeper whose
-#1 problem is staying asleep:
-  1. COLD SETTLE (genuinely cold): shed the hot sleeper's heat, make them comfortable, and prime
-     peripheral vasoconstriction so the later warm pulse produces a stronger vasodilation contrast.
-  2. WARM PULSE (brief, small, comfort-capped): a short cutaneous warm nudge (Raymann/Van Someren);
-     from the cold-primed state it triggers vasodilation -> core-temp drop -> sleepiness. This
-     phase is A/B-toggled per night (``warm_pulse_on``) so the learner can measure whether it helps.
-  3. CONSOLIDATE COOL: cool again as the user drifts off (the falling core temperature is what
-     deepens sleep). Once onset is confirmed the state machine hands off to maintenance.
-On short nights (DAMAGE_CONTROL) the cold + warm phases are compressed so onset comes faster.
+Onset is induced with a 2-phase **warm -> cool** cascade, grounded in the sleep-onset science
+(Raymann, Swaab & Van Someren 2005/2008): cutaneous *warming* — not cooling — is what speeds
+sleep onset. A small skin-temperature rise drives distal vasodilation -> a core-temperature drop
+-> sleepiness. So the cascade LEADS with a gentle warm nudge, then cools once the user is
+drifting off:
+  1. WARM NUDGE (brief, small, comfort-capped): a short cutaneous warm nudge that triggers
+     vasodilation -> core-temp drop -> sleepiness. Kept small and comfort-capped so a hot sleeper
+     is never overheated. This phase is A/B-toggled per night (``warm_pulse_on``) so the onset
+     learner can measure whether it helps *this* user; toggling it off makes the cascade cool-only
+     from the start (the fallback if warming ever feels bad to a hot sleeper).
+  2. CONSOLIDATE COOL: cool as the user drifts off (the falling core temperature is what deepens
+     sleep). Once onset is confirmed the state machine hands off to maintenance.
+On short nights (DAMAGE_CONTROL) the warm phase is compressed so the deepening cool comes sooner.
+
+Note: pressing "help me fall asleep" must never open with a *cold* blast — that both feels wrong
+to the user and is backwards from the physiology (cold promotes vasoconstriction, delaying onset).
+The legacy ``ONSET_COLD_SETTLE`` intent is retained in the thermal map for compatibility but is no
+longer part of the on-demand induction cascade.
 """
 
 from __future__ import annotations
@@ -77,25 +85,26 @@ class InductionRoutine:
     ) -> ThermalIntent:
         """Return the thermal intent for this induction tick.
 
-        3-phase cascade by minutes-in-bed: COLD SETTLE (really cold) -> optional brief WARM PULSE
-        -> CONSOLIDATE COOL. On short nights (DAMAGE_CONTROL) the cold + warm phases are halved so
-        onset comes faster. When the warm pulse is disarmed the cascade is simply cold -> cool.
+        2-phase cascade by minutes-in-bed: WARM NUDGE (gentle, comfort-capped) -> CONSOLIDATE
+        COOL. Warming the skin is what speeds onset, so the cascade LEADS with the warm nudge and
+        only then cools as the user drifts off. On short nights (DAMAGE_CONTROL) the warm phase is
+        halved so the deepening cool comes sooner. When the warm pulse is disarmed the cascade is
+        cool-only from the start (the hot-sleeper fallback if warming ever feels bad).
         """
         t = self.cfg.tunables
-        cold_min = t.induction_cold_settle_min
         warm_min = t.induction_warm_pulse_min
         if objective is NightObjective.DAMAGE_CONTROL:
-            # Short night: fast onset matters more, so compress the opening phases (halve them).
-            cold_min = cold_min / 2.0
+            # Short night: fast onset matters more, so compress the warm opener (halve it).
             warm_min = warm_min / 2.0
 
-        # Reach-aware sizing: warming from the cold-settle floor is slow (~1.3 lvl/min from very
-        # cold), so a fixed 10-min pulse can be invisible. Widen the pulse to the measured reach
-        # time (never shorten it) so the bed actually arrives at the warm level before consolidate.
+        # Reach-aware sizing: if the bed happens to start cool, warming to the nudge level takes
+        # time, so widen the pulse to the measured reach time (never shorten it) so the warm is
+        # actually felt before consolidate. None-safe: falls back to the configured length.
         warm_min = self._warm_min_effective(warm_min)
 
-        if minutes_in_bed < cold_min:
-            return ThermalIntent.ONSET_COLD_SETTLE
-        if self.warm_pulse_on and minutes_in_bed < cold_min + warm_min:
+        # Phase 1: gentle warm nudge to trigger onset (cutaneous warming -> vasodilation ->
+        # core-temp drop -> sleepiness). Skipped entirely when the warm pulse is disarmed.
+        if self.warm_pulse_on and minutes_in_bed < warm_min:
             return ThermalIntent.ONSET_WARM
+        # Phase 2: cool as the user drifts off -- the falling core temperature deepens sleep.
         return ThermalIntent.INDUCTION_COOL

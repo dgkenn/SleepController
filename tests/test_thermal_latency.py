@@ -132,49 +132,45 @@ def _cold_warm_levels(cfg):
 
 def test_slow_warm_rate_extends_the_warm_pulse():
     cfg = AppConfig.default()
-    cold_lvl, warm_lvl = _cold_warm_levels(cfg)
+    base_lvl, warm_lvl = _cold_warm_levels(cfg)
     warm_min = cfg.tunables.induction_warm_pulse_min   # 10
-    cold_min = cfg.tunables.induction_cold_settle_min  # 12
     ind = InductionRoutine(cfg)
-    # A slow warm-from-cold rate (1.3 levels/min) with a big cold->warm gap makes the reach time
-    # exceed the fixed 10-min pulse.
+    # A slow warm rate (1.3 levels/min) with a big baseline->warm gap makes the reach time exceed
+    # the fixed 10-min opener, so the warm-first cascade keeps warming until the bed arrives.
     ind.set_latency(ThermalLatencyModel(heat_rate=1.3, cool_rate=1.5,
                                         heat_lag_min=2.0, cool_lag_min=3.0))
-    ind.set_phase_levels(cold_lvl, warm_lvl, cold_lvl)
-    reach = ind.latency.minutes_to_reach(cold_lvl, warm_lvl)
-    assert reach > warm_min  # precondition: the reach time really is longer than the fixed pulse
-    # At just past the OLD end of the pulse, the reach-aware cascade is STILL warming (not cooling).
-    just_past_fixed = cold_min + warm_min + 1
-    assert just_past_fixed < cold_min + reach
+    ind.set_phase_levels(base_lvl, warm_lvl, base_lvl)
+    reach = ind.latency.minutes_to_reach(base_lvl, warm_lvl)
+    assert reach > warm_min  # precondition: the reach time really is longer than the fixed opener
+    # At just past the OLD end of the opener, the reach-aware cascade is STILL warming (not cooling).
+    just_past_fixed = warm_min + 1
+    assert just_past_fixed < reach
     assert ind.step(_frame(), NightObjective.OPTIMIZE, just_past_fixed) is ThermalIntent.ONSET_WARM
     # ...and once the reach time is satisfied it hands off to consolidate.
     assert ind.step(_frame(), NightObjective.OPTIMIZE,
-                    cold_min + reach + 1) is ThermalIntent.INDUCTION_COOL
+                    reach + 1) is ThermalIntent.INDUCTION_COOL
 
 
 def test_latency_none_keeps_fixed_behavior():
     cfg = AppConfig.default()
     ind = InductionRoutine(cfg)  # no latency, no phase levels
-    cold_min = cfg.tunables.induction_cold_settle_min
     warm_min = cfg.tunables.induction_warm_pulse_min
-    # exactly the legacy fixed windows
-    assert ind.step(_frame(), NightObjective.OPTIMIZE, 1) is ThermalIntent.ONSET_COLD_SETTLE
-    assert ind.step(_frame(), NightObjective.OPTIMIZE, cold_min + 1) is ThermalIntent.ONSET_WARM
+    # exactly the fixed warm-first windows: warm opener, then cool (never a cold opener)
+    assert ind.step(_frame(), NightObjective.OPTIMIZE, 1) is ThermalIntent.ONSET_WARM
     assert ind.step(_frame(), NightObjective.OPTIMIZE,
-                    cold_min + warm_min + 1) is ThermalIntent.INDUCTION_COOL
+                    warm_min + 1) is ThermalIntent.INDUCTION_COOL
 
 
 def test_warm_pulse_is_capped():
     cfg = AppConfig.default()
-    cold_lvl, warm_lvl = _cold_warm_levels(cfg)
-    cold_min = cfg.tunables.induction_cold_settle_min
+    base_lvl, warm_lvl = _cold_warm_levels(cfg)
     ind = InductionRoutine(cfg)
-    # An absurdly slow warm rate would demand a runaway pulse; the cap holds it to WARM_PULSE_MAX_MIN.
+    # An absurdly slow warm rate would demand a runaway opener; the cap holds it to WARM_PULSE_MAX_MIN.
     ind.set_latency(ThermalLatencyModel(heat_rate=0.5, cool_rate=1.5,
                                         heat_lag_min=15.0, cool_lag_min=3.0))
-    ind.set_phase_levels(cold_lvl, warm_lvl, cold_lvl)
+    ind.set_phase_levels(base_lvl, warm_lvl, base_lvl)
     eff = ind._warm_min_effective(cfg.tunables.induction_warm_pulse_min)
     assert eff == WARM_PULSE_MAX_MIN
-    # well past the cap -> consolidate (the pulse cannot run forever)
+    # well past the cap -> consolidate (the opener cannot run forever)
     assert ind.step(_frame(), NightObjective.OPTIMIZE,
-                    cold_min + WARM_PULSE_MAX_MIN + 1) is ThermalIntent.INDUCTION_COOL
+                    WARM_PULSE_MAX_MIN + 1) is ThermalIntent.INDUCTION_COOL
