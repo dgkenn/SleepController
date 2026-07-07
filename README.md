@@ -23,7 +23,8 @@ unless a step is 100% reversible, necessary, and minimal.
 
 - **Tier 0 — cloud `intervals`** (`EightSleepCloudSource`, via the `pyEight` OAuth2
   library): minute-level HR/HRV/breath/movement/stage and `-100..100` temperature control.
-  Always available, **zero device contact, cannot brick anything.** Ships today.
+  **Zero device contact, cannot brick anything.** Physiology (HR/HRV/breath/stage) requires an
+  active Autopilot membership; without it, use phone-BCG sensor path for movement/HR instead.
 - **Tier 1 — non-invasive raw capture** (`RawCaptureSource`): redirect the Pod's own raw
   upload (`raw-api-upload.8slp.net`) to a local capture server. **No device modification,
   fully reversible.** Go/no-go = TLS cert pinning. See
