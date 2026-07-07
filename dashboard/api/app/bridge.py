@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 VALID_COMMANDS = {
     "start", "pause", "resume", "stop", "safe_default",
@@ -98,6 +98,46 @@ def write_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
          sample.get("movement"), sample.get("source", "phone")),
     )
     conn.commit()
+
+
+# Rolling retention window for sensor_samples (append-only history, see db.py). The same SQLite
+# DB is already covered by the off-box encrypted backup, so this data is durably saved off-box
+# automatically -- local retention here is just about keeping the live table bounded, not the
+# only copy of the data.
+_SENSOR_SAMPLES_RETENTION_DAYS = 60
+
+
+def append_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
+    """Append one phone/sensor-derived sample (never overwrites) so overnight data ACCUMULATES
+    into a time-series dataset for later model training / nightly learning, unlike the
+    ``live_sensor`` singleton above which only ever holds the latest reading. Best-effort: a
+    logging failure here must never break /bcg/ingest for the daemon's real-time fusion path."""
+    try:
+        conn.execute(
+            """INSERT INTO sensor_samples (ts, hr, hrv, movement, source, fs, n_samples)
+                VALUES (?,?,?,?,?,?,?)""",
+            (_now(), sample.get("hr"), sample.get("hrv"), sample.get("movement"),
+             sample.get("source", "phone"), sample.get("fs"), sample.get("n_samples")),
+        )
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=_SENSOR_SAMPLES_RETENTION_DAYS)).isoformat()
+        conn.execute("DELETE FROM sensor_samples WHERE ts < ?", (cutoff,))
+        conn.commit()
+    except Exception:
+        pass  # never disrupt /bcg/ingest's real-time fusion path over a telemetry write
+
+
+def recent_sensor_samples(conn: sqlite3.Connection, limit: int = 500, since: str | None = None) -> list:
+    """Most-recent phone/sensor samples (ts DESC) as dicts, for export/inspection/model training.
+    ``since`` (ISO timestamp), if given, restricts to rows at or after it."""
+    if since:
+        rows = conn.execute(
+            "SELECT * FROM sensor_samples WHERE ts >= ? ORDER BY ts DESC LIMIT ?", (since, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM sensor_samples ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:

@@ -100,6 +100,21 @@ CREATE TABLE IF NOT EXISTS thermal_samples (
     session_mode TEXT          -- night | induce | nap_*
 );
 CREATE INDEX IF NOT EXISTS idx_thermal_samples_ts ON thermal_samples(ts);
+-- Append-only history of phone/independent-sensor (accelerometer-derived BCG) samples. The
+-- ``live_sensor`` table above is a singleton overwritten on every /bcg/ingest so the daemon can
+-- read "latest" cheaply; this table instead accumulates every sample overnight so there's a
+-- time-series dataset for later model training / nightly learning. Pruned to a rolling window
+-- on write (see ``bridge.append_sensor_sample``) so it can't grow forever; the underlying SQLite
+-- file is already covered by the off-box encrypted backup, so this history is durably saved
+-- off-box automatically regardless of local retention.
+CREATE TABLE IF NOT EXISTS sensor_samples (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    hr REAL, hrv REAL, movement REAL, source TEXT,
+    fs REAL,                   -- sample rate (Hz) of the accel batch this sample was derived from
+    n_samples INTEGER          -- raw accel readings ingested in this batch
+);
+CREATE INDEX IF NOT EXISTS idx_sensor_samples_ts ON sensor_samples(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);

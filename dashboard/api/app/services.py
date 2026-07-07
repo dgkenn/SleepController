@@ -1359,6 +1359,13 @@ def ingest_bcg(repo, payload: dict) -> dict:
             "hr": v.get("hr"), "hrv": v.get("hrv"),
             "movement": v.get("movement"), "source": source,
         })
+        # Also append to the time-series history (singleton above is for the daemon's real-time
+        # fusion; this accumulates overnight so there's a dataset for later model training).
+        bridge.append_sensor_sample(repo.conn, {
+            "hr": v.get("hr"), "hrv": v.get("hrv"),
+            "movement": v.get("movement"), "source": source,
+            "fs": round(fs, 1), "n_samples": len(samples),
+        })
 
     return {"ok": True, "ingested": len(samples), "buffered": buffered,
             "fs": round(fs, 1), "fs_source": "explicit" if explicit_fs else (

@@ -1044,6 +1044,25 @@ def diag_thermal_samples(token: str = "", limit: int = 500, repo=Depends(repo_de
     return bridge.recent_thermal_samples(repo.conn, limit=limit)
 
 
+@app.get("/diag/sensor-history")
+def diag_sensor_history(token: str = "", limit: int = 500, since: str = "", repo=Depends(repo_dep)):
+    """Remote pull of the accumulated phone/independent-sensor (accelerometer-derived BCG)
+    history -- unlike ``live_sensor`` (a singleton overwritten on every /bcg/ingest for the
+    daemon's real-time fusion), ``sensor_samples`` accumulates every ingested sample, for
+    off-box model training / nightly learning.
+
+    SAME token gating as ``/diag`` (secret ``DIAG_TOKEN`` env, constant-time compare, 404 when
+    missing/wrong/disabled -- invisible to scanners). ``limit`` defaults to 500, capped at 5000.
+    Optional ``since`` (ISO timestamp) restricts to rows at or after it."""
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+    from app import bridge
+    limit = max(1, min(limit, 5000))
+    return bridge.recent_sensor_samples(repo.conn, limit=limit, since=since or None)
+
+
 # ---------------------------------------------------------------- remote deep-dive (token-gated)
 # Two "give me the exact data, not a summary" tools for the maintainer, gated identically to
 # /diag (secret DIAG_TOKEN, 404 on missing/wrong token so it's invisible to scanners). /diag's
