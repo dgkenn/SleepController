@@ -31,7 +31,12 @@ class Credentials:
     email: str = ""
     password: str = ""
     timezone: str = "UTC"
-    side: str = "left"
+    # Physical sleeping side. This account reports ``currentDevice.side == "solo"`` (single
+    # sleeper), so the side can't be auto-detected and must be configured; the owner sleeps on
+    # the RIGHT, so that is the default. Commands hit both sides (shared profile), but per-side
+    # READS (bed temp, presence, any future physiology) must come from the occupied side.
+    # Override with EIGHTSLEEP_SIDE if the sleeper ever changes sides.
+    side: str = "right"
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
 
@@ -49,7 +54,7 @@ def load_credentials(path: Optional[str] = None) -> Credentials:
         email=data.get("email", ""),
         password=data.get("password", ""),
         timezone=data.get("timezone", "UTC"),
-        side=data.get("side", "left"),
+        side=data.get("side", "right"),
         client_id=data.get("client_id"),
         client_secret=data.get("client_secret"),
     )
