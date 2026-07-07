@@ -209,6 +209,21 @@ class Tunables:
     weather_enabled: bool = True
     weather_latitude: float = 42.3601   # Boston, MA
     weather_longitude: float = -71.0589
+    # --- Arousal / awakening detection thresholds (see controller/arousal.py) -----------
+    # Graded micro-arousal/awakening detector: HR surge, HRV drop, movement, and how many
+    # consecutive elevated samples count as sustained (vs. a transient blip).
+    arousal_hr_surge_bpm: float = 6.0     # HR above sleep baseline that counts as a surge
+    arousal_hrv_drop_frac: float = 0.15   # fractional HRV drop vs baseline that counts as a drop
+    arousal_movement: float = 0.4         # movement at/above this counts as arousal-level motion
+    arousal_persistence_samples: int = 3  # consecutive elevated samples => sustained (not a blip)
+    # --- Wake-risk pre-emption thresholds (see controller/wake_risk.py) ------------------
+    # Multi-signal vote (shared with the arousal detector's WakeDetector) + the precursor score
+    # that drives proactive settle-cool pre-emption.
+    wake_min_signals: int = 3                # signals required for the multi-signal wake vote
+    wake_risk_hr_creep_bpm: float = 4.0      # HR above baseline that counts as "creeping up"
+    wake_risk_movement: float = 0.3          # movement at/above this counts as restlessness
+    wake_risk_warm_margin_f: float = 1.5     # bed this far above target counts as "running warm"
+    wake_risk_preempt_threshold: float = 0.5  # combined risk score that triggers a pre-empt
     # --- Data-quality gate (do-no-harm on untrustworthy frames) --------------------------
     # Below this score, confidence is down-weighted and the decision is biased toward HOLD
     # (see ``sleepctl.controller.data_quality`` + ``SleepController.decide``).

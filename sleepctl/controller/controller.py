@@ -418,7 +418,10 @@ class SleepController:
             else:
                 target_f = self._last_target_f
             level = self.thermal.to_level(target_f)
-            action = CorrectionAction.HOLD
+            # Label the action from the actual step taken (toward neutral), not unconditionally
+            # HOLD -- this keeps _recent_decisions truthful for the guardrail's own
+            # _check_driving_arousal streak logic and any other trajectory-level analysis.
+            action = self._action_for(self._last_target_f, target_f)
             codes = ",".join(f.code for f in guardrail.findings if f.severity == "critical")
             reason = f"guardrail critical ({codes}); safe hold toward neutral"
             confidence = min(confidence, 0.3)
