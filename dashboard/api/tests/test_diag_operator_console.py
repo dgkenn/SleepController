@@ -154,7 +154,7 @@ def test_diag_action_self_test_enqueues_self_test_command(client, monkeypatch):
     assert body["action"] == "self-test"
     assert body["result"]["mode"] == "full"
     assert body["result"]["command_id"] is not None
-    assert body["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert body["verify_with"] == "/diag/all"
 
     from app.db import get_repo
     repo = get_repo()
@@ -192,7 +192,7 @@ def test_diag_action_backup_creates_a_backup_file(client, monkeypatch):
     assert body["action"] == "backup"
     path = body["result"]["path"]
     assert os.path.exists(path)
-    assert body["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert body["verify_with"] == "/diag/all"
     os.remove(path)
 
 
@@ -210,7 +210,7 @@ def test_diag_action_run_diagnostics_returns_diag_all_payload(client, monkeypatc
     assert body["action"] == "run-diagnostics"
     assert "verdict" in body["result"]
     assert "project_state" in body["result"]
-    assert body["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert body["verify_with"] == "/diag/all"
 
 
 # ------------------------------------------------------------------ verify_with retrofit
@@ -219,11 +219,43 @@ def test_verify_with_present_on_repair_and_reconnect(client, monkeypatch):
     _clear_commands()
 
     r = client.post("/diag/repair?token=s3cret-xyz")
-    assert r.json()["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert r.json()["verify_with"] == "/diag/all"
 
     r = client.post("/diag/action/reconnect?token=s3cret-xyz")
-    assert r.json()["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert r.json()["verify_with"] == "/diag/all"
     _clear_commands()
+
+
+def test_diag_action_responses_never_echo_the_token_back(client, monkeypatch):
+    """The DIAG_TOKEN must never appear anywhere in a diag-action response body -- pasting one
+    of these (e.g. into a chat, a log, a screenshot) must not leak the token that gated it."""
+    tok = "s3cret-verify-with-must-not-leak"
+    monkeypatch.setenv("DIAG_TOKEN", tok)
+    _clear_commands()
+
+    backup_path = None
+    try:
+        for path in [
+            f"/diag/repair?token={tok}",
+            f"/diag/action/reconnect?token={tok}",
+            f"/diag/action/restart?token={tok}&target=daemon",
+            f"/diag/action/restart-watchdog?token={tok}",
+            f"/diag/action/self-test?token={tok}",
+            f"/diag/action/backup?token={tok}",
+            f"/diag/action/run-diagnostics?token={tok}",
+            f"/diag/action/update?token={tok}",
+            f"/diag/action/rebuild-web?token={tok}",
+        ]:
+            r = client.post(path)
+            assert tok not in r.text, f"{path} echoed the token back: {r.text!r}"
+            if path.startswith("/diag/action/backup"):
+                backup_path = r.json()["result"]["path"]
+    finally:
+        for flag in ("restart.request", "update.request", "webbuild.request"):
+            _remove(os.path.join(_run_dir(), flag))
+        if backup_path and os.path.exists(backup_path):
+            os.remove(backup_path)
+        _clear_commands()
 
 
 # ------------------------------------------------------------------ POST /diag/action/update
@@ -246,7 +278,7 @@ def test_diag_action_update_writes_update_request_with_expected_branch(client, m
     assert body["ok"] is True
     assert body["action"] == "update"
     assert body["result"]["branch"] == "release/2026-07"
-    assert body["verify_with"] == "/diag/update-status?token=s3cret-xyz"
+    assert body["verify_with"] == "/diag/update-status"
     assert os.path.exists(flag)
     assert open(flag, encoding="utf-8").read().strip() == "release/2026-07"
     _remove(flag)
@@ -352,7 +384,7 @@ def test_diag_action_restart_watchdog_writes_watchdog_flag(client, monkeypatch):
     assert r.status_code == 200
     body = r.json()
     assert body["requested"] == "watchdog"
-    assert body["verify_with"] == "/diag/all?token=s3cret-xyz"
+    assert body["verify_with"] == "/diag/all"
     assert os.path.exists(flag)
     assert open(flag, encoding="utf-8").read().strip() == "watchdog"
     _remove(flag)
@@ -390,7 +422,7 @@ def test_diag_action_rebuild_web_writes_webbuild_request(client, monkeypatch):
     assert body["ok"] is True
     assert body["action"] == "rebuild-web"
     assert body["result"]["requested"] is True
-    assert body["verify_with"] == "/diag/webbuild-status?token=s3cret-xyz"
+    assert body["verify_with"] == "/diag/webbuild-status"
     assert os.path.exists(flag)
     _remove(flag)
 

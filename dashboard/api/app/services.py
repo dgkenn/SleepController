@@ -6,6 +6,7 @@ All read through the sleepctl ``Repository`` + the dashboard tables, reusing eng
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from sleepctl.benchmarks import NightMode, perfect_sleep_index
@@ -1293,6 +1294,23 @@ def bcg_should_record(repo) -> dict:
             "daemon_alive": rt.get("daemon_alive", False), "stale": rt.get("stale", True)}
 
 
+# A batch is normally ~1s of phone accel at 50Hz (~50 samples); this is a generous ceiling
+# (~400s at 50Hz) that still rejects a malicious/misbehaving client trying to hand us an
+# unbounded array (memory blowup / worker stall). Mirrored by the ``Field(max_length=...)``
+# caps on ``BCGBody`` in ``app/main.py`` -- kept here too since ``ingest_bcg`` can in principle
+# be called with a raw dict that never passed through that model.
+BCG_MAX_SAMPLES = 20_000
+
+
+def _finite_or_none(x):
+    """``x`` if it's a real (non-NaN/Inf) number, else ``None`` -- so a corrupt/adversarial
+    non-finite value can never reach a persisted column (sensor_samples / live_sensor)."""
+    try:
+        return x if x is not None and math.isfinite(x) else None
+    except TypeError:
+        return None
+
+
 def ingest_bcg(repo, payload: dict) -> dict:
     """Ingest a raw accelerometer batch from the phone (kept in bed), derive sub-minute
     movement (+ best-effort HR/HRV from the ballistocardiogram), and publish it to the bridge
@@ -1303,8 +1321,19 @@ def ingest_bcg(repo, payload: dict) -> dict:
       {"fs": 50, "mag": [...]}                            pre-computed 1-D magnitude / single axis
       {"fs": 50, "payload": [{"x":..,"y":..,"z":..}, ...]} list of samples (Sensor Logger style)
     Movement is the trustworthy phone signal; HR/HRV are returned only when the BCG is clean
-    enough, and are advisory (the Pod cloud HR stays the cardiac source of record)."""
+    enough, and are advisory (the Pod cloud HR stays the cardiac source of record).
+
+    Rejects oversized batches outright (see ``BCG_MAX_SAMPLES``); silently drops individual
+    non-finite (NaN/Inf) values rather than failing the whole batch, since one bad accel sample
+    shouldn't discard an otherwise-good second of data -- but a non-finite value must never
+    reach ``proc.ingest``/the fusion path or get persisted."""
     from sleepctl.adapters.bcg import accel_magnitude
+
+    for key in ("ax", "ay", "az", "mag", "payload"):
+        n = len(payload.get(key) or [])
+        if n > BCG_MAX_SAMPLES:
+            return {"ok": False, "error": f"{key} batch too large ({n} > {BCG_MAX_SAMPLES})",
+                    "ingested": 0}
 
     explicit_fs = payload.get("fs")
     source = payload.get("source") or "phone"
@@ -1340,12 +1369,18 @@ def ingest_bcg(repo, payload: dict) -> dict:
                 times.append(s["time"])
         samples = accel_magnitude(ax, ay, az)
 
+    # Drop non-finite (NaN/Inf) samples -- e.g. from a NaN accel reading or an overflowed
+    # magnitude -- so they never reach the BCG processor or get persisted downstream.
+    samples = [s for s in samples if math.isfinite(s)]
+
     if not samples:
         return {"ok": False, "error": "no usable samples", "ingested": 0}
 
     # Sample rate: explicit ?fs= wins; else auto-detect from the per-sample timestamps Sensor
     # Logger sends (so the user never has to match it); else a sane 50 Hz default.
     fs = float(explicit_fs) if explicit_fs else (_fs_from_times(times) or 50.0)
+    if not math.isfinite(fs) or fs <= 0:
+        fs = 50.0
 
     with _BCG_LOCK:
         proc = _bcg_processor(fs)
@@ -1354,18 +1389,22 @@ def ingest_bcg(repo, payload: dict) -> dict:
         buffered = len(proc._buf)
 
     if v is not None:
-        # Movement always published; HR/HRV only when the waveform yielded them.
+        # Movement always published; HR/HRV only when the waveform yielded them. Coerced through
+        # _finite_or_none so a NaN/Inf can never land in sensor_samples/live_sensor even if it
+        # somehow survived the input-side filtering above (e.g. a processor edge case).
+        hr = _finite_or_none(v.get("hr"))
+        hrv = _finite_or_none(v.get("hrv"))
+        movement = _finite_or_none(v.get("movement"))
         bridge.write_sensor_sample(repo.conn, {
-            "hr": v.get("hr"), "hrv": v.get("hrv"),
-            "movement": v.get("movement"), "source": source,
+            "hr": hr, "hrv": hrv, "movement": movement, "source": source,
         })
         # Also append to the time-series history (singleton above is for the daemon's real-time
         # fusion; this accumulates overnight so there's a dataset for later model training).
         bridge.append_sensor_sample(repo.conn, {
-            "hr": v.get("hr"), "hrv": v.get("hrv"),
-            "movement": v.get("movement"), "source": source,
+            "hr": hr, "hrv": hrv, "movement": movement, "source": source,
             "fs": round(fs, 1), "n_samples": len(samples),
         })
+        v = {**v, "hr": hr, "hrv": hrv, "movement": movement}
 
     return {"ok": True, "ingested": len(samples), "buffered": buffered,
             "fs": round(fs, 1), "fs_source": "explicit" if explicit_fs else (

@@ -162,3 +162,68 @@ def test_should_record_follows_bed_presence(auth_client):
     _write_presence(False)
     body = auth_client.get("/bcg/should-record").json()
     assert body["record"] is False and body["presence"] is False
+
+
+# ------------------------------------------------------------------ input validation (security)
+def test_oversized_mag_batch_is_rejected(auth_client):
+    """An absurdly long array (way past a real ~1s batch) must be rejected, not accepted and
+    fed to the processor -- guards against a memory-blowup / worker-stall data-poisoning attempt."""
+    from app.services import BCG_MAX_SAMPLES
+    r = auth_client.post("/bcg/ingest",
+                         json={"fs": 50.0, "mag": [1.0] * (BCG_MAX_SAMPLES + 1)})
+    assert r.status_code in (422, 400, 200)
+    if r.status_code == 200:
+        assert r.json()["ok"] is False
+
+
+def test_oversized_ax_batch_is_rejected(auth_client):
+    from app.services import BCG_MAX_SAMPLES
+    huge = [0.0] * (BCG_MAX_SAMPLES + 1)
+    r = auth_client.post("/bcg/ingest", json={"fs": 50.0, "ax": huge, "ay": huge, "az": huge})
+    assert r.status_code in (422, 400, 200)
+    if r.status_code == 200:
+        assert r.json()["ok"] is False
+
+
+def test_nan_and_inf_samples_are_dropped_not_persisted(auth_client):
+    """A batch laced with NaN/Inf must never let a non-finite value reach the bridge tables --
+    the good (finite) samples in the same batch should still be ingested."""
+    batch = _accel_batch(moving=True)
+    # corrupt every 5th sample across all three axes with NaN/Inf poison
+    for i in range(0, len(batch["ax"]), 5):
+        batch["ax"][i] = float("nan")
+        batch["ay"][i] = float("inf")
+        batch["az"][i] = float("-inf")
+
+    r = auth_client.post("/bcg/ingest", json=batch)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["ingested"] > 0  # the remaining finite samples were still ingested
+
+    vitals = body["vitals"]
+    if vitals is not None:
+        for key in ("hr", "hrv", "movement"):
+            val = vitals.get(key)
+            assert val is None or math.isfinite(val)
+
+    from app import bridge
+    from app.db import get_repo
+    repo = get_repo()
+    s = bridge.read_sensor_sample(repo.conn)
+    repo.close()
+    assert s is not None
+    for key in ("hr", "hrv", "movement"):
+        val = s.get(key)
+        assert val is None or math.isfinite(val)
+
+
+def test_all_nan_mag_batch_yields_no_usable_samples(auth_client):
+    """If every sample in the batch is non-finite, there's nothing usable left -- a clean
+    ok:false rather than persisting garbage or crashing."""
+    r = auth_client.post("/bcg/ingest",
+                         json={"fs": 50.0, "mag": [float("nan")] * 60})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["ingested"] == 0

@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import bridge, services
 from app.config import settings
@@ -372,12 +372,15 @@ def gym_config_update(body: GymConfigBody, repo=Depends(repo_dep), user: str = A
 
 
 class BCGBody(BaseModel):
+    # Capped at services.BCG_MAX_SAMPLES (~400s at 50Hz -- far beyond a 1s batch) so an
+    # unbounded/malicious array can't be used to blow up memory or stall the ingest worker;
+    # FastAPI/pydantic reject an oversized batch with a 422 before it ever reaches ingest_bcg.
     fs: float | None = None
-    ax: list[float] | None = None
-    ay: list[float] | None = None
-    az: list[float] | None = None
-    mag: list[float] | None = None
-    payload: list[dict] | None = None
+    ax: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    ay: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    az: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    mag: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    payload: list[dict] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
     source: str | None = None
 
 
@@ -1591,7 +1594,12 @@ def _diag_safe(fn, default=_DIAG_ALL_NO_DEFAULT):
 
 
 def _verify_with(token: str) -> str:
-    return f"/diag/all?token={token}"
+    """The path to re-fetch to confirm an action's effect. Deliberately does NOT embed ``token``
+    -- these paths are returned verbatim in action response bodies, and a response body is
+    exactly the kind of thing that gets pasted/logged/screenshotted, so the DIAG_TOKEN must
+    never ride along in it. The caller already has the token (it's how they authenticated the
+    action in the first place) and can append ``?token=...`` itself."""
+    return "/diag/all"
 
 
 def _action_result(action: str, result, token: str, ok: bool = True,
@@ -1603,8 +1611,10 @@ def _action_result(action: str, result, token: str, ok: bool = True,
     thing to re-check (e.g. self-update -> ``/diag/update-status``). ``/diag/repair``,
     ``/diag/action/restart`` and ``/diag/action/reconnect`` predate this helper and keep their
     original response shape (append-only), but now also carry a ``verify_with`` key each (see
-    the retrofit at their ``return`` statements above)."""
-    verify_with = f"{verify_path}?token={token}" if verify_path else _verify_with(token)
+    the retrofit at their ``return`` statements above). ``token`` is accepted for backward
+    compatibility with existing call sites but is intentionally NOT embedded in the returned
+    path -- see ``_verify_with``."""
+    verify_with = verify_path if verify_path else _verify_with(token)
     return {"ok": ok, "action": action, "result": result, "verify_with": verify_with}
 
 

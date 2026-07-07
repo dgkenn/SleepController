@@ -109,11 +109,11 @@ def test_is_secret_key_matches_the_documented_patterns():
 
     for key in ("EIGHTSLEEP_PASSWORD", "DASHBOARD_PASSWORD", "JWT_SECRET",
                "EIGHTSLEEP_CLIENT_SECRET", "CALENDAR_ICS_URL", "DIAG_TOKEN",
-               "jwt_secret", "some_token"):
+               "jwt_secret", "some_token", "VAPID_PRIVATE_KEY"):
         assert is_secret_key(key), key
 
     for key in ("SLEEPCTL_DRY_RUN", "SLEEPCTL_LIVE", "TZ", "CORS_ORIGINS",
-               "EIGHTSLEEP_EMAIL", "DASHBOARD_USER"):
+               "EIGHTSLEEP_EMAIL", "DASHBOARD_USER", "VAPID_PUBLIC_KEY", "VAPID_SUBJECT"):
         assert not is_secret_key(key), key
 
 
@@ -126,3 +126,33 @@ def test_redacted_env_lines_never_returns_the_real_secret_value():
     assert SECRET_PASSWORD not in joined
     assert "EIGHTSLEEP_PASSWORD = <redacted>" in joined
     assert "SLEEPCTL_DRY_RUN = 1" in joined
+
+
+def test_redacted_env_lines_masks_the_vapid_private_key_but_not_public_or_subject():
+    from app.diag_bundle import redacted_env_lines
+
+    SECRET_VAPID_PRIVATE = "vapid-priv-key-should-never-be-printed"
+    lines = redacted_env_lines({
+        "VAPID_PRIVATE_KEY": SECRET_VAPID_PRIVATE,
+        "VAPID_PUBLIC_KEY": "BPublicKeyValue123",
+        "VAPID_SUBJECT": "mailto:ops@example.com",
+    })
+    joined = "\n".join(lines)
+    assert SECRET_VAPID_PRIVATE not in joined
+    assert "VAPID_PRIVATE_KEY = <redacted>" in joined
+    # public key + subject are not secret -- they must stay visible for debugging
+    assert "VAPID_PUBLIC_KEY = BPublicKeyValue123" in joined
+    assert "VAPID_SUBJECT = mailto:ops@example.com" in joined
+
+
+def test_diag_bundle_never_leaks_the_vapid_private_key(client, monkeypatch):
+    SECRET_VAPID_PRIVATE = "vapid-priv-key-should-never-be-printed"
+    _set_secrets(monkeypatch)
+    monkeypatch.setenv("VAPID_PRIVATE_KEY", SECRET_VAPID_PRIVATE)
+    monkeypatch.setenv("VAPID_PUBLIC_KEY", "BPublicKeyValue123")
+
+    r = client.get("/diag/bundle?token=s3cret-xyz")
+    assert r.status_code == 200
+    assert SECRET_VAPID_PRIVATE not in r.text
+    assert "VAPID_PRIVATE_KEY = <redacted>" in r.text
+    assert "VAPID_PUBLIC_KEY = BPublicKeyValue123" in r.text

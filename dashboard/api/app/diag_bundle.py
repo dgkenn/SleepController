@@ -13,8 +13,10 @@ Used by two callers that must stay in sync on sections + redaction rules:
 
 Redaction is conservative and purely key-name-based (case-insensitive substring match) so it
 never depends on recognizing what a particular secret looks like: any env var whose KEY
-contains PASSWORD, SECRET, TOKEN, ICS_URL, CLIENT_SECRET, or JWT is rendered as
-``<redacted>`` -- its value is never read into the bundle at all.
+contains PASSWORD, SECRET, TOKEN, ICS_URL, CLIENT_SECRET, JWT, or PRIVATE is rendered as
+``<redacted>`` -- its value is never read into the bundle at all. Note this deliberately
+matches ``VAPID_PRIVATE_KEY`` (via PRIVATE) while leaving ``VAPID_PUBLIC_KEY`` and
+``VAPID_SUBJECT`` visible -- a public key and a mailto:/URL subject are not secret.
 """
 
 from __future__ import annotations
@@ -28,7 +30,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 # ------------------------------------------------------------------ redaction
-_SECRET_KEY_PATTERN = re.compile(r"PASSWORD|SECRET|TOKEN|ICS_URL|CLIENT_SECRET|JWT", re.IGNORECASE)
+_SECRET_KEY_PATTERN = re.compile(
+    r"PASSWORD|SECRET|TOKEN|ICS_URL|CLIENT_SECRET|JWT|PRIVATE", re.IGNORECASE)
 
 # Every env var this project actually reads (see deploy/.env.example, app/config.py, and the
 # sleepctl adapters) -- a curated whitelist, NOT the full process environment, so unrelated
