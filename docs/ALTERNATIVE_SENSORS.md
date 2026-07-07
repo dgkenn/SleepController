@@ -9,21 +9,25 @@ new `PodSensorSource` implementation instead.
 
 ## 1. Under-mattress BCG mats (no wearable, closest fit to the Pod's own use case)
 
-### Emfit QS — recommended
+### Emfit QS — CAUTION: subscription (correction)
 - **Data:** HR + breathing rate + movement every 4s, sleep-stage classification every 30s, HRV
   (RMSSD) every 3 min, plus bed-presence/restlessness events. Validated against ECG in a peer-
   reviewed study (JMIR Biomed Eng 2020).
 - **Access:** Emfit Cloud API — a documented push API (Emfit POSTs each finished sleep period to
-  your URL) and a pull API (poll live HR/RR/movement every 30s). Requires requesting a free
-  developer/API key from Emfit; **no separate subscription fee for API access** beyond owning the
-  device.
-- **Subscription to read your own data: NO.** All analytics/HRV/trends are included with the
-  device purchase; no forced recurring fee (unlike Whoop).
-- **Price (2026):** QS+ACTIVE ≈ **$299 one-time** (shop-us.emfit.com); nothing ongoing beyond
-  electricity.
-- **Integration difficulty: EASY.** JSON over HTTP(S); an unofficial Node client
-  (`samuelmr/emfit-qs`) and an npm package already exist as reference implementations.
-- Sources: https://emfit.com/sleep-research/emfit-qs-cloud-api/ ,
+  your URL) and a pull API (poll live HR/RR/movement every 30s). Requires an Emfit developer/API
+  key; all data goes through Emfit's cloud (no local option), so access depends on an active plan.
+- **Subscription: YES for personal use (CORRECTION — an earlier draft wrongly said "no").** Emfit's
+  own "Subscribe EMFIT QS for personal use" page lists a recurring plan: **~$180 year 1 (+$25
+  shipping), ~$100 year 2, ~$50/yr thereafter.** A separate ~$299 one-time listing
+  (shop-us.emfit.com, "QS+ACTIVE") also exists; the two offerings conflict and it is NOT clearly a
+  subscription-free purchase. Treat Emfit as a subscription/cloud-dependent product unless
+  confirmed otherwise directly with Emfit.
+- **Price (2026):** subscription ~$180 → $100 → $50/yr, OR a ~$299 one-time listing (unverified
+  whether it grants ongoing cloud/API access).
+- **Integration difficulty: EASY** *if* the plan is active — JSON over HTTP(S); an unofficial Node
+  client (`samuelmr/emfit-qs`) exists as a reference. But cloud-dependent = vendor can change terms.
+- Sources: https://emfit.com/subscribe-emfit-qs-for-personal-use/ ,
+  https://emfit.com/sleep-research/emfit-qs-cloud-api/ ,
   https://shop-us.emfit.com/products/emfit-qs ,
   https://healthcarediscovery.ai/emfit-qs-under-mattress-hrv-recovery-tracker/ ,
   https://biomedeng.jmir.org/2020/1/e16620
@@ -38,7 +42,10 @@ new `PodSensorSource` implementation instead.
   gates *coaching/programs*, not raw metric access.
 - **Price (2026):** ~**$130–$165** one-time (varies by retailer/region).
 - **Integration difficulty: EASY-MEDIUM.** Clean OAuth2 REST API; reference notebook exists
-  (wearipedia). Caveat: only tracks one side of the bed per mat (buy two for a couple).
+  (wearipedia). Caveats: only tracks one side of the bed per mat; the "Sleep Analyzer" model is
+  officially **EU/UK/AU** (US historically got the older "Withings Sleep") — **verify US
+  availability before buying**; some advanced metrics (e.g. apnea index) have been region/feature
+  gated in the past, so confirm the specific data you want is on the free API in your region.
 - Sources: https://developer.withings.com/api-reference/ ,
   https://wearipedia.readthedocs.io/en/latest/notebooks/withings_sleep.html ,
   https://www.tomsguide.com/wellness/sleep-tech/withings-sleep-analyzer-review
