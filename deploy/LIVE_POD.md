@@ -54,7 +54,10 @@ stage / bed & room temp / presence), which commands exist, and the °F↔level m
 python -m sleepctl.cli run --dry-run --wake 07:00
 ```
 Reads your real physiology all night and **logs the decisions it *would* make** — but writes
-nothing to the bed. Review the printed ticks: do the stages, targets and transitions look sane?
+nothing to the bed. (Physiology availability depends on an active Autopilot subscription; if
+your account has none, stages/HR/HRV will be empty and the controller will use alternative
+data sources like the phone-BCG sensor for movement.) Review the printed ticks: do the stages,
+targets and transitions look sane?
 
 ### 4. Go live (engine)
 ```bash
@@ -69,7 +72,9 @@ and closes the client cleanly.
 
 Once Part A looks good, point the dashboard's control daemon at the real device. The API, the
 web app, and **all your existing controls** (temperature, power, away, prime, smart wake,
-Emergency Stop) then drive the actual bed, and live status shows real physiology.
+Emergency Stop) then drive the actual bed. Live status shows bed/room temps and available
+physiology (HR/HRV/stage require an active Autopilot subscription; without it, movement data
+from phone-BCG or Pod presence is used instead).
 
 ### 1. Put your credentials in `deploy/.env`
 ```dotenv
@@ -77,7 +82,7 @@ SLEEPCTL_LIVE=1
 SLEEPCTL_DRY_RUN=1                 # <- keep this for the first night (read-only)
 EIGHTSLEEP_EMAIL=you@example.com
 EIGHTSLEEP_PASSWORD=your-password
-EIGHTSLEEP_SIDE=left              # left | right
+EIGHTSLEEP_SIDE=right             # left | right
 EIGHTSLEEP_TIMEZONE=America/New_York
 # EIGHTSLEEP_CLIENT_ID=...        # only if plain login fails (see Troubleshooting)
 # EIGHTSLEEP_CLIENT_SECRET=...
@@ -93,8 +98,10 @@ and updates the dashboard, but **sends no commands** — the perfect first-night
 Watch it: `make logs` (look for `dashboard LIVE daemon started (dry_run=True)`).
 
 ### 3. Confirm on your iPhone
-Open the dashboard (your LAN URL / tunnel). Home should show **real** bed/room temps, your live
-sleep stage, HR/HRV, etc. The **Admin** page shows the daemon as *Live (dry-run)*.
+Open the dashboard (your LAN URL / tunnel). Home should show **real** bed/room temps. Sleep
+stage, HR/HRV will appear if you have an active Autopilot subscription; otherwise those fields
+will be empty and movement/HR come from phone-BCG if available. The **Admin** page shows the
+daemon as *Live (dry-run)*.
 
 ### 4. Hand it the controls
 When you're satisfied, set `SLEEPCTL_DRY_RUN=0` in `.env` and `make up` again. Now:

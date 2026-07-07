@@ -40,7 +40,7 @@ even on error, water-drain, or Ctrl-C.
    ```bash
    export EIGHTSLEEP_EMAIL="you@example.com"
    export EIGHTSLEEP_PASSWORD="********"
-   export EIGHTSLEEP_SIDE="left"            # left | right  (default left)
+   export EIGHTSLEEP_SIDE="right"           # left | right  (default right)
    export EIGHTSLEEP_TIMEZONE="America/New_York"   # optional, default UTC
    # export EIGHTSLEEP_CLIENT_ID="..."      # only if plain login fails
    # export EIGHTSLEEP_CLIENT_SECRET="..."

@@ -9,7 +9,7 @@ thermal command lags the *command* by this actuation latency **plus** the sensin
 the deepening-response learner / architecture steerer correlate "we cooled → did it deepen?",
 they must offset by this latency, not compare at the same timestamp.
 
-## Measured rates (2026-07-03, live, dgkenn Pod 2.1, "left" side)
+## Measured rates (2026-07-03, live, dgkenn Pod 2.1, "left" side — historical; default is now right)
 
 Units: device *level* (−100..+100) and approximate °F (the level↔°F map is non-linear, denser
 near neutral 0 ≈ 81 °F).
@@ -52,7 +52,8 @@ near neutral 0 ≈ 81 °F).
 
 - **Onset cascade timing.** The warm-pulse phase (10 min) barely moved the bed off the cold
   floor (60 → 62 °F) *because* warming-from-cold is only ~0.5 °F/min. To make the pulse
-  actually felt: lengthen the pulse and/or reduce cold-settle depth. Tune against measured
+  actually felt: lengthen the pulse. (Note: the cascade is now warm→cool, with no cold-settle
+  opener; the bed starts from wherever it was when the user gets in bed.) Tune against measured
   onset latency.
 - **Smart-wake ramp.** Start the pre-wake warming earlier (≈ desired-Δ°F ÷ 1 °F/min, more from
   a cold start).
