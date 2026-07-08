@@ -179,19 +179,22 @@ export interface SetpointInfo {
 export interface NightSummary {
   date: string;
   total_sleep_min: number;
-  deep_min: number;
-  rem_min: number;
+  // Physiology-derived fields: null when Pod physiology is unavailable (e.g. subscription-gated)
+  // rather than a real 0 -- never render these as if they were measured zeros.
+  deep_min: number | null;
+  rem_min: number | null;
   wake_events: number;
   sleep_efficiency: number;
-  avg_hrv: number;
+  avg_hrv: number | null;
   outcome_score: number;
 }
 
 export interface NightSample {
   ts: string;
   stage: string;
-  heart_rate: number;
-  hrv: number;
+  // Pod-physiology-gated: absent (null) rather than 0 when there's no Pod subscription/sensor.
+  heart_rate: number | null;
+  hrv: number | null;
   bed_temp_f: number;
   room_temp_f: number;
 }

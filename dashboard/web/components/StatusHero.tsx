@@ -21,7 +21,14 @@ function TempDisplay({ label, value, unit = '°F' }: { label: string; value: num
 
 export default function StatusHero({ data }: StatusHeroProps) {
   const sleepOpMin = data.schedule?.sleep_opportunity_min;
-  const wakeTime = data.schedule?.required_wake_time;
+
+  // Primary wake time = the actually-armed Smart Wake alarm for tonight.
+  // The schedule's required_wake_time is an external (e.g. shift) constraint that
+  // may not match what's armed -- surface it only as a secondary note when it differs.
+  const armedWake = data.wake?.wake_time;
+  const requiredWake = data.schedule?.required_wake_time;
+  const primaryWake = armedWake ?? requiredWake ?? null;
+  const showShiftNote = !!requiredWake && !!armedWake && requiredWake !== armedWake;
 
   return (
     <div className="bg-surface-card rounded-2xl p-5 space-y-4">
@@ -50,13 +57,19 @@ export default function StatusHero({ data }: StatusHeroProps) {
             </span>
           </div>
         )}
-        {wakeTime && (
+        {primaryWake && (
           <div className="flex flex-col items-end">
-            <span className="text-xs text-gray-500">Wake Time</span>
-            <span className="text-white font-medium">{wakeTime}</span>
+            <span className="text-xs text-gray-500">{armedWake ? 'Alarm Set' : 'Wake Time'}</span>
+            <span className="text-white font-medium">{primaryWake}</span>
           </div>
         )}
       </div>
+
+      {showShiftNote && (
+        <p className="text-xs text-warning bg-warning/10 rounded-lg px-3 py-2">
+          Shift needs you up by {requiredWake} — alarm is set for {armedWake}
+        </p>
+      )}
 
       {data.schedule?.is_short_sleep_day && (
         <p className="text-xs text-warning bg-warning/10 rounded-lg px-3 py-2">

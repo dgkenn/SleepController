@@ -46,6 +46,13 @@ function DataContent() {
     hrv: s.hrv,
   }));
 
+  // HR/HRV are Pod-physiology-gated (e.g. subscription-gated) -- bed temp always comes from the
+  // thermal side and is unaffected. Don't let an all-null series render as a flat "0" line.
+  const hasHr = chartData.some((d) => d.hr != null);
+  const hasHrv = chartData.some((d) => d.hrv != null);
+  const NO_PHYSIOLOGY_MSG =
+    'No HR/HRV/stage data — Pod subscription-gated; connect the iPhone motion sensor (Admin → Phone Sensor).';
+
   return (
     <div className="flex flex-col min-h-screen">
       <div className="flex-1 overflow-y-auto pb-24">
@@ -87,13 +94,20 @@ function DataContent() {
             <MetricChart
               data={chartData}
               xKey="ts"
-              lines={[
-                { key: 'hr', label: 'HR (bpm)', color: '#ef4444' },
-                { key: 'bed', label: 'Bed Temp °F', color: '#60a5fa' },
-              ]}
+              lines={
+                hasHr
+                  ? [
+                      { key: 'hr', label: 'HR (bpm)', color: '#ef4444' },
+                      { key: 'bed', label: 'Bed Temp °F', color: '#60a5fa' },
+                    ]
+                  : [{ key: 'bed', label: 'Bed Temp °F', color: '#60a5fa' }]
+              }
               yFormatter={(v) => v.toFixed(0)}
               height={200}
             />
+            {!hasHr && chartData.length > 0 && (
+              <p className="text-xs text-gray-600 mt-3 leading-relaxed">{NO_PHYSIOLOGY_MSG}</p>
+            )}
           </div>
 
           {/* HRV chart */}
@@ -102,13 +116,17 @@ function DataContent() {
               <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">
                 HRV — {displayDate}
               </p>
-              <MetricChart
-                data={chartData}
-                xKey="ts"
-                lines={[{ key: 'hrv', label: 'HRV (ms)', color: '#22c55e' }]}
-                yFormatter={(v) => `${v.toFixed(0)}ms`}
-                height={160}
-              />
+              {hasHrv ? (
+                <MetricChart
+                  data={chartData}
+                  xKey="ts"
+                  lines={[{ key: 'hrv', label: 'HRV (ms)', color: '#22c55e' }]}
+                  yFormatter={(v) => `${v.toFixed(0)}ms`}
+                  height={160}
+                />
+              ) : (
+                <MetricChart data={[]} lines={[]} height={160} emptyMessage={NO_PHYSIOLOGY_MSG} />
+              )}
             </div>
           )}
 
