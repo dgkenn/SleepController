@@ -9,11 +9,14 @@ export function useStatusStream() {
   const [streamError, setStreamError] = useState<boolean>(false);
   const esRef = useRef<EventSource | null>(null);
 
-  // SWR polling fallback (every 10s)
+  const isLive = !!streamData && !streamError;
+
+  // SWR polling fallback (every 10s) -- only polls when SSE isn't live, so it acts purely
+  // as a fallback rather than double-fetching status while the stream is already up.
   const { data: pollData, error: pollError, mutate } = useSWR<StatusResponse>(
     '/api/status',
     fetcher,
-    { refreshInterval: 10000, revalidateOnFocus: true }
+    { refreshInterval: isLive ? 0 : 10000, revalidateOnFocus: true }
   );
 
   useEffect(() => {
@@ -60,7 +63,6 @@ export function useStatusStream() {
 
   // Prefer SSE data, fall back to poll data
   const data = streamData ?? pollData ?? null;
-  const isLive = !!streamData && !streamError;
 
   return { data, isLive, error: !data && (!!pollError || streamError), mutate };
 }

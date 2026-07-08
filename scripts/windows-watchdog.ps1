@@ -29,8 +29,8 @@ Log "watchdog starting (root=$Root)"
 $StormWindowSeconds = 300
 $StormThreshold = 5
 $StormCooldownSeconds = 300
-$script:restartHistory = @{ api = @(); daemon = @(); web = @() }
-$script:stormHold = @{ api = $null; daemon = $null; web = $null }
+$script:restartHistory = @{ api = @(); daemon = @(); web = @(); tailscale = @() }
+$script:stormHold = @{ api = $null; daemon = $null; web = $null; tailscale = $null }
 $script:alertFile = Join-Path $run "watchdog.alert"
 
 function Write-Alert([string]$reason) {
@@ -139,6 +139,13 @@ function Handle-RestartRequest {
         "all"    {
             Stop-ComponentProcesses "api"; Stop-ComponentProcesses "web"; Stop-ComponentProcesses "daemon"
             $script:daemonGraceUntil = (Get-Date)   # let Ensure-Daemon re-judge immediately, no grace wait
+            # Re-arm the one-shot smoke test for EVERY full restart (not just the very first
+            # watchdog-lifetime boot) -- a manual restart=all or a self-update deserves the same
+            # end-to-end verification a fresh boot gets. Also what lets a self-update's rollback
+            # safety net (Invoke-DeployRollback, via $script:pendingRollback) actually get checked.
+            $script:smokeTestAt = (Get-Date).AddSeconds(40)
+            $script:smokeTestDone = $false
+            Log "restart=all: re-arming smoke test (will re-verify ~40s from now)"
         }
         "api"      { Stop-ComponentProcesses "api" }
         "web"      { Stop-ComponentProcesses "web" }
@@ -163,6 +170,11 @@ function Handle-RestartRequest {
 $script:updateRequestFile = Join-Path $run "update.request"
 $script:updateResultFile = Join-Path $run "update.result"
 $script:updateBranchAllowlist = '^[A-Za-z0-9._/-]+$'
+# Auto-rollback bookkeeping: set (below) after a self-update's git reset + restart-request
+# succeed, to @{ priorSha; branch }; cleared as soon as it's acted on (rollback attempted) or the
+# post-restart smoke test PASSES. Invoke-SmokeTest checks this on FAILURE and rolls back to
+# priorSha -- see Invoke-DeployRollback.
+$script:pendingRollback = $null
 
 function Write-UpdateResult($record) {
     try {
@@ -198,6 +210,16 @@ function Handle-UpdateRequest {
         $ts = Get-Date -Format o
         $gitOutput = @()
         $gitOk = $true
+
+        # Capture the CURRENT commit BEFORE any git command below can move the working tree, so a
+        # deploy that fails the post-restart smoke test can be rolled back to exactly this commit
+        # (see Invoke-DeployRollback). Best-effort: a failure to capture it just means rollback
+        # later degrades to "log CRITICAL, can't auto-revert" instead of throwing here.
+        $priorSha = $null
+        try {
+            $priorSha = (& git -C $Root rev-parse HEAD 2>$null | Select-Object -First 1)
+            if ($priorSha) { $priorSha = $priorSha.Trim() }
+        } catch { $priorSha = $null }
 
         $fetchOut = & git -C $Root fetch --prune origin $branch 2>&1
         $gitOutput += $fetchOut
@@ -236,6 +258,10 @@ function Handle-UpdateRequest {
             # reuse the EXISTING restart.request protocol -- never kill a process directly here
             Set-Content -Path $script:restartRequestFile -Value "all" -Encoding ASCII
             $restarted = $true
+            # Arm the rollback safety net. Handle-RestartRequest's "all" case (below, same tick)
+            # re-arms the one-shot smoke test, which will check $script:pendingRollback on FAILURE
+            # and revert to $priorSha -- see Invoke-DeployRollback.
+            $script:pendingRollback = @{ priorSha = $priorSha; branch = $branch }
             $summary = "update to '$branch' succeeded (validate=$validateVerdict) -- restart requested"
             Log "self-update: $summary"
         } else {
@@ -467,15 +493,60 @@ function Daemon-Alive {
     if (-not (Test-Path $script:daemonHb)) { return $false }
     return ((New-TimeSpan -Start (Get-Item $script:daemonHb).LastWriteTime -End (Get-Date)).TotalSeconds -lt 90)
 }
+
+# --- wedge detection: tick-progress staleness (beyond the thread heartbeat) ---------------------
+# Daemon-Alive above only proves the OS THREAD that touches daemon.heartbeat is still running --
+# that thread is deliberately independent of the asyncio event loop (see live_daemon.py's
+# _heartbeat_thread) so it keeps beating even if the event loop itself DEADLOCKS. That's correct
+# for surviving a long blocking call, but it also means a truly wedged event loop would otherwise
+# never be detected. runtime_state.updated (the SQLite row live_daemon.py writes every control/
+# command/telemetry tick) only advances when a tick actually completes -- so heartbeat-fresh +
+# tick-progress-stale together mean "process alive, event loop stuck." Threshold is deliberately
+# generous (5 min): the on-bed self-test can run ~10 min, but it streams progress via on_progress
+# callbacks that refresh runtime_state.updated at least every ~60-90s (see sleepctl/loop/
+# self_test.py's `_emit()` calls inside its long polling windows), so 5 min of total silence only
+# trips on a REAL wedge, never a legitimate self-test. Throttled to avoid spawning python every
+# 15s tick forever -- a wedge is a slow-developing condition, a minute of extra detection latency
+# doesn't matter.
+$script:daemonTickStaleSeconds = 300
+$script:daemonTickCheckEveryS = 60
+$script:daemonTickCheckAt = (Get-Date)
+function Get-DaemonTickAgeSeconds {
+    # Returns the age (seconds) of runtime_state.updated, or $null if it can't be determined
+    # (DB missing/locked, python error, no row yet) -- callers MUST treat $null as "unknown", never
+    # as "stale", so a transient read hiccup can never itself trigger a restart.
+    try {
+        $out = & $py -c "from app.db import connect; from app.bridge import read_runtime_state; rt = read_runtime_state(connect(), 10**9); print(rt.get('updated') or 'NONE')" 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
+        $line = ($out | Select-Object -Last 1).ToString().Trim()
+        if (-not $line -or $line -eq "NONE") { return $null }
+        $ts = [datetime]::Parse($line, [System.Globalization.CultureInfo]::InvariantCulture,
+                                 [System.Globalization.DateTimeStyles]::RoundtripKind)
+        return [int]((Get-Date).ToUniversalTime() - $ts.ToUniversalTime()).TotalSeconds
+    } catch {
+        return $null
+    }
+}
+function Daemon-Wedged {
+    if ((Get-Date) -lt $script:daemonTickCheckAt) { return $false }   # not due -- default: not wedged
+    $script:daemonTickCheckAt = (Get-Date).AddSeconds($script:daemonTickCheckEveryS)
+    $age = Get-DaemonTickAgeSeconds
+    if ($null -eq $age) { return $false }   # unknown reading -- never restart on it
+    return ($age -gt $script:daemonTickStaleSeconds)
+}
+
 function Ensure-Daemon {
     if ((Get-Date) -lt $script:daemonGraceUntil) { return }   # let a fresh daemon connect + beat
-    if (Daemon-Alive) { Clear-StormState "daemon"; return }
+    $wedged = Daemon-Wedged
+    if ((Daemon-Alive) -and -not $wedged) { Clear-StormState "daemon"; return }
     if (-not (Test-CanRestart "daemon")) { return }   # storming -- held; surfaced via CRITICAL log + alert
     $age = -1
     if (Test-Path $script:daemonHb) {
         $age = [int]((New-TimeSpan -Start (Get-Item $script:daemonHb).LastWriteTime -End (Get-Date)).TotalSeconds)
     }
-    $ageDesc = if ($age -ge 0) { "daemon heartbeat ${age}s stale" } else { "daemon heartbeat missing" }
+    $ageDesc = if ($wedged) {
+        "daemon tick-progress stale beyond ${script:daemonTickStaleSeconds}s (event loop wedged -- heartbeat thread still alive)"
+    } elseif ($age -ge 0) { "daemon heartbeat ${age}s stale" } else { "daemon heartbeat missing" }
     Log ("{0}; restarting (restart #{1} in window)" -f $ageDesc, $script:restartHistory["daemon"].Count)
     # best-effort: clear any lingering run_daemon before starting a clean one
     Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
@@ -486,11 +557,47 @@ function Ensure-Daemon {
     $script:daemonGraceUntil = (Get-Date).AddSeconds(45)  # don't re-judge until it can beat
 }
 
+# --- tailscale/funnel self-heal -----------------------------------------------------------------
+# Targets the "502 then TLS failure" outage signature: tailscale's backend drops, or the funnel
+# (HTTPS ingress that exposes port 3000) goes stale, while api/daemon/web all stay perfectly
+# healthy -- silently cutting off remote/phone access with nothing LOCAL to notice. Checked once
+# per supervise tick; on a bad reading, try `tailscale up` + `tailscale funnel --bg 3000` once,
+# then fold into the SAME storm/backoff bookkeeping as api/daemon/web (Test-CanRestart/
+# Clear-StormState, extended above with a "tailscale" key) so a persistently broken tailscale
+# can't hot-loop `tailscale up` forever -- it holds + raises CRITICAL exactly like any other
+# repeatedly-failing component. No-op (cleanly) if tailscale isn't installed.
+$script:tailscaleCmd = (Get-Command tailscale -ErrorAction SilentlyContinue)
+function Tailscale-Healthy {
+    if (-not $script:tailscaleCmd) { return $true }   # not installed -- nothing to supervise
+    try {
+        $statusJson = & tailscale status --json 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $statusJson) { return $false }
+        $status = ($statusJson | Out-String) | ConvertFrom-Json -ErrorAction Stop
+        if ($status.BackendState -ne "Running") { return $false }
+    } catch { return $false }
+    try {
+        $funnelOut = (& tailscale funnel status 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0) { return $false }
+        if ($funnelOut -notmatch 'https://') { return $false }   # no active https funnel entry
+    } catch { return $false }
+    return $true
+}
+function Ensure-Tailscale {
+    if (-not $script:tailscaleCmd) { return }
+    if (Tailscale-Healthy) { Clear-StormState "tailscale"; return }
+    if (-not (Test-CanRestart "tailscale")) { return }   # storming -- held; CRITICAL logged by Test-CanRestart
+    Log ("tailscale/funnel unhealthy; attempting self-heal (attempt #{0} in window)" -f $script:restartHistory["tailscale"].Count)
+    try { & tailscale up *> $null } catch { Log "WARN: 'tailscale up' failed: $_" }
+    try { & tailscale funnel --bg 3000 *> $null } catch { Log "WARN: 'tailscale funnel --bg 3000' failed: $_" }
+}
+
 # --- post-restart smoke test --------------------------------------------------------------------
 # Once things have had ~40s to come up, verify the whole stack actually works end to end -- this
 # catches a broken deploy (bad build, import error, wrong port, dead creds) immediately instead of
-# discovering it hours later. Runs exactly once, on whichever supervise pass crosses the 40s mark,
-# so it never blocks the loop with an up-front sleep.
+# discovering it hours later. Runs once per arm (see Handle-RestartRequest's "all" case and
+# Handle-UpdateRequest, both of which re-arm $script:smokeTestAt/$script:smokeTestDone), on
+# whichever supervise pass first crosses the armed deadline, so it never blocks the loop with an
+# up-front sleep.
 function Invoke-SmokeTest {
     $failures = @()
     try {
@@ -506,11 +613,48 @@ function Invoke-SmokeTest {
     if ($failures.Count -eq 0) {
         Set-Content -Path $resultPath -Value "SMOKE PASS" -Encoding ASCII
         Log "smoke test: SMOKE PASS"
+        $script:pendingRollback = $null   # this deploy is verified good -- nothing to roll back
     } else {
         $msg = "SMOKE FAIL: " + ($failures -join "; ")
         Set-Content -Path $resultPath -Value $msg -Encoding ASCII
         Log "smoke test: $msg"
         Write-Alert $msg
+        if ($script:pendingRollback -ne $null) { Invoke-DeployRollback }
+    }
+}
+
+# --- deploy rollback: undo a self-update that fails its post-restart smoke test -----------------
+# Handle-UpdateRequest captured the pre-update commit ($priorSha) and armed $script:pendingRollback
+# BEFORE resetting to the new branch; if the smoke test that follows the resulting restart fails,
+# revert to that exact commit and restart once more so the box lands back on the last-known-good
+# deploy instead of serving a broken one until a human notices. Never retries more than once per
+# update (pendingRollback is cleared unconditionally below) -- a rollback target that ALSO fails
+# its smoke test just logs CRITICAL again on that next pass rather than bouncing forever.
+function Invoke-DeployRollback {
+    $rb = $script:pendingRollback
+    $script:pendingRollback = $null
+    if (-not $rb -or -not $rb.priorSha) {
+        Log "CRITICAL: smoke test failed after self-update but no prior commit was captured -- cannot auto-rollback; needs manual attention"
+        Write-Alert "smoke test FAILED after self-update; no prior SHA captured -- manual rollback needed"
+        return
+    }
+    Log "CRITICAL: smoke test FAILED after self-update to '$($rb.branch)' -- rolling back to prior commit $($rb.priorSha)"
+    try {
+        $resetOut = & git -C $Root reset --hard $rb.priorSha 2>&1
+        $resetOk = ($LASTEXITCODE -eq 0)
+        ($resetOut | Out-String) -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { Log "rollback git: $_" }
+        if (-not $resetOk) {
+            Log "CRITICAL: rollback 'git reset --hard $($rb.priorSha)' FAILED -- system is left on the broken deploy"
+            Write-Alert "auto-rollback FAILED (git reset to $($rb.priorSha) failed) -- system is on a broken deploy, needs manual attention"
+            return
+        }
+        Write-Alert "auto-rolled-back self-update (branch '$($rb.branch)') after smoke test failure -- reverted to $($rb.priorSha)"
+        # reuse the EXISTING restart.request protocol -- never kill a process directly here
+        Set-Content -Path $script:restartRequestFile -Value "all" -Encoding ASCII
+        Log "rollback: restart requested to bring the reverted build up (smoke test re-arms automatically)"
+    } catch {
+        Log "CRITICAL: rollback handler crashed: $_"
+        Write-Alert "auto-rollback handler crashed: $_"
     }
 }
 
@@ -552,9 +696,30 @@ while ($true) {
         Clear-StormState "web"
     }
 
+    Ensure-Tailscale
+
     if (-not $script:smokeTestDone -and (Get-Date) -ge $script:smokeTestAt) {
         Invoke-SmokeTest
         $script:smokeTestDone = $true
+    }
+
+    # --- off-box dead-man's-switch (e.g. healthchecks.io) ---------------------------------------
+    # If ALL supervised components (api, daemon, web) are healthy THIS cycle, ping HEALTHCHECKS_URL
+    # (read from deploy\.env, loaded into $env: at startup above). If ANY of them is down/unhealthy,
+    # SKIP the ping on purpose -- a MISSED ping is what triggers the external alert, so this single
+    # mechanism reports BOTH "the box is completely dark" (no pings at all -- power/network/OS
+    # failure) and "the box is up but broken" (a component down, so pings stop even though the
+    # laptop itself is fine). Cleanly a no-op if HEALTHCHECKS_URL is unset/blank. Best-effort: a
+    # network hiccup reaching the external service must never affect the supervise loop.
+    if ($env:HEALTHCHECKS_URL) {
+        $allHealthy = (Port-Alive 8000) -and (Daemon-Alive) -and (Port-Alive 3000)
+        if ($allHealthy) {
+            try {
+                Invoke-RestMethod -Uri $env:HEALTHCHECKS_URL -Method Post -TimeoutSec 10 -ErrorAction Stop | Out-Null
+            } catch {
+                Log "WARN: healthcheck ping failed: $_"
+            }
+        }
     }
 
     Set-Content -Path (Join-Path $run "watchdog.heartbeat") -Value (Get-Date -Format o)

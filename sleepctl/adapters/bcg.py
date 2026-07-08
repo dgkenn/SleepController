@@ -20,7 +20,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sleepctl.adapters.wearable import RealtimeWearableSource, WearableSample
-from sleepctl.recon.frame_decoder import find_beats, heart_rate_from_bcg, movement_index
+from sleepctl.recon.frame_decoder import detrend, find_beats, heart_rate_from_beats, movement_index
 
 
 class BCGProcessor:
@@ -37,13 +37,19 @@ class BCGProcessor:
 
     def vitals(self) -> Optional[dict]:
         """Beat-to-beat HR (bpm), HRV (RMSSD, ms), and a 0..1 movement index, or None if the
-        window is too short / too noisy to trust."""
+        window is too short / too noisy to trust.
+
+        ``detrend(x, fs)`` and beat-detection are each run ONCE here and reused across the HR/
+        HRV/movement helpers (previously ``find_beats`` detrended, ``heart_rate_from_bcg``
+        detrended + re-ran beat detection again, and ``movement_index`` detrended a third time --
+        3x the work for the same input, on every /bcg/ingest call)."""
         x = list(self._buf)
         if len(x) < int(self.fs * 5):         # need >=5 s to estimate a rate
             return None
-        beats = find_beats(x, self.fs)
-        hr = heart_rate_from_bcg(x, self.fs)
-        rms = movement_index(x, self.fs)
+        detrended = detrend(x, self.fs)
+        beats = find_beats(x, self.fs, detrended=detrended)
+        hr = heart_rate_from_beats(beats, self.fs)
+        rms = movement_index(x, self.fs, detrended=detrended)
         movement = max(0.0, min(1.0, rms / self.move_scale)) if self.move_scale else 0.0
         hrv = self._rmssd_ms(beats)
         return {"hr": round(hr, 1) if hr else None, "hrv": hrv,

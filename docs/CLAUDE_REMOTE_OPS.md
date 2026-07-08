@@ -109,8 +109,9 @@ running code with no human at the keyboard. Use it deliberately.
    deployment's checkout already points at. This console cannot push code for you; it can only
    trigger the box to pull what's already on that branch.
 2. **`POST /diag/action/update?token=$TOKEN`** — writes `.run/update.request` = the box's
-   `DEPLOY_BRANCH` value. Returns `{ok, action:"update", result:{branch}, verify_with:
-   "/diag/update-status?token=..."}`.
+   `DEPLOY_BRANCH` value. Returns `{ok, action:"update", result:{branch},
+   verify_with:"/diag/update-status"}` (append `?token=$TOKEN` yourself — the response
+   deliberately never echoes the token back, so pasting an action response can't leak it).
 3. **Poll `GET /diag/update-status?token=$TOKEN`** every ~15–30s until `available: true` with a
    `git_ok`/`validate_verdict`/`restarted` verdict. The record is `{timestamp, branch, git_ok,
    git_output (tail), validate_verdict, restarted, summary}`.

@@ -211,16 +211,19 @@ def test_good_night_never_triggers_guardrail_through_the_controller():
     assert summary["critical"] is False
 
 
-def test_critical_guardrail_forces_safe_hold_through_the_controller():
+def test_critical_guardrail_forces_safe_step_toward_neutral_through_the_controller():
     """Drive HR up while the controller is actively cooling (settle-cool during maintenance),
-    long enough for the driving-arousal guardrail to trip, and confirm it forces a HOLD toward
-    neutral rather than letting the aggressive cooling continue."""
+    long enough for the driving-arousal guardrail to trip, and confirm it forces a safe step
+    toward neutral -- labeled by its TRUE direction (e.g. WARMER when reverting up from an
+    active cool), not an unconditional HOLD, so ``_recent_decisions`` stays truthful for the
+    guardrail's own streak logic (regression test for the mislabeled-action bug)."""
     cfg = AppConfig.default()
     controller = SleepController(cfg)
     now = datetime(2026, 6, 24, 0, 0)
     now, recent, ctx = _advance_to_maintenance(controller, now)
 
-    forced_hold = False
+    forced_override = False
+    prev_target = controller._last_target_f
     for i in range(30):
         # Rising HR well above the settled sleep baseline while movement stays low (so the
         # frame itself is trustworthy -- this must be the GUARDRAIL catching it, not the
@@ -230,12 +233,22 @@ def test_critical_guardrail_forces_safe_hold_through_the_controller():
         recent.append(frame)
         now += timedelta(minutes=1)
         if decision.log_payload["guardrail"]["critical"]:
-            forced_hold = True
-            assert decision.action is CorrectionAction.HOLD
+            forced_override = True
             assert "guardrail critical" in decision.reason
+            neutral = cfg.tunables.neutral_temp_f
+            # the step must move toward neutral (or hold there), never away from it.
+            assert abs(decision.target_temp_f - neutral) <= abs(prev_target - neutral)
+            # ...and the action label must reflect the step's TRUE direction.
+            if decision.target_temp_f > prev_target:
+                assert decision.action is CorrectionAction.WARMER
+            elif decision.target_temp_f < prev_target:
+                assert decision.action is CorrectionAction.COOLER
+            else:
+                assert decision.action is CorrectionAction.HOLD
             break
+        prev_target = decision.target_temp_f
 
-    assert forced_hold, "expected the driving-arousal guardrail to eventually trip"
+    assert forced_override, "expected the driving-arousal guardrail to eventually trip"
 
 
 def test_guardrail_override_respects_slew_limit_on_the_next_tick():

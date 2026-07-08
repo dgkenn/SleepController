@@ -15,9 +15,10 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app import bridge, services
 from app.config import settings
@@ -41,6 +42,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup() -> None:
+    from app.db import init_schema
+    init_schema()  # run the engine + dashboard DDL/migrations ONCE, not on every request/tick
     ensure_bootstrap_user()
     # Optional: connect the work-shift calendar from CALENDAR_ICS_URL (deploy/.env) without the UI.
     try:
@@ -372,12 +375,15 @@ def gym_config_update(body: GymConfigBody, repo=Depends(repo_dep), user: str = A
 
 
 class BCGBody(BaseModel):
+    # Capped at services.BCG_MAX_SAMPLES (~400s at 50Hz -- far beyond a 1s batch) so an
+    # unbounded/malicious array can't be used to blow up memory or stall the ingest worker;
+    # FastAPI/pydantic reject an oversized batch with a 422 before it ever reaches ingest_bcg.
     fs: float | None = None
-    ax: list[float] | None = None
-    ay: list[float] | None = None
-    az: list[float] | None = None
-    mag: list[float] | None = None
-    payload: list[dict] | None = None
+    ax: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    ay: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    az: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    mag: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    payload: list[dict] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
     source: str | None = None
 
 
@@ -426,7 +432,10 @@ async def stream_status(request: Request, token: str | None = None):
         while True:
             repo = get_repo()
             try:
-                payload = services.build_status(repo)
+                # build_status is synchronous DB work; run it off the event loop thread so one
+                # slow tick (or the several concurrent dashboard tabs each holding an SSE stream)
+                # can't stall every other request being served by this process.
+                payload = await run_in_threadpool(services.build_status, repo)
             finally:
                 repo.close()
             yield f"data: {json.dumps(payload, default=str)}\n\n"
@@ -890,14 +899,25 @@ import threading  # noqa: E402
 _HEALTH_WATCHDOG_INTERVAL_S = 60
 _health_watchdog_started = False
 
+# TTL safety net for the cached ML recommendation (see services.cached_ml_recommendation):
+# refreshed once/night by the nightly close-out, but also periodically here so a long-running
+# process never shows a recommendation that's gone stale for days if close-out is ever skipped
+# (daemon restart mid-night, simulator daemon, etc). This runs in this background thread, NOT on
+# the request/SSE hot path, so build_status still never triggers the refit itself.
+_ML_REC_REFRESH_EVERY_N_TICKS = 5  # 5 * 60s = ~5 minutes
+
 
 def _health_watchdog_loop() -> None:
     import time
+    tick = 0
     while True:
         try:
             repo = get_repo()
             try:
                 services.evaluate_and_sync_health_alerts(repo)
+                tick += 1
+                if tick % _ML_REC_REFRESH_EVERY_N_TICKS == 0:
+                    services.refresh_ml_recommendation_cache(repo)
             finally:
                 repo.close()
         except Exception:
@@ -1042,6 +1062,25 @@ def diag_thermal_samples(token: str = "", limit: int = 500, repo=Depends(repo_de
     from app import bridge
     limit = max(1, min(limit, 5000))
     return bridge.recent_thermal_samples(repo.conn, limit=limit)
+
+
+@app.get("/diag/sensor-history")
+def diag_sensor_history(token: str = "", limit: int = 500, since: str = "", repo=Depends(repo_dep)):
+    """Remote pull of the accumulated phone/independent-sensor (accelerometer-derived BCG)
+    history -- unlike ``live_sensor`` (a singleton overwritten on every /bcg/ingest for the
+    daemon's real-time fusion), ``sensor_samples`` accumulates every ingested sample, for
+    off-box model training / nightly learning.
+
+    SAME token gating as ``/diag`` (secret ``DIAG_TOKEN`` env, constant-time compare, 404 when
+    missing/wrong/disabled -- invisible to scanners). ``limit`` defaults to 500, capped at 5000.
+    Optional ``since`` (ISO timestamp) restricts to rows at or after it."""
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+    from app import bridge
+    limit = max(1, min(limit, 5000))
+    return bridge.recent_sensor_samples(repo.conn, limit=limit, since=since or None)
 
 
 # ---------------------------------------------------------------- remote deep-dive (token-gated)
@@ -1572,7 +1611,12 @@ def _diag_safe(fn, default=_DIAG_ALL_NO_DEFAULT):
 
 
 def _verify_with(token: str) -> str:
-    return f"/diag/all?token={token}"
+    """The path to re-fetch to confirm an action's effect. Deliberately does NOT embed ``token``
+    -- these paths are returned verbatim in action response bodies, and a response body is
+    exactly the kind of thing that gets pasted/logged/screenshotted, so the DIAG_TOKEN must
+    never ride along in it. The caller already has the token (it's how they authenticated the
+    action in the first place) and can append ``?token=...`` itself."""
+    return "/diag/all"
 
 
 def _action_result(action: str, result, token: str, ok: bool = True,
@@ -1584,8 +1628,10 @@ def _action_result(action: str, result, token: str, ok: bool = True,
     thing to re-check (e.g. self-update -> ``/diag/update-status``). ``/diag/repair``,
     ``/diag/action/restart`` and ``/diag/action/reconnect`` predate this helper and keep their
     original response shape (append-only), but now also carry a ``verify_with`` key each (see
-    the retrofit at their ``return`` statements above)."""
-    verify_with = f"{verify_path}?token={token}" if verify_path else _verify_with(token)
+    the retrofit at their ``return`` statements above). ``token`` is accepted for backward
+    compatibility with existing call sites but is intentionally NOT embedded in the returned
+    path -- see ``_verify_with``."""
+    verify_with = verify_path if verify_path else _verify_with(token)
     return {"ok": ok, "action": action, "result": result, "verify_with": verify_with}
 
 

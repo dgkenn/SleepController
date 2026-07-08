@@ -10,7 +10,8 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+import time
+from datetime import datetime, timedelta, timezone
 
 VALID_COMMANDS = {
     "start", "pause", "resume", "stop", "safe_default",
@@ -100,6 +101,59 @@ def write_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
     conn.commit()
 
 
+# Rolling retention window for sensor_samples (append-only history, see db.py). The same SQLite
+# DB is already covered by the off-box encrypted backup, so this data is durably saved off-box
+# automatically -- local retention here is just about keeping the live table bounded, not the
+# only copy of the data.
+_SENSOR_SAMPLES_RETENTION_DAYS = 60
+
+# /bcg/ingest fires ~1/sec while the phone is streaming; running the retention DELETE on every
+# single call was a full table scan of sensor_samples per ingest for no benefit (the window only
+# meaningfully changes over hours, not seconds). Gate it to at most once/hour -- the INSERT above
+# still runs every call, so accumulation is unaffected. Module-level (not per-connection) since
+# it's a single-process API server; a monotonic clock avoids any wall-clock-jump weirdness.
+_SENSOR_PRUNE_INTERVAL_S = 3600.0
+_last_sensor_prune_monotonic = 0.0
+
+
+def append_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
+    """Append one phone/sensor-derived sample (never overwrites) so overnight data ACCUMULATES
+    into a time-series dataset for later model training / nightly learning, unlike the
+    ``live_sensor`` singleton above which only ever holds the latest reading. Best-effort: a
+    logging failure here must never break /bcg/ingest for the daemon's real-time fusion path."""
+    global _last_sensor_prune_monotonic
+    try:
+        conn.execute(
+            """INSERT INTO sensor_samples (ts, hr, hrv, movement, source, fs, n_samples)
+                VALUES (?,?,?,?,?,?,?)""",
+            (_now(), sample.get("hr"), sample.get("hrv"), sample.get("movement"),
+             sample.get("source", "phone"), sample.get("fs"), sample.get("n_samples")),
+        )
+        now_mono = time.monotonic()
+        if now_mono - _last_sensor_prune_monotonic >= _SENSOR_PRUNE_INTERVAL_S:
+            cutoff = (datetime.now(timezone.utc)
+                     - timedelta(days=_SENSOR_SAMPLES_RETENTION_DAYS)).isoformat()
+            conn.execute("DELETE FROM sensor_samples WHERE ts < ?", (cutoff,))
+            _last_sensor_prune_monotonic = now_mono
+        conn.commit()
+    except Exception:
+        pass  # never disrupt /bcg/ingest's real-time fusion path over a telemetry write
+
+
+def recent_sensor_samples(conn: sqlite3.Connection, limit: int = 500, since: str | None = None) -> list:
+    """Most-recent phone/sensor samples (ts DESC) as dicts, for export/inspection/model training.
+    ``since`` (ISO timestamp), if given, restricts to rows at or after it."""
+    if since:
+        rows = conn.execute(
+            "SELECT * FROM sensor_samples WHERE ts >= ? ORDER BY ts DESC LIMIT ?", (since, limit)
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM sensor_samples ORDER BY ts DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:
     """Record how the user was woken on ``row['date']`` (one row/night; last write wins). Joined
     with the morning grogginess check-in to personalize the wake tuning."""
@@ -148,6 +202,23 @@ def recent_thermal_samples(conn: sqlite3.Connection, limit: int = 500) -> list:
         "SELECT * FROM thermal_samples ORDER BY ts DESC LIMIT ?", (limit,)
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def prune_thermal_samples(conn: sqlite3.Connection, keep_days: int = 45) -> int:
+    """Delete thermal_samples rows older than ``keep_days``. Mirrors ``Repository.prune_events``/
+    ``prune_raw_samples`` etc, but lives here (not on ``Repository``) because ``thermal_samples``
+    is a dashboard-layer table (see ``db.py``'s ``_DASHBOARD_DDL``), not part of the sleepctl
+    engine schema. Called once/night at the nightly close-out seam (see
+    ``LiveDashboardDaemon._maybe_close_out``), NEVER on the per-tick hot path. Defensive: returns
+    0 on any error rather than raising."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        cur = conn.execute("DELETE FROM thermal_samples WHERE ts < ?", (cutoff,))
+        deleted = cur.rowcount or 0
+        conn.commit()
+        return deleted
+    except Exception:
+        return 0
 
 
 def read_wake_logs(conn: sqlite3.Connection, limit: int = 30) -> list:

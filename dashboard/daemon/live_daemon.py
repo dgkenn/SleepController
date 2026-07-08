@@ -61,6 +61,12 @@ def _classify_tick_error(exc: BaseException) -> tuple[str, str]:
     return "error", "error"
 
 
+# Cap on the rolling recent-tick-error window persisted into runtime_state.extra (see
+# LiveDashboardDaemon._recent_errors) -- generous relative to health_monitor's 3-error
+# "repeated_cloud_errors" threshold, just bounding memory/row size during a very long outage.
+_MAX_RECENT_ERRORS = 20
+
+
 def _parse_wake_dt(wake_time):
     """'HH:MM' -> the next datetime it occurs, or None if malformed (so a bad UI command degrades
     gracefully instead of crashing the command loop)."""
@@ -115,6 +121,12 @@ class LiveDashboardDaemon:
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
         self._consec_errors = 0
+        # Rolling window of recent tick-error reprs, persisted into runtime_state.extra each tick
+        # (see _snapshot) so app.services.evaluate_and_sync_health_alerts can see a sustained
+        # cloud/device outage (e.g. daytime Eight Sleep API down) and push a critical alert via
+        # health_monitor.evaluate_health's recent_errors path -- capped well above the 3-error
+        # alert threshold so the count stays accurate for any realistic outage.
+        self._recent_errors: list[str] = []
         self._last_decision = None  # reused by the fast telemetry tick between control ticks
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
         self.efficacy_arm = None  # tonight's standing efficacy-trial arm, if the trial is enabled
@@ -760,6 +772,12 @@ class LiveDashboardDaemon:
                       "onset_cold_settle_f": getattr(self, "_onset_cold_settle_f", None),
                       "warm_pulse_on": getattr(self, "_warm_pulse_on", None),
                       "device_error": error,
+                      # Consecutive tick-error count + a rolling window of their reprs -- read by
+                      # app.services.evaluate_and_sync_health_alerts (via runtime_state.extra) so a
+                      # sustained daytime cloud outage crosses health_monitor's repeated-error
+                      # threshold and pushes a critical alert, instead of silently retrying forever.
+                      "consec_errors": self._consec_errors,
+                      "recent_errors": list(self._recent_errors),
                       "data_age_s": round(frame.data_age_seconds, 1)
                       if frame is not None and frame.data_age_seconds is not None else None,
                       "telemetry_stale": bool(
@@ -1063,7 +1081,22 @@ class LiveDashboardDaemon:
                 self._emit_event("nightly", "info", "nightly_close_out",
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})
+                try:
+                    # Refresh the dashboard's cached ML recommendation now that a new setpoint
+                    # version may exist -- the ONLY place build_status's shown recommendation
+                    # should change, since build_status itself never recomputes (see
+                    # app.services.cached_ml_recommendation).
+                    from app import services as dashboard_services
+                    dashboard_services.refresh_ml_recommendation_cache(self.repo)
+                except Exception:
+                    pass
                 self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
+                # High-write tables with no prior retention (raw_samples/decisions/interventions/
+                # thermal_samples) -- prune here (once/night), never on the per-tick hot path.
+                self.repo.prune_raw_samples()
+                self.repo.prune_decisions()
+                self.repo.prune_interventions()
+                bridge.prune_thermal_samples(self.repo.conn)
                 self._maybe_backup()      # rotating DB backup: once/day, gated on-disk
             except Exception as exc:
                 self._log(f"nightly close-out skipped: {exc}")
@@ -1133,12 +1166,14 @@ class LiveDashboardDaemon:
                         await self.telemetry_tick()
                         last_telem = loop_now
                     self._consec_errors = 0
+                    self._recent_errors = []
                 except Exception as exc:
                     # A transient device/cloud error (timeout, token refresh, 5xx) must NOT
                     # kill the 24/7 loop. Log, surface a degraded snapshot so the dashboard
                     # shows the problem, hold (the device keeps its last safe command), and
                     # back off so we don't hammer a failing API.
                     self._consec_errors += 1
+                    self._recent_errors = (self._recent_errors + [repr(exc)])[-_MAX_RECENT_ERRORS:]
                     self._log(f"tick error #{self._consec_errors}: {exc!r}; holding")
                     cat, sev = _classify_tick_error(exc)
                     self._emit_event(cat, sev, "tick_error", repr(exc),

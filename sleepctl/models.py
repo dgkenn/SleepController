@@ -64,9 +64,10 @@ class ThermalIntent(Enum):
     # onset and suppresses wakefulness (Raymann/Van Someren); kept small + comfort-capped for
     # a hot sleeper, then the controller cools once asleep to deepen sleep.
     ONSET_WARM = "onset_warm"
-    # Genuinely COLD opening phase of induction: sheds a hot sleeper's heat and primes
-    # peripheral vasoconstriction so the later warm pulse produces a stronger vasodilation
-    # contrast. Learnable really-cold target; runs before ONSET_WARM.
+    # LEGACY: Genuinely COLD opening phase of induction (no longer part of the on-demand cascade).
+    # Sheds a hot sleeper's heat and primes peripheral vasoconstriction so the later warm pulse
+    # produces a stronger vasodilation contrast. Retained for compatibility but replaced by the
+    # 2-phase warm→cool cascade (see induction.py).
     ONSET_COLD_SETTLE = "onset_cold_settle"
 
 

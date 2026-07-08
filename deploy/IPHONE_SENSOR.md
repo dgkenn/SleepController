@@ -206,7 +206,9 @@ start the recording or the phone dies, the controller silently falls back to Pod
 
 - The daemon reads the phone feed only when `SLEEPCTL_PHONE_SENSOR` is unset or truthy (default
   on). Set `SLEEPCTL_PHONE_SENSOR=0` to ignore it entirely.
-- Accelerometer batches are processed into movement/HR and **only the derived sample is kept**
-  (a singleton row); the raw stream is not stored.
+- Accelerometer batches are processed into movement/HR. The derived samples are appended to a
+  `sensor_samples` history table (retrievable via `GET /diag/sensor-history` for analysis and
+  learning); independently, the live singleton row (`bridge.live_sensor`) is what the daemon
+  reads for real-time fusion. The raw accelerometer stream itself is not stored.
 - The token is a normal dashboard session token — treat it like your password; rotate by simply
   logging in again (old tokens expire after 30 days).

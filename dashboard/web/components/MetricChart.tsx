@@ -12,7 +12,7 @@ import {
 } from 'recharts';
 
 interface DataPoint {
-  [key: string]: string | number;
+  [key: string]: string | number | null;
 }
 
 interface LineConfig {
@@ -28,6 +28,9 @@ interface MetricChartProps {
   height?: number;
   xFormatter?: (v: string) => string;
   yFormatter?: (v: number) => string;
+  /** Overrides the generic "No data" fallback -- use to explain *why* data is missing
+   *  (e.g. Pod-subscription-gated physiology) instead of implying it's simply not loaded yet. */
+  emptyMessage?: string;
 }
 
 export default function MetricChart({
@@ -37,14 +40,15 @@ export default function MetricChart({
   height = 220,
   xFormatter,
   yFormatter,
+  emptyMessage = 'No data',
 }: MetricChartProps) {
   if (!data || data.length === 0) {
     return (
       <div
-        className="flex items-center justify-center bg-surface-raised rounded-2xl text-gray-600 text-sm"
+        className="flex items-center justify-center bg-surface-raised rounded-2xl text-gray-600 text-sm text-center px-4"
         style={{ height }}
       >
-        No data
+        {emptyMessage}
       </div>
     );
   }

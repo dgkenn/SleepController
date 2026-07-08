@@ -162,3 +162,92 @@ def test_should_record_follows_bed_presence(auth_client):
     _write_presence(False)
     body = auth_client.get("/bcg/should-record").json()
     assert body["record"] is False and body["presence"] is False
+
+
+# ------------------------------------------------------------------ input validation (security)
+def test_oversized_mag_batch_is_rejected(auth_client):
+    """An absurdly long array (way past a real ~1s batch) must be rejected, not accepted and
+    fed to the processor -- guards against a memory-blowup / worker-stall data-poisoning attempt.
+    Pydantic's ``Field(max_length=...)`` on ``BCGBody`` rejects it at request-validation time,
+    before ``ingest_bcg`` ever sees it, hence the 422."""
+    from app.services import BCG_MAX_SAMPLES
+    r = auth_client.post("/bcg/ingest",
+                         json={"fs": 50.0, "mag": [1.0] * (BCG_MAX_SAMPLES + 1)})
+    assert r.status_code == 422
+
+
+def test_oversized_ax_batch_is_rejected(auth_client):
+    from app.services import BCG_MAX_SAMPLES
+    huge = [0.0] * (BCG_MAX_SAMPLES + 1)
+    r = auth_client.post("/bcg/ingest", json={"fs": 50.0, "ax": huge, "ay": huge, "az": huge})
+    assert r.status_code == 422
+
+
+def test_batch_at_the_max_length_is_still_accepted(auth_client):
+    """The cap is a ceiling, not a regression on legitimate (if unusually long) batches."""
+    from app.services import BCG_MAX_SAMPLES
+    r = auth_client.post("/bcg/ingest", json={"fs": 50.0, "mag": [1.0] * BCG_MAX_SAMPLES})
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_ingest_bcg_service_itself_rejects_an_oversized_batch_bypassing_the_model():
+    """Defense in depth: ``services.ingest_bcg`` also enforces the cap directly, in case it's
+    ever called with a raw dict that didn't pass through the ``BCGBody`` pydantic model."""
+    from app.services import BCG_MAX_SAMPLES, ingest_bcg
+    result = ingest_bcg(None, {"fs": 50.0, "mag": [1.0] * (BCG_MAX_SAMPLES + 1)})
+    assert result["ok"] is False
+    assert result["ingested"] == 0
+
+
+def _post_json_allowing_nan(client, path, obj):
+    """httpx (the test client's transport) serializes ``json=...`` with ``allow_nan=False`` and
+    raises before the request is even sent, so a NaN/Inf-poisoned payload has to be encoded by
+    hand (stdlib ``json.dumps`` allows NaN/Infinity by default, same as a real misbehaving
+    client would send) and posted as raw bytes."""
+    import json as _json
+    body = _json.dumps(obj).encode("utf-8")
+    return client.post(path, content=body, headers={"content-type": "application/json"})
+
+
+def test_nan_and_inf_samples_are_dropped_not_persisted(auth_client):
+    """A batch laced with NaN/Inf must never let a non-finite value reach the bridge tables --
+    the good (finite) samples in the same batch should still be ingested."""
+    batch = _accel_batch(moving=True)
+    # corrupt every 5th sample across all three axes with NaN/Inf poison
+    for i in range(0, len(batch["ax"]), 5):
+        batch["ax"][i] = float("nan")
+        batch["ay"][i] = float("inf")
+        batch["az"][i] = float("-inf")
+
+    r = _post_json_allowing_nan(auth_client, "/bcg/ingest", batch)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["ingested"] > 0  # the remaining finite samples were still ingested
+
+    vitals = body["vitals"]
+    if vitals is not None:
+        for key in ("hr", "hrv", "movement"):
+            val = vitals.get(key)
+            assert val is None or math.isfinite(val)
+
+    from app import bridge
+    from app.db import get_repo
+    repo = get_repo()
+    s = bridge.read_sensor_sample(repo.conn)
+    repo.close()
+    assert s is not None
+    for key in ("hr", "hrv", "movement"):
+        val = s.get(key)
+        assert val is None or math.isfinite(val)
+
+
+def test_all_nan_mag_batch_yields_no_usable_samples(auth_client):
+    """If every sample in the batch is non-finite, there's nothing usable left -- a clean
+    ok:false rather than persisting garbage or crashing."""
+    r = _post_json_allowing_nan(auth_client, "/bcg/ingest", {"fs": 50.0, "mag": [float("nan")] * 60})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert body["ingested"] == 0

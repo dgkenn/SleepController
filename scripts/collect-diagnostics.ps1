@@ -11,7 +11,9 @@
 # Writes .run\diag-bundle-YYYYMMDD-HHMMSS.txt and prints its path. Paste/upload that ONE file
 # to Claude (or a human helping you debug) -- it never contains secret values, only whether
 # they're set (same redaction rule as the API bundle and doctor.ps1: any env KEY matching
-# PASSWORD/SECRET/TOKEN/ICS_URL/CLIENT_SECRET/JWT, case-insensitive, is always <redacted>).
+# PASSWORD/SECRET/TOKEN/ICS_URL/CLIENT_SECRET/JWT/PRIVATE, case-insensitive, is always
+# <redacted> -- this deliberately covers VAPID_PRIVATE_KEY while leaving VAPID_PUBLIC_KEY/
+# VAPID_SUBJECT visible).
 $ErrorActionPreference = "Continue"
 $Root = Join-Path $HOME "SleepController"
 if (-not (Test-Path $Root)) { $Root = (Get-Location).Path }  # best-effort if run from a checkout elsewhere
@@ -152,7 +154,7 @@ foreach ($name in $logFiles) {
 Add-Section "CONFIG SNAPSHOT (redacted -- secret values NEVER included)"
 # Same rule as diag_bundle.py's is_secret_key(): any KEY matching this pattern (case-
 # insensitive substring) is always <redacted>, never its real value.
-$SecretKeyPattern = "PASSWORD|SECRET|TOKEN|ICS_URL|CLIENT_SECRET|JWT"
+$SecretKeyPattern = "PASSWORD|SECRET|TOKEN|ICS_URL|CLIENT_SECRET|JWT|PRIVATE"
 $EnvKeysOfInterest = @(
     "SLEEPCTL_DB", "SLEEPCTL_LIVE", "SLEEPCTL_DRY_RUN", "SLEEPCTL_LAT", "SLEEPCTL_LON",
     "SLEEPCTL_WEATHER", "SLEEPCTL_PHONE_SENSOR",

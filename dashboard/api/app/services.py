@@ -6,6 +6,7 @@ All read through the sleepctl ``Repository`` + the dashboard tables, reusing eng
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from sleepctl.benchmarks import NightMode, perfect_sleep_index
@@ -253,7 +254,10 @@ def build_status(repo) -> dict:
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
     nights = repo.recent_nights(1)
     last = nights[-1] if nights else None
-    rec = ml_recommendation(repo)
+    # Read-only: NEVER recompute the ML recommendation here (see ``cached_ml_recommendation``) --
+    # build_status is hit every 5s by the SSE loop + by /status, and the real computation is an
+    # O(all-history) ridge refit meant to run once per night.
+    rec = cached_ml_recommendation(repo)
     extra = rt.get("extra") or {}
     return {
         "state": rt.get("state") or "IDLE",
@@ -330,6 +334,17 @@ def schedule_brief(repo) -> dict:
 
 
 # -------------------------------------------------------------------------- ml
+# ``ml_recommendation`` drives ``recommend_action`` -> ``build_feature_rows`` (per-night queries
+# over ALL history) -> ``SetpointModel().fit()`` (a pure-Python ridge regression) -- an
+# O(all-history) refit that's meant to run once per night (see ``NightlyUpdater.run`` /
+# ``sleepctl/loop/nightly.py``), NOT on every poll. ``build_status`` is hit every 5s by the SSE
+# loop and by ``/status``, so it must never call this directly -- see ``cached_ml_recommendation``
+# below, which it uses instead. Everything else (``/ml/recommendation``, ``/ml/overview``,
+# ``/tonight`` -- all much less frequently polled) still gets a live recommendation here, and
+# write-through refreshes the shared cache so ``cached_ml_recommendation`` benefits too.
+_ML_REC_CACHE_KEY = "ml_recommendation_cache"
+
+
 def ml_recommendation(repo, mode: NightMode | None = None) -> dict:
     profile = repo.latest_setpoints() or CFG.default_setpoints()
     if mode is None:
@@ -340,14 +355,76 @@ def ml_recommendation(repo, mode: NightMode | None = None) -> dict:
     # The ML optimises for tonight's situation-specific benchmark (work vs off-day).
     chosen = recommend_action(repo, profile, CFG, mode=mode)
     if chosen is None:
-        return {"action": "rule-policy", "reason": "deferring to safe rule policy (insufficient "
-                "data or confidence)", "confidence": 0.0, "source": "fallback",
-                "low_confidence": True, "mode": mode.value}
-    return {
-        "action": chosen.name, "reason": chosen.reason, "confidence": chosen.confidence,
-        "predicted": chosen.predicted, "source": "ml", "mode": mode.value,
-        "low_confidence": chosen.confidence < CFG.ml.conf_min,
-    }
+        result = {"action": "rule-policy", "reason": "deferring to safe rule policy (insufficient "
+                  "data or confidence)", "confidence": 0.0, "source": "fallback",
+                  "low_confidence": True, "mode": mode.value}
+    else:
+        result = {
+            "action": chosen.name, "reason": chosen.reason, "confidence": chosen.confidence,
+            "predicted": chosen.predicted, "source": "ml", "mode": mode.value,
+            "low_confidence": chosen.confidence < CFG.ml.conf_min,
+        }
+    _write_ml_recommendation_cache(repo, result)
+    return result
+
+
+def _write_ml_recommendation_cache(repo, result: dict) -> None:
+    """Persist the freshly-computed recommendation so ``cached_ml_recommendation`` can serve it
+    without recomputing. Repo-backed (not just a module-level dict) because the nightly refit
+    that MUST refresh this runs in the daemon process, a separate OS process from the API --
+    the two only share the SQLite file. Best-effort: caching must never break the caller's
+    (already-computed) result."""
+    import json as _json
+    payload = {"result": result, "computed_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        repo.conn.execute(
+            "INSERT INTO settings_kv (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (_ML_REC_CACHE_KEY, _json.dumps(payload)),
+        )
+        repo.conn.commit()
+    except Exception:
+        pass
+
+
+def cached_ml_recommendation(repo) -> dict:
+    """Read-only last-computed ML recommendation -- NEVER triggers ``recommend_action`` /
+    ``build_feature_rows`` / ``SetpointModel.fit()``. This is what ``build_status`` uses so the
+    O(all-history) ridge refit never runs on the SSE/poll hot path; the tradeoff is the shown
+    recommendation is "last computed", not "recomputed every poll" (refreshed once per night by
+    the nightly close-out, and opportunistically whenever anything -- ``/ml/recommendation``,
+    ``/ml/overview``, ``/tonight`` -- computes a fresh one; see ``ml_recommendation``)."""
+    import json as _json
+    try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key=?", (_ML_REC_CACHE_KEY,)).fetchone()
+    except Exception:
+        row = None
+    if row:
+        try:
+            cached = _json.loads(row["value"])
+            result = cached.get("result")
+            if result:
+                return result
+        except Exception:
+            pass
+    # Nothing computed yet (e.g. brand-new DB, no night has closed out) -- a safe default in the
+    # same shape ``ml_recommendation`` returns on insufficient data, without doing any of the
+    # expensive work.
+    try:
+        mode = current_mode(repo)
+    except Exception:
+        mode = NightMode.NORMAL
+    return {"action": "rule-policy", "reason": "no recommendation computed yet",
+            "confidence": 0.0, "source": "fallback", "low_confidence": True, "mode": mode.value}
+
+
+def refresh_ml_recommendation_cache(repo, mode: NightMode | None = None) -> dict:
+    """Force a fresh computation + cache write. Called (1) once per night right after
+    ``NightlyUpdater.run`` closes out (see ``live_daemon._maybe_close_out``) and (2) periodically
+    (every few minutes) by the API's background health-watchdog thread -- both OFF the
+    request/SSE hot path, so ``build_status`` still never triggers the refit itself."""
+    return ml_recommendation(repo, mode=mode)
 
 
 def ml_overview(repo) -> dict:
@@ -1293,6 +1370,23 @@ def bcg_should_record(repo) -> dict:
             "daemon_alive": rt.get("daemon_alive", False), "stale": rt.get("stale", True)}
 
 
+# A batch is normally ~1s of phone accel at 50Hz (~50 samples); this is a generous ceiling
+# (~400s at 50Hz) that still rejects a malicious/misbehaving client trying to hand us an
+# unbounded array (memory blowup / worker stall). Mirrored by the ``Field(max_length=...)``
+# caps on ``BCGBody`` in ``app/main.py`` -- kept here too since ``ingest_bcg`` can in principle
+# be called with a raw dict that never passed through that model.
+BCG_MAX_SAMPLES = 20_000
+
+
+def _finite_or_none(x):
+    """``x`` if it's a real (non-NaN/Inf) number, else ``None`` -- so a corrupt/adversarial
+    non-finite value can never reach a persisted column (sensor_samples / live_sensor)."""
+    try:
+        return x if x is not None and math.isfinite(x) else None
+    except TypeError:
+        return None
+
+
 def ingest_bcg(repo, payload: dict) -> dict:
     """Ingest a raw accelerometer batch from the phone (kept in bed), derive sub-minute
     movement (+ best-effort HR/HRV from the ballistocardiogram), and publish it to the bridge
@@ -1303,8 +1397,19 @@ def ingest_bcg(repo, payload: dict) -> dict:
       {"fs": 50, "mag": [...]}                            pre-computed 1-D magnitude / single axis
       {"fs": 50, "payload": [{"x":..,"y":..,"z":..}, ...]} list of samples (Sensor Logger style)
     Movement is the trustworthy phone signal; HR/HRV are returned only when the BCG is clean
-    enough, and are advisory (the Pod cloud HR stays the cardiac source of record)."""
+    enough, and are advisory (the Pod cloud HR stays the cardiac source of record).
+
+    Rejects oversized batches outright (see ``BCG_MAX_SAMPLES``); silently drops individual
+    non-finite (NaN/Inf) values rather than failing the whole batch, since one bad accel sample
+    shouldn't discard an otherwise-good second of data -- but a non-finite value must never
+    reach ``proc.ingest``/the fusion path or get persisted."""
     from sleepctl.adapters.bcg import accel_magnitude
+
+    for key in ("ax", "ay", "az", "mag", "payload"):
+        n = len(payload.get(key) or [])
+        if n > BCG_MAX_SAMPLES:
+            return {"ok": False, "error": f"{key} batch too large ({n} > {BCG_MAX_SAMPLES})",
+                    "ingested": 0}
 
     explicit_fs = payload.get("fs")
     source = payload.get("source") or "phone"
@@ -1340,12 +1445,18 @@ def ingest_bcg(repo, payload: dict) -> dict:
                 times.append(s["time"])
         samples = accel_magnitude(ax, ay, az)
 
+    # Drop non-finite (NaN/Inf) samples -- e.g. from a NaN accel reading or an overflowed
+    # magnitude -- so they never reach the BCG processor or get persisted downstream.
+    samples = [s for s in samples if math.isfinite(s)]
+
     if not samples:
         return {"ok": False, "error": "no usable samples", "ingested": 0}
 
     # Sample rate: explicit ?fs= wins; else auto-detect from the per-sample timestamps Sensor
     # Logger sends (so the user never has to match it); else a sane 50 Hz default.
     fs = float(explicit_fs) if explicit_fs else (_fs_from_times(times) or 50.0)
+    if not math.isfinite(fs) or fs <= 0:
+        fs = 50.0
 
     with _BCG_LOCK:
         proc = _bcg_processor(fs)
@@ -1354,11 +1465,22 @@ def ingest_bcg(repo, payload: dict) -> dict:
         buffered = len(proc._buf)
 
     if v is not None:
-        # Movement always published; HR/HRV only when the waveform yielded them.
+        # Movement always published; HR/HRV only when the waveform yielded them. Coerced through
+        # _finite_or_none so a NaN/Inf can never land in sensor_samples/live_sensor even if it
+        # somehow survived the input-side filtering above (e.g. a processor edge case).
+        hr = _finite_or_none(v.get("hr"))
+        hrv = _finite_or_none(v.get("hrv"))
+        movement = _finite_or_none(v.get("movement"))
         bridge.write_sensor_sample(repo.conn, {
-            "hr": v.get("hr"), "hrv": v.get("hrv"),
-            "movement": v.get("movement"), "source": source,
+            "hr": hr, "hrv": hrv, "movement": movement, "source": source,
         })
+        # Also append to the time-series history (singleton above is for the daemon's real-time
+        # fusion; this accumulates overnight so there's a dataset for later model training).
+        bridge.append_sensor_sample(repo.conn, {
+            "hr": hr, "hrv": hrv, "movement": movement, "source": source,
+            "fs": round(fs, 1), "n_samples": len(samples),
+        })
+        v = {**v, "hr": hr, "hrv": hrv, "movement": movement}
 
     return {"ok": True, "ingested": len(samples), "buffered": buffered,
             "fs": round(fs, 1), "fs_source": "explicit" if explicit_fs else (
@@ -1583,8 +1705,20 @@ def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None
     CRITICAL issues to any subscribed phones. Returns a small summary dict (useful for
     tests/diagnostics); safe to call on every ``/status``/``/alerts`` request — it's a
     handful of indexed SQLite lookups, not a background job, so there's no extra process
-    to keep alive (see the module docstring in health_monitor.py for why that's enough)."""
+    to keep alive (see the module docstring in health_monitor.py for why that's enough).
+
+    ``recent_errors``, when not given explicitly by the caller, is read from the live
+    daemon's own persisted signal: ``runtime_state.extra["recent_errors"]`` (a rolling
+    window of tick-error reprs the daemon writes every tick — see
+    ``live_daemon.LiveDashboardDaemon._recent_errors``/``_snapshot``). That's what wires up
+    the previously-dead "3 consecutive errors -> critical push" path: a sustained daytime
+    Eight Sleep cloud outage now actually crosses ``health_monitor``'s repeated-error
+    threshold and pushes, instead of every real caller passing ``None`` forever."""
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    if recent_errors is None:
+        extra = rt.get("extra") or {}
+        if isinstance(extra, dict):
+            recent_errors = extra.get("recent_errors")
     issues = health_monitor.evaluate_health(rt, recent_errors=recent_errors,
                                             stale_seconds=settings.runtime_stale_seconds)
     current_codes = {i["code"] for i in issues}

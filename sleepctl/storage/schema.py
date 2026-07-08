@@ -367,6 +367,32 @@ def connect(path: str, check_same_thread: bool = True) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     if path != ":memory:":
         conn.execute("PRAGMA journal_mode=WAL")
+        # NORMAL is the standard safe pairing with WAL (durable across app crashes; only a full
+        # OS/power failure could lose the last commit) and skips an fsync on every commit.
+        conn.execute("PRAGMA synchronous=NORMAL")
+    # Let a writer wait for a locked DB instead of raising "database is locked" immediately --
+    # matters once multiple connections (API requests + the daemon) touch the same file.
+    conn.execute("PRAGMA busy_timeout=5000")
     conn.execute("PRAGMA foreign_keys=ON")
     init_db(conn)
+    return conn
+
+
+def connect_light(path: str, check_same_thread: bool = True) -> sqlite3.Connection:
+    """Open a connection with the same pragmas as ``connect()`` but WITHOUT running the schema
+    DDL/migrations.
+
+    For high-frequency per-request/per-tick connections where the schema is already guaranteed to
+    exist (see ``dashboard/api/app/db.py``'s ``init_schema()``/``get_repo()``). Re-running
+    ``executescript`` plus several ``PRAGMA table_info`` migration checks on every HTTP
+    request/SSE tick/ingest was measurable overhead on a modest always-on box; the PRAGMAs below
+    are cheap per-connection settings, not schema work, so they still run every time.
+    """
+    conn = sqlite3.connect(path, check_same_thread=check_same_thread)
+    conn.row_factory = sqlite3.Row
+    if path != ":memory:":
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn

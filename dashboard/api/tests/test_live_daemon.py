@@ -143,6 +143,52 @@ def test_live_daemon_survives_transient_device_errors():
     assert rt["daemon_alive"] is True      # daemon stayed alive through the errors
 
 
+class _AlwaysFlakyClient(SimulatedLiveClient):
+    """Simulated client whose update() ALWAYS raises (never recovers) -- unlike _FlakyClient
+    above, so a test can observe a persistent run of consecutive errors before anything resets
+    the counter. Note: with an always-failing client, `ticks` (incremented only on a SUCCESSFUL
+    control_tick) never advances, so `max_ticks` can never be reached -- that would spin the
+    `run()` loop forever. Sets `stop_event` once `stop_after` calls have been made so the test
+    can bound the run via `shutdown_event` instead."""
+    def __init__(self, *a, stop_after: int, stop_event: asyncio.Event, **k):
+        super().__init__(*a, **k)
+        self._stop_after = stop_after
+        self._calls = 0
+        self._stop_event = stop_event
+
+    async def update(self):
+        self._calls += 1
+        if self._calls >= self._stop_after:
+            self._stop_event.set()
+        raise RuntimeError(f"persistent cloud error #{self._calls}")
+
+
+def test_live_daemon_persists_consec_errors_into_runtime_state_extra():
+    """A sustained (non-recovering) run of tick errors must be visible in runtime_state.extra
+    so app.services.evaluate_and_sync_health_alerts can see it and push a critical alert --
+    see health_monitor.evaluate_health's recent_errors path (item #4 of the reliability audit)."""
+    repo = get_repo()
+    repo.conn.execute("UPDATE commands SET status='applied' WHERE status='pending'")
+    repo.conn.commit()
+    stop_event = asyncio.Event()
+    client = _AlwaysFlakyClient(scenario="normal", seed=3, stop_after=3, stop_event=stop_event)
+    d = LiveDashboardDaemon(AppConfig.default(), client, repo, verbose=False)
+
+    async def go():
+        # poll_seconds=0 -> every iteration is a control tick; all of them fail. Bounded by
+        # shutdown_event (set by the client on its 3rd call), NOT max_ticks (see _AlwaysFlakyClient
+        # docstring for why max_ticks would never fire here).
+        await d.run(poll_seconds=0, command_poll_seconds=0, shutdown_event=stop_event)
+    _run(go())
+
+    assert d._consec_errors == 3
+    rt = bridge.read_runtime_state(repo.conn)
+    assert rt["extra"]["consec_errors"] == 3
+    assert len(rt["extra"]["recent_errors"]) == 3
+    assert all("persistent cloud error" in e for e in rt["extra"]["recent_errors"])
+    repo.close()
+
+
 def test_live_telemetry_tick_refreshes_snapshot_without_actuating():
     d, client, repo = _daemon()
 

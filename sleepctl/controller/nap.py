@@ -78,7 +78,6 @@ def nap_strategy(window_min: int, now_hour: Optional[int] = None, cfg=None) -> N
                     "alertness with the least grogginess." + late_note),
         )
     if window_min >= cycle_min:
-        target = min(window_min, cycle_target) if window_min < cycle_target else cycle_target
         # if they gave more than a cycle, still wake ~one cycle in (more isn't better for a nap)
         target = cycle_target if window_min >= cycle_target else window_min
         return NapPlan(

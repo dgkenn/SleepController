@@ -5,6 +5,7 @@ import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import StateBadge from '@/components/StateBadge';
 import StatusHero from '@/components/StatusHero';
+import HealthBanner from '@/components/HealthBanner';
 import RecommendationCard from '@/components/RecommendationCard';
 import AlertBanner from '@/components/AlertBanner';
 import EmergencyStop from '@/components/EmergencyStop';
@@ -71,10 +72,21 @@ function HomeContent() {
         </div>
 
         <div className="px-4 space-y-4">
+          {/* Unmissable fused health verdict (daemon-alive + stale + device-online -- not just
+              SSE transport like the Live/Polling dot above). Above everything else: a half-asleep
+              user should see "is it working" before any coaching content. */}
+          <HealthBanner />
+
           {/* Alerts */}
           {currentAlerts.length > 0 && (
             <AlertBanner alerts={currentAlerts} onAck={handleAck} />
           )}
+
+          {/* Hero temps + armed wake alarm — "what's my bed doing + when's my alarm" */}
+          <StatusHero data={data} />
+
+          {/* Realtime temperature control */}
+          <QuickTemp targetF={data.target_temp_f} powerOn={data.power_on ?? true} />
 
           {/* Wake-up exit survey (shown when a check-in is due) */}
           {checkin?.due && (
@@ -89,12 +101,6 @@ function HomeContent() {
 
           {/* Circadian phase estimate + OAuth-free calendar auto-ingest */}
           <CircadianCard />
-
-          {/* Hero temps */}
-          <StatusHero data={data} />
-
-          {/* Realtime temperature control */}
-          <QuickTemp targetF={data.target_temp_f} powerOn={data.power_on ?? true} />
 
           {/* Recommendation */}
           <RecommendationCard recommendation={data.recommendation} />
