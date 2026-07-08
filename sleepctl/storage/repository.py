@@ -255,10 +255,12 @@ class Repository:
         except Exception:
             return 0
 
-    # raw_samples/decisions/interventions/thermal_samples are high-write tables (roughly one row
-    # per control tick) that, unlike events/state_history/sensor_samples, were never pruned --
-    # left to grow unbounded for the life of the DB. Pruned once/night at the nightly close-out
-    # seam (see LiveDashboardDaemon._maybe_close_out), NEVER on the per-tick hot path.
+    # raw_samples/decisions/interventions are high-write tables (roughly one row per control
+    # tick) that, unlike events/state_history/sensor_samples, were never pruned -- left to grow
+    # unbounded for the life of the DB. Pruned once/night at the nightly close-out seam (see
+    # LiveDashboardDaemon._maybe_close_out), NEVER on the per-tick hot path. (The fourth such
+    # table, ``thermal_samples``, is a dashboard-layer table that doesn't exist in this engine
+    # schema -- see ``app.bridge.prune_thermal_samples`` for its mirror-image helper.)
     def prune_raw_samples(self, keep_days: int = 45) -> int:
         return self._prune_ts_table("raw_samples", keep_days)
 
@@ -267,9 +269,6 @@ class Repository:
 
     def prune_interventions(self, keep_days: int = 45) -> int:
         return self._prune_ts_table("interventions", keep_days)
-
-    def prune_thermal_samples(self, keep_days: int = 45) -> int:
-        return self._prune_ts_table("thermal_samples", keep_days)
 
     def save_night_summary(self, ns: NightSummary) -> None:
         self.conn.execute(

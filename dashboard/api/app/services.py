@@ -1705,8 +1705,20 @@ def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None
     CRITICAL issues to any subscribed phones. Returns a small summary dict (useful for
     tests/diagnostics); safe to call on every ``/status``/``/alerts`` request — it's a
     handful of indexed SQLite lookups, not a background job, so there's no extra process
-    to keep alive (see the module docstring in health_monitor.py for why that's enough)."""
+    to keep alive (see the module docstring in health_monitor.py for why that's enough).
+
+    ``recent_errors``, when not given explicitly by the caller, is read from the live
+    daemon's own persisted signal: ``runtime_state.extra["recent_errors"]`` (a rolling
+    window of tick-error reprs the daemon writes every tick — see
+    ``live_daemon.LiveDashboardDaemon._recent_errors``/``_snapshot``). That's what wires up
+    the previously-dead "3 consecutive errors -> critical push" path: a sustained daytime
+    Eight Sleep cloud outage now actually crosses ``health_monitor``'s repeated-error
+    threshold and pushes, instead of every real caller passing ``None`` forever."""
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
+    if recent_errors is None:
+        extra = rt.get("extra") or {}
+        if isinstance(extra, dict):
+            recent_errors = extra.get("recent_errors")
     issues = health_monitor.evaluate_health(rt, recent_errors=recent_errors,
                                             stale_seconds=settings.runtime_stale_seconds)
     current_codes = {i["code"] for i in issues}

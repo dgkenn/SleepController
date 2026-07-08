@@ -204,6 +204,23 @@ def recent_thermal_samples(conn: sqlite3.Connection, limit: int = 500) -> list:
     return [dict(r) for r in rows]
 
 
+def prune_thermal_samples(conn: sqlite3.Connection, keep_days: int = 45) -> int:
+    """Delete thermal_samples rows older than ``keep_days``. Mirrors ``Repository.prune_events``/
+    ``prune_raw_samples`` etc, but lives here (not on ``Repository``) because ``thermal_samples``
+    is a dashboard-layer table (see ``db.py``'s ``_DASHBOARD_DDL``), not part of the sleepctl
+    engine schema. Called once/night at the nightly close-out seam (see
+    ``LiveDashboardDaemon._maybe_close_out``), NEVER on the per-tick hot path. Defensive: returns
+    0 on any error rather than raising."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).isoformat()
+        cur = conn.execute("DELETE FROM thermal_samples WHERE ts < ?", (cutoff,))
+        deleted = cur.rowcount or 0
+        conn.commit()
+        return deleted
+    except Exception:
+        return 0
+
+
 def read_wake_logs(conn: sqlite3.Connection, limit: int = 30) -> list:
     rows = conn.execute("SELECT * FROM wake_log ORDER BY date DESC LIMIT ?", (limit,)).fetchall()
     return [dict(r) for r in rows]

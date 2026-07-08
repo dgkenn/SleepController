@@ -1,7 +1,8 @@
 """Retention pruning for the previously-unbounded high-write tables (raw_samples, decisions,
-interventions, thermal_samples) -- unlike events/state_history/sensor_samples, these were never
-pruned before, growing forever for the life of the DB on a 24/7 box. Mirrors test_events.py's
-coverage of ``prune_events``."""
+interventions) -- unlike events/state_history/sensor_samples, these were never pruned before,
+growing forever for the life of the DB on a 24/7 box. Mirrors test_events.py's coverage of
+``prune_events``. (The fourth such table, ``thermal_samples``, is a dashboard-layer table; see
+``dashboard/api/tests/test_bridge_thermal_prune.py`` for its coverage.)"""
 
 from __future__ import annotations
 
@@ -65,26 +66,9 @@ def test_prune_interventions_keeps_recent_deletes_old():
     assert remaining == 1
 
 
-def test_prune_thermal_samples_keeps_recent_deletes_old():
-    repo = Repository(":memory:")
-    old_ts = (datetime.now() - timedelta(days=200)).isoformat()
-    recent_ts = datetime.now().isoformat()
-    for _ in range(6):
-        _insert(repo, "thermal_samples", old_ts)
-    for _ in range(2):
-        _insert(repo, "thermal_samples", recent_ts)
-    repo.conn.commit()
-
-    deleted = repo.prune_thermal_samples(keep_days=45)
-    assert deleted == 6
-    remaining = repo.conn.execute("SELECT COUNT(*) c FROM thermal_samples").fetchone()["c"]
-    assert remaining == 2
-
-
 def test_prune_never_raises_on_bad_connection():
     repo = Repository(":memory:")
     repo.conn.close()
     assert repo.prune_raw_samples() == 0
     assert repo.prune_decisions() == 0
     assert repo.prune_interventions() == 0
-    assert repo.prune_thermal_samples() == 0

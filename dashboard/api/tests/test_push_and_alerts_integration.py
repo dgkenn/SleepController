@@ -99,6 +99,60 @@ def test_thermal_stalled_alert_via_direct_service_call(auth_client):
         _clear_all_alerts()
 
 
+def test_repeated_cloud_errors_raises_critical_and_pushes(auth_client, monkeypatch):
+    """Item #4 of the reliability audit: the live daemon persists consec_errors/recent_errors
+    into runtime_state.extra every tick (see live_daemon.py's _snapshot); this proves the
+    other end of that wire -- evaluate_and_sync_health_alerts (called with NO recent_errors
+    argument, exactly as every real caller does) must read that persisted signal, raise a
+    critical 'repeated_cloud_errors' alert, and actually invoke the push transport -- the
+    previously-dead 'N consecutive errors -> critical push' path."""
+    from app import push_sender
+
+    _clear_all_alerts()
+    _set_runtime_extra(consec_errors=5, recent_errors=["timeout", "timeout", "timeout", "504", "504"])
+
+    monkeypatch.setattr(push_sender.settings, "vapid_private_key", "priv")
+    monkeypatch.setattr(push_sender.settings, "vapid_public_key", "pub")
+    monkeypatch.setattr(push_sender.settings, "vapid_subject", "mailto:test@example.com")
+
+    sent_calls = []
+
+    class _FakeTransport:
+        def send(self, subscription, payload, vapid_private_key, vapid_claims):
+            sent_calls.append((subscription["endpoint"], payload))
+
+    monkeypatch.setattr(push_sender, "WebPushTransport", _FakeTransport)
+
+    repo = get_repo()
+    try:
+        repo.conn.execute(
+            "INSERT INTO push_subscriptions (endpoint, p256dh, auth, created) "
+            "VALUES ('https://push.example/repeated-errors', 'p', 'a', '2026-01-01T00:00:00')"
+        )
+        repo.conn.commit()
+        try:
+            # Deliberately no recent_errors kwarg -- matches every real caller (_status_alerts,
+            # the daemon's own future callers, etc.) and is exactly the path that used to be dead.
+            summary = services.evaluate_and_sync_health_alerts(repo)
+        finally:
+            repo.conn.execute(
+                "DELETE FROM push_subscriptions WHERE endpoint='https://push.example/repeated-errors'"
+            )
+            repo.conn.commit()
+    finally:
+        repo.close()
+
+    assert "repeated_cloud_errors" in summary["newly_raised"]
+    issue = next(i for i in summary["issues"] if i["code"] == "repeated_cloud_errors")
+    assert issue["severity"] == "critical"
+    assert summary["pushed"] == 1
+    assert len(sent_calls) == 1
+    assert sent_calls[0][0] == "https://push.example/repeated-errors"
+
+    _set_runtime_extra()  # restore healthy state for subsequent tests
+    _clear_all_alerts()
+
+
 def test_vapid_public_key_endpoint_no_auth_required(client):
     r = client.get("/push/vapid-public-key")
     assert r.status_code == 200
