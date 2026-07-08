@@ -254,7 +254,10 @@ def build_status(repo) -> dict:
     rt = bridge.read_runtime_state(repo.conn, settings.runtime_stale_seconds)
     nights = repo.recent_nights(1)
     last = nights[-1] if nights else None
-    rec = ml_recommendation(repo)
+    # Read-only: NEVER recompute the ML recommendation here (see ``cached_ml_recommendation``) --
+    # build_status is hit every 5s by the SSE loop + by /status, and the real computation is an
+    # O(all-history) ridge refit meant to run once per night.
+    rec = cached_ml_recommendation(repo)
     extra = rt.get("extra") or {}
     return {
         "state": rt.get("state") or "IDLE",
@@ -331,6 +334,17 @@ def schedule_brief(repo) -> dict:
 
 
 # -------------------------------------------------------------------------- ml
+# ``ml_recommendation`` drives ``recommend_action`` -> ``build_feature_rows`` (per-night queries
+# over ALL history) -> ``SetpointModel().fit()`` (a pure-Python ridge regression) -- an
+# O(all-history) refit that's meant to run once per night (see ``NightlyUpdater.run`` /
+# ``sleepctl/loop/nightly.py``), NOT on every poll. ``build_status`` is hit every 5s by the SSE
+# loop and by ``/status``, so it must never call this directly -- see ``cached_ml_recommendation``
+# below, which it uses instead. Everything else (``/ml/recommendation``, ``/ml/overview``,
+# ``/tonight`` -- all much less frequently polled) still gets a live recommendation here, and
+# write-through refreshes the shared cache so ``cached_ml_recommendation`` benefits too.
+_ML_REC_CACHE_KEY = "ml_recommendation_cache"
+
+
 def ml_recommendation(repo, mode: NightMode | None = None) -> dict:
     profile = repo.latest_setpoints() or CFG.default_setpoints()
     if mode is None:
@@ -341,14 +355,76 @@ def ml_recommendation(repo, mode: NightMode | None = None) -> dict:
     # The ML optimises for tonight's situation-specific benchmark (work vs off-day).
     chosen = recommend_action(repo, profile, CFG, mode=mode)
     if chosen is None:
-        return {"action": "rule-policy", "reason": "deferring to safe rule policy (insufficient "
-                "data or confidence)", "confidence": 0.0, "source": "fallback",
-                "low_confidence": True, "mode": mode.value}
-    return {
-        "action": chosen.name, "reason": chosen.reason, "confidence": chosen.confidence,
-        "predicted": chosen.predicted, "source": "ml", "mode": mode.value,
-        "low_confidence": chosen.confidence < CFG.ml.conf_min,
-    }
+        result = {"action": "rule-policy", "reason": "deferring to safe rule policy (insufficient "
+                  "data or confidence)", "confidence": 0.0, "source": "fallback",
+                  "low_confidence": True, "mode": mode.value}
+    else:
+        result = {
+            "action": chosen.name, "reason": chosen.reason, "confidence": chosen.confidence,
+            "predicted": chosen.predicted, "source": "ml", "mode": mode.value,
+            "low_confidence": chosen.confidence < CFG.ml.conf_min,
+        }
+    _write_ml_recommendation_cache(repo, result)
+    return result
+
+
+def _write_ml_recommendation_cache(repo, result: dict) -> None:
+    """Persist the freshly-computed recommendation so ``cached_ml_recommendation`` can serve it
+    without recomputing. Repo-backed (not just a module-level dict) because the nightly refit
+    that MUST refresh this runs in the daemon process, a separate OS process from the API --
+    the two only share the SQLite file. Best-effort: caching must never break the caller's
+    (already-computed) result."""
+    import json as _json
+    payload = {"result": result, "computed_at": datetime.now(timezone.utc).isoformat()}
+    try:
+        repo.conn.execute(
+            "INSERT INTO settings_kv (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (_ML_REC_CACHE_KEY, _json.dumps(payload)),
+        )
+        repo.conn.commit()
+    except Exception:
+        pass
+
+
+def cached_ml_recommendation(repo) -> dict:
+    """Read-only last-computed ML recommendation -- NEVER triggers ``recommend_action`` /
+    ``build_feature_rows`` / ``SetpointModel.fit()``. This is what ``build_status`` uses so the
+    O(all-history) ridge refit never runs on the SSE/poll hot path; the tradeoff is the shown
+    recommendation is "last computed", not "recomputed every poll" (refreshed once per night by
+    the nightly close-out, and opportunistically whenever anything -- ``/ml/recommendation``,
+    ``/ml/overview``, ``/tonight`` -- computes a fresh one; see ``ml_recommendation``)."""
+    import json as _json
+    try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key=?", (_ML_REC_CACHE_KEY,)).fetchone()
+    except Exception:
+        row = None
+    if row:
+        try:
+            cached = _json.loads(row["value"])
+            result = cached.get("result")
+            if result:
+                return result
+        except Exception:
+            pass
+    # Nothing computed yet (e.g. brand-new DB, no night has closed out) -- a safe default in the
+    # same shape ``ml_recommendation`` returns on insufficient data, without doing any of the
+    # expensive work.
+    try:
+        mode = current_mode(repo)
+    except Exception:
+        mode = NightMode.NORMAL
+    return {"action": "rule-policy", "reason": "no recommendation computed yet",
+            "confidence": 0.0, "source": "fallback", "low_confidence": True, "mode": mode.value}
+
+
+def refresh_ml_recommendation_cache(repo, mode: NightMode | None = None) -> dict:
+    """Force a fresh computation + cache write. Called (1) once per night right after
+    ``NightlyUpdater.run`` closes out (see ``live_daemon._maybe_close_out``) and (2) periodically
+    (every few minutes) by the API's background health-watchdog thread -- both OFF the
+    request/SSE hot path, so ``build_status`` still never triggers the refit itself."""
+    return ml_recommendation(repo, mode=mode)
 
 
 def ml_overview(repo) -> dict:

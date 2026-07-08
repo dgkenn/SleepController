@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -41,6 +42,8 @@ app.add_middleware(
 
 @app.on_event("startup")
 def _startup() -> None:
+    from app.db import init_schema
+    init_schema()  # run the engine + dashboard DDL/migrations ONCE, not on every request/tick
     ensure_bootstrap_user()
     # Optional: connect the work-shift calendar from CALENDAR_ICS_URL (deploy/.env) without the UI.
     try:
@@ -429,7 +432,10 @@ async def stream_status(request: Request, token: str | None = None):
         while True:
             repo = get_repo()
             try:
-                payload = services.build_status(repo)
+                # build_status is synchronous DB work; run it off the event loop thread so one
+                # slow tick (or the several concurrent dashboard tabs each holding an SSE stream)
+                # can't stall every other request being served by this process.
+                payload = await run_in_threadpool(services.build_status, repo)
             finally:
                 repo.close()
             yield f"data: {json.dumps(payload, default=str)}\n\n"
@@ -893,14 +899,25 @@ import threading  # noqa: E402
 _HEALTH_WATCHDOG_INTERVAL_S = 60
 _health_watchdog_started = False
 
+# TTL safety net for the cached ML recommendation (see services.cached_ml_recommendation):
+# refreshed once/night by the nightly close-out, but also periodically here so a long-running
+# process never shows a recommendation that's gone stale for days if close-out is ever skipped
+# (daemon restart mid-night, simulator daemon, etc). This runs in this background thread, NOT on
+# the request/SSE hot path, so build_status still never triggers the refit itself.
+_ML_REC_REFRESH_EVERY_N_TICKS = 5  # 5 * 60s = ~5 minutes
+
 
 def _health_watchdog_loop() -> None:
     import time
+    tick = 0
     while True:
         try:
             repo = get_repo()
             try:
                 services.evaluate_and_sync_health_alerts(repo)
+                tick += 1
+                if tick % _ML_REC_REFRESH_EVERY_N_TICKS == 0:
+                    services.refresh_ml_recommendation_cache(repo)
             finally:
                 repo.close()
         except Exception:

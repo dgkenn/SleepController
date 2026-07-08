@@ -362,13 +362,14 @@ def _check_thermal_response(extra: dict) -> dict:
 # air-bound water loop, a prime that starts but never finishes, a low reservoir, the Eight
 # Sleep app's own schedule fighting this controller, and telemetry frozen by a crash-looping
 # daemon.
-def _check_thermal_capacity(repo, extra: dict) -> dict:
+def _check_thermal_capacity(repo, extra: dict, history: list | None = None) -> dict:
     device = extra.get("device") or {}
     if not isinstance(device, dict):
         device = {}
     try:
         from sleepctl.diagnostics_thermal import analyze_thermal_capacity
-        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        if history is None:
+            history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
         now_iso = datetime.now(timezone.utc).isoformat()
         result = analyze_thermal_capacity(device, history, now_iso)
     except Exception as exc:
@@ -388,13 +389,14 @@ def _check_thermal_capacity(repo, extra: dict) -> dict:
     return _check("thermal_capacity", "Water-loop / thermal capacity", "ok", reason, None)
 
 
-def _check_external_conflict(repo, extra: dict) -> dict:
+def _check_external_conflict(repo, extra: dict, history: list | None = None) -> dict:
     device = extra.get("device") or {}
     if not isinstance(device, dict):
         device = {}
     try:
         from sleepctl.diagnostics_thermal import detect_external_conflict
-        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        if history is None:
+            history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
         result = detect_external_conflict(device, history)
     except Exception as exc:
         return _check("external_conflict", "External controller conflict", "info",
@@ -411,10 +413,11 @@ def _check_external_conflict(repo, extra: dict) -> dict:
     return _check("external_conflict", "External controller conflict", "ok", reason, None)
 
 
-def _check_frozen_telemetry(repo) -> dict:
+def _check_frozen_telemetry(repo, history: list | None = None) -> dict:
     try:
         from sleepctl.diagnostics_thermal import detect_frozen_telemetry
-        history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
+        if history is None:
+            history = repo.state_history(hours=_THERMAL_HISTORY_HOURS, limit=_THERMAL_HISTORY_LIMIT)
         result = detect_frozen_telemetry(history)
     except Exception as exc:
         return _check("frozen_telemetry", "Frozen telemetry", "info",
@@ -626,11 +629,19 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("device_online", "Device online", lambda: _check_device_online(extra))
     add("priming", "Priming state", lambda: _check_priming(extra))
     add("thermal_response", "Thermal response", lambda: _check_thermal_response(extra))
+    # thermal_capacity/external_conflict/frozen_telemetry all read the same state_history window;
+    # fetch it once here instead of each check re-querying it (3x the same SELECT per /diag call).
+    try:
+        _thermal_history = repo.state_history(hours=_THERMAL_HISTORY_HOURS,
+                                              limit=_THERMAL_HISTORY_LIMIT)
+    except Exception:
+        _thermal_history = []
     add("thermal_capacity", "Water-loop / thermal capacity",
-        lambda: _check_thermal_capacity(repo, extra))
+        lambda: _check_thermal_capacity(repo, extra, history=_thermal_history))
     add("external_conflict", "External controller conflict",
-        lambda: _check_external_conflict(repo, extra))
-    add("frozen_telemetry", "Frozen telemetry", lambda: _check_frozen_telemetry(repo))
+        lambda: _check_external_conflict(repo, extra, history=_thermal_history))
+    add("frozen_telemetry", "Frozen telemetry",
+        lambda: _check_frozen_telemetry(repo, history=_thermal_history))
     add("live_mode", "Live / dry-run mode", lambda: _check_live_mode(extra))
     add("cloud_errors", "Eight Sleep cloud errors", lambda: _check_cloud_errors(run_dir))
     daemon_hb_age = _file_age_s(os.path.join(run_dir, "daemon.heartbeat"), now)

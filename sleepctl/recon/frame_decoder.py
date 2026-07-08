@@ -127,12 +127,16 @@ def detrend(samples: List[float], fs: float) -> List[float]:
 
 
 def find_beats(samples: List[float], fs: float, min_bpm: float = 35.0,
-               max_bpm: float = 140.0) -> List[int]:
+               max_bpm: float = 140.0, detrended: Optional[List[float]] = None) -> List[int]:
     """Peak-pick the detrended BCG: local maxima above a robust threshold, spaced by the
-    physiological refractory period. Returns sample indices of detected beats."""
+    physiological refractory period. Returns sample indices of detected beats.
+
+    ``detrended``, if given, is used instead of recomputing ``detrend(samples, fs)`` -- callers
+    that also need the detrended signal / beats elsewhere (see ``BCGProcessor.vitals``) can
+    compute it once and pass it to every helper instead of each one redoing it."""
     if len(samples) < int(fs):
         return []
-    x = detrend(samples, fs)
+    x = detrended if detrended is not None else detrend(samples, fs)
     mean = sum(x) / len(x)
     sd = (sum((v - mean) ** 2 for v in x) / len(x)) ** 0.5
     thresh = mean + 0.5 * sd
@@ -149,8 +153,10 @@ def find_beats(samples: List[float], fs: float, min_bpm: float = 35.0,
     return beats
 
 
-def heart_rate_from_bcg(samples: List[float], fs: float) -> Optional[float]:
-    beats = find_beats(samples, fs)
+def heart_rate_from_beats(beats: List[int], fs: float) -> Optional[float]:
+    """Beat-to-beat HR (bpm) from already-detected beat indices -- the shared tail end of
+    ``heart_rate_from_bcg``, split out so a caller that already ran ``find_beats`` (e.g.
+    ``BCGProcessor.vitals``) doesn't have to re-detect beats just to get the rate."""
     if len(beats) < 2:
         return None
     intervals = [(beats[i] - beats[i - 1]) / fs for i in range(1, len(beats))]
@@ -158,12 +164,21 @@ def heart_rate_from_bcg(samples: List[float], fs: float) -> Optional[float]:
     return 60.0 / mean_ibi if mean_ibi > 0 else None
 
 
-def movement_index(samples: List[float], fs: float, window_s: float = 1.0) -> float:
+def heart_rate_from_bcg(samples: List[float], fs: float) -> Optional[float]:
+    beats = find_beats(samples, fs)
+    return heart_rate_from_beats(beats, fs)
+
+
+def movement_index(samples: List[float], fs: float, window_s: float = 1.0,
+                   detrended: Optional[List[float]] = None) -> float:
     """Sub-second restlessness proxy: short-window RMS of the high-passed signal, normalized.
-    THIS is the fast precursor the 60s cloud bins away — the main prize of raw capture."""
+    THIS is the fast precursor the 60s cloud bins away — the main prize of raw capture.
+
+    ``detrended``, if given, is used instead of recomputing ``detrend(samples, fs)`` (see
+    ``find_beats`` for why)."""
     if not samples:
         return 0.0
-    x = detrend(samples, fs)
+    x = detrended if detrended is not None else detrend(samples, fs)
     rms = (sum(v * v for v in x) / len(x)) ** 0.5
     return rms
 

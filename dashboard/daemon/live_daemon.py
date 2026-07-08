@@ -1063,7 +1063,22 @@ class LiveDashboardDaemon:
                 self._emit_event("nightly", "info", "nightly_close_out",
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})
+                try:
+                    # Refresh the dashboard's cached ML recommendation now that a new setpoint
+                    # version may exist -- the ONLY place build_status's shown recommendation
+                    # should change, since build_status itself never recomputes (see
+                    # app.services.cached_ml_recommendation).
+                    from app import services as dashboard_services
+                    dashboard_services.refresh_ml_recommendation_cache(self.repo)
+                except Exception:
+                    pass
                 self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
+                # High-write tables with no prior retention (raw_samples/decisions/interventions/
+                # thermal_samples) -- prune here (once/night), never on the per-tick hot path.
+                self.repo.prune_raw_samples()
+                self.repo.prune_decisions()
+                self.repo.prune_interventions()
+                self.repo.prune_thermal_samples()
                 self._maybe_backup()      # rotating DB backup: once/day, gated on-disk
             except Exception as exc:
                 self._log(f"nightly close-out skipped: {exc}")

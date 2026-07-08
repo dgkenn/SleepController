@@ -64,10 +64,17 @@ def _jload(value) -> dict:
 class Repository:
     """Read/write access to the sleepctl dataset."""
 
-    def __init__(self, path: str = "sleepctl.db", check_same_thread: bool = True) -> None:
+    def __init__(self, path: str = "sleepctl.db", check_same_thread: bool = True,
+                 ensure_schema: bool = True) -> None:
         self.path = path
-        self.conn: sqlite3.Connection = schema.connect(
-            path, check_same_thread=check_same_thread)
+        if ensure_schema:
+            self.conn: sqlite3.Connection = schema.connect(
+                path, check_same_thread=check_same_thread)
+        else:
+            # Skip re-running the schema DDL/migrations -- for callers that already guaranteed
+            # the schema exists once elsewhere and just need a plain connection (see
+            # dashboard/api/app/db.py's per-request ``get_repo()``).
+            self.conn = schema.connect_light(path, check_same_thread=check_same_thread)
 
     # -- lifecycle ---------------------------------------------------------------
     def __enter__(self) -> "Repository":
@@ -221,6 +228,48 @@ class Repository:
             return deleted
         except Exception:
             return 0
+
+    def _prune_ts_table(self, table: str, keep_days: int, max_rows: Optional[int] = None) -> int:
+        """Shared prune primitive for append-only, ``ts``-indexed high-write tables (mirrors
+        ``prune_events`` above): delete rows older than ``keep_days`` and, if ``max_rows`` is
+        given and still exceeded, the oldest excess rows. Defensive: returns 0 on any error
+        rather than raising. Returns rows deleted. ``table`` is always one of this module's own
+        fixed table names, never user input."""
+        try:
+            cutoff = _iso(datetime.now() - timedelta(days=keep_days))
+            cur = self.conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))
+            deleted = cur.rowcount or 0
+            if max_rows is not None:
+                total = self.conn.execute(f"SELECT COUNT(*) c FROM {table}").fetchone()["c"]
+                if total > max_rows:
+                    excess = total - max_rows
+                    ids = [r["id"] for r in self.conn.execute(
+                        f"SELECT id FROM {table} ORDER BY id ASC LIMIT ?", (excess,)).fetchall()]
+                    if ids:
+                        qmarks = ",".join("?" * len(ids))
+                        cur2 = self.conn.execute(
+                            f"DELETE FROM {table} WHERE id IN ({qmarks})", ids)
+                        deleted += cur2.rowcount or 0
+            self.conn.commit()
+            return deleted
+        except Exception:
+            return 0
+
+    # raw_samples/decisions/interventions/thermal_samples are high-write tables (roughly one row
+    # per control tick) that, unlike events/state_history/sensor_samples, were never pruned --
+    # left to grow unbounded for the life of the DB. Pruned once/night at the nightly close-out
+    # seam (see LiveDashboardDaemon._maybe_close_out), NEVER on the per-tick hot path.
+    def prune_raw_samples(self, keep_days: int = 45) -> int:
+        return self._prune_ts_table("raw_samples", keep_days)
+
+    def prune_decisions(self, keep_days: int = 45) -> int:
+        return self._prune_ts_table("decisions", keep_days)
+
+    def prune_interventions(self, keep_days: int = 45) -> int:
+        return self._prune_ts_table("interventions", keep_days)
+
+    def prune_thermal_samples(self, keep_days: int = 45) -> int:
+        return self._prune_ts_table("thermal_samples", keep_days)
 
     def save_night_summary(self, ns: NightSummary) -> None:
         self.conn.execute(

@@ -153,10 +153,34 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     return conn
 
 
+# Set once ``init_schema()`` has run (see ``main.py``'s startup event). Guards ``get_repo()``
+# against re-running the full engine DDL + dashboard DDL + migrations (a executescript of a
+# dozen CREATE TABLE/INDEX statements plus several PRAGMA table_info migration checks) on every
+# API request, SSE tick, and /bcg/ingest call -- previously that ran once per call on a hot path.
+_schema_initialized = False
+
+
+def init_schema(path: str | None = None) -> None:
+    """Run the engine schema + dashboard DDL/migrations ONCE. Call at API startup (and the
+    daemon's own init, via the lazy fallback in ``get_repo()`` below) so tables are guaranteed to
+    exist before the first request/tick -- not re-verified on every single one. Idempotent (safe
+    to call more than once, e.g. from tests that import ``app.db`` directly)."""
+    global _schema_initialized
+    conn = connect(path)
+    conn.close()
+    _schema_initialized = True
+
+
 def get_repo() -> Repository:
-    """A sleepctl Repository over the shared DB (ensures dashboard tables exist too)."""
-    repo = Repository(settings.db_path, check_same_thread=False)
-    repo.conn.executescript(_DASHBOARD_DDL)
-    _apply_migrations(repo.conn)
-    repo.conn.commit()
-    return repo
+    """A sleepctl Repository over the shared DB, for per-request/per-tick use.
+
+    Schema/DDL/migrations are NOT re-run here: ``init_schema()`` (called once at API/daemon
+    startup) already guarantees the tables exist, so each call just opens a lightweight
+    connection (see ``schema.connect_light``) instead of repeating an ``executescript`` +
+    migration pass. The lazy call below is a safety net for any path that reaches ``get_repo()``
+    before startup has run (e.g. a script importing ``app.db`` directly) so correctness never
+    depends on call order.
+    """
+    if not _schema_initialized:
+        init_schema()
+    return Repository(settings.db_path, check_same_thread=False, ensure_schema=False)

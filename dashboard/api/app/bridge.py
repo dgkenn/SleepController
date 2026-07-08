@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timedelta, timezone
 
 VALID_COMMANDS = {
@@ -106,12 +107,21 @@ def write_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
 # only copy of the data.
 _SENSOR_SAMPLES_RETENTION_DAYS = 60
 
+# /bcg/ingest fires ~1/sec while the phone is streaming; running the retention DELETE on every
+# single call was a full table scan of sensor_samples per ingest for no benefit (the window only
+# meaningfully changes over hours, not seconds). Gate it to at most once/hour -- the INSERT above
+# still runs every call, so accumulation is unaffected. Module-level (not per-connection) since
+# it's a single-process API server; a monotonic clock avoids any wall-clock-jump weirdness.
+_SENSOR_PRUNE_INTERVAL_S = 3600.0
+_last_sensor_prune_monotonic = 0.0
+
 
 def append_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
     """Append one phone/sensor-derived sample (never overwrites) so overnight data ACCUMULATES
     into a time-series dataset for later model training / nightly learning, unlike the
     ``live_sensor`` singleton above which only ever holds the latest reading. Best-effort: a
     logging failure here must never break /bcg/ingest for the daemon's real-time fusion path."""
+    global _last_sensor_prune_monotonic
     try:
         conn.execute(
             """INSERT INTO sensor_samples (ts, hr, hrv, movement, source, fs, n_samples)
@@ -119,8 +129,12 @@ def append_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
             (_now(), sample.get("hr"), sample.get("hrv"), sample.get("movement"),
              sample.get("source", "phone"), sample.get("fs"), sample.get("n_samples")),
         )
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=_SENSOR_SAMPLES_RETENTION_DAYS)).isoformat()
-        conn.execute("DELETE FROM sensor_samples WHERE ts < ?", (cutoff,))
+        now_mono = time.monotonic()
+        if now_mono - _last_sensor_prune_monotonic >= _SENSOR_PRUNE_INTERVAL_S:
+            cutoff = (datetime.now(timezone.utc)
+                     - timedelta(days=_SENSOR_SAMPLES_RETENTION_DAYS)).isoformat()
+            conn.execute("DELETE FROM sensor_samples WHERE ts < ?", (cutoff,))
+            _last_sensor_prune_monotonic = now_mono
         conn.commit()
     except Exception:
         pass  # never disrupt /bcg/ingest's real-time fusion path over a telemetry write
