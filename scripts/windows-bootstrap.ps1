@@ -78,11 +78,29 @@ if (Test-Path $envPath) {
     Write-Host "    Eight Sleep login written to deploy\.env." -ForegroundColor Green
 }
 
-# --- 6. always-on: disable AC sleep + register the boot Scheduled Task -------
+# --- 6. safety gate: the watchdog MUST parse before we make it the boot task --
+# The watchdog is critical infra (it auto-restarts everything). A syntax error would make the
+# Scheduled Task fail to launch on every boot, taking the whole system down. Parse it here on the
+# real machine (PowerShell IS available) BEFORE registering it, and abort if it's broken.
+Write-Host "==> Verifying the watchdog script parses..." -ForegroundColor Cyan
+foreach ($ps1 in @("scripts\windows-watchdog.ps1","scripts\validate_env.ps1","scripts\windows-always-on.ps1")) {
+    $full = Join-Path $Root $ps1
+    $tokens = $null; $errs = $null
+    [void][System.Management.Automation.Language.Parser]::ParseFile($full, [ref]$tokens, [ref]$errs)
+    if ($errs -and $errs.Count -gt 0) {
+        Write-Host "ERROR: $ps1 has PowerShell syntax errors -- NOT registering always-on (would boot-loop):" -ForegroundColor Red
+        $errs | ForEach-Object { Write-Host "    $($_.Message)" -ForegroundColor Red }
+        Write-Host "Fix/pull a corrected version, then re-run this bootstrap. (Everything else above is already set up.)" -ForegroundColor Yellow
+        return
+    }
+}
+Write-Host "    Watchdog + helper scripts parse OK." -ForegroundColor Green
+
+# --- 7. always-on: disable AC sleep + register the boot Scheduled Task --------
 Write-Host "==> Enabling always-on (no AC sleep + auto-start watchdog)..." -ForegroundColor Cyan
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\windows-always-on.ps1")
 
-# --- 7. Tailscale funnel so the iPhone can reach it from anywhere ------------
+# --- 8. Tailscale funnel so the iPhone can reach it from anywhere ------------
 Write-Host ""
 Write-Host "==> Tailscale (remote access). A browser will open to log in..." -ForegroundColor Cyan
 try {
