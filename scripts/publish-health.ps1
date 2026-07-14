@@ -97,6 +97,13 @@ try {
     New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
     $outPath = Join-Path $stagingDir "latest.json"
 
+    # Load deploy\.env into THIS process's environment so env-based diagnostics checks
+    # (eight_sleep_creds, etc.) reflect reality even when this script is run BY HAND -- outside the
+    # watchdog, which normally loads .env for its children. Without it a manual publish reports
+    # "creds not set" purely because the interactive shell never loaded .env, a false DEGRADED. The
+    # checks read PRESENCE only, and env values are whitelisted/scrubbed out of the published snapshot.
+    foreach ($k in $vars.Keys) { Set-Item -Path "Env:$k" -Value $vars[$k] -ErrorAction SilentlyContinue }
+
     Log "building operational-health snapshot from $dbPath -> $outPath"
     $prevPythonPath = $env:PYTHONPATH
     $env:PYTHONPATH = "$Root;$Root\dashboard\api;$Root\pyEight"
