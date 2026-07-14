@@ -687,7 +687,53 @@ $script:smokeTestDone = $false
 $script:healthPublishEveryMin = 10
 $script:healthPublishAt = (Get-Date).AddMinutes(2)
 
+# --- auto-deploy: how often to check origin for a newer DEPLOY_BRANCH ---------------------------
+# The operator merges fixes to main but (funnel blocked by egress policy) cannot reach this box to
+# trigger a deploy. So the watchdog polls origin/<DEPLOY_BRANCH> every $autoUpdateEveryMin minutes
+# and, when the box is strictly BEHIND (fast-forwardable -- never a divergent local tree), drops
+# the SAME .run\update.request flag the operator-console Update button writes. The existing guarded
+# path (Handle-UpdateRequest: fetch/reset/validate/restart/post-restart smoke test/auto-rollback)
+# then performs the actual deploy, so a bad commit still rolls itself back. Opt out by setting
+# SLEEPCTL_AUTO_UPDATE=0 in deploy\.env. First check a few minutes after boot so a fresh start
+# settles before it can trigger a redeploy (staggered from the health-publish tick).
+$script:deployBranch = if ($env:DEPLOY_BRANCH) { $env:DEPLOY_BRANCH } else { "main" }
+$script:autoUpdateEnabled = ($env:SLEEPCTL_AUTO_UPDATE -ne "0")
+$script:autoUpdateEveryMin = 10
+$script:autoUpdateAt = (Get-Date).AddMinutes(3)
+
+function Check-AutoUpdate {
+    if (-not $script:autoUpdateEnabled) { return }
+    if ((Get-Date) -lt $script:autoUpdateAt) { return }
+    $script:autoUpdateAt = (Get-Date).AddMinutes($script:autoUpdateEveryMin)
+    # A manual/console update already pending? Don't stack another -- let it run first.
+    if (Test-Path $script:updateRequestFile) { return }
+    try {
+        & git -C $Root fetch --prune --quiet origin $script:deployBranch 2>$null
+        if ($LASTEXITCODE -ne 0) { return }   # transient network/git error -- retry next window
+        $head = (& git -C $Root rev-parse HEAD 2>$null | Select-Object -First 1)
+        $remote = (& git -C $Root rev-parse "origin/$script:deployBranch" 2>$null | Select-Object -First 1)
+        if (-not $head -or -not $remote) { return }
+        $head = $head.Trim(); $remote = $remote.Trim()
+        if ($head -eq $remote) { return }   # already current
+        # Only auto-deploy when strictly BEHIND: HEAD must be an ANCESTOR of origin/<branch>. A
+        # divergent local tree (someone committed locally) needs a human, not an automatic hard
+        # reset that would silently discard those commits.
+        & git -C $Root merge-base --is-ancestor HEAD "origin/$script:deployBranch" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Log "auto-update: local HEAD diverged from origin/$($script:deployBranch) -- NOT auto-deploying (needs a human)"
+            return
+        }
+        Log "auto-update: origin/$($script:deployBranch) is ahead ($head -> $remote); requesting guarded self-update"
+        Set-Content -Path $script:updateRequestFile -Value $script:deployBranch -Encoding ASCII
+    } catch {
+        Log "WARN: auto-update check failed: $_"
+    }
+}
+
 while ($true) {
+    # Auto-deploy check FIRST: if origin/<DEPLOY_BRANCH> is ahead, this drops .run\update.request,
+    # which Handle-UpdateRequest (next line, same tick) then executes through the guarded path.
+    Check-AutoUpdate
     # Update BEFORE restart so a same-tick "all" restart request written by Handle-UpdateRequest
     # (on a successful update) is picked up immediately by Handle-RestartRequest below, instead
     # of waiting for the next ~15s tick.
