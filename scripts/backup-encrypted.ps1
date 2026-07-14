@@ -27,6 +27,13 @@
 #   FAIL <reason>                    -- something broke; exit 1
 $ErrorActionPreference = "Stop"
 
+# Fail-fast, never HANG: if this machine has no git push credential (an anonymous clone), a bare
+# `git push` would block FOREVER on Git Credential Manager's interactive prompt (a detached, hidden
+# process just wedges). Force git fully non-interactive so a missing/invalid credential errors out
+# immediately and is recorded as FAIL, instead of piling up stuck processes on the daily schedule.
+$env:GIT_TERMINAL_PROMPT = "0"
+$env:GCM_INTERACTIVE = "never"
+
 # --- locate the repo root (mirrors doctor.ps1's fallback style) --------------------------------
 $Root = Join-Path $HOME "SleepController"
 if (-not (Test-Path $Root)) { $Root = Split-Path -Parent $PSScriptRoot }
