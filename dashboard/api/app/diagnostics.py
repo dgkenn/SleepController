@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 import socket
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # ------------------------------------------------------------------ thresholds / constants
 DAEMON_HEARTBEAT_STALE_S = 90     # daemon writes .run/daemon.heartbeat roughly every ~2s
@@ -55,7 +55,7 @@ _CHECK_ORDER = [
     "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
-    "cloud_errors", "live_mode", "eight_sleep_creds", "version", "log_sizes",
+    "cloud_errors", "live_mode", "phone_sensor", "eight_sleep_creds", "version", "log_sizes",
     "calendar", "shift",
 ]
 
@@ -458,6 +458,41 @@ def _check_frozen_telemetry(repo, history: list | None = None) -> dict:
     return _check("frozen_telemetry", "Frozen telemetry", "ok", reason, None)
 
 
+def _check_phone_sensor(repo, extra: dict) -> dict:
+    """Phone (Sensor Logger) ingest liveness -- METADATA ONLY: streaming yes/no, seconds since the
+    last sample, count in the last hour, in-bed, fusing. NEVER the physiology VALUES (HR/HRV/
+    movement), so it's safe in the scrubbed public health snapshot. Lets an off-box operator
+    confirm the iPhone stream is actually reaching the server without exposing any biometrics."""
+    from app.bridge import read_sensor_sample
+    sample = read_sensor_sample(repo.conn)
+    cnt = None
+    try:
+        since = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        row = repo.conn.execute(
+            "SELECT COUNT(*) c FROM sensor_samples WHERE ts >= ?", (since,)).fetchone()
+        cnt = row["c"] if row is not None else None
+    except Exception:
+        cnt = None
+    if sample is None and not cnt:
+        return _check("phone_sensor", "Phone sensor (iPhone)", "info",
+                      "no phone sensor data received yet (Sensor Logger not streaming)",
+                      "point Sensor Logger at /bcg/ingest — see deploy/IPHONE_SENSOR.md")
+    age = sample.get("age_seconds") if sample else None
+    in_bed = (extra.get("bed_presence") is True)
+    streaming = bool(age is not None and age < 120)
+    fusing = bool(age is not None and age < 90 and in_bed)
+    age_txt = f"{age:.0f}s ago" if age is not None else "unknown"
+    cnt_txt = f"{cnt} samples in last hr" if cnt is not None else "count unavailable"
+    if streaming:
+        detail = (f"phone STREAMING (last sample {age_txt}; {cnt_txt}); "
+                  f"in_bed={in_bed}, fusing={fusing}")
+        status = "ok"
+    else:
+        detail = f"phone not currently streaming (last sample {age_txt}; {cnt_txt})"
+        status = "info"
+    return _check("phone_sensor", "Phone sensor (iPhone)", status, detail, None)
+
+
 def _check_live_mode(extra: dict) -> dict:
     live = extra.get("live")
     dry_run = extra.get("dry_run")
@@ -667,6 +702,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("frozen_telemetry", "Frozen telemetry",
         lambda: _check_frozen_telemetry(repo, history=_thermal_history))
     add("live_mode", "Live / dry-run mode", lambda: _check_live_mode(extra))
+    add("phone_sensor", "Phone sensor (iPhone)", lambda: _check_phone_sensor(repo, extra))
     add("cloud_errors", "Eight Sleep cloud errors", lambda: _check_cloud_errors(run_dir))
     daemon_hb_age = _file_age_s(os.path.join(run_dir, "daemon.heartbeat"), now)
     add("recent_errors", "Recent daemon errors",
