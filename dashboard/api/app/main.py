@@ -389,12 +389,19 @@ class BCGBody(BaseModel):
 
 def _bcg_auth(request: Request, token: str | None) -> None:
     """Phone-friendly auth: accept the dashboard token as a ?token= query param (same trick as
-    the SSE stream) or the usual header/cookie. When ``BCG_INGEST_OPEN`` is set, auth is dropped
-    on the phone endpoints only — for a header-less device on a trusted LAN."""
+    the SSE stream) or the usual header/cookie. A static ``BCG_INGEST_TOKEN`` shared secret,
+    when set, is also accepted as ?token= (non-expiring, funnel-safe). When ``BCG_INGEST_OPEN``
+    is set, auth is dropped on the phone endpoints only — for a header-less device on a trusted
+    LAN."""
     if settings.bcg_ingest_open:
         return
+    import hmac
+
     from app.security import _token_from_request, decode_token
-    decode_token(token or _token_from_request(request) or "")  # raises 401 if invalid
+    presented = token or _token_from_request(request) or ""
+    if settings.bcg_ingest_token and hmac.compare_digest(presented, settings.bcg_ingest_token):
+        return  # static shared-secret ingest token (non-expiring, funnel-safe)
+    decode_token(presented)  # raises 401 if invalid
 
 
 @app.get("/bcg/should-record")
