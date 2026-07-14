@@ -36,6 +36,10 @@ class Settings:
     bcg_ingest_open: bool = field(
         default_factory=lambda: os.environ.get("BCG_INGEST_OPEN", "").strip().lower()
         in ("1", "true", "yes", "on"))
+    # A static, non-expiring shared secret the phone passes as ?token=<value>. Unlike
+    # BCG_INGEST_OPEN (which drops auth entirely), this keeps the phone endpoints
+    # authenticated — funnel-safe — without the 30-day JWT expiry. Empty = disabled.
+    bcg_ingest_token: str = field(default_factory=lambda: os.environ.get("BCG_INGEST_TOKEN", ""))
 
     # Web Push (VAPID). Keys are env-only, never committed — see deploy/.env.example.
     # Generate with: python3 -m app.push_keys  (prints a keypair; requires the optional

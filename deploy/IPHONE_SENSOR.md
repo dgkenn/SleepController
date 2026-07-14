@@ -34,32 +34,44 @@ which is exactly the endpoint this dashboard exposes. No coding, no jailbreak.
 
 ## One-time setup (~5 minutes)
 
-### 1. Auth: token-less on your LAN (easiest), or a token
+> **Note (Windows deploy):** the always-on box runs via `scripts/windows-watchdog.ps1` + `deploy\.env`,
+> **not** docker-compose — so the compose "publish port 8000 / uncomment `ports:`" step does not
+> apply here. The watchdog opens **port 3000** in Windows Firewall (Next.js), which proxies
+> `/api/*` to the API; use the `:3000/api/...` Push URL below.
 
-**Token-less (recommended for a home setup).** Because the phone streams to the API on your own
-network, you can drop auth on **just the two phone endpoints** — no token to juggle on the phone
-keyboard. In `deploy/.env` set:
+### 1. Auth: pick one of three options
 
-```
-BCG_INGEST_OPEN=1
-```
+You pass auth as a `?token=` on the Push URL (Sensor Logger's header-less HTTP push can't set an
+`Authorization` header reliably, so the query param is what actually works). The three options:
 
-…and (to reach the API directly at `http://<server-ip>:8000`) publish the port: uncomment the
-`ports: ["8000:8000"]` line on the `api` service in `docker-compose.yml`, then `make up` (or
-`docker compose up -d`). Now you can **leave the Auth Header blank.** Every other endpoint stays
-login-protected; only enable this when the API isn't exposed to the open internet.
+- **(a) Static ingest token via `?token=` — recommended.** Set a non-expiring shared secret in
+  `deploy/.env`:
 
-**Or use a token** (needed if you stream over the internet via the dashboard URL). The phone
-authenticates with the same login as the dashboard (token lasts 30 days):
+  ```
+  BCG_INGEST_TOKEN=<paste output of: python -c "import secrets; print(secrets.token_urlsafe(24))">
+  ```
 
-```bash
-curl -s -X POST https://YOUR-DASHBOARD/api/auth/login \
-  -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"YOUR_DASHBOARD_PASSWORD"}'
-# -> {"token":"eyJhbGciOi...","..."}
-```
+  Then put that same value on the Push URL as `?token=<BCG_INGEST_TOKEN>`. This keeps the phone
+  endpoints **authenticated even over the public Tailscale funnel**, and it **never expires** —
+  nothing to re-mint on the phone every month. Best default.
 
-Copy the `token` value and use it in step 2's Auth Header.
+- **(b) 30-day dashboard JWT via `?token=`.** The phone authenticates with the same login as the
+  dashboard; the token **expires after ~30 days** and must be re-minted:
+
+  ```bash
+  curl -s -X POST https://YOUR-DASHBOARD/api/auth/login \
+    -H 'Content-Type: application/json' \
+    -d '{"username":"admin","password":"YOUR_DASHBOARD_PASSWORD"}'
+  # -> {"token":"eyJhbGciOi...","..."}
+  ```
+
+  Copy the `token` value and use it as `?token=<TOKEN>`.
+
+- **(c) `BCG_INGEST_OPEN=1` — no token (LAN-trusted only).** Drops auth on **just the two phone
+  endpoints** so a header-less device can stream with no token. Every other endpoint stays
+  login-protected. Enable this ONLY on a trusted LAN — note it **also drops auth on the funnel's
+  ingest path**, so anyone who can reach the funnel URL could POST to it. Prefer (a) if the API is
+  exposed to the internet at all.
 
 ### 2. Configure Sensor Logger to stream to the endpoint
 
@@ -69,16 +81,22 @@ Sensor Logger's **Settings → HTTP Push** screen (the one with **Push URL** + *
    battery). The default rate is fine — the server auto-detects it.
 2. **Enable HTTP Push.**
 3. **Push URL** — point it at the ingest endpoint:
-   - Over the internet (HTTPS via the dashboard): `https://YOUR-DASHBOARD/api/bcg/ingest`
-   - On your home WiFi straight to the API box (what the screenshot shows):
-     `http://YOUR-SERVER-IP:8000/bcg/ingest`  ← note the **path is `/bcg/ingest`**, and there's
-     **no `/api`** when you hit the API directly on port 8000 (`/api` is only the web proxy's
-     prefix).
-4. **Auth Header**:
-   - If you set `BCG_INGEST_OPEN=1` (token-less LAN) — **leave it blank.**
-   - Otherwise paste your token as `Bearer <THE_TOKEN_FROM_STEP_1>` (Sensor Logger sends it as
-     the `Authorization` header; the `Bearer ` prefix is required). If your app build lacks the
-     field, append `?token=<TOKEN>` to the Push URL instead.
+   - **Recommended (home WiFi, via the web proxy):**
+     `http://192.168.1.163:3000/api/bcg/ingest?token=<BCG_INGEST_TOKEN>`
+     — hit **port 3000** (Next.js), which **proxies `/api/*`** (including the POST body **and**
+     the `?token=` query) through to the API. On the always-on **Windows** deployment the
+     watchdog opens **port 3000** in Windows Firewall but **NOT 8000**, so this is the path that
+     actually works out of the box. (Replace the IP with your server's LAN IP if different.)
+   - Over the internet (HTTPS via the dashboard funnel): `https://YOUR-DASHBOARD/api/bcg/ingest?token=<BCG_INGEST_TOKEN>`
+   - Direct to the API on port 8000 (older text suggested this):
+     `http://YOUR-SERVER-IP:8000/bcg/ingest?token=<BCG_INGEST_TOKEN>` — note the **path is
+     `/bcg/ingest`** with **no `/api`** prefix when hitting the API directly. **Requires opening
+     the 8000 firewall port first** (the Windows watchdog does not); prefer the `:3000/api/...`
+     path above.
+4. **Auth** — put your token on the Push URL as `?token=<value>` per option (a)/(b) in step 1.
+   If you chose option (c) `BCG_INGEST_OPEN=1`, no token is needed — **leave the Auth Header
+   blank** and drop the `?token=` from the URL. (Sensor Logger's `Authorization`/`Bearer <token>`
+   header field also works where present, but the `?token=` query is the reliable path.)
 5. **Batch Period** — **1 s is perfect** (don't pay for 100/200 ms; the server keeps a rolling
    window, so 1-second batches are plenty). Leave **Skip Writing** off, **Send Images** off.
 6. Hit **Test Push** — you want a `200` with `{"ok": true, "ingested": …, "fs_source": "detected"}`.

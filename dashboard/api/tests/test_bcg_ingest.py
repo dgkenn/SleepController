@@ -139,6 +139,37 @@ def test_bcg_ingest_open_mode_allows_tokenless(client):
         app_settings.bcg_ingest_open = False
 
 
+def test_ingest_static_token_authorizes(client):
+    """A static, non-expiring BCG_INGEST_TOKEN passed as ?token= authorizes ingest (funnel-safe,
+    no JWT/no expiry) while every other auth path stays intact."""
+    from fastapi.testclient import TestClient
+    from app.config import settings as app_settings
+    from app.main import app
+    fresh = TestClient(app)  # no login cookie
+    app_settings.bcg_ingest_token = "s3cret-ingest"
+    app_settings.bcg_ingest_open = False
+    try:
+        r = fresh.post("/bcg/ingest?token=s3cret-ingest", json={"fs": 50, "mag": [1.0] * 60})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        # a wrong token (and no valid JWT) is still rejected
+        assert fresh.post("/bcg/ingest?token=nope", json={"mag": [1.0]}).status_code == 401
+    finally:
+        app_settings.bcg_ingest_token = ""
+
+
+def test_no_static_token_leaves_behavior_unchanged(client):
+    """With BCG_INGEST_TOKEN unset, auth is unchanged: a valid JWT still works, no token → 401."""
+    from fastapi.testclient import TestClient
+    from app.config import settings as app_settings
+    from app.main import app
+    from app.security import create_token
+    assert app_settings.bcg_ingest_token == ""  # default: disabled
+    fresh = TestClient(app)  # no login cookie
+    tok = create_token("owner")
+    assert fresh.post(f"/bcg/ingest?token={tok}", json={"fs": 50, "mag": [1.0] * 60}).status_code == 200
+    assert fresh.post("/bcg/ingest", json={"mag": [1.0]}).status_code == 401
+
+
 def test_fs_auto_detected_from_sensor_logger_timestamps(auth_client):
     """No ?fs= given: the rate is inferred from the per-sample UTC-ns timestamps."""
     import math
