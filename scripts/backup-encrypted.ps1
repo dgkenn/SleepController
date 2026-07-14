@@ -277,7 +277,21 @@ try {
     Assert-Success "git commit"
 
     Log "pushing db-backups to origin"
-    & git -C $backupRepo push --quiet origin db-backups 2>> $logFile
+    # Push using a token from deploy\.env (GIT_PUSH_TOKEN) when set, so it works regardless of WHICH
+    # Windows user runs it -- the watchdog's Scheduled Task runs as a different account than the
+    # interactive login, so a per-user credential store (Git Credential Manager) is invisible to it.
+    # Pushing to an explicit tokenized URL depends on no credential helper. Git redacts the userinfo
+    # in any error output, so the token doesn't land in the log. Falls back to `origin` when unset.
+    $pushTarget = "origin"
+    if ($vars["GIT_PUSH_TOKEN"]) {
+        try {
+            $ou = (& git -C $backupRepo remote get-url origin 2>$null).Trim()
+            if ($ou -match '^https://') {
+                $pushTarget = $ou -replace '^https://', ("https://x-access-token:" + $vars["GIT_PUSH_TOKEN"] + "@")
+            }
+        } catch {}
+    }
+    & git -C $backupRepo push --quiet $pushTarget db-backups 2>> $logFile
     Assert-Success "git push origin db-backups"
 
     Log "OK: pushed $destName"
