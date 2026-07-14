@@ -12,7 +12,18 @@ $run = Join-Path $Root ".run"
 New-Item -ItemType Directory -Force -Path $run | Out-Null
 function Log($msg) {
     $line = "{0}  {1}" -f (Get-Date -Format "yyyy-MM-dd HH:mm:ss"), $msg
-    Add-Content -Path (Join-Path $run "watchdog.log") -Value $line
+    $wlog = Join-Path $run "watchdog.log"
+    # Roll watchdog.log once it passes ~10MB. It's APPEND-only (Add-Content) and otherwise never
+    # truncated, so on an always-on box it would grow unbounded and eventually fill the disk that
+    # also holds the SQLite DB. Keep exactly one rolled generation (watchdog.log.1). Guarded so a
+    # rotation hiccup can never stop us from logging the line itself.
+    try {
+        $wi = Get-Item -Path $wlog -ErrorAction SilentlyContinue
+        if ($wi -and $wi.Length -gt 10MB) {
+            Move-Item -Path $wlog -Destination "$wlog.1" -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
+    Add-Content -Path $wlog -Value $line
     Write-Host $line
 }
 
@@ -687,6 +698,14 @@ $script:smokeTestDone = $false
 $script:healthPublishEveryMin = 10
 $script:healthPublishAt = (Get-Date).AddMinutes(2)
 
+# --- daily maintenance: local + offsite DB backup --------------------------------------------
+# Runs once per ~24h from the supervise loop. A consistent LOCAL snapshot (SQLite online-backup
+# API, safe under WAL) protects months of physiology against DB corruption; the OFFSITE encrypted
+# push (scripts\backup-encrypted.ps1, a clean no-op until BACKUP_AGE_RECIPIENT is set) protects
+# against whole-machine loss. First run a few minutes after boot.
+$script:dailyMaintEveryMin = 1440
+$script:dailyMaintAt = (Get-Date).AddMinutes(5)
+
 # --- auto-deploy: how often to check origin for a newer DEPLOY_BRANCH ---------------------------
 # The operator merges fixes to main but (funnel blocked by egress policy) cannot reach this box to
 # trigger a deploy. So the watchdog polls origin/<DEPLOY_BRANCH> every $autoUpdateEveryMin minutes
@@ -811,6 +830,29 @@ while ($true) {
         } catch {
             Log "WARN: could not launch publish-health: $_"
         }
+    }
+
+    # --- daily maintenance: local + offsite DB backup ------------------------------------------
+    if ((Get-Date) -ge $script:dailyMaintAt) {
+        $script:dailyMaintAt = (Get-Date).AddMinutes($script:dailyMaintEveryMin)
+        # 1. consistent LOCAL DB snapshot (keep 7), independent of the offsite leg. maybe_run_backup
+        #    is idempotent-per-day (gated on the newest snapshot's age) and safe under WAL via the
+        #    SQLite online-backup API. Best-effort: a failure just logs and we try again tomorrow.
+        if ($env:SLEEPCTL_DB) {
+            try {
+                & $py -c "from sleepctl.storage.backup import maybe_run_backup; import sys; r=maybe_run_backup(sys.argv[1], keep=7, interval_hours=24); print(r or 'recent-backup-exists')" $env:SLEEPCTL_DB 2>&1 |
+                    ForEach-Object { Log "daily-backup: $_" }
+            } catch { Log "WARN: daily local DB backup failed: $_" }
+        }
+        # 2. OFFSITE encrypted backup, launched DETACHED so a slow git push can't stall the loop.
+        #    Cleanly exits 0 as "not configured" until BACKUP_AGE_RECIPIENT is set in deploy\.env.
+        try {
+            $bk = Join-Path $Root "scripts\backup-encrypted.ps1"
+            if (Test-Path $bk) {
+                Start-Process -FilePath "powershell" -WindowStyle Hidden `
+                    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $bk) | Out-Null
+            }
+        } catch { Log "WARN: could not launch offsite backup: $_" }
     }
 
     Set-Content -Path (Join-Path $run "watchdog.heartbeat") -Value (Get-Date -Format o)
