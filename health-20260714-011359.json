@@ -1,0 +1,161 @@
+{
+  "checks": [
+    {
+      "detail": "commit 33446cd on confident-gates-rg7af0; web build is 1.5h older than the deployed code",
+      "id": "version",
+      "remedy": "web build is older than the deployed code \u2014 rebuild the UI (npm run build in dashboard/web; the watchdog only builds it if .next is entirely missing)",
+      "status": "warn",
+      "title": "Deployed version"
+    },
+    {
+      "detail": "last heartbeat 0s ago",
+      "id": "daemon_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Control daemon heartbeat"
+    },
+    {
+      "detail": "last heartbeat 22s ago",
+      "id": "watchdog_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Watchdog heartbeat"
+    },
+    {
+      "detail": "this request was served, so the API is up",
+      "id": "api",
+      "remedy": null,
+      "status": "ok",
+      "title": "API process"
+    },
+    {
+      "detail": "something is listening on 127.0.0.1:3000",
+      "id": "web",
+      "remedy": null,
+      "status": "ok",
+      "title": "Web UI (port 3000)"
+    },
+    {
+      "detail": "last update 9s ago",
+      "id": "runtime_state_fresh",
+      "remedy": null,
+      "status": "ok",
+      "title": "Runtime state freshness"
+    },
+    {
+      "detail": "reservoir has water",
+      "id": "device_water",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water reservoir"
+    },
+    {
+      "detail": "device reports online",
+      "id": "device_online",
+      "remedy": null,
+      "status": "ok",
+      "title": "Device online"
+    },
+    {
+      "detail": "not priming / doesn't need priming",
+      "id": "priming",
+      "remedy": null,
+      "status": "ok",
+      "title": "Priming state"
+    },
+    {
+      "detail": "state=ok (at setpoint)",
+      "id": "thermal_response",
+      "remedy": null,
+      "status": "ok",
+      "title": "Thermal response"
+    },
+    {
+      "detail": "only 0 history sample(s) in the last 20 min \u2014 not enough to assess thermal capacity yet.",
+      "id": "thermal_capacity",
+      "remedy": null,
+      "status": "info",
+      "title": "Water-loop / thermal capacity"
+    },
+    {
+      "detail": "no external-controller conflict detected.",
+      "id": "external_conflict",
+      "remedy": null,
+      "status": "ok",
+      "title": "External controller conflict"
+    },
+    {
+      "detail": "telemetry is updating normally.",
+      "id": "frozen_telemetry",
+      "remedy": null,
+      "status": "ok",
+      "title": "Frozen telemetry"
+    },
+    {
+      "detail": "live=True dry_run=True",
+      "id": "live_mode",
+      "remedy": "read-only: SLEEPCTL_DRY_RUN=1, not actuating the bed \u2014 unset it in deploy/.env once you trust the decisions",
+      "status": "warn",
+      "title": "Live / dry-run mode"
+    },
+    {
+      "detail": "no cloud/timeout errors in the last 1 log lines",
+      "id": "cloud_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep cloud errors"
+    },
+    {
+      "detail": "daemon.err and daemon-crash.log are empty",
+      "id": "recent_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Recent daemon errors"
+    },
+    {
+      "detail": "EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD are set",
+      "id": "eight_sleep_creds",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep credentials"
+    },
+    {
+      "detail": "no calendar configured",
+      "id": "calendar",
+      "remedy": null,
+      "status": "info",
+      "title": "Work calendar (ICS)"
+    },
+    {
+      "detail": "no upcoming shift configured",
+      "id": "shift",
+      "remedy": null,
+      "status": "info",
+      "title": "Shift plan"
+    },
+    {
+      "detail": "daemon.log=117B, daemon.err=0B, watchdog.log=17KB, api.log=7KB",
+      "id": "log_sizes",
+      "remedy": null,
+      "status": "ok",
+      "title": "Log file sizes"
+    }
+  ],
+  "generated_utc": "2026-07-14T01:13:53.338173+00:00",
+  "headline": "Live / dry-run mode: live=True dry_run=True",
+  "playbook_matches": [
+    {
+      "id": "dry_run_left_on"
+    },
+    {
+      "id": "calendar_ics_unreachable"
+    }
+  ],
+  "primary_remedy": "read-only: SLEEPCTL_DRY_RUN=1, not actuating the bed \u2014 unset it in deploy/.env once you trust the decisions",
+  "schema": "sleepctl.health/v1",
+  "verdict": "DEGRADED",
+  "version": {
+    "branch": "confident-gates-rg7af0",
+    "sha": "33446cd"
+  }
+}
