@@ -196,6 +196,25 @@ def _git_head_info(repo_root: str) -> dict:
     return info
 
 
+def _last_web_commit_time(repo_root: str) -> float | None:
+    """Unix time of the most recent commit that touched ``dashboard/web`` — so the version check
+    can tell whether the ``.next`` build is actually behind the UI SOURCE, not merely behind some
+    unrelated backend/infra commit. Best-effort via the git binary; returns None if git isn't
+    available or the call fails (caller then falls back to the HEAD commit time)."""
+    try:
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "-C", repo_root, "log", "-1", "--format=%ct", "--", "dashboard/web"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if out.returncode == 0 and out.stdout.strip():
+            return float(out.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 def _check_version(repo_root: str) -> dict:
     info = _git_head_info(repo_root)
     sha = info.get("sha") or "unknown"
@@ -211,16 +230,21 @@ def _check_version(repo_root: str) -> dict:
     elif os.path.isdir(web_next):
         build_mtime = os.path.getmtime(web_next)
 
-    commit_time = info.get("commit_time")
+    # Compare the .next build against the last commit that actually TOUCHED the web UI source
+    # (dashboard/web), not merely the latest HEAD commit -- otherwise an unrelated backend/infra
+    # deploy falsely flags the UI as stale. Falls back to the HEAD commit time if the git binary
+    # isn't available.
+    web_commit_time = _last_web_commit_time(repo_root)
+    ref_time = web_commit_time if web_commit_time is not None else info.get("commit_time")
     if build_mtime is None:
         detail += "; no production web build found (.next missing)"
         status = "warn"
         remedy = "run `npm run build` in dashboard/web — the UI has never been built for production"
-    elif commit_time is not None and build_mtime < commit_time:
-        age_h = (commit_time - build_mtime) / 3600.0
-        detail += f"; web build is {age_h:.1f}h older than the deployed code"
+    elif ref_time is not None and build_mtime < ref_time:
+        age_h = (ref_time - build_mtime) / 3600.0
+        detail += f"; web build is {age_h:.1f}h older than the web UI source"
         status = "warn"
-        remedy = ("web build is older than the deployed code — rebuild the UI "
+        remedy = ("web build is older than the web UI source — rebuild the UI "
                   "(npm run build in dashboard/web; the watchdog only builds it if .next is "
                   "entirely missing)")
     else:
