@@ -679,6 +679,14 @@ Log "supervising; iPhone URL (same WiFi): http://${ip}:3000  login=$($env:DASHBO
 $script:smokeTestAt = (Get-Date).AddSeconds(40)
 $script:smokeTestDone = $false
 
+# --- remote-visibility: how often to publish the health snapshot to GitHub ---------------------
+# The operator's sandbox cannot reach this box's Tailscale funnel (network egress policy), but
+# BOTH sides can reach GitHub -- so every $healthPublishEveryMin minutes the watchdog fires the
+# publish-health script DETACHED (see the loop below). First push a couple minutes after boot so
+# the components have settled.
+$script:healthPublishEveryMin = 10
+$script:healthPublishAt = (Get-Date).AddMinutes(2)
+
 while ($true) {
     # Update BEFORE restart so a same-tick "all" restart request written by Handle-UpdateRequest
     # (on a successful update) is picked up immediately by Handle-RestartRequest below, instead
@@ -734,6 +742,28 @@ while ($true) {
             } catch {
                 Log "WARN: healthcheck ping failed: $_"
             }
+        }
+    }
+
+    # --- remote-visibility: publish scrubbed operational-health snapshot to GitHub --------------
+    # An off-site Claude cannot reach this box's funnel (egress policy) but CAN read GitHub, and
+    # this box can push to GitHub -- so every ~10 min push a secrets-free / biometrics-free health
+    # snapshot (the /diag diagnosis) to the orphan `health` branch. That gives the operator remote
+    # VISIBILITY; ACTION still flows back through the existing self-update path (a merged fix on
+    # main is pulled by Handle-UpdateRequest). Launched DETACHED via Start-Process so a slow or
+    # hung git push can NEVER stall this supervise loop -- publish-health.ps1 records its own
+    # verdict in .run\health-publish.result. Cleanly a no-op if the script isn't present yet
+    # (e.g. an older checkout that hasn't self-updated to this version).
+    if ((Get-Date) -ge $script:healthPublishAt) {
+        $script:healthPublishAt = (Get-Date).AddMinutes($script:healthPublishEveryMin)
+        try {
+            $hp = Join-Path $Root "scripts\publish-health.ps1"
+            if (Test-Path $hp) {
+                Start-Process -FilePath "powershell" -WindowStyle Hidden `
+                    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $hp) | Out-Null
+            }
+        } catch {
+            Log "WARN: could not launch publish-health: $_"
         }
     }
 
