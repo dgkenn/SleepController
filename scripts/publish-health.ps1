@@ -129,6 +129,20 @@ try {
         Assert-Success "git clone"
     }
 
+    # Configure the dedicated clone BEFORE any checkout/reset/add. Two settings, both essential for
+    # unattended operation:
+    #  1. core.autocrlf=false / core.safecrlf=false -- our snapshots are LF-terminated JSON. With
+    #     Git's Windows default (core.autocrlf=true), `git add` writes "LF will be replaced by CRLF"
+    #     to STDERR; under $ErrorActionPreference='Stop' PowerShell turns that native-stderr write
+    #     into a TERMINATING error, aborting the publish before commit/push (observed as: orphan
+    #     branch created locally but never pushed). We don't want line-ending rewriting anyway.
+    #  2. a LOCAL commit identity, so a box with no global git identity can still commit (this box
+    #     hit "Committer identity unknown" on a plain `git pull` during setup).
+    & git -C $healthRepo config core.autocrlf false 2>> $logFile
+    & git -C $healthRepo config core.safecrlf false 2>> $logFile
+    & git -C $healthRepo config user.email "sleepcontroller-bot@users.noreply.github.com" 2>> $logFile
+    & git -C $healthRepo config user.name "SleepController Health Bot" 2>> $logFile
+
     Log "fetching origin in dedicated health clone"
     & git -C $healthRepo fetch origin --quiet 2>> $logFile
     Assert-Success "git fetch origin"
@@ -188,13 +202,7 @@ try {
     }
 
     # --- commit + push ---------------------------------------------------------------------------
-    # Set a commit identity LOCAL to this dedicated clone so we never depend on a global git
-    # identity being configured on the machine -- a fresh Windows box often has none, which would
-    # make `git commit` below fail with "Committer identity unknown" (this box hit exactly that on
-    # a plain `git pull` during setup). Idempotent; scoped to the health clone only.
-    & git -C $healthRepo config user.email "sleepcontroller-bot@users.noreply.github.com" 2>> $logFile
-    & git -C $healthRepo config user.name "SleepController Health Bot" 2>> $logFile
-
+    # (line-ending + commit identity already configured on the clone right after checkout, above)
     & git -C $healthRepo add -A 2>> $logFile
     Assert-Success "git add -A"
 
