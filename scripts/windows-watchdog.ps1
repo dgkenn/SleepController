@@ -94,12 +94,25 @@ function Stop-ComponentProcesses([string]$component) {
                 Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
                     Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
                 }
+            # Port-based cleanup above is a no-op for a STALE process that isn't (yet/anymore)
+            # actually listening -- e.g. hung mid-startup, or dying just as Port-Alive sampled it
+            # as down. That's exactly the case the main loop calls us in (Port-Alive already said
+            # "not listening"), so without this a lingering api process can survive alongside a
+            # freshly spawned one and both end up racing for port 8000. Match by command line
+            # (interpreter-path-agnostic) the same way "daemon" below already does.
+            Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine -match 'uvicorn' -and $_.CommandLine -match 'app\.main:app' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         }
         "web" {
             Get-NetTCPConnection -LocalPort 3000 -State Listen -ErrorAction SilentlyContinue |
                 Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
                     Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue
                 }
+            # Same reasoning as "api" above, for the node-based web process.
+            Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue |
+                Where-Object { $_.CommandLine -and $_.CommandLine -match 'next' -and $_.CommandLine -match 'start' } |
+                ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
         }
         "daemon" {
             Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
@@ -679,6 +692,7 @@ while ($true) {
     if (-not (Port-Alive 8000)) {
         if (Test-CanRestart "api") {
             Log ("api not listening; starting (restart #{0} in window)" -f $script:restartHistory["api"].Count)
+            Stop-ComponentProcesses "api"   # best-effort: clear any lingering api before starting a clean one
             Start-Api | Out-Null; Start-Sleep -Seconds 3
         }
     } else {
@@ -690,6 +704,7 @@ while ($true) {
     if (-not (Port-Alive 3000)) {
         if (Test-CanRestart "web") {
             Log ("web not listening; starting (restart #{0} in window)" -f $script:restartHistory["web"].Count)
+            Stop-ComponentProcesses "web"   # best-effort: clear any lingering web before starting a clean one
             Start-Web | Out-Null; Start-Sleep -Seconds 3
         }
     } else {
