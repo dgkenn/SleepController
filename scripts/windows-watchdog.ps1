@@ -282,6 +282,20 @@ function Handle-UpdateRequest {
             # reuse the EXISTING restart.request protocol -- never kill a process directly here
             Set-Content -Path $script:restartRequestFile -Value "all" -Encoding ASCII
             $restarted = $true
+            # If the pulled diff changed the web UI SOURCE, also request a production rebuild --
+            # otherwise `next start` keeps serving the STALE .next after the deploy (the box only
+            # auto-builds when .next is entirely missing). Handle-WebBuildRequest (same tick, below)
+            # builds off-line, then swaps web onto the fresh .next only if the build succeeds.
+            # Best-effort + guarded; the version diagnostic still warns if a rebuild is ever missed.
+            if ($priorSha) {
+                try {
+                    $webChanged = & git -C $Root diff --name-only $priorSha HEAD -- dashboard/web 2>$null
+                    if ($webChanged) {
+                        Set-Content -Path $script:webBuildRequestFile -Value "1" -Encoding ASCII
+                        Log "self-update: web UI source changed -- requested a production rebuild"
+                    }
+                } catch { Log "WARN: web-change detection failed: $_" }
+            }
             # Arm the rollback safety net. Handle-RestartRequest's "all" case (below, same tick)
             # re-arms the one-shot smoke test, which will check $script:pendingRollback on FAILURE
             # and revert to $priorSha -- see Invoke-DeployRollback.
