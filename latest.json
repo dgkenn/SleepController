@@ -64,7 +64,7 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-30 -> -29 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-29 -> -30 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
       "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
       "status": "fail",
@@ -148,8 +148,8 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T16:18:04.694178+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-30 -> -29 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-15T16:28:16.168376+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-29 -> -30 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
