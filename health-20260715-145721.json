@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 10s ago",
+      "detail": "last update 1s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,10 +64,10 @@
       "title": "Priming state"
     },
     {
-      "detail": "state=ok (at setpoint)",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-28 -> -28 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+      "status": "fail",
       "title": "Thermal response"
     },
     {
@@ -78,10 +78,10 @@
       "title": "Water-loop / thermal capacity"
     },
     {
-      "detail": "no external-controller conflict detected.",
+      "detail": "external_setpoint_conflict: the device's accepted target repeatedly disagreed with our commanded target in 8 of the last 8 samples (observed external target ~0).",
       "id": "external_conflict",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~0). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+      "status": "warn",
       "title": "External controller conflict"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 3 log lines",
+      "detail": "no cloud/timeout errors in the last 21 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,23 +141,29 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=306B, daemon.err=0B, watchdog.log=30KB, api.log=14KB",
+      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=160KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-14T05:07:15.349416+00:00",
-  "headline": "all systems nominal",
+  "generated_utc": "2026-07-15T14:57:21.284863+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-28 -> -28 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
+      "id": "watchdog_restart_storm"
+    },
+    {
       "id": "calendar_ics_unreachable"
+    },
+    {
+      "id": "external_schedule_conflict"
     }
   ],
-  "primary_remedy": null,
+  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
   "schema": "sleepctl.health/v1",
-  "verdict": "HEALTHY",
+  "verdict": "DEGRADED",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
