@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 3s ago",
+      "detail": "last update 6s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -71,7 +71,7 @@
       "title": "Thermal response"
     },
     {
-      "detail": "stuck_prime: the Pod has been priming continuously for 253.3 min (> 6 min) without completing (last_prime='2026-07-14T19:49:00.000Z').",
+      "detail": "stuck_prime: the Pod has been priming continuously for 263.5 min (> 6 min) without completing (last_prime='2026-07-14T19:49:00.000Z').",
       "id": "thermal_capacity",
       "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
       "status": "fail",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=160B, daemon.err=0B, watchdog.log=186KB, api.log=59B",
+      "detail": "daemon.log=160B, daemon.err=0B, watchdog.log=187KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T18:35:32.216755+00:00",
-  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 253.3 min (> 6 min) without completing (last_prime='2026-07-14T19:49:00.000Z').",
+  "generated_utc": "2026-07-15T18:45:44.969053+00:00",
+  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 263.5 min (> 6 min) without completing (last_prime='2026-07-14T19:49:00.000Z').",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
