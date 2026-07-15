@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 7s ago",
+      "detail": "last update 10s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,10 +64,10 @@
       "title": "Priming state"
     },
     {
-      "detail": "state=ok (at setpoint)",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-41 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+      "status": "fail",
       "title": "Thermal response"
     },
     {
@@ -78,9 +78,9 @@
       "title": "Water-loop / thermal capacity"
     },
     {
-      "detail": "external_setpoint_conflict: the device's own schedule is active (activity='temperatureControl', target_level=-38) and disagrees with our commanded -68.",
+      "detail": "external_setpoint_conflict: the device's accepted target repeatedly disagreed with our commanded target in 8 of the last 8 samples (observed external target ~0).",
       "id": "external_conflict",
-      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~-38). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~0). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
       "status": "warn",
       "title": "External controller conflict"
     },
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 16 log lines",
+      "detail": "no cloud/timeout errors in the last 17 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=140KB, api.log=59B",
+      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=141KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T11:34:49.505983+00:00",
-  "headline": "External controller conflict: external_setpoint_conflict: the device's own schedule is active (activity='temperatureControl', target_level=-38) and disagrees with our commanded -68.",
+  "generated_utc": "2026-07-15T11:45:03.283216+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-41 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
@@ -161,7 +161,7 @@
       "id": "external_schedule_conflict"
     }
   ],
-  "primary_remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~-38). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
   "schema": "sleepctl.health/v1",
   "verdict": "DEGRADED",
   "version": {

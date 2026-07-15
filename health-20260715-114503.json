@@ -1,21 +1,21 @@
 {
   "checks": [
     {
-      "detail": "commit 33446cd on confident-gates-rg7af0; web build is 1.5h older than the deployed code",
+      "detail": "commit 8609148 on confident-gates-rg7af0; web build is up to date",
       "id": "version",
-      "remedy": "web build is older than the deployed code \u2014 rebuild the UI (npm run build in dashboard/web; the watchdog only builds it if .next is entirely missing)",
-      "status": "warn",
+      "remedy": null,
+      "status": "info",
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 22s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 9s ago",
+      "detail": "last update 10s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,10 +64,10 @@
       "title": "Priming state"
     },
     {
-      "detail": "state=ok (at setpoint)",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-41 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+      "status": "fail",
       "title": "Thermal response"
     },
     {
@@ -78,10 +78,10 @@
       "title": "Water-loop / thermal capacity"
     },
     {
-      "detail": "no external-controller conflict detected.",
+      "detail": "external_setpoint_conflict: the device's accepted target repeatedly disagreed with our commanded target in 8 of the last 8 samples (observed external target ~0).",
       "id": "external_conflict",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~0). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+      "status": "warn",
       "title": "External controller conflict"
     },
     {
@@ -92,14 +92,21 @@
       "title": "Frozen telemetry"
     },
     {
-      "detail": "live=True dry_run=True",
+      "detail": "live=True dry_run=False",
       "id": "live_mode",
-      "remedy": "read-only: SLEEPCTL_DRY_RUN=1, not actuating the bed \u2014 unset it in deploy/.env once you trust the decisions",
-      "status": "warn",
+      "remedy": null,
+      "status": "info",
       "title": "Live / dry-run mode"
     },
     {
-      "detail": "no cloud/timeout errors in the last 1 log lines",
+      "detail": "no phone sensor data received yet (Sensor Logger not streaming)",
+      "id": "phone_sensor",
+      "remedy": "point Sensor Logger at /bcg/ingest \u2014 see deploy/IPHONE_SENSOR.md",
+      "status": "info",
+      "title": "Phone sensor (iPhone)"
+    },
+    {
+      "detail": "no cloud/timeout errors in the last 17 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -134,28 +141,31 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=117B, daemon.err=0B, watchdog.log=17KB, api.log=7KB",
+      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=141KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-14T01:13:53.338173+00:00",
-  "headline": "Live / dry-run mode: live=True dry_run=True",
+  "generated_utc": "2026-07-15T11:45:03.283216+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-41 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
-      "id": "dry_run_left_on"
+      "id": "watchdog_restart_storm"
     },
     {
       "id": "calendar_ics_unreachable"
+    },
+    {
+      "id": "external_schedule_conflict"
     }
   ],
-  "primary_remedy": "read-only: SLEEPCTL_DRY_RUN=1, not actuating the bed \u2014 unset it in deploy/.env once you trust the decisions",
+  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
   "schema": "sleepctl.health/v1",
   "verdict": "DEGRADED",
   "version": {
     "branch": "confident-gates-rg7af0",
-    "sha": "33446cd"
+    "sha": "8609148"
   }
 }
