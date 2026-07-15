@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 11s ago",
+      "detail": "last update 14s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -141,16 +141,19 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=452B, daemon.err=0B, watchdog.log=30KB, api.log=14KB",
+      "detail": "daemon.log=452B, daemon.err=0B, watchdog.log=205KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-14T11:54:04.462317+00:00",
+  "generated_utc": "2026-07-15T21:47:46.449856+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
+    {
+      "id": "watchdog_restart_storm"
+    },
     {
       "id": "calendar_ics_unreachable"
     }
