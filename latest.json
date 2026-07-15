@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 8s ago",
+      "detail": "last update 13s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,7 +64,7 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-30 -> -29 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-30 -> -30 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
       "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
       "status": "fail",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=176KB, api.log=59B",
+      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=178KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T17:39:08.172916+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-30 -> -29 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-15T17:49:23.357282+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-30 -> -30 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
