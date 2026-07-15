@@ -8,14 +8,14 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -148,7 +148,7 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T20:16:46.930855+00:00",
+  "generated_utc": "2026-07-15T20:26:57.261636+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
