@@ -15,7 +15,7 @@
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 15s ago",
+      "detail": "last update 4s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,10 +64,10 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-54 -> -58 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "state=ok (at setpoint)",
       "id": "thermal_response",
-      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
-      "status": "fail",
+      "remedy": null,
+      "status": "ok",
       "title": "Thermal response"
     },
     {
@@ -141,23 +141,26 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=452B, daemon.err=0B, watchdog.log=30KB, api.log=14KB",
+      "detail": "daemon.log=452B, daemon.err=0B, watchdog.log=197KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-14T10:22:24.218192+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-54 -> -58 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-15T20:16:46.930855+00:00",
+  "headline": "all systems nominal",
   "playbook_matches": [
+    {
+      "id": "watchdog_restart_storm"
+    },
     {
       "id": "calendar_ics_unreachable"
     }
   ],
-  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+  "primary_remedy": null,
   "schema": "sleepctl.health/v1",
-  "verdict": "DEGRADED",
+  "verdict": "HEALTHY",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
