@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 10s ago",
+      "detail": "last update 14s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,7 +64,7 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-41 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-37 -> -33 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
       "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
       "status": "fail",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 17 log lines",
+      "detail": "no cloud/timeout errors in the last 18 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=141KB, api.log=59B",
+      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=143KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T11:45:03.283216+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-41 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-15T11:55:03.354589+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-37 -> -33 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"

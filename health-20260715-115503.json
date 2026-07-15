@@ -1,7 +1,7 @@
 {
   "checks": [
     {
-      "detail": "commit 581bbeb on confident-gates-rg7af0; web build is up to date",
+      "detail": "commit 8609148 on confident-gates-rg7af0; web build is up to date",
       "id": "version",
       "remedy": null,
       "status": "info",
@@ -15,7 +15,7 @@
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 8s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 11s ago",
+      "detail": "last update 14s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,10 +64,10 @@
       "title": "Priming state"
     },
     {
-      "detail": "state=ok (at setpoint)",
+      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-37 -> -33 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+      "status": "fail",
       "title": "Thermal response"
     },
     {
@@ -78,10 +78,10 @@
       "title": "Water-loop / thermal capacity"
     },
     {
-      "detail": "no external-controller conflict detected.",
+      "detail": "external_setpoint_conflict: the device's accepted target repeatedly disagreed with our commanded target in 8 of the last 8 samples (observed external target ~0).",
       "id": "external_conflict",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~0). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+      "status": "warn",
       "title": "External controller conflict"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 2 log lines",
+      "detail": "no cloud/timeout errors in the last 18 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -120,10 +120,10 @@
       "title": "Recent daemon errors"
     },
     {
-      "detail": "EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD not both set",
+      "detail": "EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD are set",
       "id": "eight_sleep_creds",
-      "remedy": "daemon will fall back to SIMULATOR \u2014 set both in deploy/.env for live control",
-      "status": "warn",
+      "remedy": null,
+      "status": "ok",
       "title": "Eight Sleep credentials"
     },
     {
@@ -141,28 +141,31 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=160B, daemon.err=0B, watchdog.log=29KB, api.log=6KB",
+      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=143KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-14T02:11:12.064115+00:00",
-  "headline": "Eight Sleep credentials: EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD not both set",
+  "generated_utc": "2026-07-15T11:55:03.354589+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-37 -> -33 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
-      "id": "no_credentials_configured"
+      "id": "watchdog_restart_storm"
     },
     {
       "id": "calendar_ics_unreachable"
+    },
+    {
+      "id": "external_schedule_conflict"
     }
   ],
-  "primary_remedy": "daemon will fall back to SIMULATOR \u2014 set both in deploy/.env for live control",
+  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
   "schema": "sleepctl.health/v1",
   "verdict": "DEGRADED",
   "version": {
     "branch": "confident-gates-rg7af0",
-    "sha": "581bbeb"
+    "sha": "8609148"
   }
 }
