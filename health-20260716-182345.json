@@ -8,14 +8,14 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 14s ago",
+      "detail": "last update 1s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -57,10 +57,10 @@
       "title": "Device online"
     },
     {
-      "detail": "not priming / doesn't need priming",
+      "detail": "the Pod is currently priming",
       "id": "priming",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "wait for priming to finish; normal control resumes automatically",
+      "status": "warn",
       "title": "Priming state"
     },
     {
@@ -71,17 +71,17 @@
       "title": "Thermal response"
     },
     {
-      "detail": "only 0 history sample(s) in the last 20 min \u2014 not enough to assess thermal capacity yet.",
+      "detail": "stuck_prime: the Pod has been priming continuously for 253.5 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
       "id": "thermal_capacity",
-      "remedy": null,
-      "status": "info",
+      "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
+      "status": "fail",
       "title": "Water-loop / thermal capacity"
     },
     {
-      "detail": "external_setpoint_conflict: the device's own schedule is active (activity='temperatureControl', target_level=-38) and disagrees with our commanded -68.",
+      "detail": "no external-controller conflict detected.",
       "id": "external_conflict",
-      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~-38). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
-      "status": "warn",
+      "remedy": null,
+      "status": "ok",
       "title": "External controller conflict"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 15 log lines",
+      "detail": "no cloud/timeout errors in the last 9 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=122KB, api.log=59B",
+      "detail": "daemon.log=1KB, daemon.err=0B, watchdog.log=328KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T08:32:27.760931+00:00",
-  "headline": "External controller conflict: external_setpoint_conflict: the device's own schedule is active (activity='temperatureControl', target_level=-38) and disagrees with our commanded -68.",
+  "generated_utc": "2026-07-16T18:23:44.757600+00:00",
+  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 253.5 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
@@ -158,10 +158,10 @@
       "id": "calendar_ics_unreachable"
     },
     {
-      "id": "external_schedule_conflict"
+      "id": "stuck_prime"
     }
   ],
-  "primary_remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~-38). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+  "primary_remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
   "schema": "sleepctl.health/v1",
   "verdict": "DEGRADED",
   "version": {
