@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 8s ago",
+      "detail": "last update 9s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,14 +64,14 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-60 -> -62 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-61 -> -65 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
       "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
       "status": "fail",
       "title": "Thermal response"
     },
     {
-      "detail": "stuck_prime: the Pod has been priming continuously for 293.8 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
+      "detail": "stuck_prime: the Pod has been priming continuously for 300.0 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
       "id": "thermal_capacity",
       "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
       "status": "fail",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 14 log lines",
+      "detail": "no cloud/timeout errors in the last 16 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -148,8 +148,8 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-16T19:04:05.069766+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-60 -> -62 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-16T19:14:16.020057+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-61 -> -65 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
