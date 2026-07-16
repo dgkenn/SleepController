@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 14s ago",
+      "detail": "last update 3s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -106,17 +106,17 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 4 log lines",
+      "detail": "no cloud/timeout errors in the last 6 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
       "title": "Eight Sleep cloud errors"
     },
     {
-      "detail": "daemon.err last: device update failed, using stale data: EightSleepRequestError('GET https://client-api.8slp.net/v1/devices/370034000650335330373220 failed: EightSleepRequestError(\\'GET https://client-api.8slp.net/v1/devices/370034000650335330373220 -> HTTP 400: {\\\\\\'status\\\\\\': 400, \\\\\\'code\\\\\\': \\\\\\'BadRequest\\\\\\'",
+      "detail": "daemon.err and daemon-crash.log are empty",
       "id": "recent_errors",
-      "remedy": "read the daemon.err/daemon-crash.log tails below for the full traceback",
-      "status": "warn",
+      "remedy": null,
+      "status": "ok",
       "title": "Recent daemon errors"
     },
     {
@@ -141,23 +141,26 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=452B, daemon.err=142KB, watchdog.log=30KB, api.log=14KB",
+      "detail": "daemon.log=745B, daemon.err=0B, watchdog.log=228KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-14T15:38:44.711701+00:00",
-  "headline": "Recent daemon errors: daemon.err last: device update failed, using stale data: EightSleepRequestError('GET https://client-api.8slp.net/v1/devices/370034000650335330373220 failed: EightSleepRequestError(\\'GET https://client-api.8slp.net/v1/devices/370034000650335330373220 -> HTTP 400: {\\\\\\'status\\\\\\': 400, \\\\\\'code\\\\\\': \\\\\\'BadRequest\\\\\\'",
+  "generated_utc": "2026-07-16T01:30:36.768193+00:00",
+  "headline": "all systems nominal",
   "playbook_matches": [
+    {
+      "id": "watchdog_restart_storm"
+    },
     {
       "id": "calendar_ics_unreachable"
     }
   ],
-  "primary_remedy": "read the daemon.err/daemon-crash.log tails below for the full traceback",
+  "primary_remedy": null,
   "schema": "sleepctl.health/v1",
-  "verdict": "DEGRADED",
+  "verdict": "HEALTHY",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
