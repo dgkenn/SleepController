@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 15s ago",
+      "detail": "last update 2s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,7 +64,7 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-63 -> -57 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-58 -> -54 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
       "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
       "status": "fail",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 17 log lines",
+      "detail": "no cloud/timeout errors in the last 18 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -148,8 +148,8 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-16T19:34:30.383154+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-63 -> -57 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-16T19:44:43.374980+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-58 -> -54 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
