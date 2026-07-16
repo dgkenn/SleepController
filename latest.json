@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 13s ago",
+      "detail": "last update 2s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,14 +64,14 @@
       "title": "Priming state"
     },
     {
-      "detail": "state=ok (at setpoint)",
+      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-71 -> -63 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+      "status": "fail",
       "title": "Thermal response"
     },
     {
-      "detail": "stuck_prime: the Pod has been priming continuously for 263.6 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
+      "detail": "stuck_prime: the Pod has been priming continuously for 273.7 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
       "id": "thermal_capacity",
       "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
       "status": "fail",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 9 log lines",
+      "detail": "no cloud/timeout errors in the last 11 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=1KB, daemon.err=0B, watchdog.log=328KB, api.log=59B",
+      "detail": "daemon.log=1KB, daemon.err=0B, watchdog.log=330KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-16T18:33:52.812950+00:00",
-  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 263.6 min (> 6 min) without completing (last_prime='2026-07-15T20:06:35.000Z').",
+  "generated_utc": "2026-07-16T18:43:53.625434+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-71 -> -63 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
@@ -161,7 +161,7 @@
       "id": "stuck_prime"
     }
   ],
-  "primary_remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
+  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
   "schema": "sleepctl.health/v1",
   "verdict": "DEGRADED",
   "version": {
