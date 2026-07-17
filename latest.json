@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat -0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -148,7 +148,7 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-17T17:11:25.667565+00:00",
+  "generated_utc": "2026-07-17T17:21:37.000353+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
