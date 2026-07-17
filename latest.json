@@ -8,14 +8,14 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 15s ago",
+      "detail": "last update 2s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -71,7 +71,7 @@
       "title": "Thermal response"
     },
     {
-      "detail": "stuck_prime: the Pod has been priming continuously for 254.2 min (> 6 min) without completing (last_prime='2026-07-16T19:53:46.000Z').",
+      "detail": "stuck_prime: the Pod has been priming continuously for 264.5 min (> 6 min) without completing (last_prime='2026-07-16T19:53:46.000Z').",
       "id": "thermal_capacity",
       "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
       "status": "fail",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=470KB, api.log=59B",
+      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=471KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-17T18:22:27.929380+00:00",
-  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 254.2 min (> 6 min) without completing (last_prime='2026-07-16T19:53:46.000Z').",
+  "generated_utc": "2026-07-17T18:32:40.885292+00:00",
+  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 264.5 min (> 6 min) without completing (last_prime='2026-07-16T19:53:46.000Z').",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
