@@ -15,7 +15,7 @@
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 6s ago",
+      "detail": "last update 3s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -57,10 +57,10 @@
       "title": "Device online"
     },
     {
-      "detail": "the Pod is currently priming",
+      "detail": "not priming / doesn't need priming",
       "id": "priming",
-      "remedy": "wait for priming to finish; normal control resumes automatically",
-      "status": "warn",
+      "remedy": null,
+      "status": "ok",
       "title": "Priming state"
     },
     {
@@ -71,10 +71,10 @@
       "title": "Thermal response"
     },
     {
-      "detail": "stuck_prime: the Pod has been priming continuously for 299.8 min (> 6 min) without completing (last_prime='2026-07-14T19:49:00.000Z').",
+      "detail": "only 0 history sample(s) in the last 20 min \u2014 not enough to assess thermal capacity yet.",
       "id": "thermal_capacity",
-      "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
-      "status": "fail",
+      "remedy": null,
+      "status": "info",
       "title": "Water-loop / thermal capacity"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 3 log lines",
+      "detail": "no cloud/timeout errors in the last 21 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,29 +141,26 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=306B, daemon.err=0B, watchdog.log=191KB, api.log=59B",
+      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=391KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T19:26:10.079398+00:00",
-  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 299.8 min (> 6 min) without completing (last_prime='2026-07-14T19:49:00.000Z').",
+  "generated_utc": "2026-07-17T05:12:14.015943+00:00",
+  "headline": "all systems nominal",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
     },
     {
       "id": "calendar_ics_unreachable"
-    },
-    {
-      "id": "stuck_prime"
     }
   ],
-  "primary_remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
+  "primary_remedy": null,
   "schema": "sleepctl.health/v1",
-  "verdict": "DEGRADED",
+  "verdict": "HEALTHY",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
