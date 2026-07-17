@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -148,7 +148,7 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-17T13:08:15.203186+00:00",
+  "generated_utc": "2026-07-17T13:18:26.535143+00:00",
   "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-54 -> -54 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
