@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 9s ago",
+      "detail": "last update 15s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 6 log lines",
+      "detail": "no cloud/timeout errors in the last 35 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=745B, daemon.err=0B, watchdog.log=287KB, api.log=59B",
+      "detail": "daemon.log=5KB, daemon.err=0B, watchdog.log=487KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-16T11:28:08.055452+00:00",
+  "generated_utc": "2026-07-17T21:14:52.600904+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
