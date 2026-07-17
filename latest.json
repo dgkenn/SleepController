@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 10s ago",
+      "detail": "last update 13s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -148,7 +148,7 @@
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-17T09:35:37.836067+00:00",
+  "generated_utc": "2026-07-17T09:45:50.954551+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {

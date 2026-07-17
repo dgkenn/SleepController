@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat -0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 4 log lines",
+      "detail": "no cloud/timeout errors in the last 21 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=452B, daemon.err=0B, watchdog.log=219KB, api.log=59B",
+      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=418KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T23:59:30.025831+00:00",
+  "generated_utc": "2026-07-17T09:45:50.954551+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
