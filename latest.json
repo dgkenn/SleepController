@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=501KB, api.log=59B",
+      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=502KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-17T23:36:40.819096+00:00",
+  "generated_utc": "2026-07-17T23:46:51.881953+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
