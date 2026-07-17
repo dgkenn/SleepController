@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 13s ago",
+      "detail": "last update 7s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -64,10 +64,10 @@
       "title": "Priming state"
     },
     {
-      "detail": "thermal control appears stalled: commanded to warm but device level not responding (-30 -> -30 over 8 min) \u2014 check water level, cover connection, or hardware",
+      "detail": "state=ok (at setpoint)",
       "id": "thermal_response",
-      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
-      "status": "fail",
+      "remedy": null,
+      "status": "ok",
       "title": "Thermal response"
     },
     {
@@ -78,10 +78,10 @@
       "title": "Water-loop / thermal capacity"
     },
     {
-      "detail": "external_setpoint_conflict: the device's accepted target repeatedly disagreed with our commanded target in 8 of the last 8 samples (observed external target ~0).",
+      "detail": "no external-controller conflict detected.",
       "id": "external_conflict",
-      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~0). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
-      "status": "warn",
+      "remedy": null,
+      "status": "ok",
       "title": "External controller conflict"
     },
     {
@@ -141,29 +141,26 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=178KB, api.log=59B",
+      "detail": "daemon.log=3KB, daemon.err=0B, watchdog.log=382KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-15T17:49:23.357282+00:00",
-  "headline": "Thermal response: thermal control appears stalled: commanded to warm but device level not responding (-30 -> -30 over 8 min) \u2014 check water level, cover connection, or hardware",
+  "generated_utc": "2026-07-17T03:41:12.822779+00:00",
+  "headline": "all systems nominal",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
     },
     {
       "id": "calendar_ics_unreachable"
-    },
-    {
-      "id": "external_schedule_conflict"
     }
   ],
-  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+  "primary_remedy": null,
   "schema": "sleepctl.health/v1",
-  "verdict": "DEGRADED",
+  "verdict": "HEALTHY",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
