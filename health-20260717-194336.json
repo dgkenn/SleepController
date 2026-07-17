@@ -57,24 +57,24 @@
       "title": "Device online"
     },
     {
-      "detail": "not priming / doesn't need priming",
+      "detail": "the Pod is currently priming",
       "id": "priming",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "wait for priming to finish; normal control resumes automatically",
+      "status": "warn",
       "title": "Priming state"
     },
     {
-      "detail": "state=ok (at setpoint)",
+      "detail": "thermal control appears stalled: commanded to cool but device level not responding (-69 -> -64 over 8 min) \u2014 check water level, cover connection, or hardware",
       "id": "thermal_response",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
+      "status": "fail",
       "title": "Thermal response"
     },
     {
-      "detail": "only 0 history sample(s) in the last 20 min \u2014 not enough to assess thermal capacity yet.",
+      "detail": "stuck_prime: the Pod has been priming continuously for 299.7 min (> 6 min) without completing (last_prime='2026-07-16T19:53:46.000Z').",
       "id": "thermal_capacity",
-      "remedy": null,
-      "status": "info",
+      "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
+      "status": "fail",
       "title": "Water-loop / thermal capacity"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 6 log lines",
+      "detail": "no cloud/timeout errors in the last 33 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,26 +141,29 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=745B, daemon.err=0B, watchdog.log=278KB, api.log=59B",
+      "detail": "daemon.log=5KB, daemon.err=0B, watchdog.log=478KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-16T09:57:07.210681+00:00",
-  "headline": "all systems nominal",
+  "generated_utc": "2026-07-17T19:43:36.404296+00:00",
+  "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-69 -> -64 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
     },
     {
       "id": "calendar_ics_unreachable"
+    },
+    {
+      "id": "stuck_prime"
     }
   ],
-  "primary_remedy": null,
+  "primary_remedy": "power-cycle the Hub, check the hose for kinks, or run the on-bed self-test",
   "schema": "sleepctl.health/v1",
-  "verdict": "HEALTHY",
+  "verdict": "DEGRADED",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
