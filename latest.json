@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -71,7 +71,7 @@
       "title": "Thermal response"
     },
     {
-      "detail": "stuck_prime: the Pod has been priming continuously for 280.8 min (> 6 min) without completing (last_prime='2026-07-17T19:52:28.000Z').",
+      "detail": "stuck_prime: the Pod has been priming continuously for 290.9 min (> 6 min) without completing (last_prime='2026-07-17T19:52:28.000Z').",
       "id": "thermal_capacity",
       "remedy": "Prime is not completing \u2014 the water loop is likely air-bound. Top off the reservoir with distilled water, reseat the hub\u2194cover connectors, then re-prime.",
       "status": "fail",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 44 log lines",
+      "detail": "no cloud/timeout errors in the last 45 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,15 +141,15 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=615KB, api.log=59B",
+      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=616KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-18T18:51:15.658870+00:00",
-  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 280.8 min (> 6 min) without completing (last_prime='2026-07-17T19:52:28.000Z').",
+  "generated_utc": "2026-07-18T19:01:26.890414+00:00",
+  "headline": "Water-loop / thermal capacity: stuck_prime: the Pod has been priming continuously for 290.9 min (> 6 min) without completing (last_prime='2026-07-17T19:52:28.000Z').",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
