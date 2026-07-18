@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 14s ago",
+      "detail": "last update 6s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=576KB, api.log=59B",
+      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=577KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-18T12:16:38.877989+00:00",
+  "generated_utc": "2026-07-18T12:26:40.444793+00:00",
   "headline": "Thermal response: thermal control appears stalled: commanded to cool but device level not responding (-39 -> -39 over 8 min) \u2014 check water level, cover connection, or hardware",
   "playbook_matches": [
     {
