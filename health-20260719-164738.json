@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 1s ago",
+      "detail": "last heartbeat 0s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 12s ago",
+      "detail": "last update 11s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -50,10 +50,10 @@
       "title": "Water reservoir"
     },
     {
-      "detail": "device reports online",
+      "detail": "the bed/hub is reporting offline",
       "id": "device_online",
-      "remedy": null,
-      "status": "ok",
+      "remedy": "check the Hub's network connection/power; verify Eight Sleep cloud status",
+      "status": "fail",
       "title": "Device online"
     },
     {
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 40 log lines",
+      "detail": "no cloud/timeout errors in the last 52 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,26 +141,29 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=545KB, api.log=59B",
+      "detail": "daemon.log=7KB, daemon.err=0B, watchdog.log=745KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-18T07:02:49.450302+00:00",
-  "headline": "all systems nominal",
+  "generated_utc": "2026-07-19T16:47:37.879899+00:00",
+  "headline": "Device online: the bed/hub is reporting offline",
   "playbook_matches": [
     {
       "id": "watchdog_restart_storm"
     },
     {
       "id": "calendar_ics_unreachable"
+    },
+    {
+      "id": "device_offline"
     }
   ],
-  "primary_remedy": null,
+  "primary_remedy": "check the Hub's network connection/power; verify Eight Sleep cloud status",
   "schema": "sleepctl.health/v1",
-  "verdict": "HEALTHY",
+  "verdict": "DEGRADED",
   "version": {
     "branch": "confident-gates-rg7af0",
     "sha": "8609148"
