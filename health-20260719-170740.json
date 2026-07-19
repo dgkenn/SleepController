@@ -15,7 +15,7 @@
       "title": "Control daemon heartbeat"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "watchdog_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 2s ago",
+      "detail": "last update 5s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 40 log lines",
+      "detail": "no cloud/timeout errors in the last 52 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=547KB, api.log=59B",
+      "detail": "daemon.log=7KB, daemon.err=0B, watchdog.log=747KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-18T07:23:02.948159+00:00",
+  "generated_utc": "2026-07-19T17:07:40.275950+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
