@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 7s ago",
+      "detail": "last update 3s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -106,7 +106,7 @@
       "title": "Phone sensor (iPhone)"
     },
     {
-      "detail": "no cloud/timeout errors in the last 40 log lines",
+      "detail": "no cloud/timeout errors in the last 51 log lines",
       "id": "cloud_errors",
       "remedy": null,
       "status": "ok",
@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=6KB, daemon.err=0B, watchdog.log=509KB, api.log=59B",
+      "detail": "daemon.log=7KB, daemon.err=0B, watchdog.log=709KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-18T00:57:44.108771+00:00",
+  "generated_utc": "2026-07-19T10:43:31.951035+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
