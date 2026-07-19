@@ -8,7 +8,7 @@
       "title": "Deployed version"
     },
     {
-      "detail": "last heartbeat 0s ago",
+      "detail": "last heartbeat 1s ago",
       "id": "daemon_heartbeat",
       "remedy": null,
       "status": "ok",
@@ -36,7 +36,7 @@
       "title": "Web UI (port 3000)"
     },
     {
-      "detail": "last update 2s ago",
+      "detail": "last update 3s ago",
       "id": "runtime_state_fresh",
       "remedy": null,
       "status": "ok",
@@ -141,14 +141,14 @@
       "title": "Shift plan"
     },
     {
-      "detail": "daemon.log=7KB, daemon.err=0B, watchdog.log=692KB, api.log=59B",
+      "detail": "daemon.log=7KB, daemon.err=0B, watchdog.log=693KB, api.log=59B",
       "id": "log_sizes",
       "remedy": null,
       "status": "ok",
       "title": "Log file sizes"
     }
   ],
-  "generated_utc": "2026-07-19T07:51:16.345523+00:00",
+  "generated_utc": "2026-07-19T08:01:28.731765+00:00",
   "headline": "all systems nominal",
   "playbook_matches": [
     {
