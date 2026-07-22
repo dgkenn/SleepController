@@ -558,7 +558,17 @@ def data_health(repo) -> dict:
                  # actually fused = fresh AND the Pod senses you in bed (presence-gated).
                  "fusing": bool(extra.get("phone_fused")) or (fresh and in_bed),
                  "in_bed": in_bed}
+    # Dedicated cardiac sensor (Polar Verity Sense armband) freshness — the authoritative HR/HRV
+    # channel merged with the phone's movement. Metadata only; no raw biometric values leak here.
+    cardiac = bridge.read_cardiac_sample(repo.conn)
+    if cardiac is not None:
+        c_age = cardiac.get("age_seconds")
+        cardiac = {"updated": cardiac.get("updated"), "source": cardiac.get("source"),
+                   "age_seconds": round(c_age, 1) if c_age is not None else None,
+                   "hr": cardiac.get("hr"), "hrv": cardiac.get("hrv"),
+                   "streaming": bool(c_age is not None and c_age < 120)}
     return {
+        "cardiac": cardiac,
         "daemon": {"alive": rt.get("daemon_alive", False), "updated": rt.get("updated"),
                    "stale": rt.get("stale", True),
                    "live": bool(extra.get("live", False)),
@@ -1385,6 +1395,62 @@ def _finite_or_none(x):
         return x if x is not None and math.isfinite(x) else None
     except TypeError:
         return None
+
+
+def _rmssd(rr_ms: list) -> "float | None":
+    """RMSSD (ms) — root-mean-square of successive RR-interval differences, the standard
+    short-window HRV metric. Needs ≥2 usable intervals; returns None otherwise / if non-finite."""
+    clean = [float(x) for x in rr_ms
+             if isinstance(x, (int, float)) and math.isfinite(x) and 250.0 <= float(x) <= 2000.0]
+    if len(clean) < 2:
+        return None
+    diffs = [clean[i + 1] - clean[i] for i in range(len(clean) - 1)]
+    val = math.sqrt(sum(d * d for d in diffs) / len(diffs))
+    return val if math.isfinite(val) else None
+
+
+def ingest_hr(repo, payload: dict) -> dict:
+    """Ingest a cardiac batch from a DEDICATED BLE HR sensor — e.g. a Polar Verity Sense armband
+    forwarded by ``scripts/verity_forwarder.py``: an instantaneous ``hr`` (bpm) plus optional
+    beat-to-beat ``rr`` intervals (milliseconds). Computes HRV (RMSSD) from the RR intervals and
+    publishes to the bridge's cardiac channel (``live_cardiac``), which ``read_fused_sensor``
+    treats as the AUTHORITATIVE HR/HRV source and MERGES with — never clobbering — the phone
+    accelerometer's movement. Also appends to the ``sensor_samples`` history (source-tagged) for
+    later model training. Zero device risk: an independent sensor; the Pod is never touched.
+
+    Accepted body (query ``?token=`` + ``?source=`` optional, header-less friendly):
+      {"hr": 58, "rr": [1010, 1032, 998, ...], "source": "verity"}
+    ``hr`` and ``rr`` are both optional individually but at least one must yield a value; with RR
+    but no HR, HR is derived from the mean RR interval."""
+    source = payload.get("source") or "verity"
+    rr = payload.get("rr") or []
+    if len(rr) > BCG_MAX_SAMPLES:
+        return {"ok": False, "error": f"rr batch too large ({len(rr)} > {BCG_MAX_SAMPLES})",
+                "ingested": 0}
+
+    hr = _finite_or_none(payload.get("hr"))
+    hrv = _finite_or_none(_rmssd(rr))
+    # RR present but no explicit HR → derive HR from the mean interval (60000 ms / mean_rr_ms).
+    if hr is None and rr:
+        clean = [float(x) for x in rr
+                 if isinstance(x, (int, float)) and math.isfinite(x) and 250.0 <= float(x) <= 2000.0]
+        if clean:
+            hr = _finite_or_none(60000.0 / (sum(clean) / len(clean)))
+    # sanity-clamp HR to a physiological band so a corrupt reading can't poison the fusion
+    if hr is not None and not (25.0 <= hr <= 240.0):
+        hr = None
+
+    if hr is None and hrv is None:
+        return {"ok": False, "error": "no usable hr/rr in batch", "ingested": 0}
+
+    bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source})
+    # Accumulate into the same overnight time-series as the phone samples (source-tagged so the
+    # two channels stay distinguishable for model training). Best-effort; never fails the ingest.
+    bridge.append_sensor_sample(repo.conn, {
+        "hr": hr, "hrv": hrv, "movement": None, "source": source,
+        "fs": None, "n_samples": len(rr),
+    })
+    return {"ok": True, "hr": hr, "hrv": hrv, "rr_count": len(rr), "source": source}
 
 
 def ingest_bcg(repo, payload: dict) -> dict:

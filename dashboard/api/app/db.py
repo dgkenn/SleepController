@@ -71,6 +71,16 @@ CREATE TABLE IF NOT EXISTS live_sensor (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     updated TEXT, hr REAL, hrv REAL, movement REAL, source TEXT
 );
+-- Singleton: latest DEDICATED cardiac sample from a separate BLE HR sensor (e.g. a Polar Verity
+-- Sense armband forwarded by scripts/verity_forwarder.py). Kept SEPARATE from live_sensor so the
+-- Verity's authoritative HR/HRV and the iPhone accelerometer's movement never clobber each other:
+-- bridge.read_fused_sensor MERGES the two channels per-field (Verity authoritative for HR/HRV,
+-- phone authoritative for movement, each gated by its own freshness). Zero device risk — an
+-- independent sensor; the Pod is never touched. ``hr`` bpm, ``hrv`` = RMSSD ms from RR intervals.
+CREATE TABLE IF NOT EXISTS live_cardiac (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    updated TEXT, hr REAL, hrv REAL, source TEXT
+);
 -- One row per night recording HOW you were woken (stage, how early, window, forced), joined
 -- with the morning check-in grogginess to personalize the wake tuning.
 CREATE TABLE IF NOT EXISTS wake_log (

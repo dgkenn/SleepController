@@ -55,8 +55,8 @@ _CHECK_ORDER = [
     "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
-    "cloud_errors", "live_mode", "phone_sensor", "eight_sleep_creds", "version", "log_sizes",
-    "calendar", "shift",
+    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "eight_sleep_creds",
+    "version", "log_sizes", "calendar", "shift",
 ]
 
 # History window handed to the thermal-capacity/conflict/frozen-telemetry detectors — plenty
@@ -639,6 +639,24 @@ def _aggregate(checks: list[dict]) -> tuple[str, str, str | None]:
     return "HEALTHY", "all systems nominal", None
 
 
+def _check_cardiac_sensor(repo) -> dict:
+    """Dedicated BLE cardiac sensor (Polar Verity Sense -> /hr/ingest) freshness. Metadata only —
+    reports streaming state, not raw HR/HRV."""
+    from app import bridge
+    s = bridge.read_cardiac_sample(repo.conn)
+    if not s:
+        return _check("cardiac_sensor", "Cardiac sensor (Verity)", "info",
+                      "no cardiac-sensor data yet (Polar Verity Sense not streaming)",
+                      "run scripts/verity_forwarder.py -- see deploy/VERITY_SENSOR.md")
+    age = s.get("age_seconds")
+    if age is not None and age < 120:
+        return _check("cardiac_sensor", "Cardiac sensor (Verity)", "ok",
+                      f"streaming (last HR sample {int(age)}s ago)", None)
+    ago = f"{int(age)}s ago" if age is not None else "at an unknown time"
+    return _check("cardiac_sensor", "Cardiac sensor (Verity)", "info",
+                  f"not currently streaming (last sample {ago})", None)
+
+
 # ------------------------------------------------------------------ entry point
 def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     """Run the full diagnostic battery. Never raises.
@@ -708,6 +726,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("recent_errors", "Recent daemon errors",
         lambda: _check_recent_errors(run_dir, now, daemon_hb_age))
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
+    add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("calendar", "Work calendar (ICS)", lambda: _check_calendar(repo))
     add("shift", "Shift plan", lambda: _check_shift(repo))
     add("log_sizes", "Log file sizes", lambda: _check_log_sizes(run_dir))

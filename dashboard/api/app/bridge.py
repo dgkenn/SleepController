@@ -242,6 +242,88 @@ def read_sensor_sample(conn: sqlite3.Connection) -> dict | None:
     return d
 
 
+# ---- dedicated cardiac sensor (BLE HR strap / armband, e.g. Polar Verity Sense) --------------
+def write_cardiac_sample(conn: sqlite3.Connection, sample: dict) -> None:
+    """Persist the latest dedicated-cardiac-sensor sample (singleton, ``live_cardiac``). Written
+    by /hr/ingest after a BLE HR batch (HR + RR-interval-derived HRV). Deliberately a SEPARATE
+    row from ``live_sensor`` (the phone/accelerometer channel) so the Verity's authoritative
+    HR/HRV and the phone's movement can be merged per-field without either clobbering the other
+    (see ``read_fused_sensor``)."""
+    conn.execute(
+        """INSERT INTO live_cardiac (id, updated, hr, hrv, source)
+        VALUES (1,?,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+         updated=excluded.updated, hr=excluded.hr, hrv=excluded.hrv, source=excluded.source""",
+        (_now(), sample.get("hr"), sample.get("hrv"), sample.get("source", "verity")),
+    )
+    conn.commit()
+
+
+def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
+    """Latest dedicated-cardiac-sensor sample with a computed ``age_seconds``, or None."""
+    row = conn.execute("SELECT * FROM live_cardiac WHERE id = 1").fetchone()
+    if row is None:
+        return None
+    d = dict(row)
+    age = None
+    if d.get("updated"):
+        try:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(d["updated"])).total_seconds()
+        except Exception:
+            age = None
+    d["age_seconds"] = age
+    return d
+
+
+def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
+                      movement_max_age_s: float = 30.0,
+                      phone_hr_max_age_s: float = 30.0) -> dict | None:
+    """MERGE the two independent fast-sensor channels into one per-field snapshot for the daemon:
+
+      * **movement** — from the iPhone accelerometer (``live_sensor``); the phone is the only
+        source of the sub-second motion signal.
+      * **hr / hrv** — from the dedicated cardiac sensor (``live_cardiac``, e.g. Polar Verity
+        Sense) when it is fresh; that optical/ECG HR + RR-interval HRV is AUTHORITATIVE and wins
+        over the phone's best-effort ballistocardiogram HR. If the cardiac sensor is absent or
+        stale, we fall back to the phone's best-effort HR/HRV so a lone iPhone still contributes.
+
+    Each field is gated by ITS OWN freshness (a disconnected Verity doesn't strand a live phone,
+    and vice-versa). Returns per-field values + ages, or None if nothing fresh is available.
+    ``hr_source`` records which channel actually supplied HR ("verity"/"phone"), for the UI."""
+    phone = read_sensor_sample(conn)
+    card = read_cardiac_sample(conn)
+
+    def _fresh(d, key, max_age):
+        if not d:
+            return (None, None)
+        v = d.get(key)
+        a = d.get("age_seconds")
+        if v is None or a is None or a > max_age:
+            return (None, None)
+        return (v, a)
+
+    # movement: phone only
+    mv, mv_age = _fresh(phone, "movement", movement_max_age_s)
+    # HR: dedicated cardiac sensor first (authoritative), else phone best-effort BCG
+    hr, hr_age = _fresh(card, "hr", cardiac_max_age_s)
+    hr_source = (card.get("source") or "verity") if card and hr is not None else None
+    if hr is None:
+        hr, hr_age = _fresh(phone, "hr", phone_hr_max_age_s)
+        hr_source = (phone.get("source") or "phone") if phone and hr is not None else None
+    # HRV: same priority
+    hrv, hrv_age = _fresh(card, "hrv", cardiac_max_age_s)
+    if hrv is None:
+        hrv, hrv_age = _fresh(phone, "hrv", phone_hr_max_age_s)
+
+    if hr is None and hrv is None and mv is None:
+        return None
+    return {
+        "hr": hr, "hrv": hrv, "movement": mv,
+        "hr_age_seconds": hr_age, "hrv_age_seconds": hrv_age, "movement_age_seconds": mv_age,
+        "hr_source": hr_source,
+    }
+
+
 def write_self_test(conn: sqlite3.Connection, report: dict | None) -> None:
     """Merge the live self-test report into ``runtime_state.extra['self_test']`` in place,
     leaving the rest of the snapshot untouched so the dashboard's sensor fields don't blank out
