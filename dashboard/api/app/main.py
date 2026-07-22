@@ -421,6 +421,30 @@ def bcg_ingest(body: BCGBody, request: Request, token: str | None = None,
     return services.ingest_bcg(repo, payload)
 
 
+class HRBody(BaseModel):
+    # A dedicated BLE HR sensor (Polar Verity Sense armband) forwarded by
+    # scripts/verity_forwarder.py: an instantaneous HR (bpm) + optional beat-to-beat RR intervals
+    # (milliseconds). ``rr`` capped like the BCG batch so an unbounded array can't blow up memory.
+    hr: float | None = None
+    rr: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
+    source: str | None = None
+
+
+@app.post("/hr/ingest")
+def hr_ingest(body: HRBody, request: Request, token: str | None = None,
+              source: str | None = None, repo=Depends(repo_dep)):
+    """Ingest a cardiac batch (HR + optional RR intervals in ms) from a dedicated BLE HR sensor —
+    e.g. a Polar Verity Sense armband via ``scripts/verity_forwarder.py``. The Verity's HR/HRV is
+    the AUTHORITATIVE cardiac source; it's merged with the phone accelerometer's movement (never
+    clobbering it). Header-less friendly — the phone-endpoint auth (``?token=`` or
+    ``BCG_INGEST_OPEN``) applies: ``POST /hr/ingest?token=<JWT>`` with a JSON body."""
+    _bcg_auth(request, token)
+    payload = body.model_dump(exclude_none=True)
+    if source is not None:
+        payload["source"] = source
+    return services.ingest_hr(repo, payload)
+
+
 @app.get("/stream/status")
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie

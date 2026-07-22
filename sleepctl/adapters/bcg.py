@@ -95,24 +95,35 @@ def accel_magnitude(ax, ay, az) -> List[float]:
 
 
 class BridgeWearableSource(RealtimeWearableSource):
-    """Reads the latest phone/sensor-derived sample the API wrote to the bridge (``live_sensor``),
-    so an iPhone streaming to the dashboard fuses into the daemon with no direct coupling."""
+    """Reads the fast-sensor sample the API wrote to the bridge and fuses it into the daemon with
+    no direct coupling. MERGES two independent channels per-field (see ``bridge.read_fused_sensor``):
+    the iPhone accelerometer's ``movement`` (``live_sensor``) and a dedicated BLE HR sensor's
+    authoritative ``hr``/``hrv`` (``live_cardiac`` — e.g. a Polar Verity Sense). Each field is
+    gated by its own freshness, so a lone phone, a lone strap, or both together all work."""
 
-    def __init__(self, repo, max_age_s: float = 90.0) -> None:
+    def __init__(self, repo, max_age_s: float = 30.0) -> None:
         self.repo = repo
         self.max_age_s = max_age_s
 
     def read_sample(self) -> Optional[WearableSample]:
         try:
             from app import bridge
-            s = bridge.read_sensor_sample(self.repo.conn)
+            s = bridge.read_fused_sensor(
+                self.repo.conn, cardiac_max_age_s=self.max_age_s,
+                movement_max_age_s=self.max_age_s, phone_hr_max_age_s=self.max_age_s)
         except Exception:
             return None
         if not s:
             return None
+        # ``read_fused_sensor`` already dropped stale fields; carry the FRESHEST surviving age so
+        # ``fuse_sample`` overlays (and stamps frame freshness from) real data.
+        ages = [a for a in (s.get("hr_age_seconds"), s.get("hrv_age_seconds"),
+                            s.get("movement_age_seconds")) if a is not None]
+        if not ages:
+            return None
         return WearableSample(timestamp=datetime.now(), heart_rate=s.get("hr"),
                               hrv=s.get("hrv"), movement=s.get("movement"),
-                              age_seconds=s.get("age_seconds"))
+                              age_seconds=min(ages))
 
 
 def synthesize_bcg(fs: float = 100.0, secs: float = 20.0, bpm: float = 60.0,
