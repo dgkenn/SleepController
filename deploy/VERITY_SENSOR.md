@@ -42,6 +42,12 @@ Eight Sleep's cloud.
 
 ## Run the forwarder
 
+**Preferred — let the watchdog run it.** Set `SLEEPCTL_VERITY=1` in `deploy\.env` and restart the
+watchdog (or wait for its next auto-update). The watchdog then launches `verity_forwarder.py`,
+keeps it alive (relaunches if it dies), and — deliberately — treats it as *non-critical*, so a
+missing sensor or Bluetooth hiccup can never make the box report unhealthy. Its log is
+`.run\verity.log`.
+
 By hand (foreground, to confirm it works):
 ```powershell
 .\.venv\Scripts\python.exe scripts\verity_forwarder.py

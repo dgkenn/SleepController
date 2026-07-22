@@ -516,6 +516,38 @@ function Start-Web {
         -RedirectStandardOutput "$run\web.log" -RedirectStandardError "$run\web.err"
 }
 
+# --- optional dedicated cardiac sensor (Polar Verity Sense) forwarder ---------------------------
+# Opt-in via SLEEPCTL_VERITY=1 in deploy\.env. Reads a BLE HR armband and POSTs HR + RR intervals
+# to /hr/ingest (see scripts\verity_forwarder.py + deploy\VERITY_SENSOR.md). This is a NON-critical
+# supplementary sensor: it is deliberately kept OUT of the api/daemon/web health gate below, so a
+# missing sensor / no Bluetooth adapter / a crashed forwarder can never make the box report
+# unhealthy or skip the dead-man's-switch ping. Best-effort self-heal: relaunched if it isn't
+# running. A clean no-op when SLEEPCTL_VERITY is unset or the script/bleak aren't present yet.
+function Verity-Enabled {
+    return ($env:SLEEPCTL_VERITY -and $env:SLEEPCTL_VERITY -notin @("0","false","off","no"))
+}
+function Verity-Running {
+    try {
+        $p = Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+             Where-Object { $_.CommandLine -and $_.CommandLine -match 'verity_forwarder\.py' }
+        return [bool]$p
+    } catch { return $true }  # on a CIM hiccup, assume alive (don't spawn duplicates)
+}
+function Ensure-Verity {
+    if (-not (Verity-Enabled)) { return }
+    $script = Join-Path $Root "scripts\verity_forwarder.py"
+    if (-not (Test-Path $script)) { return }
+    if (Verity-Running) { return }
+    try {
+        Start-Process -FilePath $py -WindowStyle Hidden `
+            -ArgumentList @($script) `
+            -RedirectStandardOutput "$run\verity.log" -RedirectStandardError "$run\verity.err" | Out-Null
+        Log "launched Polar Verity forwarder (verity_forwarder.py)"
+    } catch {
+        Log "WARN: could not launch verity_forwarder: $_"
+    }
+}
+
 # --- supervise by REALITY -------------------------------------------------------------------
 # api/web: their listening port. Daemon: a HEARTBEAT FILE it rewrites every ~2s. The previous
 # approaches (a Start-Process handle, then a CIM command-line query) both FLAPPED in the
@@ -775,6 +807,10 @@ while ($true) {
     # Web rebuild AFTER restart handling: on a green build it stops web here, and the web check
     # below (same tick) relaunches it on the fresh .next. A failed build never touches web.
     Handle-WebBuildRequest
+
+    # Optional Verity cardiac forwarder (opt-in; non-critical). Launched/relaunched here so it
+    # self-heals, but deliberately NOT part of the api/daemon/web health gate below.
+    Ensure-Verity
 
     if (-not (Port-Alive 8000)) {
         if (Test-CanRestart "api") {
