@@ -176,6 +176,10 @@ class Tunables:
     use_learned_stager: bool = True
     stager_min_hr_samples: int = 5           # need at least this many recent HR samples to trust it
     est_model_conf_cap: float = 0.7          # cap the learned model's stage confidence
+    # Feed the phone's movement into the stager's HR+motion variant. Off until that variant is
+    # verified to transfer from the actigraphy counts it was trained on to the phone's 0..1 motion
+    # index (scale-free features). HR-only always works -- it's what lets the Verity run ALONE.
+    stager_use_motion: bool = False
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded

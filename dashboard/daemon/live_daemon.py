@@ -650,6 +650,20 @@ class LiveDashboardDaemon:
                 self._phone_fused = fuse_sample(frame, self.wearable.read_sample())
             except Exception as exc:
                 self._log(f"wearable fusion skipped: {exc}")
+            # Attach the DENSE trailing HR/movement series (~1 sample/2 s from the Verity) for the
+            # wearable sleep-stager. The frame fields alone are ~1 sample/minute, which washes out
+            # the short-timescale HR variability staging relies on. Purely additive and
+            # best-effort: on any failure the stager falls back to the frame buffer.
+            try:
+                reader = getattr(self.wearable, "read_history", None)
+                if reader is not None:
+                    hist = reader(minutes=45.0) or {}
+                    if hist.get("hr"):
+                        frame.hr_history = hist["hr"]
+                    if hist.get("activity"):
+                        frame.activity_history = hist["activity"]
+            except Exception as exc:
+                self._log(f"dense sensor history unavailable: {exc}")
         return frame
 
     def _refresh_shift_plan(self) -> None:

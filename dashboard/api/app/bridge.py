@@ -154,6 +154,45 @@ def recent_sensor_samples(conn: sqlite3.Connection, limit: int = 500, since: str
     return [dict(r) for r in rows]
 
 
+def sensor_history_series(conn: sqlite3.Connection, minutes: float = 45.0,
+                          max_rows: int = 4000) -> dict:
+    """DENSE trailing HR + movement series for the wearable sleep-stager, as
+    ``{"hr": [(epoch_seconds, bpm), ...], "activity": [(epoch_seconds, movement), ...]}``.
+
+    The daemon's per-tick frame carries only ~1 sample/minute, but ``sensor_samples`` accumulates
+    every ingest (a Polar Verity Sense writes ~1 HR sample every 2 s). Short-timescale HR
+    variability is a major staging signal, so the stager scores far better on this dense series
+    than on the 1/min frame buffer. Best-effort: any failure returns empty series so the caller
+    silently falls back to the frame buffer.
+
+    ``activity`` is the phone-derived movement index (0..1) -- a DIFFERENT unit from the
+    actigraphy counts the model was trained on, which is why the model's activity features are
+    scale-free (percentile/robust-z within the night) rather than absolute.
+    """
+    out = {"hr": [], "activity": []}
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        rows = conn.execute(
+            "SELECT ts, hr, movement FROM sensor_samples WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+            (cutoff, int(max_rows)),
+        ).fetchall()
+        for r in rows:
+            ts = r["ts"]
+            if not ts:
+                continue
+            try:
+                t = datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                continue
+            if r["hr"] is not None:
+                out["hr"].append((t, float(r["hr"])))
+            if r["movement"] is not None:
+                out["activity"].append((t, float(r["movement"])))
+    except Exception:
+        return {"hr": [], "activity": []}
+    return out
+
+
 def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:
     """Record how the user was woken on ``row['date']`` (one row/night; last write wins). Joined
     with the morning grogginess check-in to personalize the wake tuning."""

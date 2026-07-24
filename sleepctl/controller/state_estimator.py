@@ -54,8 +54,18 @@ def _get_stager():
 
 
 def _hr_series(recent, frame) -> list:
-    """Trailing (t_seconds, bpm) HR history from the controller's recent-frame buffer + the
-    current frame, for the learned stager's trailing-window features."""
+    """Trailing (t_seconds, bpm) HR history for the learned stager's window features.
+
+    Prefers the DENSE series the daemon attaches from the ingest tables (a Polar Verity Sense
+    writes ~1 sample every 2 s); short-timescale HR variability is a major staging signal and the
+    per-tick frame buffer only carries ~1 sample/minute. Falls back to the frame buffer when no
+    dense history is present (simulator, Pod-only, or a fresh start)."""
+    dense = getattr(frame, "hr_history", None)
+    if dense:
+        try:
+            return [(float(t), float(v)) for t, v in dense if v is not None]
+        except Exception:
+            pass
     out = []
     for f in list(recent or []) + [frame]:
         hr = getattr(f, "heart_rate", None)
@@ -66,6 +76,29 @@ def _hr_series(recent, frame) -> list:
             except Exception:
                 continue
     return out
+
+
+def _activity_series(recent, frame) -> "Optional[list]":
+    """Trailing (t_seconds, movement) series, or None when no motion signal is available (the
+    Verity-alone case) so the caller uses the HR-only model. Prefers the daemon's dense series."""
+    dense = getattr(frame, "activity_history", None)
+    if dense:
+        try:
+            out = [(float(t), float(v)) for t, v in dense if v is not None]
+            if out:
+                return out
+        except Exception:
+            pass
+    out = []
+    for f in list(recent or []) + [frame]:
+        mv = getattr(f, "movement", None)
+        ts = getattr(f, "timestamp", None)
+        if mv is not None and ts is not None:
+            try:
+                out.append((ts.timestamp(), float(mv)))
+            except Exception:
+                continue
+    return out or None
 
 
 def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
@@ -84,9 +117,15 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
         if stager is not None:
             hr_samples = _hr_series(recent, frame)
             if len(hr_samples) >= getattr(t, "stager_min_hr_samples", 5):
+                # Motion is opt-in: the model's activity features are trained on actigraphy counts
+                # while the phone supplies a 0..1 movement index. Only enable once the HR+motion
+                # variant is verified to transfer across that scale change (scale-free features);
+                # HR-only is always valid and is what makes the Verity work ALONE.
+                act = (_activity_series(recent, frame)
+                       if getattr(t, "stager_use_motion", False) else None)
                 try:
                     est = stager.predict(
-                        hr_samples, activity_samples=None,
+                        hr_samples, activity_samples=act,
                         minutes_since_start=minutes_since_start,
                         minutes_since_onset=minutes_since_onset)
                 except Exception:

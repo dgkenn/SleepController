@@ -125,6 +125,17 @@ class BridgeWearableSource(RealtimeWearableSource):
                               hrv=s.get("hrv"), movement=s.get("movement"),
                               age_seconds=min(ages))
 
+    def read_history(self, minutes: float = 45.0) -> dict:
+        """DENSE trailing {"hr": [(t_s, bpm)], "activity": [(t_s, movement)]} from the ingest
+        history, for the wearable sleep-stager (the per-tick frame is only ~1 sample/minute, which
+        washes out the short-timescale HR variability staging depends on). Best-effort: returns
+        empty series on any failure so the caller falls back to the frame buffer."""
+        try:
+            from app import bridge
+            return bridge.sensor_history_series(self.repo.conn, minutes=minutes)
+        except Exception:
+            return {"hr": [], "activity": []}
+
 
 def synthesize_bcg(fs: float = 100.0, secs: float = 20.0, bpm: float = 60.0,
                    move_window=None) -> List[float]:
