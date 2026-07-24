@@ -787,6 +787,10 @@ class LiveDashboardDaemon:
                       # fused; out of bed -> it's ignored automatically.
                       "bed_presence": frame.presence if frame is not None else None,
                       "phone_fused": self._phone_fused,
+                      # "estimated" => the sleep stage steering the controller was DERIVED from an
+                      # external HR sensor's vitals (no Pod stage); "sensor" => a real device stage.
+                      "stage_source": (decision.log_payload or {}).get("stage_source")
+                      if decision else None,
                       "wake_action": (decision.log_payload or {}).get("wake_action")
                       if decision else None},
         }
