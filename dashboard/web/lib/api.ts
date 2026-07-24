@@ -269,10 +269,20 @@ export interface PhoneSensor {
   in_bed?: boolean;
 }
 
+export interface CardiacSensor {
+  updated?: string;
+  source?: string;
+  age_seconds?: number | null;
+  hr?: number | null;
+  hrv?: number | null;
+  streaming: boolean;
+}
+
 export interface AdminHealth {
   daemon: { alive: boolean; updated: string; stale: boolean; live?: boolean; dry_run?: boolean };
   sources: Record<string, { ok: boolean; last_ok?: string; error?: string }>;
   phone_sensor?: PhoneSensor | null;
+  cardiac?: CardiacSensor | null;
   pending_commands: number;
 }
 
