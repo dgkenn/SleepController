@@ -155,6 +155,19 @@ class Tunables:
     onset_hrv_rise_frac: float = 0.08   # HRV this fraction above awake baseline
     onset_min_stage_conf: float = 0.4   # ignore low-confidence stage labels
     onset_resp_regular_cv: float = 0.06  # breathing-rate CV at/under this = regular (asleep)
+    # --- vitals-based sleep-stage estimate (external HR sensor, e.g. Polar Verity Sense) --------
+    # When the Pod provides no sleep stage (staging unavailable/paywalled) but a fresh HR feed is
+    # present, derive a COARSE stage (AWAKE/LIGHT/DEEP; never REM) from HR/HRV/movement so onset
+    # detection + all maintenance-time steering can engage off the wearable alone. Only overrides a
+    # stage that is UNKNOWN -- a real Pod stage always wins -- and its confidence is capped below a
+    # Pod label so downstream trust stays appropriately soft. See sleepctl/controller/state_estimator.py.
+    estimate_stage_from_vitals: bool = True
+    est_stage_awake_movement: float = 0.25   # movement at/above this => AWAKE
+    est_stage_awake_hr_delta: float = 6.0    # HR this far above the sleep baseline => AWAKE
+    est_stage_deep_hr_delta: float = -3.0    # HR this far BELOW the sleep baseline => DEEP-eligible
+    est_stage_deep_movement: float = 0.06    # movement at/under this (sustained) => DEEP-eligible
+    est_stage_deep_sustain: int = 4          # consecutive quiescent frames required to call DEEP
+    est_stage_max_conf: float = 0.5          # cap estimate confidence below a real Pod stage
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded

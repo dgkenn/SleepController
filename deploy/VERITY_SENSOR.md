@@ -26,6 +26,18 @@ Together this gives the controller clean HR + HRV (for arousal / onset detection
 staying asleep) plus movement (for actigraphy-style light/deep estimation) — fully independent of
 Eight Sleep's cloud.
 
+## How it steers the controller (no Pod staging needed)
+
+The Pod normally supplies the sleep *stage* the controller keys off. With the membership inactive
+that stage is missing, so the controller derives a **coarse stage (AWAKE / LIGHT / DEEP) from the
+Verity's HR/HRV + movement** and overlays it onto the frame at one point — so onset detection, the
+state machine, arousal detection, wake-risk pre-emption and in-night steering **all engage off the
+wearable alone**. It's conservative: never claims REM, confidence is capped below a real Pod stage,
+and a real Pod stage (if it ever returns) always wins. This is what lets the Verity actually *drive*
+the bed — detect that you've fallen asleep, hold you there, and pre-empt awakenings — not just
+display a heart rate. The dashboard/`runtime_state` reports `stage_source: estimated` vs `sensor`
+so you can see which is steering. Tunable via `estimate_stage_from_vitals` in config.
+
 ## One-time setup
 
 1. **Charge & wear.** Put the Verity Sense on your upper forearm/bicep. Single-press the button so

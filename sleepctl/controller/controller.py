@@ -21,6 +21,7 @@ from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
 from sleepctl.controller.precursor import PrecursorDetector
 from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
+from sleepctl.controller.state_estimator import estimate_stage_from_vitals
 from sleepctl.controller.state_machine import SleepStateMachine
 from sleepctl.controller.wake_risk import WakeRiskAssessor
 from sleepctl.controller.thermal import ThermalController
@@ -110,6 +111,7 @@ class SleepController:
         self.last_wake_event = None
         self.last_onset_event = None
         self.last_arousal = None          # last ArousalAssessment
+        self._stage_estimated = False     # was frame.stage derived from vitals this tick (no Pod stage)
         self.last_wake_risk = None        # last WakeRisk
         self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
         self.last_precursor_profile = None  # learned personalized awakening-precursor trajectory
@@ -209,6 +211,29 @@ class SleepController:
 
         # --- graded arousal detection (maintenance: detect + grade disturbances) -
         sleep_hr_base, sleep_hrv_base = self._sleep_baseline(recent)
+
+        # --- vitals-based stage estimate (external HR sensor, e.g. Polar Verity Sense) ----------
+        # When the Pod gives no sleep stage (UNKNOWN) but we DO have a fresh HR feed, derive a
+        # coarse stage from HR/HRV/movement and overlay it here, at ONE point, so onset detection,
+        # the state machine, architecture accrual and every downstream module see a usable stage
+        # and can steer off the wearable alone. A real Pod stage (anything other than UNKNOWN)
+        # always wins; the estimate carries a capped, sub-Pod confidence.
+        self._stage_estimated = False
+        if (cfg.tunables.estimate_stage_from_vitals
+                and frame.stage is SleepStage.UNKNOWN
+                and frame.presence is not False):
+            est = estimate_stage_from_vitals(
+                frame, sleep_hr_base, recent,
+                awake_movement=cfg.tunables.est_stage_awake_movement,
+                awake_hr_delta=cfg.tunables.est_stage_awake_hr_delta,
+                deep_hr_delta=cfg.tunables.est_stage_deep_hr_delta,
+                deep_movement=cfg.tunables.est_stage_deep_movement,
+                deep_sustain=cfg.tunables.est_stage_deep_sustain,
+                max_conf=cfg.tunables.est_stage_max_conf)
+            if est is not None:
+                frame.stage, frame.stage_confidence = est
+                self._stage_estimated = True
+
         arousal = None
         wake_detected = False
         self._preempt_cool = False
@@ -847,6 +872,9 @@ class SleepController:
         log_payload = {
             "stage": frame.stage.value if frame.stage is not None else None,
             "stage_confidence": frame.stage_confidence,
+            # "estimated" => derived from an external HR sensor's vitals this tick (no Pod stage);
+            # "sensor" => a real Pod/device sleep stage. Lets the dashboard show what's steering.
+            "stage_source": "estimated" if self._stage_estimated else "sensor",
             "heart_rate": frame.heart_rate,
             "hrv": frame.hrv,
             "respiratory_rate": frame.respiratory_rate,
