@@ -203,6 +203,8 @@ def main(argv=None) -> int:
     p.add_argument("--source", default="verity", help="source tag stored with the samples")
     p.add_argument("--batch-seconds", type=float, default=2.0, help="POST cadence")
     p.add_argument("--retry-seconds", type=float, default=10.0, help="reconnect backoff")
+    p.add_argument("--scan", action="store_true",
+                   help="scan for BLE HR sensors, print what's found, and exit (setup helper)")
     args = p.parse_args(argv)
 
     if not args.url:
@@ -214,6 +216,24 @@ def main(argv=None) -> int:
     except Exception:
         _log("ERROR: 'bleak' is not installed. Run:  pip install bleak")
         return 2
+
+    if args.scan:
+        async def _scan_only():
+            from bleak import BleakScanner
+            _log("scanning 10s for Bluetooth LE devices...")
+            devices = await BleakScanner.discover(timeout=10.0)
+            hits = [d for d in devices if any(h in (d.name or "").lower() for h in _NAME_HINTS)]
+            if hits:
+                for d in hits:
+                    _log(f"  FOUND heart-rate sensor: '{d.name}'  {d.address}")
+                _log("sensor is discoverable -- you're good to go.")
+            else:
+                _log("no Polar/HR sensor found. Put the Verity in HR broadcast mode (single press,")
+                _log("blue LED) and keep it near the PC, then re-run. All BLE devices seen this scan:")
+                for d in devices:
+                    _log(f"  - {d.name or '(unnamed)'}  {d.address}")
+        asyncio.run(_scan_only())
+        return 0
 
     _log(f"Polar Verity forwarder starting (source={args.source})")
     try:

@@ -537,6 +537,20 @@ function Ensure-Verity {
     if (-not (Verity-Enabled)) { return }
     $script = Join-Path $Root "scripts\verity_forwarder.py"
     if (-not (Test-Path $script)) { return }
+    # One-time self-provisioning: install the bleak BLE stack the forwarder needs, so enabling the
+    # Verity is just SLEEPCTL_VERITY=1 + a restart -- no manual pip. Guarded by a marker file so it
+    # runs at most once per successful install (never on the hot supervise path afterwards).
+    $depMarker = Join-Path $run "verity-deps.ok"
+    if (-not (Test-Path $depMarker)) {
+        & $py -c "import bleak" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Log "installing 'bleak' for the Verity forwarder (one-time)"
+            & $py -m pip install --quiet --disable-pip-version-check bleak 2>&1 | Out-Null
+            & $py -c "import bleak" 2>$null
+        }
+        if ($LASTEXITCODE -eq 0) { Set-Content -Path $depMarker -Value "ok" -Encoding ASCII }
+        else { Log "WARN: 'bleak' not importable yet; Verity forwarder will retry next cycle"; return }
+    }
     if (Verity-Running) { return }
     try {
         Start-Process -FilePath $py -WindowStyle Hidden `
