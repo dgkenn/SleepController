@@ -29,14 +29,27 @@ Eight Sleep's cloud.
 ## How it steers the controller (no Pod staging needed)
 
 The Pod normally supplies the sleep *stage* the controller keys off. With the membership inactive
-that stage is missing, so the controller derives a **coarse stage (AWAKE / LIGHT / DEEP) from the
-Verity's HR/HRV + movement** and overlays it onto the frame at one point — so onset detection, the
-state machine, arousal detection, wake-risk pre-emption and in-night steering **all engage off the
-wearable alone**. It's conservative: never claims REM, confidence is capped below a real Pod stage,
-and a real Pod stage (if it ever returns) always wins. This is what lets the Verity actually *drive*
-the bed — detect that you've fallen asleep, hold you there, and pre-empt awakenings — not just
-display a heart rate. The dashboard/`runtime_state` reports `stage_source: estimated` vs `sensor`
-so you can see which is steering. Tunable via `estimate_stage_from_vitals` in config.
+that stage is missing, so the controller **derives the stage from the Verity's HR** and overlays it
+onto the frame at one point — so onset detection, the state machine, arousal detection, wake-risk
+pre-emption and in-night steering **all engage off the wearable alone**. This is what lets the
+Verity actually *drive* the bed — detect that you've fallen asleep, hold you there, and pre-empt
+awakenings — not just display a heart rate. A real Pod stage (if it ever returns) always wins; the
+dashboard/`runtime_state` reports `stage_source` (`model` / `heuristic` / `sensor`) so you can see
+what's steering.
+
+Two estimators, in priority order:
+1. **Learned model** (`sleepctl/ml/sleep_staging/`) — logistic models trained on the open PhysioNet
+   **sleep-accel** dataset (Walch et al.: wrist HR → PSG stages). Pure-stdlib at runtime (no numpy).
+2. **Heuristic fallback** (`state_estimator.py`) — interpretable HR/HRV/movement rules, used if the
+   model weights are absent or there isn't enough HR history yet.
+
+**Honest accuracy (leave-subjects-out CV, HR-only):** wake/sleep κ≈0.31, 4-class κ≈0.33 — deep-sleep
+recall ≈0.73 is the strongest, wake/REM are weaker. Staging from a wrist HR feed is genuinely coarse,
+so the estimate carries a **capped, sub-Pod confidence** and the controller's own multi-signal
+wake/arousal detectors (HR spike + iPhone movement) remain the primary awakening signal — the model
+supplies *staging + trajectory*, not the final say on wake. Retrain any time with
+`python scripts/fetch_sleep_accel.py` then `python -m sleepctl.ml.sleep_staging.train`.
+Tunable via `use_learned_stager` / `estimate_stage_from_vitals` in config.
 
 ## One-time setup
 
