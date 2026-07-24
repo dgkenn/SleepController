@@ -539,6 +539,59 @@ function AdminContent() {
             )}
           </div>
 
+          {/* Cardiac sensor (Polar Verity Sense — authoritative HR/HRV, fused with phone movement) */}
+          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Cardiac Sensor (Verity)</p>
+            {!health ? (
+              <p className="text-sm text-gray-600 text-center py-2">Loading…</p>
+            ) : !health.cardiac ? (
+              <p className="text-sm text-gray-500 py-1">
+                Not streaming. See <span className="text-brand">VERITY_SENSOR.md</span> to stream a
+                Polar Verity Sense (HR + HRV) as the authoritative cardiac signal.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Status</span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        health.cardiac.streaming ? 'bg-success' : 'bg-danger'
+                      }`}
+                    />
+                    <span className="text-sm font-semibold text-white">
+                      {health.cardiac.streaming ? 'Streaming' : 'Idle'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Source</span>
+                  <span className="text-sm text-gray-400">{health.cardiac.source}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Last sample</span>
+                  <span className="text-sm text-gray-400">
+                    {health.cardiac.age_seconds != null
+                      ? `${health.cardiac.age_seconds}s ago`
+                      : 'N/A'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Heart rate</span>
+                  <span className="text-sm text-white font-medium">
+                    {health.cardiac.hr != null ? `${Math.round(health.cardiac.hr)} bpm` : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">HRV (RMSSD)</span>
+                  <span className="text-sm text-white font-medium">
+                    {health.cardiac.hrv != null ? `${Math.round(health.cardiac.hrv)} ms` : '—'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Quick nav */}
           <div className="grid grid-cols-2 gap-3">
             {[
