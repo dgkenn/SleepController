@@ -66,9 +66,10 @@ def test_verity_only_feed_reaches_maintenance_and_runs_steering():
                             bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
         d = c.decide(frame, ctx, recent, now)
         recent.append(frame)
-        # the stage the whole pipeline saw was DERIVED from vitals, not a Pod label
-        assert d.log_payload["stage_source"] == "estimated"
-        assert d.log_payload["stage"] in ("light", "deep")
+        # the stage the whole pipeline saw was DERIVED from vitals (learned model or heuristic),
+        # not a Pod label
+        assert d.log_payload["stage_source"] in ("model", "heuristic")
+        assert d.log_payload["stage"] in ("light", "deep", "rem")
         if c.sm.state is ControllerState.MAINTENANCE:
             reached = True
             break
@@ -85,6 +86,32 @@ def test_verity_only_feed_reaches_maintenance_and_runs_steering():
                         bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
     c.decide(surge, ctx, recent, now)
     assert c.last_arousal is not None, "arousal detector did not run in MAINTENANCE"
+
+
+def test_learned_model_drives_when_weights_are_bundled():
+    """With the trained sleep_staging weights present, the learned model (not the heuristic)
+    supplies the stage for a stage-less HR feed."""
+    from sleepctl.ml.sleep_staging.infer import SleepStager
+    if not SleepStager.load().available:
+        import pytest
+        pytest.skip("sleep_staging weights not bundled")
+
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    ctx = ContextRecord(date="2026-06-23")
+    recent: list = []
+    start = datetime(2026, 6, 23, 23, 0)
+    saw_model = False
+    for i in range(12):
+        now = start + timedelta(minutes=i)
+        frame = SensorFrame(timestamp=now, stage=SleepStage.UNKNOWN, presence=True,
+                            heart_rate=55.0, hrv=60.0, respiratory_rate=14.0, movement=0.03,
+                            bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+        d = c.decide(frame, ctx, recent, now)
+        recent.append(frame)
+        if d.log_payload["stage_source"] == "model":
+            saw_model = True
+    assert saw_model, "learned stager was available but never supplied the stage"
 
 
 def test_real_pod_stage_is_never_overridden():

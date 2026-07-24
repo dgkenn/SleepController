@@ -21,7 +21,7 @@ from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
 from sleepctl.controller.precursor import PrecursorDetector
 from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
-from sleepctl.controller.state_estimator import estimate_stage_from_vitals
+from sleepctl.controller.state_estimator import estimate_sleep_stage
 from sleepctl.controller.state_machine import SleepStateMachine
 from sleepctl.controller.wake_risk import WakeRiskAssessor
 from sleepctl.controller.thermal import ThermalController
@@ -112,6 +112,7 @@ class SleepController:
         self.last_onset_event = None
         self.last_arousal = None          # last ArousalAssessment
         self._stage_estimated = False     # was frame.stage derived from vitals this tick (no Pod stage)
+        self._stage_source = "sensor"     # "sensor" | "model" | "heuristic" (which supplied the stage)
         self.last_wake_risk = None        # last WakeRisk
         self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
         self.last_precursor_profile = None  # learned personalized awakening-precursor trajectory
@@ -219,19 +220,19 @@ class SleepController:
         # and can steer off the wearable alone. A real Pod stage (anything other than UNKNOWN)
         # always wins; the estimate carries a capped, sub-Pod confidence.
         self._stage_estimated = False
+        self._stage_source = "sensor"
         if (cfg.tunables.estimate_stage_from_vitals
                 and frame.stage is SleepStage.UNKNOWN
                 and frame.presence is not False):
-            est = estimate_stage_from_vitals(
-                frame, sleep_hr_base, recent,
-                awake_movement=cfg.tunables.est_stage_awake_movement,
-                awake_hr_delta=cfg.tunables.est_stage_awake_hr_delta,
-                deep_hr_delta=cfg.tunables.est_stage_deep_hr_delta,
-                deep_movement=cfg.tunables.est_stage_deep_movement,
-                deep_sustain=cfg.tunables.est_stage_deep_sustain,
-                max_conf=cfg.tunables.est_stage_max_conf)
+            mss = ((now - self._bed_entry_time).total_seconds() / 60.0
+                   if self._bed_entry_time is not None else None)
+            mso = ((now - self._sleep_onset_time).total_seconds() / 60.0
+                   if self._sleep_onset_time is not None else None)
+            est = estimate_sleep_stage(
+                frame, sleep_hr_base, recent, cfg,
+                minutes_since_start=mss, minutes_since_onset=mso)
             if est is not None:
-                frame.stage, frame.stage_confidence = est
+                frame.stage, frame.stage_confidence, self._stage_source = est
                 self._stage_estimated = True
 
         arousal = None
@@ -872,9 +873,11 @@ class SleepController:
         log_payload = {
             "stage": frame.stage.value if frame.stage is not None else None,
             "stage_confidence": frame.stage_confidence,
-            # "estimated" => derived from an external HR sensor's vitals this tick (no Pod stage);
-            # "sensor" => a real Pod/device sleep stage. Lets the dashboard show what's steering.
-            "stage_source": "estimated" if self._stage_estimated else "sensor",
+            # Where the sleep stage steering the controller came from this tick:
+            #   "sensor"    => a real Pod/device sleep stage
+            #   "model"     => the learned wearable stager (HR -> stage; PhysioNet-trained)
+            #   "heuristic" => the interpretable HR/HRV/movement fallback
+            "stage_source": self._stage_source if self._stage_estimated else "sensor",
             "heart_rate": frame.heart_rate,
             "hrv": frame.hrv,
             "respiratory_rate": frame.respiratory_rate,

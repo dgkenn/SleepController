@@ -28,6 +28,86 @@ from typing import Optional
 
 from sleepctl.models import SensorFrame, SleepStage
 
+_LABEL_TO_STAGE = {
+    "wake": SleepStage.AWAKE,
+    "light": SleepStage.LIGHT,
+    "deep": SleepStage.DEEP,
+    "rem": SleepStage.REM,
+}
+
+# Lazily-loaded singleton learned stager (None if its weights/module aren't available).
+_STAGER = None
+_STAGER_LOADED = False
+
+
+def _get_stager():
+    global _STAGER, _STAGER_LOADED
+    if not _STAGER_LOADED:
+        _STAGER_LOADED = True
+        try:
+            from sleepctl.ml.sleep_staging.infer import SleepStager
+            s = SleepStager.load()
+            _STAGER = s if getattr(s, "available", False) else None
+        except Exception:
+            _STAGER = None
+    return _STAGER
+
+
+def _hr_series(recent, frame) -> list:
+    """Trailing (t_seconds, bpm) HR history from the controller's recent-frame buffer + the
+    current frame, for the learned stager's trailing-window features."""
+    out = []
+    for f in list(recent or []) + [frame]:
+        hr = getattr(f, "heart_rate", None)
+        ts = getattr(f, "timestamp", None)
+        if hr is not None and ts is not None:
+            try:
+                out.append((ts.timestamp(), float(hr)))
+            except Exception:
+                continue
+    return out
+
+
+def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
+                         minutes_since_start=None, minutes_since_onset=None):
+    """Best available coarse sleep-stage estimate for a stage-less (wearable) feed.
+
+    Returns ``(SleepStage, confidence, source)`` or ``None``. Prefers the LEARNED wearable stager
+    (``sleepctl.ml.sleep_staging`` — trained on PhysioNet sleep-accel: wrist HR → PSG stages) when
+    its weights are bundled and enough recent HR exists; otherwise falls back to the interpretable
+    ``estimate_stage_from_vitals`` heuristic. HR-only (works with the Verity alone). Confidence is
+    capped below a real Pod stage in both paths.
+    """
+    t = cfg.tunables
+    if getattr(t, "use_learned_stager", True):
+        stager = _get_stager()
+        if stager is not None:
+            hr_samples = _hr_series(recent, frame)
+            if len(hr_samples) >= getattr(t, "stager_min_hr_samples", 5):
+                try:
+                    est = stager.predict(
+                        hr_samples, activity_samples=None,
+                        minutes_since_start=minutes_since_start,
+                        minutes_since_onset=minutes_since_onset)
+                except Exception:
+                    est = None
+                if est is not None:
+                    stage = _LABEL_TO_STAGE.get(est.stage_label, SleepStage.LIGHT)
+                    conf = min(float(est.confidence), getattr(t, "est_model_conf_cap", 0.7))
+                    return (stage, round(conf, 3), "model")
+
+    heur = estimate_stage_from_vitals(
+        frame, sleep_hr_base, recent,
+        awake_movement=t.est_stage_awake_movement,
+        awake_hr_delta=t.est_stage_awake_hr_delta,
+        deep_hr_delta=t.est_stage_deep_hr_delta,
+        deep_movement=t.est_stage_deep_movement,
+        deep_sustain=t.est_stage_deep_sustain,
+        max_conf=t.est_stage_max_conf)
+    if heur is None:
+        return None
+    return (heur[0], heur[1], "heuristic")
+
 
 def estimate_stage_from_vitals(
     frame: SensorFrame,

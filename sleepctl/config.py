@@ -167,7 +167,15 @@ class Tunables:
     est_stage_deep_hr_delta: float = -3.0    # HR this far BELOW the sleep baseline => DEEP-eligible
     est_stage_deep_movement: float = 0.06    # movement at/under this (sustained) => DEEP-eligible
     est_stage_deep_sustain: int = 4          # consecutive quiescent frames required to call DEEP
-    est_stage_max_conf: float = 0.5          # cap estimate confidence below a real Pod stage
+    est_stage_max_conf: float = 0.5          # cap heuristic-estimate confidence below a real Pod stage
+    # Learned wearable stager (sleepctl/ml/sleep_staging, trained on PhysioNet sleep-accel). Preferred
+    # over the heuristic above when its weights are bundled and enough HR history exists; falls back
+    # to the heuristic otherwise. Confidence capped below a real Pod stage (staging from a wrist HR
+    # feed is genuinely coarse -- see the CV metrics in docs). HR-only by default so it works with the
+    # Verity alone; the iPhone's motion keeps feeding the wake/arousal detectors separately.
+    use_learned_stager: bool = True
+    stager_min_hr_samples: int = 5           # need at least this many recent HR samples to trust it
+    est_model_conf_cap: float = 0.7          # cap the learned model's stage confidence
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded
