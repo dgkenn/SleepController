@@ -2,6 +2,15 @@
 
 iPhone-first web control interface for the `sleepctl` sleep-optimization system.
 
+> **This is the original v1 design doc** — architecture, auth, and data model below are still
+> accurate, but the API surface has grown substantially since it was written and is not fully
+> re-enumerated here. Newer endpoints/pages not covered by §6/§7 below include `/thermal/dose-response`
+> (`docs/THERMAL_DOSE_RESPONSE.md`), `/cbti/advice` (`docs/CBTI.md`), `/learning/phases`
+> (`docs/SELF_LEARNING.md`), `/shift/plan` + `/shift/config` (`docs/SHORT_SLEEP.md`,
+> `docs/SLEEP_DEPRIVATION.md`), the nap/induce session controls (`docs/NAPS_AND_INDUCTION.md`), and
+> the whole `/diag*` remote-operator surface (`docs/DIAGNOSTICS_CLI.md`, `docs/CLAUDE_REMOTE_OPS.md`).
+> Treat `dashboard/api/app/main.py` as the source of truth for the current route list.
+
 ---
 
 ## 1. Executive Summary

@@ -504,6 +504,23 @@ class SleepController:
                 self.sm.state = ControllerState.INDUCTION
                 self.sm.reason = "induction forced on user request (help me fall asleep)"
 
+    @property
+    def sleep_onset_time(self) -> Optional[datetime]:
+        """The measured, confirmed sleep-onset timestamp for the current bed session (None until
+        onset is confirmed by ``SleepOnsetDetector``). This is what on-demand nap/induce sessions
+        must anchor their dosing to — NOT the moment the user pressed the button — since sleep
+        inertia is governed by time actually ASLEEP, not time in bed (see ``sleepctl.controller.
+        nap``)."""
+        return self._sleep_onset_time
+
+    def update_nap_keep_light(self, keep_light: bool) -> None:
+        """Adjust the active session's keep-light policy WITHOUT re-forcing the onset cascade
+        (unlike ``set_session``). Used when a nap is RE-PLANNED after onset is already confirmed
+        (see ``sleepctl.controller.nap.replan_on_onset``) — onset has already happened, so
+        restarting the induction cascade here would be wrong; only whether maintenance keeps the
+        bed light (avoids driving deep cooling) needs to change."""
+        self.session_keep_light = bool(keep_light)
+
     def preemption_summary(self) -> dict:
         """Live predictive-pre-emption state for the dashboard: is the controller actively
         heading off an awakening, and which signals (point-in-time risk + leading-edge drift)

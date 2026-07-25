@@ -53,3 +53,57 @@ the axes that matter. Untested as of writing.
 
 Optimise the metric that changes a control decision, not the metric the literature reports. They are
 not the same, and here they actively conflict.
+
+## Current shipped model + numbers (verify against `cv_report.json` before quoting elsewhere)
+
+`sleepctl/ml/sleep_staging/` trains on the open PhysioNet **sleep-accel** dataset (Walch et al.:
+wrist HR ± motion → PSG stages), pure-stdlib at inference (`infer.py`/`features.py`; `numpy`/`sklearn`
+are training-only deps). The default shipped config is **HR-only** (`stager_use_motion = False` in
+`sleepctl/config.py`) — see the "harmful metric" case above for why motion is disabled despite
+looking like an improvement on 4-class kappa. The pipeline actually deployed is the 4-class head +
+binary wake head blended into an emission, then smoothed by an online HMM forward filter — the `"sm"`
+variant in `cv_report.json`, evaluated by **grouped leave-subjects-out CV** (5 folds, split by
+subject, so no subject's data leaks between train and test):
+
+| metric | value | what it drives |
+|---|---|---|
+| 4-class κ | **0.436** | secondary/diagnostic (see "why chasing 4-class kappa is harmful" above) |
+| wake κ | **0.450** | the primary signal — asleep/awake, feeds onset + arousal detection |
+| deep-minutes MAE | **23.0 min** | the number the architecture steerer actually consumes |
+| onset-latency MAE | **5.4 min** | drives the state-machine INDUCTION → MAINTENANCE transition timing |
+
+Retrain any time with `python scripts/fetch_sleep_accel.py` then
+`python -m sleepctl.ml.sleep_staging.train`.
+
+**Cross-reference note:** `deploy/VERITY_SENSOR.md` (setup/run doc, outside `docs/`, not edited as
+part of this pass) currently quotes older figures — "wake/sleep κ≈0.31, 4-class κ≈0.33" — for the
+HR-only leave-subjects-out model. Those numbers predate the smoothing/HMM pipeline reflected in
+`cv_report.json` above and are **stale**; treat the table in this section as current, and prefer
+`sleepctl/ml/sleep_staging/cv_report.json` itself as the ground truth over either document if they
+ever diverge again.
+
+## The `state_estimator` overlay: letting a stage-less wearable drive the controller
+
+The Eight Sleep Pod normally supplies `SensorFrame.stage`. When that's unavailable — no active
+Autopilot membership, the Pod sensors aren't reporting, or the only physiology source is the Polar
+Verity Sense (see `VERITY_RESEARCH.md`) — `stage` arrives as `UNKNOWN`. Onset detection and the state
+machine hard-require a real stage, so a stage-less feed would get stuck in `INDUCTION` forever and
+none of the maintenance-time steering (arousal / wake-risk / precursor / architecture) would run.
+
+`sleepctl/controller/state_estimator.py` derives a **coarse** stage from HR, HRV, and movement so
+that pipeline can engage off the wearable alone, in priority order:
+
+1. **The learned model above** (`sleepctl.ml.sleep_staging.infer.SleepStager`), if its weights are
+   available and enough HR history has accumulated.
+2. **A heuristic fallback** (interpretable HR/HRV/movement rules), used when the model weights are
+   absent or there isn't enough history yet.
+
+Deliberately conservative in both cases: it only ever returns AWAKE/LIGHT/DEEP, never REM (REM isn't
+reliably separable from light sleep by cardiorespiratory + actigraphy alone, and claiming it would
+mislead the REM-aware steering — see the "REM vs light" row in the table above). Its confidence is
+capped well below a real Pod stage (`est_stage_max_conf`), so the onset detector's own multi-signal
+persistence gate still has to independently confirm onset — an estimated LIGHT sample never
+fabricates sleep on its own. A real Pod stage, if it ever returns mid-night, always wins over the
+estimate. `runtime_state.stage_source` (`"sensor"` / `"model"` / `"heuristic"`) reports which one
+supplied tonight's stage, so this is observable on the dashboard rather than silent. Tunable via
+`use_learned_stager` / `estimate_stage_from_vitals` in `config.py`.

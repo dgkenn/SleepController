@@ -116,8 +116,20 @@ class LiveDashboardDaemon:
         self.last_target_f: Optional[float] = None
         self.wake = None
         self.session_mode = "night"
-        self.nap_plan = None
-        self.nap_deadline = None
+        self.nap_plan = None          # NapPlan.to_dict() (dashboard-facing) when a nap is active
+        self.nap_deadline = None      # CURRENT operative deadline fed to required_wake_time
+        # Time-anchoring bookkeeping for the active nap (see sleepctl.controller.nap): the actual
+        # NapPlan object (kept internally so it can be re-planned once onset is known), when the
+        # button was pressed (duration-nap fallback math), the immutable hard wake-by deadline
+        # (wake-by requests only; None for a duration nap, whose deadline is onset-derived) and
+        # whether the one-time re-plan-on-onset has already run this session.
+        self._nap_plan_obj = None
+        self.nap_start = None
+        self.nap_hard_deadline = None
+        self._nap_replanned = False
+        # "Help me fall asleep" surfaced constraint when a wake deadline leaves little sleep
+        # opportunity remaining (see ``_apply_induce_deadline_awareness``); None otherwise.
+        self._induce_note = None
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
         self._consec_errors = 0
@@ -156,31 +168,120 @@ class LiveDashboardDaemon:
         self.session_mode = "induce"
         self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
         self.nap_plan, self.nap_deadline = None, None
+        self._nap_plan_obj, self.nap_start = None, None
+        self.nap_hard_deadline, self._nap_replanned = None, False
+        self._induce_note = None
+        self._apply_induce_deadline_awareness()
         self.cycle.controller.set_session("induce", keep_light=False)
 
+    def _apply_induce_deadline_awareness(self) -> None:
+        """'Help me fall asleep' must know how much sleep opportunity is actually left. If a wake
+        deadline is set and the opportunity remaining RIGHT NOW (not whatever ``plan_night``
+        computed back when the alarm was set — the user may have been awake a while since) is
+        short, route tonight onto the EXISTING short-night/DAMAGE_CONTROL compression path
+        (``InductionRoutine`` halves the warm-opener phase — see induction.py) so a slow,
+        luxurious cascade doesn't eat the little time left. This reuses the same classification
+        the controller already understands (``context.is_short_sleep_day`` ->
+        ``NightObjective.DAMAGE_CONTROL``); it does not invent any new behaviour. Best-effort:
+        never raises."""
+        try:
+            ctx = self.context
+            wake = ctx.required_wake_time
+            if wake is None:
+                return
+            remaining_min = (wake - datetime.now()).total_seconds() / 60.0
+            if remaining_min <= 0:
+                return
+            from sleepctl.benchmarks import CONSTRAINED_OPPORTUNITY_MIN
+            if remaining_min < CONSTRAINED_OPPORTUNITY_MIN:
+                ctx.is_short_sleep_day = True
+                self._induce_note = (
+                    f"only ~{remaining_min / 60.0:.1f}h left before your wake time — "
+                    "keeping the onset cascade short so it doesn't eat the time you have")
+                self._log(f"induce: {self._induce_note}")
+                self._emit_event(
+                    "induction", "info", "induce_deadline_constrained", self._induce_note,
+                    {"remaining_min": round(remaining_min, 1)})
+        except Exception as exc:
+            self._log(f"induce deadline-awareness skipped: {exc}")
+
     def _start_nap(self, duration_min=None, wake_time=None) -> None:
-        from sleepctl.controller.nap import NapStrategy, nap_strategy
+        from sleepctl.controller.nap import NapRequestKind, NapStrategy, fallback_deadline, nap_strategy
         now = datetime.now()
         if wake_time:
             hh, mm = (int(x) for x in str(wake_time).split(":"))
-            deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            if deadline <= now:
-                deadline += timedelta(days=1)
+            hard_deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if hard_deadline <= now:
+                hard_deadline += timedelta(days=1)
+            requested_window_min = max(5, int((hard_deadline - now).total_seconds() // 60))
+            plan = nap_strategy(requested_window_min, now_hour=now.hour, cfg=self.cfg,
+                                request_kind=NapRequestKind.WAKE_BY.value,
+                                requested_window_min=requested_window_min)
+            deadline = hard_deadline
         else:
-            deadline = now + timedelta(minutes=int(duration_min or 20))
-        window = max(5, int((deadline - now).total_seconds() // 60))
-        plan = nap_strategy(window, now_hour=now.hour, cfg=self.cfg)
+            requested_window_min = max(1, int(duration_min or 20))
+            plan = nap_strategy(requested_window_min, now_hour=now.hour, cfg=self.cfg,
+                                request_kind=NapRequestKind.DURATION.value,
+                                requested_window_min=requested_window_min)
+            hard_deadline = None  # no externally-fixed wall for a pure duration nap
+            # Anchor the wake to onset once it's known (see _maybe_replan_nap); until then this
+            # fallback cap guards the "never actually falls asleep" case (see fallback_deadline).
+            deadline = fallback_deadline(now, plan)
         ctrl_mode = "nap_power" if plan.strategy in (NapStrategy.POWER, NapStrategy.TRAP) \
             else "nap_cycle"
         self.session_mode = "nap"
         self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
-        self.nap_plan, self.nap_deadline = plan.to_dict(), deadline
+        self._nap_plan_obj = plan
+        self.nap_plan = plan.to_dict()
+        self.nap_deadline = deadline
+        self.nap_start = now
+        self.nap_hard_deadline = hard_deadline
+        self._nap_replanned = False
+        self._induce_note = None
         self.context.required_wake_time = deadline
         self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+
+    def _maybe_replan_nap(self) -> None:
+        """Once sleep onset is CONFIRMED (see ``SleepController.sleep_onset_time``), re-plan the
+        active nap against the TRUE sleep window instead of the press-time estimate — the fix for
+        the historical bug where a nap's deadline was anchored to button-press time (time in bed)
+        rather than onset (time asleep). Runs once per nap session, right when onset first
+        confirms. Best-effort: a failure here must never break the control loop; the fallback
+        cap / hard wake-by deadline already set by ``_start_nap`` remains the safety backstop."""
+        if self.session_mode != "nap" or self._nap_replanned or self._nap_plan_obj is None:
+            return
+        onset = self.cycle.controller.sleep_onset_time
+        if onset is None:
+            return
+        try:
+            from sleepctl.controller.nap import NapRequestKind, replan_on_onset
+            deadline_for_replan = self.nap_hard_deadline or self.nap_deadline
+            new_plan = replan_on_onset(self._nap_plan_obj, onset, deadline_for_replan, cfg=self.cfg)
+            self._nap_plan_obj = new_plan
+            self.nap_plan = new_plan.to_dict()
+            self._nap_replanned = True
+            planned_wake = onset + timedelta(minutes=new_plan.target_sleep_min)
+            if new_plan.request_kind == NapRequestKind.WAKE_BY.value and self.nap_hard_deadline:
+                # The hard wake-by wall is NEVER exceeded; capping short may bring the effective
+                # planned wake earlier than it, extending never brings it later (see nap.py).
+                self.nap_deadline = min(self.nap_hard_deadline, planned_wake)
+            else:
+                self.nap_deadline = planned_wake
+            self.context.required_wake_time = self.nap_deadline
+            self.cycle.controller.update_nap_keep_light(new_plan.keep_light)
+            self._log(f"nap replanned on confirmed onset: {new_plan.headline} "
+                      f"(realized_sleep_min={new_plan.realized_sleep_min}, "
+                      f"deadline={self.nap_deadline.isoformat()})")
+            self._emit_event("nap", "info", "nap_replanned", new_plan.headline, new_plan.to_dict())
+        except Exception as exc:
+            self._log(f"nap replan skipped: {exc}")
 
     def _end_session(self) -> None:
         self.session_mode = "night"
         self.nap_plan, self.nap_deadline = None, None
+        self._nap_plan_obj, self.nap_start = None, None
+        self.nap_hard_deadline, self._nap_replanned = None, False
+        self._induce_note = None
         self.context.required_wake_time = None
         self.cycle.controller.set_session("night", keep_light=False)
 
@@ -803,6 +904,10 @@ class LiveDashboardDaemon:
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
+                      # Surfaced constraint when "help me fall asleep" is pressed with little
+                      # sleep opportunity left before a wake deadline (see
+                      # _apply_induce_deadline_awareness); None outside that situation.
+                      "induce_note": self._induce_note,
                       "thermal_health": self.thermal.status().to_dict(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
@@ -1029,8 +1134,6 @@ class LiveDashboardDaemon:
             bridge.write_runtime_state(self.repo.conn, self._snapshot(self._last_decision, frame))
             return
         self._refresh_hue()
-        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
-            self._end_session()
         await self.client.update()
         frame = self._read_frame()
         now = self.client.now()
@@ -1040,6 +1143,7 @@ class LiveDashboardDaemon:
         decision = None
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
+            self._maybe_replan_nap()
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
             elif self.mode == "auto":
@@ -1064,6 +1168,13 @@ class LiveDashboardDaemon:
         self._record_state_history(snapshot)
         self.blackbox.record(self._blackbox_entry(decision, frame))
         self._check_failure_alerts()
+        # A nap's deadline is checked LAST, after this tick's decide()/device-actuation already
+        # ran with the deadline still armed — so the tick that first crosses it still gets a full
+        # wake_orch pass (guaranteed "fire" action, should_wake=True, native alarm) instead of
+        # losing it to an end-of-session reset that would wipe required_wake_time out from under
+        # this same tick (which would previously drop the deadline-crossing wake action).
+        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
+            self._end_session()
 
     async def command_tick(self) -> bool:
         """Fast path for realtime control: apply queued overrides and snapshot now.
@@ -1080,6 +1191,7 @@ class LiveDashboardDaemon:
             await self._comfort_set_level()
         elif self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
+            self._maybe_replan_nap()
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
         self._last_decision = decision

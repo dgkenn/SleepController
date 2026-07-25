@@ -29,3 +29,10 @@ lazy-`bleak`) is included for real hardware; the simulated source backs the test
 **Recommendation:** wearable fusion is the reliable win (movement is the highest-value fast
 precursor, and it's guaranteed to work). Passive capture is a free side-bet worth running once
 the Pod is back online — if `:1337` happens to be plaintext, it's a bonus raw-waveform source.
+
+**Status update:** wearable fusion was built out well beyond the `BLEHeartRateSource` baseline
+described above — the Polar Verity Sense now streams its own accelerometer and pulse-to-pulse
+intervals over Polar's PMD BLE service (not just generic HR), feeding both a data-quality guard and
+a learned sleep-stager. See `VERITY_RESEARCH.md` and `deploy/VERITY_SENSOR.md` for the shipped
+implementation; passive capture's status is unchanged (still an unverified, free side-bet, not
+pursued further as of this writing).

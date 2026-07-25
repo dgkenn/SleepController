@@ -81,4 +81,15 @@ Cloud latency caps lead time; everything is per‑phenotype (presets are evidenc
 that sharpen as nights accumulate); the hyperarousal framing is advisory and routes to
 behavioral suggestions, not diagnosis.
 
+## A newer, complementary n-of-1 instrument
+
+The forensics/n-of-1 engine above (`sleepctl/experiments.py`, `suggest_experiment`) is the
+general-purpose "what caused last night's awakenings, and what should we try next" tool. A separate,
+narrower, purpose-built instrument now exists specifically for the maintenance-temperature question:
+`docs/THERMAL_DOSE_RESPONSE.md` (`sleepctl/ml/thermal_trial.py`), a pre-registered, block-randomized
+offset ladder that directly tests the same Raymann warming-vs-cooling tension described above (see
+"The thermal direction — reconciled for a HOT sleeper") as a controlled trial rather than inferring it
+from observational forensics. The two are complementary: this doc's engine reacts to what already
+happened, the dose-response trial pro-actively randomizes to get a cleaner causal answer.
+
 *Sources retrieved from PubMed; please retain the DOI links above as attribution.*

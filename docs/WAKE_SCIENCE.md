@@ -108,6 +108,24 @@ not device control.
   and is already handled; the gains here are in the **post-wake** dose and **honest readiness
   guidance**, which were the gaps.
 
+## Trajectory-prediction fix: feed the cycle predictor all night, not just in the wake window
+
+The ultradian `SleepCyclePredictor` (`sleepctl/controller/sleep_cycle.py`, driven by
+`WakeOrchestrator`) learns *this* night's deep-bout length and cycle boundaries from observed stage
+transitions, and its confidence grows with how many transitions it has actually seen. It was
+previously only fed inside `WAKE_WINDOW` (where `wake_orch.evaluate()` runs), which meant it entered
+the wake window with an **empty** observation history — a generic ~22-min bout estimate and
+confidence pinned low, i.e. an uninformed trajectory prediction at exactly the moment it matters most
+for smart-wake timing.
+
+The fix (`SleepController.decide()`): the controller now calls `wake_orch.observe_stage(now,
+frame.stage)` on **every tick once asleep** (`self._sleep_onset_time is not None and frame.presence
+is not False`), not just while `WAKE_WINDOW` evaluation is running. `observe_stage` is idempotent for
+a repeated stage — it only records on an actual stage change — so this is a cheap, all-night feed
+that gives the predictor a real cycle history (and therefore a real confidence and bout estimate) by
+the time the wake window opens. This is orthogonal to, and feeds into, the light-sleep-targeting logic
+described above.
+
 ## Where the changes live
 
 - `sleepctl/controller/wake_orchestrator.py` — `post_wake_light_min` hold (bright dose past wake,
