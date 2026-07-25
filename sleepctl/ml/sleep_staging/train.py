@@ -381,14 +381,16 @@ def score_emissions(cache: dict, *, smoothing_epochs: int = DEFAULT_SMOOTHING_EP
     return out
 
 
-def tune_smoothing(cache: dict, *, epochs_grid=(10, 20, 40),
-                   temper_grid=(0.05, 0.1, 0.2, 0.35, 0.6, 1.0),
+def tune_smoothing(cache: dict, *, epochs_grid=(20, 40),
+                   temper_grid=(0.1, 0.2, 0.35, 0.6),
                    prior_modes=("uniform", "empirical"),
                    wake_modes=("balanced", "natural"), verbose: bool = True) -> dict:
     """Pick the wake head + forward-filter hyper-parameters by the same grouped CV.
 
-    Objective is 4-class kappa of the *smoothed* posterior — i.e. the number the controller
-    actually experiences.
+    The objective is the mean of the *smoothed* 4-class kappa and the smoothed wake kappa.
+    Optimizing 4-class kappa alone reliably picks a very sticky filter that wins on stage
+    structure while collapsing wake recall — but the controller needs wake for sleep onset
+    and WASO, so both are weighted equally.
     """
     trials = []
     for wm in wake_modes:
@@ -397,18 +399,20 @@ def tune_smoothing(cache: dict, *, epochs_grid=(10, 20, 40),
                 for tp in temper_grid:
                     res = score_emissions(cache, smoothing_epochs=ne, temper=tp,
                                           prior_mode=pm, wake_mode=wm)
-                    trials.append(dict(kappa=res["sm"]["kappa4"], temper=tp, epochs=ne,
-                                       prior_mode=pm, wake_mode=wm, res=res,
-                                       deep_mae=res["sm"]["night"]["deep_mae"]))
-    top = max(t["kappa"] for t in trials)
+                    k4 = res["sm"]["kappa4"]
+                    kw = res["sm"]["wake_kappa"]
+                    trials.append(dict(kappa=k4, wake_kappa=kw, score=0.5 * (k4 + kw),
+                                       temper=tp, epochs=ne, prior_mode=pm, wake_mode=wm,
+                                       res=res, deep_mae=res["sm"]["night"]["deep_mae"]))
+    top = max(t["score"] for t in trials)
     # tie-break on total deep-sleep-minutes error: the controller steers on realized deep,
     # so among statistically indistinguishable settings prefer the least deep-biased one
-    best = min((t for t in trials if t["kappa"] >= top - 0.01),
+    best = min((t for t in trials if t["score"] >= top - 0.01),
                key=lambda t: t["deep_mae"])
     if verbose:
         print(f"  tuned: wake_head={best['wake_mode']} temper={best['temper']} "
-              f"epochs={best['epochs']} prior={best['prior_mode']} "
-              f"-> smoothed 4-class k={best['kappa']:.3f}", flush=True)
+              f"epochs={best['epochs']} prior={best['prior_mode']} -> smoothed "
+              f"4-class k={best['kappa']:.3f} wake k={best['wake_kappa']:.3f}", flush=True)
     return best
 
 

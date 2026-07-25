@@ -244,6 +244,81 @@ def test_smoothing_reduces_label_flipflop():
     assert changes(smooth) < changes(rough)
 
 
+# ------------------------------------------------------- stale weights must not be scored
+def _copy_weights(dest, mutate=None):
+    """Copy the bundled weights into ``dest``, optionally mutating one file's JSON."""
+    import json
+    import os
+    import shutil
+
+    from sleepctl.ml.sleep_staging.infer import WEIGHTS_DIR
+
+    for name in os.listdir(WEIGHTS_DIR):
+        shutil.copy(os.path.join(WEIGHTS_DIR, name), os.path.join(dest, name))
+    if mutate:
+        for name, fn in mutate.items():
+            path = os.path.join(dest, name)
+            with open(path) as fh:
+                d = json.load(fh)
+            with open(path, "w") as fh:
+                json.dump(fn(d), fh)
+    return dest
+
+
+def test_mismatched_feature_names_are_rejected(tmp_path):
+    """A weights file naming features we no longer compute must NOT be loaded.
+
+    feature_vector() imputes unknown names with 0.0, so a stale export would otherwise be
+    scored as an all-zero row and return confident garbage.
+    """
+    def stale(d):
+        d["feature_names"] = [f"legacy_feature_{i}" for i in range(len(d["feature_names"]))]
+        return d
+
+    w = _copy_weights(str(tmp_path), mutate={"stage4_hr.json": stale})
+    stager = SleepStager.load(w)
+    assert stager.stage4_hr is None
+    assert stager._hr_ok is False
+
+
+def test_structurally_broken_weights_are_rejected(tmp_path):
+    def broken(d):
+        d["trees"][0]["f"][0] = 10 ** 6  # feature index far out of range
+        return d
+
+    w = _copy_weights(str(tmp_path), mutate={"wake_hr.json": broken})
+    stager = SleepStager.load(w)
+    assert stager.wake_hr is None
+    assert stager._hr_ok is False
+
+
+def test_bundled_weights_match_current_feature_lists():
+    import json
+    import os
+
+    from sleepctl.ml.sleep_staging.infer import WEIGHTS_DIR
+
+    expected = {
+        "wake_hr.json": FEATURE_NAMES_HR,
+        "stage4_hr.json": FEATURE_NAMES_HR,
+        "wake_hrmotion.json": FEATURE_NAMES_HRMOTION,
+        "stage4_hrmotion.json": FEATURE_NAMES_HRMOTION,
+    }
+    for name, names in expected.items():
+        path = os.path.join(WEIGHTS_DIR, name)
+        if not os.path.exists(path):
+            continue
+        with open(path) as fh:
+            assert json.load(fh)["feature_names"] == list(names), name
+
+
+def test_unavailable_stager_returns_none(tmp_path):
+    stager = SleepStager.load(str(tmp_path))  # empty dir: nothing to load
+    assert stager.available is False
+    hr = [(i * 10.0, 55.0) for i in range(100)]
+    assert stager.predict(hr) is None
+
+
 # --------------------------------------------------------------- pure-stdlib guarantee
 def test_runtime_imports_without_numpy():
     """features.py + infer.py must run in the controller with numpy unavailable."""

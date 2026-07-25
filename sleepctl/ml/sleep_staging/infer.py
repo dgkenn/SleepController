@@ -36,11 +36,16 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from .features import (
     FEATURE_NAMES_HR,
     FEATURE_NAMES_HRMOTION,
+    FEATURE_NAMES_HRMOTION_ABS,
     MAX_LOOKBACK_S,
     compute_features,
     feature_vector,
     stats_from_sorted,
 )
+
+#: every feature name :func:`features.compute_features` can emit. A weights file naming
+#: anything outside this set was exported against a different feature version.
+KNOWN_FEATURES = frozenset(FEATURE_NAMES_HRMOTION_ABS)
 
 WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "weights")
 
@@ -128,9 +133,63 @@ def _load_json(path: str) -> Optional[dict]:
         return None
 
 
+def validate_forest_dict(d: object) -> bool:
+    """Is this JSON a self-consistent forest for the *current* feature vocabulary?
+
+    :func:`features.feature_vector` imputes unknown names with 0.0, so a weights file
+    exported against an older feature set would otherwise be scored silently — every column
+    zero — and return confident garbage. The controller treats a returned estimate as
+    authoritative for onset and all maintenance-time steering, so "unavailable" is far
+    safer than "confidently wrong": anything inconsistent is rejected here.
+    """
+    try:
+        if not isinstance(d, dict):
+            return False
+        names = d.get("feature_names")
+        classes = d.get("classes")
+        trees = d.get("trees")
+        if not isinstance(names, list) or not names:
+            return False
+        if not isinstance(classes, list) or not classes:
+            return False
+        if not isinstance(trees, list) or not trees:
+            return False
+        # every declared feature must exist in the current vocabulary
+        if not all(isinstance(n, str) and n in KNOWN_FEATURES for n in names):
+            return False
+        n_feat = len(names)
+        n_cls = len(classes)
+        for tr in trees:
+            f = tr["f"]
+            th = tr["t"]
+            left = tr["l"]
+            right = tr["r"]
+            v = tr["v"]
+            n_nodes = len(f)
+            if n_nodes == 0 or not (len(th) == len(left) == len(right) == n_nodes):
+                return False
+            n_leaves = 0
+            for i in range(n_nodes):
+                fi = f[i]
+                if fi < 0:                      # leaf: l[] indexes the flat value array
+                    if not (0 <= left[i]):
+                        return False
+                    n_leaves = max(n_leaves, left[i] + 1)
+                else:                           # split: feature index must be in range
+                    if fi >= n_feat:
+                        return False
+                    if not (0 <= left[i] < n_nodes and 0 <= right[i] < n_nodes):
+                        return False
+            if len(v) != n_leaves * n_cls:
+                return False
+        return True
+    except Exception:  # noqa: BLE001 — malformed structure of any shape
+        return False
+
+
 def _load_model(path: str) -> Optional[_Forest]:
     d = _load_json(path)
-    if not d:
+    if not validate_forest_dict(d):
         return None
     try:
         return _Forest.from_dict(d)
@@ -283,8 +342,7 @@ class SleepStager:
         hi = 0
         ai = 0
         emissions: List[List[float]] = []
-        raw_last: List[float] = []
-        p_wake_last = 0.0
+        p_wake_last = 0.0  # raw binary-head wake probability at the newest epoch
 
         for end in epoch_ends:
             while hi < len(hr) and hr_ts[hi] <= end:
@@ -321,7 +379,6 @@ class SleepStager:
             p_wake_raw = _prob_of_class(wake_model.predict_proba(feats),
                                         wake_model.classes, 0)
             emissions.append(blend_emission(stage_raw, p_wake_raw))
-            raw_last = stage_raw
             p_wake_last = p_wake_raw
 
         if not emissions:
