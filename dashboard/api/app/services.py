@@ -277,6 +277,10 @@ def build_status(repo) -> dict:
         "bed_presence": extra.get("bed_presence"),
         "device": extra.get("device"),                             # online/water/priming/alarm
         "session_mode": extra.get("session_mode"),
+        # Tonight's n-of-1 thermal dose-response arm, when the (opt-in) trial assigned one.
+        # None whenever the trial is off, the night is ineligible, or it was skipped to avoid
+        # confounding an efficacy-trial sham night -- so the UI can say WHY there's no arm.
+        "thermal_trial": extra.get("thermal_trial"),
         "device_error": extra.get("device_error"),
         "live": extra.get("live", False),
         "daemon_alive": rt.get("daemon_alive", False),

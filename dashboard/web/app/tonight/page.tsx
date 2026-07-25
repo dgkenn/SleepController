@@ -18,7 +18,106 @@ import DeviceStatusCard from '@/components/DeviceStatusCard';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
 import useSWR from 'swr';
-import { TonightResponse, SleepPlan, api, fetcher } from '@/lib/api';
+import { TonightResponse, SleepPlan, CBTIAdviceResponse, CBTIDirection, api, fetcher } from '@/lib/api';
+
+// ---------------------------------------------------------------------------
+// Advisory CBT-I sleep-window guidance (sleepctl.cbti). PURELY ADVISORY: it never changes
+// how the bed is controlled -- it only computes and explains a recommended time-in-bed. Kept
+// as a self-contained card (own fetch), matching PreemptionCard/SafetyGuardrailCard/GymCard
+// elsewhere on this page.
+// ---------------------------------------------------------------------------
+
+function fmtHM(totalMin: number): string {
+  const h = Math.floor(totalMin / 60);
+  const m = Math.round(totalMin % 60);
+  return `${h} h ${m} m`;
+}
+
+const CBTI_DIRECTION_META: Record<CBTIDirection, { label: string; color: string }> = {
+  compress: { label: 'Compress time-in-bed', color: 'text-warning' },
+  expand: { label: 'Expand time-in-bed', color: 'text-success' },
+  hold: { label: 'Hold steady', color: 'text-gray-300' },
+};
+
+function CBTIAdviceCard() {
+  const { data } = useSWR<CBTIAdviceResponse>('/api/cbti/advice', fetcher, {
+    refreshInterval: 60000,
+  });
+
+  if (!data) return null;
+  const dm = CBTI_DIRECTION_META[data.direction];
+  const haveEstimate = data.baseline_tib_min != null;
+  const changeTxt =
+    data.change_min === 0 ? 'no change' : `${data.change_min > 0 ? '+' : ''}${data.change_min} min`;
+
+  return (
+    <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500 uppercase tracking-wider">Sleep-window advice (CBT-I)</p>
+        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-surface-raised border border-surface-border text-gray-400 uppercase">
+          Advisory only
+        </span>
+      </div>
+
+      <p className="text-[11px] text-gray-500 leading-relaxed">
+        Sleep-restriction / stimulus-control guidance computed from your recent sleep efficiency.
+        It never changes how the bed is controlled — you decide whether to act on it.
+      </p>
+
+      <div className="flex items-center justify-between">
+        <span className={`text-sm font-semibold ${dm.color}`}>{dm.label}</span>
+        <span className="text-xs text-gray-500">{changeTxt}</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <p className="text-gray-500 text-xs">Recommended time-in-bed</p>
+          <p className="text-white font-medium text-sm">
+            {haveEstimate ? fmtHM(data.recommended_tib_min) : '—'}
+          </p>
+        </div>
+        <div>
+          <p className="text-gray-500 text-xs">Confidence</p>
+          <p className="text-white font-medium text-sm">{Math.round(data.confidence * 100)}%</p>
+        </div>
+      </div>
+
+      {/* Safety notes exist because a safety rule fired (e.g. refused to restrict before an
+          on-call shift) -- rendered prominently, never buried below the fold. */}
+      {data.safety_notes.length > 0 && (
+        <div className="bg-danger/10 border border-danger/30 rounded-xl px-3 py-2 space-y-1.5">
+          <p className="text-danger text-xs font-medium">Safety note</p>
+          {data.safety_notes.map((n, i) => (
+            <p key={i} className="text-[11px] text-danger/90 leading-snug">
+              {n}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <p className="text-xs text-gray-400 leading-relaxed">{data.rationale}</p>
+
+      {data.tips.length > 0 && (
+        <div className="space-y-1.5 pt-1 border-t border-surface-border">
+          <p className="text-[10px] text-gray-500 uppercase tracking-wider">Stimulus-control tips</p>
+          {data.tips.map((t, i) => (
+            <p key={i} className="text-[11px] text-gray-400 leading-snug">
+              {t}
+            </p>
+          ))}
+        </div>
+      )}
+
+      <p className="text-[10px] text-gray-600">
+        Based on {data.eligible_nights} eligible night(s)
+        {data.mean_efficiency != null
+          ? ` · mean efficiency ${(data.mean_efficiency * 100).toFixed(0)}%`
+          : ''}
+        {data.upcoming_high_stakes ? ' · upcoming high-stakes duty flagged' : ''}
+      </p>
+    </div>
+  );
+}
 
 function TonightContent() {
   const { data, mutate } = useSWR<TonightResponse>('/api/tonight', fetcher, {
@@ -230,6 +329,9 @@ function TonightContent() {
 
           {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
           {plan && <SleepPlanCard plan={plan} />}
+
+          {/* Advisory CBT-I sleep-window guidance — never changes controller behavior */}
+          <CBTIAdviceCard />
 
           {/* Gym vs. sleep morning call */}
           <GymCard />

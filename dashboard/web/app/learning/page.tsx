@@ -11,7 +11,135 @@ import EfficacyCard from '@/components/EfficacyCard';
 import TargetsCard from '@/components/TargetsCard';
 import LearningPhasesCard from '@/components/LearningPhasesCard';
 import useSWR from 'swr';
-import { LearningLedgerResponse, MLOverview, fetcher } from '@/lib/api';
+import { LearningLedgerResponse, MLOverview, ThermalDoseResponseResponse, fetcher } from '@/lib/api';
+
+// ---------------------------------------------------------------------------
+// Personal thermal dose-response trial (n-of-1): what maintenance-temperature offset
+// minimizes THIS user's awakenings? Mirrors sleepctl.ml.thermal_trial.analyze_dose_response();
+// see EfficacyCard just below for the sibling "does the closed loop help at all?" trial this
+// sits next to. OFF by default -- unlike the efficacy trial, this changes what temperature the
+// bed actually runs at overnight, so that must be unmistakable in the UI.
+// ---------------------------------------------------------------------------
+
+function fmtArm(offsetF: number): string {
+  const s = Math.abs(offsetF).toFixed(2);
+  return offsetF < 0 ? `-${s}` : `+${s}`;
+}
+
+function fmtWakeEvents(mean: number | null | undefined, se: number | null | undefined): string {
+  if (mean == null) return '—';
+  return se != null ? `${mean.toFixed(2)} ± ${se.toFixed(2)}` : mean.toFixed(2);
+}
+
+const TREND_HEADLINE: Record<string, string> = {
+  insufficient_data: 'Not enough arms with data yet',
+  warmer_is_better: 'So far, warmer looks better',
+  cooler_is_better: 'So far, cooler looks better',
+  no_clear_trend: 'No clear trend yet',
+};
+
+function ThermalDoseResponseCard() {
+  const { data } = useSWR<ThermalDoseResponseResponse>('/api/thermal/dose-response', fetcher, {
+    refreshInterval: 60000,
+  });
+
+  if (!data) return null;
+  const { config, analysis } = data;
+
+  if (!config.enabled) {
+    return (
+      <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-gray-500 uppercase tracking-wider">
+            Personal thermal offset trial
+          </p>
+          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-surface-raised border border-surface-border text-gray-400 uppercase">
+            Disabled
+          </span>
+        </div>
+        <p className="text-[11px] text-gray-500 leading-relaxed">
+          Off by default. Randomizes tonight&apos;s maintenance-temperature offset across nights to
+          find what actually minimizes <em>your</em> awakenings, instead of assuming a population
+          default. Enabling it changes what temperature the bed actually runs at overnight on a
+          capped fraction of nights.
+        </p>
+      </div>
+    );
+  }
+
+  // Every offset in the configured ladder (+ the control arm), so an arm with zero nights so
+  // far still shows a row rather than silently disappearing.
+  const ladderOffsets = Array.from(
+    new Set<number>([...config.offset_ladder_f, config.control_offset_f])
+  ).sort((a, b) => a - b);
+  const minN = analysis.min_nights_per_arm;
+  const armNs = ladderOffsets.map((o) => analysis.arms[fmtArm(o)]?.n ?? 0);
+  const worstN = armNs.length ? Math.min(...armNs) : 0;
+  const progressPct = minN > 0 ? Math.min(100, Math.round((worstN / minN) * 100)) : 0;
+
+  return (
+    <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500 uppercase tracking-wider">
+          Personal thermal offset trial
+        </p>
+        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-brand/15 border border-brand/30 text-brand uppercase">
+          Enabled
+        </span>
+      </div>
+      <p className="text-[11px] text-gray-500 leading-relaxed">
+        Randomizing tonight&apos;s maintenance-temperature offset across nights — this changes what
+        temperature the bed actually runs at overnight on a capped fraction of nights.
+      </p>
+
+      <div>
+        <div className="flex items-center justify-between text-xs mb-1">
+          <span className="text-gray-500 uppercase tracking-wider">Nights collected</span>
+          <span className="text-white font-medium tabular-nums">
+            {worstN} / {minN} <span className="text-gray-600">(least-advanced arm)</span>
+          </span>
+        </div>
+        <div className="h-2 bg-surface-raised rounded-full overflow-hidden">
+          <div className="h-full rounded-full bg-brand" style={{ width: `${progressPct}%` }} />
+        </div>
+      </div>
+
+      <div className="divide-y divide-surface-border">
+        {ladderOffsets.map((o) => {
+          const label = fmtArm(o);
+          const arm = analysis.arms[label];
+          const isControl = label === analysis.control_arm;
+          return (
+            <div key={label} className="py-1.5 flex items-center justify-between text-xs gap-2">
+              <span className="text-gray-400">
+                {label}°F{isControl && <span className="text-gray-600"> (control)</span>}
+              </span>
+              <span className="text-gray-300 text-right">
+                n={arm?.n ?? 0} · {fmtWakeEvents(arm?.mean_wake_events, arm?.se_wake_events)} wake/night
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Verdict: when the trial isn't confident yet, this text (from the engine) says so
+          plainly and never names a "best" arm — nothing else in this card infers one either. */}
+      <div className="bg-surface-raised rounded-xl px-3 py-2 space-y-1">
+        <p className="text-xs font-medium text-gray-300">
+          {analysis.confident ? 'Verdict' : 'Not enough data yet'}
+        </p>
+        <p className="text-[11px] text-gray-400 leading-relaxed">{analysis.verdict}</p>
+      </div>
+
+      <div>
+        <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">
+          {TREND_HEADLINE[analysis.trend.direction] ?? 'Trend'}
+        </p>
+        <p className="text-[11px] text-gray-500 leading-relaxed">{analysis.trend.note}</p>
+      </div>
+    </div>
+  );
+}
 
 const SOURCE_BADGE: Record<string, string> = {
   learned: 'bg-success/15 text-success border-success/30',
@@ -161,6 +289,9 @@ function LearningContent() {
 
           {/* Standing efficacy trial: does the closed loop actually help? */}
           <EfficacyCard />
+
+          {/* Personal thermal dose-response trial: what maintenance offset works best for ME? */}
+          <ThermalDoseResponseCard />
 
           {/* Model confidence */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">
