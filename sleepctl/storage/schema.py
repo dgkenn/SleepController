@@ -289,6 +289,34 @@ CREATE TABLE IF NOT EXISTS efficacy_trials (
 );
 CREATE INDEX IF NOT EXISTS idx_efficacy_trials_arm ON efficacy_trials(arm);
 
+-- n-of-1 THERMAL DOSE-RESPONSE trial (sleepctl.ml.thermal_trial): on a capped, block-balanced
+-- fraction of ELIGIBLE (normal, full-length) nights, randomize the MAINTENANCE-phase neutral
+-- setpoint across a small offset ladder (e.g. -1.5..+0.8 F around the learned neutral) to find
+-- which offset minimizes THIS user's wake_events -- deliberately including mild WARMING
+-- (Raymann et al. 2008, DOI 10.1093/brain/awm315) against the controller's default cool bias,
+-- not just more cooling. Kept as its OWN table rather than reusing efficacy_trials/efficacy_nights
+-- for the same reason those two don't share one: this trial's arm vocabulary is a continuous
+-- offset ladder (formatted '+0.40'/'-1.50'/'+0.00' strings), not a fixed 'active'/'sham' or
+-- 'controlled'/'held' pair, and *_trials.night_date is a primary key elsewhere too, so sharing
+-- rows would let one randomization scheme silently clobber another's assignment on any night
+-- more than one trial is enabled. Every planned night gets a row (including ineligible ones,
+-- eligible=0) so the schedule is fully auditable, not just the randomized nights.
+CREATE TABLE IF NOT EXISTS thermal_trials (
+    night_date TEXT PRIMARY KEY,
+    arm TEXT NOT NULL,             -- formatted maintenance offset, e.g. '+0.40' ('+0.00' = control)
+    offset_f REAL NOT NULL,        -- the actual (comfort-band-clamped) offset applied, degrees F
+    eligible INTEGER NOT NULL DEFAULT 1,  -- 0 = ineligible (short/recovery/nap night); forced control
+    block_key TEXT,                 -- night-type stratum used to balance arms WITHIN a block
+    seed REAL,                      -- deterministic [0,1) draw -- audit trail, not itself the decision
+    wake_events INTEGER,            -- primary outcome (the user's #1 problem: staying asleep)
+    deep_min REAL,
+    sleep_efficiency REAL,
+    hrv REAL,
+    subjective_rating REAL,         -- morning subjective quality check-in, if logged
+    resolved INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_thermal_trials_arm ON thermal_trials(arm);
+
 -- Structured, queryable event log: "what happened and when" as one query instead of grepping
 -- unstructured text logs. Both daemons emit best-effort rows here at lifecycle/error/state/device
 -- moments (see LiveDashboardDaemon._emit_event / DashboardDaemon._emit_event). severity is one of

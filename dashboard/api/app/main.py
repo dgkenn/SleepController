@@ -2343,3 +2343,50 @@ def efficacy_trials_view(repo=Depends(repo_dep), user: str = AuthDep):
         "n_ineligible": n_ineligible,
         "analysis": analysis,
     }
+
+
+# n-of-1 THERMAL DOSE-RESPONSE trial (sleepctl.ml.thermal_trial): randomizes tonight's maintenance
+# temperature OFFSET across a comfort-clamped ladder so the user's PERSONAL response curve can be
+# measured (primary outcome: wake events -- their #1 complaint) rather than shipping population
+# defaults. Opt-in: it changes what the bed does overnight, so it is disabled until explicitly
+# enabled. Read-only surface; assignment lives in the engine + daemon wiring.
+@app.get("/thermal/dose-response")
+def thermal_dose_response_view(repo=Depends(repo_dep), user: str = AuthDep):
+    """Personal thermal dose-response: per-offset arm counts, the mean wake-events difference vs
+    the 0.0 control arm with a confidence interval, a monotonic-trend readout, and an explicit
+    ``confident`` flag so a 3-night difference is never presented as an answer."""
+    from sleepctl.config import AppConfig
+    from sleepctl.ml.thermal_trial import analyze_dose_response
+
+    cfg = AppConfig.default()
+    tc = cfg.thermal_trial
+    rows = repo.thermal_trial_rows(resolved_only=True)
+    analysis = analyze_dose_response(rows, cfg=tc)
+    all_rows = repo.thermal_trial_rows(resolved_only=False)
+    n_eligible = sum(1 for r in all_rows if r.get("eligible"))
+    return {
+        "config": {
+            "enabled": tc.enabled,
+            "offset_ladder_f": tc.offset_ladder_f,
+            "control_offset_f": tc.control_offset_f,
+            "comfort_band_f": tc.comfort_band_f,
+            "experimental_fraction": tc.experimental_fraction,
+            "min_nights_before_verdict": tc.min_nights_before_verdict,
+        },
+        "n_nights_planned": len(all_rows),
+        "n_eligible": n_eligible,
+        "n_ineligible": len(all_rows) - n_eligible,
+        "n_resolved": len(rows),
+        "analysis": analysis,
+    }
+
+
+# Advisory CBT-I sleep-window guidance (sleepctl.cbti). PURELY ADVISORY -- it never changes
+# controller behaviour, never forces a schedule, and refuses to recommend restriction before
+# high-stakes (on-call) nights, since daytime sleepiness in an anaesthesia trainee is a real
+# safety issue rather than an inconvenience.
+@app.get("/cbti/advice")
+def cbti_advice_view(repo=Depends(repo_dep), user: str = AuthDep):
+    """Sleep-window recommendation (compress/expand/hold) derived from recent sleep efficiency,
+    with its plain-language rationale, confidence, and any safety notes."""
+    return services.cbti_advice(repo)

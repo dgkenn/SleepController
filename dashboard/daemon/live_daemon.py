@@ -131,6 +131,7 @@ class LiveDashboardDaemon:
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
         self.efficacy_arm = None  # tonight's standing efficacy-trial arm, if the trial is enabled
         self.efficacy_trial_arm = None  # tonight's randomized efficacy MICRO-trial arm, if any
+        self.thermal_trial_arm = None   # tonight's n-of-1 thermal DOSE-RESPONSE arm, if any
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
@@ -348,6 +349,40 @@ class LiveDashboardDaemon:
         # Night TYPE is only known now (plan_night just classified it) -- the randomized efficacy
         # micro-trial's eligibility gate needs that, so it's applied here, not at daemon start-up.
         self._apply_efficacy_micro_trial()
+        self._apply_thermal_dose_trial()
+
+    def _apply_thermal_dose_trial(self) -> None:
+        """n-of-1 thermal DOSE-RESPONSE trial: randomize tonight's maintenance temperature OFFSET
+        across a comfort-clamped ladder, so we can measure THIS user's personal response curve
+        (primary outcome: wake events) instead of shipping population defaults. Off unless
+        ``cfg.thermal_trial.enabled`` -- it changes what the bed does overnight, so it is opt-in.
+
+        Applied AFTER the efficacy micro-trial, and DELIBERATELY SKIPPED on a sham night: a sham
+        night is defined as a neutral do-no-harm hold, so layering an experimental offset on top
+        would both corrupt that arm and confound the two experiments with each other. Same for a
+        HELD night from the older standing trial. When we skip, we say so, so the audit trail
+        shows why a night carries no thermal arm."""
+        try:
+            trial_cfg = getattr(self.cfg, "thermal_trial", None)
+            if trial_cfg is None or not getattr(trial_cfg, "enabled", False):
+                return
+            # Never stack this on top of another experiment's arm (validity + do-no-harm).
+            eff = (self.efficacy_trial_arm or {}).get("arm")
+            if eff == "sham":
+                self._log("thermal dose-trial: skipped (efficacy micro-trial assigned SHAM tonight)")
+                return
+
+            from sleepctl.ml.thermal_trial import apply_trial_arm
+            base = self.cycle.controller.thermal.profile
+            context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
+            prof, info = apply_trial_arm(
+                self.repo, self.cfg, datetime.now().date().isoformat(), context, base)
+            self.cycle.controller.set_setpoints(prof)
+            self.thermal_trial_arm = info
+            self._log(f"thermal dose-trial: offset {info.get('offset_f'):+.2f}F "
+                      f"(eligible={info.get('eligible')})")
+        except Exception as exc:
+            self._log(f"thermal dose-trial apply skipped: {exc}")
 
     def _apply_efficacy_micro_trial(self) -> None:
         """Randomized efficacy MICRO-trial (on by default, conservative): assign 'active' vs
@@ -805,6 +840,9 @@ class LiveDashboardDaemon:
                       # external HR sensor's vitals (no Pod stage); "sensor" => a real device stage.
                       "stage_source": (decision.log_payload or {}).get("stage_source")
                       if decision else None,
+                      # tonight's n-of-1 thermal dose-response arm (None when the trial is off,
+                      # the night is ineligible, or it was skipped to avoid confounding a sham night)
+                      "thermal_trial": self.thermal_trial_arm,
                       "wake_action": (decision.log_payload or {}).get("wake_action")
                       if decision else None},
         }
@@ -1096,6 +1134,16 @@ class LiveDashboardDaemon:
                     self.repo, night_date, wake_events=night.wake_events, deep_pct=deep_pct,
                     hrv=night.avg_hrv, efficiency=night.sleep_efficiency,
                     outcome_score=night.outcome_score)
+                # Same for the thermal dose-response arm (no-op when the night was never assigned
+                # one -- trial disabled, ineligible night, or skipped as a sham night).
+                try:
+                    from sleepctl.ml.thermal_trial import record_trial_outcome as record_thermal
+                    record_thermal(
+                        self.repo, night_date, wake_events=night.wake_events,
+                        deep_min=night.deep_min, sleep_efficiency=night.sleep_efficiency,
+                        hrv=night.avg_hrv)
+                except Exception as exc:
+                    self._log(f"thermal dose-trial outcome skipped: {exc}")
                 self._emit_event("nightly", "info", "nightly_close_out",
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})

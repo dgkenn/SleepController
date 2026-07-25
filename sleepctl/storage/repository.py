@@ -723,6 +723,45 @@ class Repository:
         ).fetchone()
         return dict(row) if row else None
 
+    # ---- n-of-1 THERMAL DOSE-RESPONSE trial (sleepctl.ml.thermal_trial) ------
+    def assign_thermal_trial_night(self, night_date: str, arm: str, offset_f: float,
+                                   eligible: bool, block_key: Optional[str] = None,
+                                   seed: Optional[float] = None) -> None:
+        """Persist tonight's dose-response arm assignment (a formatted maintenance-offset
+        label like '+0.40', plus the raw offset_f/eligibility/block/seed for audit). Idempotent:
+        a night's assignment must not change once made, so this never overwrites an existing row."""
+        self.conn.execute(
+            "INSERT INTO thermal_trials (night_date, arm, offset_f, eligible, block_key, seed, "
+            "resolved) VALUES (?,?,?,?,?,?,0) ON CONFLICT(night_date) DO NOTHING",
+            (night_date, arm, offset_f, int(bool(eligible)), block_key, seed),
+        )
+        self.conn.commit()
+
+    def record_thermal_trial_outcome(self, night_date: str, wake_events=None, deep_min=None,
+                                     sleep_efficiency=None, hrv=None,
+                                     subjective_rating=None) -> None:
+        """Record tonight's measured outcome against its already-assigned dose-response arm
+        (no-op if the night was never assigned one)."""
+        self.conn.execute(
+            "UPDATE thermal_trials SET wake_events=?, deep_min=?, sleep_efficiency=?, hrv=?, "
+            "subjective_rating=?, resolved=1 WHERE night_date=?",
+            (wake_events, deep_min, sleep_efficiency, hrv, subjective_rating, night_date),
+        )
+        self.conn.commit()
+
+    def thermal_trial_rows(self, resolved_only: bool = False) -> list:
+        q = "SELECT * FROM thermal_trials"
+        if resolved_only:
+            q += " WHERE resolved=1"
+        q += " ORDER BY night_date ASC"
+        return [dict(r) for r in self.conn.execute(q).fetchall()]
+
+    def thermal_trial_night(self, night_date: str) -> Optional[dict]:
+        row = self.conn.execute(
+            "SELECT * FROM thermal_trials WHERE night_date=?", (night_date,)
+        ).fetchone()
+        return dict(row) if row else None
+
     def backfill_action_rewards(self) -> None:
         """Set each action's reward = mean outcome_score of the nights its version produced.
 

@@ -2608,3 +2608,78 @@ def send_test_night_alert(repo) -> dict:
     except Exception:
         pass
     return {"ok": result.ok, "sent": result.sent}
+
+
+# ================================================================================
+# Advisory CBT-I sleep-window guidance (sleepctl.cbti)
+#
+# PURELY ADVISORY. Sleep restriction is the first-line evidence-based treatment for the
+# maintenance insomnia this user reports, with effect sizes well above thermal manipulation --
+# but the user has been explicit that thermal control is the centrepiece and CBT-I is a side
+# feature, so this only ever COMPUTES and EXPLAINS a recommendation. It never changes controller
+# behaviour, never forces a schedule, and never gates anything.
+# ================================================================================
+
+def cbti_advice(repo, nights_back: int = 21) -> dict:
+    """Sleep-window recommendation from recent nights, with its reasoning.
+
+    Time-in-bed is derived from bedtime->wake_time when both are present, else reconstructed from
+    total sleep and efficiency (TIB = total_sleep / efficiency), which is how the underlying
+    efficiency figure was defined in the first place. Nights we cannot place on that scale are
+    passed through WITHOUT a TIB rather than guessed at -- the module already ignores records it
+    cannot use, and inventing a number here would quietly corrupt the efficiency estimate that the
+    whole titration keys off.
+    """
+    from sleepctl.cbti import recommend_sleep_window, stimulus_control_tips
+
+    rows = []
+    for n in repo.recent_nights(nights_back) or []:
+        tib = None
+        try:
+            if n.bedtime is not None and n.wake_time is not None:
+                tib = max(0.0, (n.wake_time - n.bedtime).total_seconds() / 60.0)
+            elif n.total_sleep_min and n.sleep_efficiency:
+                tib = float(n.total_sleep_min) / float(n.sleep_efficiency)
+        except Exception:
+            tib = None
+        rows.append({
+            "date": n.date,
+            "time_in_bed_min": tib,
+            "total_sleep_min": n.total_sleep_min,
+            "sleep_efficiency": n.sleep_efficiency,
+            "wake_events": n.wake_events,
+            "bedtime": n.bedtime,
+        })
+
+    # An upcoming on-call / night shift makes sleep restriction unsafe (daytime sleepiness in
+    # someone administering anaesthesia). Derive it from the configured shift plan: any upcoming
+    # shift at all counts as high-stakes for this purpose. If the shift plan is unavailable or
+    # unreadable we fall back to False, which permits compression -- so this is deliberately
+    # conservative ONLY when a shift is actually known. The module applies its own independent
+    # guards (severe-short-sleep refusal, the 5.5 h floor), so an unknown schedule can never on
+    # its own produce a dangerous recommendation.
+    high_stakes = False
+    try:
+        plan = shift_plan_view(repo) or {}
+        nxt = plan.get("next_shift") or (plan.get("shift") or {}).get("start")
+        high_stakes = bool(nxt) or bool(plan.get("upcoming_high_stakes"))
+    except Exception:
+        high_stakes = False
+
+    advice = recommend_sleep_window(rows, upcoming_high_stakes=high_stakes)
+    out = {
+        "direction": advice.direction,
+        "recommended_tib_min": advice.recommended_tib_min,
+        "change_min": advice.change_min,
+        "rationale": advice.rationale,
+        "confidence": advice.confidence,
+        "safety_notes": list(advice.safety_notes or []),
+        "baseline_tib_min": advice.baseline_tib_min,
+        "mean_efficiency": advice.mean_efficiency,
+        "mean_total_sleep_min": advice.mean_total_sleep_min,
+        "eligible_nights": advice.eligible_nights,
+        "upcoming_high_stakes": high_stakes,
+        "tips": stimulus_control_tips(rows),
+        "advisory_only": True,
+    }
+    return out
