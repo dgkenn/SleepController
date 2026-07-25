@@ -71,7 +71,8 @@ def test_sensor_history_series_never_raises_on_bad_db(client):
         def execute(self, *a, **k):
             raise RuntimeError("db gone")
 
-    assert bridge.sensor_history_series(Boom(), minutes=45.0) == {"hr": [], "activity": []}
+    out = bridge.sensor_history_series(Boom(), minutes=45.0)
+    assert out["hr"] == [] and out["activity"] == [] and out["activity_units"] is None
 
 
 def test_bridge_wearable_source_exposes_history(client):

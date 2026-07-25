@@ -428,6 +428,10 @@ class HRBody(BaseModel):
     hr: float | None = None
     rr: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
     source: str | None = None
+    # Actigraphy counts from the wearable's own accelerometer (Polar PMD ACC stream):
+    # {"pim":..,"zcm":..,"mad":..,"std":..,"pmax":..,"n":..,"fs":..}. Same definitions as the
+    # training-set reduction, so unit-comparable with training data.
+    acc: dict | None = None
 
 
 @app.post("/hr/ingest")

@@ -1449,6 +1449,12 @@ def ingest_hr(repo, payload: dict) -> dict:
     # be reconstructed after the fact -- so for a model personalized to this user each night's raw
     # series is irreplaceable training data.
     bridge.append_rr_intervals(repo.conn, rr, source)
+    # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
+    # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
+    # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.
+    acc = payload.get("acc")
+    if isinstance(acc, dict):
+        bridge.append_actigraphy(repo.conn, acc, source)
     # Accumulate into the same overnight time-series as the phone samples (source-tagged so the
     # two channels stay distinguishable for model training). Best-effort; never fails the ingest.
     bridge.append_sensor_sample(repo.conn, {

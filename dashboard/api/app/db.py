@@ -139,6 +139,21 @@ CREATE TABLE IF NOT EXISTS rr_intervals (
     source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rr_intervals_ts ON rr_intervals(ts);
+-- Append-only ACTIGRAPHY COUNTS from the wearable's OWN triaxial accelerometer (the Polar Verity
+-- Sense streams ACC over Polar's PMD BLE service). Columns deliberately mirror the reduction in
+-- scripts/reduce_motion_activity.py -- the same PIM/ZCM/MAD/std/peak definitions used to build the
+-- training set -- so live counts are directly comparable to training counts rather than merely
+-- similar. This is a DIFFERENT signal from sensor_samples.movement, which is the iPhone's
+-- unitless 0..1 index; keeping them apart avoids silently mixing incompatible scales.
+CREATE TABLE IF NOT EXISTS actigraphy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    pim REAL, zcm INTEGER, mad REAL, std REAL, pmax REAL,
+    n INTEGER,                 -- raw accel samples in the batch
+    fs REAL,                   -- accelerometer sample rate (Hz)
+    source TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_actigraphy_ts ON actigraphy(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);

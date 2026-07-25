@@ -8,6 +8,7 @@ keeps control race-free and means a UI/API crash can never disrupt the closed lo
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -216,6 +217,73 @@ def recent_rr_intervals(conn: sqlite3.Connection, minutes: float = 45.0,
     return out
 
 
+_ACTIGRAPHY_RETENTION_DAYS = 400
+_last_actigraphy_prune_monotonic = 0.0
+
+
+def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "verity") -> None:
+    """Persist one batch of actigraphy counts from the wearable's own accelerometer.
+
+    Fields mirror ``scripts/reduce_motion_activity.py`` (pim/zcm/mad/std/pmax/n) so live counts are
+    unit-comparable with the training set. Kept for the same long window as the RR intervals -- this
+    is personal training data. Best-effort; never breaks the ingest path."""
+    global _last_actigraphy_prune_monotonic
+    if not counts:
+        return
+    try:
+        def _num(key):
+            v = counts.get(key)
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return v if math.isfinite(v) else None
+
+        pim, mad, std, pmax = _num("pim"), _num("mad"), _num("std"), _num("pmax")
+        if pim is None and mad is None and std is None:
+            return  # nothing usable
+        zcm = counts.get("zcm")
+        zcm = int(zcm) if isinstance(zcm, (int, float)) and math.isfinite(float(zcm)) else None
+        n = counts.get("n")
+        n = int(n) if isinstance(n, (int, float)) and math.isfinite(float(n)) else None
+        conn.execute(
+            """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source),
+        )
+        now_mono = time.monotonic()
+        if now_mono - _last_actigraphy_prune_monotonic >= _RR_PRUNE_INTERVAL_S:
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(days=_ACTIGRAPHY_RETENTION_DAYS)).isoformat()
+            conn.execute("DELETE FROM actigraphy WHERE ts < ?", (cutoff,))
+            _last_actigraphy_prune_monotonic = now_mono
+        conn.commit()
+    except Exception:
+        pass
+
+
+def recent_actigraphy(conn: sqlite3.Connection, minutes: float = 45.0,
+                      max_rows: int = 5000) -> list:
+    """Recent actigraphy batches as ``[(epoch_seconds, pim), ...]`` for the stager's activity
+    features. PIM is the primary movement-energy count; the other columns stay available in the
+    table for later modelling."""
+    out: list = []
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        rows = conn.execute(
+            "SELECT ts, pim FROM actigraphy WHERE ts >= ? AND pim IS NOT NULL"
+            " ORDER BY ts ASC LIMIT ?", (cutoff, int(max_rows)),
+        ).fetchall()
+        for r in rows:
+            try:
+                out.append((datetime.fromisoformat(r["ts"]).timestamp(), float(r["pim"])))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
+
 def sensor_history_series(conn: sqlite3.Connection, minutes: float = 45.0,
                           max_rows: int = 4000) -> dict:
     """DENSE trailing HR + movement series for the wearable sleep-stager, as
@@ -227,11 +295,13 @@ def sensor_history_series(conn: sqlite3.Connection, minutes: float = 45.0,
     than on the 1/min frame buffer. Best-effort: any failure returns empty series so the caller
     silently falls back to the frame buffer.
 
-    ``activity`` is the phone-derived movement index (0..1) -- a DIFFERENT unit from the
-    actigraphy counts the model was trained on, which is why the model's activity features are
-    scale-free (percentile/robust-z within the night) rather than absolute.
+    ``activity`` prefers the wearable's OWN actigraphy counts (Polar PMD ACC -> PIM), which are
+    unit-comparable with the model's training data. It falls back to the iPhone's 0..1 movement
+    index only when no wearable actigraphy is present -- that index is a different unit, so it is
+    usable only via the model's scale-free (percentile / robust-z within the night) features.
+    ``activity_units`` reports which one is in play so the caller can pick the right feature path.
     """
-    out = {"hr": [], "activity": []}
+    out = {"hr": [], "activity": [], "activity_units": None}
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
         rows = conn.execute(
@@ -250,8 +320,17 @@ def sensor_history_series(conn: sqlite3.Connection, minutes: float = 45.0,
                 out["hr"].append((t, float(r["hr"])))
             if r["movement"] is not None:
                 out["activity"].append((t, float(r["movement"])))
+        # Prefer the wearable's own actigraphy counts when present: they are in the SAME units as
+        # the model's training data, whereas the phone index is unitless and only usable through
+        # scale-free features.
+        acti = recent_actigraphy(conn, minutes=minutes, max_rows=max_rows)
+        if acti:
+            out["activity"] = acti
+            out["activity_units"] = "counts"
+        elif out["activity"]:
+            out["activity_units"] = "phone_index"
     except Exception:
-        return {"hr": [], "activity": []}
+        return {"hr": [], "activity": [], "activity_units": None}
     return out
 
 
