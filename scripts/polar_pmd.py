@@ -27,14 +27,17 @@ generic connection fault.
 
 Frame layouts implemented here (see the module tests for worked examples):
 
-  Control point START  : [0x02][meas_type] then per-setting TLVs [type][count:uint8][value:uint16 LE]
+  Control point START  : [0x02][meas_type] then per-setting TLVs [type][count:uint8][value LE]
+                          (value is uint16 for sample rate/resolution/range, uint8 for channels)
   Control point STOP   : [0x03][meas_type]
-  Control point RESPONSE: [0xF0][opcode][meas_type][error] [more] [setting TLVs...]
+  Control point RESPONSE: [0xF0][opcode][meas_type][error][more][setting TLVs...]
   Data characteristic  : [meas_type][timestamp:uint64 LE ns][frame_type][payload...]
+                          (frame_type bit 7 = compressed; timestamp is the LAST sample's time)
 """
 from __future__ import annotations
 
 import math
+import struct
 from typing import Iterable, Sequence
 
 __all__ = [
@@ -42,6 +45,7 @@ __all__ = [
     "OP_GET_SETTINGS", "OP_START_MEASUREMENT", "OP_STOP_MEASUREMENT",
     "MEAS_ECG", "MEAS_PPG", "MEAS_ACC", "MEAS_PPI", "MEAS_GYRO", "MEAS_MAG",
     "SETTING_SAMPLE_RATE", "SETTING_RESOLUTION", "SETTING_RANGE", "SETTING_CHANNELS",
+    "SETTING_FACTOR",
     "CONTROL_RESPONSE_HEADER", "ERROR_NAMES", "PmdParseError",
     "build_start_command", "build_stop_command", "parse_control_response",
     "frame_measurement_type", "parse_acc_frame", "parse_ppi_frame",
@@ -88,18 +92,45 @@ MEAS_NAMES = {
 SETTING_SAMPLE_RATE = 0x00
 SETTING_RESOLUTION = 0x01
 SETTING_RANGE = 0x02
+# setting type 0x03 ("RANGE_MILLIUNIT") exists in Polar's official PMD PDF (Table 5) and in
+# zHElEARN/polar-python's constants, but the PDF itself labels it "NOT USED" and neither
+# reference implementation ever sends or expects it for ECG/PPG/ACC/PPI -- deliberately omitted.
 SETTING_CHANNELS = 0x04
+SETTING_FACTOR = 0x05
 
 SETTING_NAMES = {
     SETTING_SAMPLE_RATE: "sample_rate",
     SETTING_RESOLUTION: "resolution",
     SETTING_RANGE: "range",
     SETTING_CHANNELS: "channels",
+    SETTING_FACTOR: "factor",
 }
 _SETTING_IDS = {v: k for k, v in SETTING_NAMES.items()}
 # Aliases people (and CLI flags) actually type.
 _SETTING_IDS.update({"rate": SETTING_SAMPLE_RATE, "hz": SETTING_SAMPLE_RATE,
                      "bits": SETTING_RESOLUTION, "g": SETTING_RANGE})
+
+# Wire width of a setting's value(s), in bytes. Confirmed by THREE independent sources agreeing
+# exactly: Polar's own official PMD PDF (Table 5: "4 | Number of channels | 1 | uint8" and
+# "5 | Conversion factor | 4 | IEEE 754 ..."), bleakheart's start_streaming
+# (``wlen=2 if s!='CHANNELS' else 1``), and polar-python's ``PmdSettingType.field_size``
+# (CHANNELS=1, FACTOR=4, everything else=2). A captured real Verity Sense ACC settings response
+# in the PDF (sec 5.2) even shows the raw bytes: "...04 01 03" -- setting type CHANNELS, array
+# length 1, and the single value byte 0x03 (3 channels) with NO second, padding byte.
+#
+# BUG FIXED: this module used to encode (and expect to decode) every setting's value(s) as
+# uint16 unconditionally. For CHANNELS that writes one extra, unexpected byte into every START
+# command that configures channel count, and misaligns the parse of every subsequent TLV (and,
+# for FACTOR, four bytes short) in any GET-SETTINGS/START response that includes one of these
+# two setting types -- silently corrupting or losing every setting that comes after it in the
+# same response. See test_channels_setting_uses_one_byte_not_two.
+_SETTING_FIELD_SIZE = {
+    SETTING_SAMPLE_RATE: 2,
+    SETTING_RESOLUTION: 2,
+    SETTING_RANGE: 2,
+    SETTING_CHANNELS: 1,
+    SETTING_FACTOR: 4,
+}
 
 CONTROL_RESPONSE_HEADER = 0xF0
 
@@ -120,9 +151,22 @@ ERROR_NAMES = {
     13: "device in charger",
 }
 
-# Frame types on the DATA characteristic. 0x00/0x01 are uncompressed; 0x02 is delta-compressed.
+# Frame types on the DATA characteristic. Confirmed against Polar's official PMD PDF
+# (polarofficial/polar-ble-sdk, technical_documentation/online_measurement.pdf, sec 4.2.9
+# "Parse meta data") AND two independent, real-hardware-tested community codecs
+# (fsmeraldi/bleakheart PmdDataFrame handling; zHElEARN/polar-python PmdDataFrame.from_bytes):
+# compression is signalled SOLELY by bit 7 (0x80) of the frame-type byte; the low 7 bits are
+# an independent "raw data layout" id (0/1/2 = 8/16/24-bit uncompressed samples for ACC, per
+# the PDF's Tables 7-9) that is NOT itself a "this frame is delta-compressed" flag. A captured
+# real Verity Sense delta ACC frame in the PDF (sec 5.3) has frame-type byte 0x80.
+#
+# BUG FIXED: this module used to treat a literal frame-type byte of 0x02 as "always delta",
+# which collided with the *uncompressed* 24-bit ACC layout (Table 9) -- a real 0x02 frame with
+# bit 7 clear would have been silently run through the delta decoder instead of being rejected
+# as an unsupported (not implemented here) raw layout. See
+# test_acc_frame_type_0x02_without_compression_bit_is_not_delta.
 FRAME_TYPE_UNCOMPRESSED = (0x00, 0x01)
-FRAME_TYPE_DELTA = 0x02
+FRAME_TYPE_COMPRESSED_BIT = 0x80
 
 # Default ACC stream configuration: 52 Hz, 16-bit, +/-8 G.
 # Ordered RANGE -> SAMPLE_RATE -> RESOLUTION to match Polar's own verified byte sequence.
@@ -185,11 +229,20 @@ def build_start_command(meas_type: int, settings: dict | None = None) -> bytes:
     """Build a START MEASUREMENT control-point command.
 
     ``settings`` maps setting type (id 0x00/0x01/0x02/0x04 or the names ``sample_rate``,
-    ``resolution``, ``range``, ``channels``) to a uint16 value (or a sequence of uint16 values).
-    ``None``/empty means "no settings", which is what PPI requires.
+    ``resolution``, ``range``, ``channels``) to a value (or a sequence of values). ``None``/empty
+    means "no settings", which is what PPI requires.
 
-    Each TLV is ``[setting_type][count:uint8][value:uint16 LE]*count``; e.g. ACC at 25 Hz / 16-bit
-    / 2 G is ``02 02 | 02 01 02 00 | 00 01 19 00 | 01 01 10 00``.
+    Each TLV is ``[setting_type][count:uint8][value]*count`` where ``value`` is little-endian and
+    ``count`` bytes wide per :data:`_SETTING_FIELD_SIZE` -- uint16 for sample rate / resolution /
+    range, but uint8 for channels (confirmed against a real captured Verity Sense byte sequence;
+    see the comment on :data:`_SETTING_FIELD_SIZE`). E.g. ACC at 25 Hz / 16-bit / 2 G is
+    ``02 02 | 02 01 02 00 | 00 01 19 00 | 01 01 10 00``.
+
+    Setting TLVs may be emitted in any order: Polar's own official PMD PDF documents ACC START
+    requests in two different orders for two different devices (RANGE-first for the H10, sec
+    5.3; SAMPLE_RATE-first for the Verity Sense, sec 5.3) that both work, confirming firmware is
+    order-insensitive. This module still reproduces the RANGE-first byte sequence for ACC (the
+    one we have byte-for-byte confirmation of) purely to match a known-good example exactly.
     """
     out = bytearray([OP_START_MEASUREMENT, meas_type & 0xFF])
     if not settings:
@@ -198,12 +251,14 @@ def build_start_command(meas_type: int, settings: dict | None = None) -> bytes:
     normalized: dict[int, list[int]] = {}
     for key, value in settings.items():
         sid = _setting_id(key)
+        width = _SETTING_FIELD_SIZE.get(sid, 2)
         if isinstance(value, (list, tuple)):
             values = [int(v) for v in value]
         else:
             values = [int(value)]
+        max_value = (1 << (8 * width)) - 1
         for v in values:
-            if not 0 <= v <= 0xFFFF:
+            if not 0 <= v <= max_value:
                 raise PmdParseError(f"PMD setting {SETTING_NAMES.get(sid, sid)} out of range: {v}")
         normalized[sid] = values
 
@@ -213,10 +268,11 @@ def build_start_command(meas_type: int, settings: dict | None = None) -> bytes:
 
     for sid in ordered:
         values = normalized[sid]
+        width = _SETTING_FIELD_SIZE.get(sid, 2)
         out.append(sid & 0xFF)
         out.append(len(values) & 0xFF)
         for v in values:
-            out += int(v).to_bytes(2, "little")
+            out += int(v).to_bytes(width, "little")
     return bytes(out)
 
 
@@ -234,10 +290,13 @@ def build_get_settings_command(meas_type: int) -> bytes:
 # Control point: response parsing
 # --------------------------------------------------------------------------------------
 def _try_parse_settings(buf: bytes) -> tuple[dict, bool]:
-    """Parse a run of ``[type][count:uint8][uint16 LE]*count`` TLVs.
+    """Parse a run of ``[type][count:uint8][value]*count`` TLVs (value width per setting type;
+    see :data:`_SETTING_FIELD_SIZE` -- uint16 for most settings, uint8 for channels, an IEEE-754
+    float32 for the conversion factor).
 
     Returns ``(settings, exact)`` where ``exact`` is True only when the buffer was consumed
-    completely by well-formed TLVs with known setting ids.
+    completely by well-formed TLVs with known setting ids. ``settings[SETTING_FACTOR]`` holds
+    ``float`` values; every other setting holds ``int`` values.
     """
     settings: dict = {}
     i = 0
@@ -248,10 +307,16 @@ def _try_parse_settings(buf: bytes) -> tuple[dict, bool]:
         sid = buf[i]
         count = buf[i + 1]
         i += 2
-        if sid not in SETTING_NAMES or count == 0 or i + 2 * count > n:
+        width = _SETTING_FIELD_SIZE.get(sid, 2)
+        if sid not in SETTING_NAMES or count == 0 or i + width * count > n:
             return settings, False
-        values = [int.from_bytes(buf[i + 2 * k:i + 2 * k + 2], "little") for k in range(count)]
-        i += 2 * count
+        if sid == SETTING_FACTOR:
+            values = [struct.unpack("<f", buf[i + width * k:i + width * (k + 1)])[0]
+                      for k in range(count)]
+        else:
+            values = [int.from_bytes(buf[i + width * k:i + width * (k + 1)], "little")
+                      for k in range(count)]
+        i += width * count
         settings[sid] = values
     return settings, True
 
@@ -259,7 +324,13 @@ def _try_parse_settings(buf: bytes) -> tuple[dict, bool]:
 def parse_control_response(data: bytes | bytearray) -> dict:
     """Parse a PMD control-point response/indication.
 
-    Layout: ``[0xF0][opcode][meas_type][error][more][setting TLVs...]``.
+    Layout: ``[0xF0][opcode][meas_type][error][more][setting TLVs...]``. The "more frames
+    follow" flag is ALWAYS byte 4 and the TLV run ALWAYS starts at byte 5 -- confirmed by two
+    independent, real-hardware-tested implementations agreeing exactly:
+    bleakheart's ``available_settings`` (``if data[4]!=0x00: raise ...; offset=5``) and
+    polar-python's ``MeasurementSettings.from_bytes`` (``more_frames = data[4] != 0; index = 5``).
+    There is no alternate layout to disambiguate, so (unlike an earlier version of this
+    function) we no longer guess between two possible offsets.
 
     Returns a dict with ``opcode``, ``measurement_type``, ``error_code``, ``error``, ``ok``,
     ``more``, ``settings`` (setting id -> list of values) and ``settings_by_name``.
@@ -278,19 +349,8 @@ def parse_control_response(data: bytes | bytearray) -> dict:
     settings: dict = {}
     rest = data[4:]
     if rest:
-        # Polar's SDK puts a "more frames follow" flag at index 4 and the TLVs at index 5. Some
-        # documentation shows the TLVs starting straight after the error byte, so accept both:
-        # prefer the layout whose TLV run consumes its buffer exactly.
-        tail_settings, tail_exact = _try_parse_settings(rest[1:])
-        head_settings, head_exact = _try_parse_settings(rest)
-        if tail_exact and (tail_settings or not head_exact or not head_settings):
-            more = bool(rest[0])
-            settings = tail_settings
-        elif head_exact:
-            settings = head_settings
-        else:
-            more = bool(rest[0])
-            settings = tail_settings
+        more = bool(rest[0])
+        settings, _exact = _try_parse_settings(rest[1:])
 
     return {
         "opcode": opcode,
@@ -329,7 +389,27 @@ def _split_frame(data: bytes | bytearray, expect_type: int) -> tuple[int, int, b
 
 
 def _read_bits(buf: bytes, bit_offset: int, width: int) -> int:
-    """Read ``width`` bits LSB-first starting at ``bit_offset`` (bits packed continuously)."""
+    """Read ``width`` bits LSB-first starting at ``bit_offset`` (bits packed continuously).
+
+    CROSS-REFERENCE DISAGREEMENT (unresolved, flagged per the audit that added this comment):
+    this LSB-first-within-byte, LSB-first-into-value bit order matches
+    ``zHElEARN/polar-python``'s ``parsers/compression.py`` (``parse_delta_frame``), which is the
+    function that library actually uses to decode ACC delta frames on both the Polar H10 and
+    Verity Sense, i.e. the reference closest to this exact code path -- so this module's
+    pre-existing choice is left unchanged. However ``fsmeraldi/bleakheart``'s
+    ``_decode_ppg_data`` (real Verity-Sense-under-Windows hardware, though only exercised for
+    PPG, never ACC, in that library) builds its delta bit-string MSB-first per byte
+    (``f'{byte:08b}'``) and interprets each chunk MSB-first, i.e. the OPPOSITE convention.
+    Polar's own official PMD PDF (sec 4.3.3) describes the accumulation as repeated
+    "shift left, OR in the next bit", which is consistent with either convention depending on
+    what "transformed into binary format" means for the source bytes, so it does not break the
+    tie. Net effect: for any bit width that is NOT a multiple of 8, this module and
+    bleakheart's PPG decoder would decode DIFFERENT sample values from the same bytes. This
+    matters here only if it turns out ACC and PPG do not share identical bit-packing on real
+    hardware. STILL-UNVERIFIED against a real Verity Sense ACC delta capture with a non-8-bit
+    width; confirm before trusting delta ACC magnitudes from an overnight run that uses
+    non-byte-aligned delta widths.
+    """
     value = 0
     for i in range(width):
         idx = bit_offset + i
@@ -359,10 +439,44 @@ def parse_acc_frame(data: bytes | bytearray) -> tuple[int, int, list[tuple[int, 
 
     Handles both the uncompressed layout (6 bytes/sample: int16 LE x, y, z) and the
     delta-compressed layout (an int16 reference sample followed by blocks of
-    ``[delta_bit_width][sample_count]`` + bit-packed signed deltas, 3 axes per sample, LSB-first
-    and continuous across byte boundaries; each block restarts on a byte boundary).
+    ``[delta_bit_width][sample_count]`` + bit-packed signed deltas, 3 axes per sample,
+    LSB-first and continuous across byte boundaries; each block restarts on a byte boundary --
+    see :func:`_read_bits` for the exact bit order and its cross-reference caveat).
+
+    ``timestamp_ns`` is the sensor's own clock reading for the **LAST** sample in the frame, not
+    the first (confirmed by both bleakheart's docstring -- "the time stamp refers to the last
+    sample of the list constituting the payload" -- and Polar's own official PMD PDF worked ACC
+    delta example, sec 5.3, which labels the identical field "last sample timestamp"). Callers
+    that need a per-sample timestamp must count backwards from this value, not forwards.
+
+    STILL-UNVERIFIED, deliberately not applied here: the START-measurement control response for
+    ACC on a real Verity Sense (Polar's official PMD PDF, sec 5.3) includes a setting-type 5
+    ("factor") TLV -- see :data:`SETTING_FACTOR` -- with a non-1.0 IEEE-754 float value. Its raw
+    bytes (``40 DA 7F 39`` LE) decode to ``~0.000244`` (the PDF's own prose annotates this TLV
+    with a similar-but-not-bit-exact number, most likely an OCR artifact of that page's
+    sequence-diagram graphic -- see test_control_response_factor_setting_is_a_four_byte_float).
+    Multiplying that PDF's own worked delta reference sample (z=4068 raw) by ~0.000244 gives
+    ~0.99 (physically a plausible ~1 g resting reading), which is suspicious: it suggests
+    DELTA-compressed ACC samples may need `raw * factor * 1000` to
+    reach true milliG, while uncompressed samples (Table 8: "16-bit signed value (mG)") do not.
+    zHElEARN/polar-python's own compressed-ACC decoder is inconsistent about this (it applies
+    `factor * 1000` for its 8-bit path but bare `factor`, no `* 1000`, for the 16-bit path Verity
+    Sense actually uses), and bleakheart never decodes compressed ACC at all, so neither
+    reference settles the exact formula. This module does not thread a factor through
+    ``parse_acc_frame`` at all (callers get raw int16 deltas/samples either way) rather than
+    risk guessing the multiplier wrong -- a wrong constant scale factor would NOT be caught by
+    :func:`actigraphy_counts` (which only looks at deviations from the batch's own mean) and
+    would silently misrepresent every delta-compressed-frame actigraphy count all night.
+    Confirm the real per-frame magnitudes against known-still/known-moving reference recordings
+    before trusting absolute (not just relative) accelerometer magnitudes from compressed
+    frames.
     """
     timestamp_ns, frame_type, payload = _split_frame(data, MEAS_ACC)
+
+    # Compression is signalled by bit 7 alone -- see FRAME_TYPE_COMPRESSED_BIT above for the
+    # evidence trail. This must be checked BEFORE the uncompressed-type check below.
+    if frame_type & FRAME_TYPE_COMPRESSED_BIT:
+        return timestamp_ns, frame_type, _parse_delta_payload(payload, channels=3)
 
     if frame_type in FRAME_TYPE_UNCOMPRESSED:
         if len(payload) % 6:
@@ -375,11 +489,6 @@ def parse_acc_frame(data: bytes | bytearray) -> tuple[int, int, list[tuple[int, 
                 for a in range(3)
             ))
         return timestamp_ns, frame_type, samples
-
-    # Bit 7 set is how newer Polar firmware flags a compressed frame; 0x02 is the documented
-    # delta frame type. Treat both as delta-compressed.
-    if frame_type == FRAME_TYPE_DELTA or frame_type & 0x80:
-        return timestamp_ns, frame_type, _parse_delta_payload(payload, channels=3)
 
     raise PmdParseError(f"unsupported ACC frame type 0x{frame_type:02X}")
 
@@ -438,6 +547,17 @@ def parse_ppi_frame(data: bytes | bytearray) -> tuple[int, list[dict]]:
     bit0 = blocker (interval unreliable), bit1 = skin contact detected, bit2 = skin contact
     supported. Every sample dict also carries ``ok``: False when the blocker bit is set or the
     interval is outside the plausible 250-2500 ms window.
+
+    Field order/widths and bit0/bit1 CONFIRMED against Polar's official PMD PDF (Table 22, "PPi
+    Data, TYPE0") and zHElEARN/polar-python's ``PPIData._data_from_raw_type_0`` (independently
+    matching this module exactly, both on real H10 and Verity Sense hardware). bit2
+    ("skin_contact_supported") is an UNRESOLVED disagreement between those two sources: the PDF's
+    prose says "bit 2: 1 if sensor contact is not supported" (i.e. 1 = NOT supported), but
+    polar-python's real-hardware-tested code treats bit2 truthy as "supported" -- the same
+    polarity this module already used. We keep the polarity that matches the tested code, since
+    PDF prose elsewhere in this same document has OCR/wording artifacts (see the frame-type
+    bitmask notes above), and flag the PDF's contradicting wording here rather than silently
+    trusting either source.
     """
     timestamp_ns, _frame_type, payload = _split_frame(data, MEAS_PPI)
     if len(payload) % 6:

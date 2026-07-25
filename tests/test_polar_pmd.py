@@ -62,7 +62,12 @@ def _acc_delta(reference, blocks, timestamp_ns=42) -> bytes:
             for axis in d:
                 w.write(axis, bit_width)
         payload += w.to_bytes()
-    return _frame(pmd.MEAS_ACC, timestamp_ns, 0x02, bytes(payload))
+    # 0x80 = compression bit set (bit 7); matches the frame-type byte of the real Verity Sense
+    # delta ACC frame captured in Polar's official PMD PDF (technical_documentation/
+    # online_measurement.pdf, sec 5.3). A frame-type byte of 0x02 WITHOUT bit 7 set is a
+    # different, unrelated thing (uncompressed 24-bit ACC, PDF Table 9) -- see
+    # test_acc_frame_type_0x02_without_compression_bit_is_not_delta.
+    return _frame(pmd.MEAS_ACC, timestamp_ns, 0x80, bytes(payload))
 
 
 def _ppi(samples, timestamp_ns=0) -> bytes:
@@ -117,6 +122,34 @@ def test_start_command_rejects_unknown_setting_and_out_of_range_value():
         pmd.build_start_command(pmd.MEAS_ACC, {"sample_rate": 70000})
 
 
+def test_channels_setting_uses_one_byte_not_two():
+    """Regression test for a real bug: CHANNELS values used to be encoded as uint16 (2 bytes),
+    like every other setting. Polar's official PMD PDF (Table 5), bleakheart's start_streaming
+    (``wlen=2 if s!='CHANNELS' else 1``) and polar-python's ``PmdSettingType.field_size`` all
+    independently agree CHANNELS is ONE byte -- confirmed by a real captured Verity Sense ACC
+    START request in that PDF (sec 5.3: "...04 01 03" = type CHANNELS, array_length 1, single
+    value byte 0x03, no second/padding byte). Field widths here match that capture; this
+    module's own RANGE-first TLV ordering (order is confirmed firmware-insensitive, see
+    build_start_command's docstring) is used instead of the PDF's SAMPLE_RATE-first order.
+    """
+    cmd = pmd.build_start_command(pmd.MEAS_ACC, {
+        pmd.SETTING_RANGE: 8,
+        pmd.SETTING_SAMPLE_RATE: 52,
+        pmd.SETTING_RESOLUTION: 16,
+        pmd.SETTING_CHANNELS: 3,
+    })
+    assert cmd == bytes.fromhex(
+        ("0202"
+         "02 01 08 00"    # RANGE = 8G
+         "00 01 34 00"    # SAMPLE_RATE = 52 Hz
+         "01 01 10 00"    # RESOLUTION = 16-bit
+         "04 01 03"       # CHANNELS = 3 -- ONE byte value, no padding byte
+         ).replace(" ", ""))
+    # An out-of-range CHANNELS value (>255) must be rejected against the 1-byte width, not 0xFFFF.
+    with pytest.raises(pmd.PmdParseError):
+        pmd.build_start_command(pmd.MEAS_ACC, {pmd.SETTING_CHANNELS: 256})
+
+
 # --------------------------------------------------------------------------------------
 # control point: response parsing
 # --------------------------------------------------------------------------------------
@@ -156,6 +189,51 @@ def test_control_response_rejects_bad_header_and_short_frame():
         pmd.parse_control_response(bytes([0xF0, 0x02]))
 
 
+def test_control_response_channels_setting_is_one_byte():
+    """Regression test for a real bug: a CHANNELS TLV in a settings response used to be parsed
+    as a 2-byte value like every other setting, which both reads the wrong value AND misaligns
+    the parse of everything after it in the same response. Built from Polar's official PMD PDF
+    field descriptions for a real Verity Sense ACC GET-SETTINGS response (sec 5.2: sample rate
+    52 Hz, resolution 16-bit, range 8G, channels 3) -- the PDF's own hex rendering of this
+    specific response is corrupted by OCR of an overlapping sequence-diagram graphic, so the
+    bytes below are reconstructed from its individually legible prose fields, which is what
+    actually matters for this test (that CHANNELS is one byte, immediately followed by nothing).
+    """
+    raw = bytes([0xF0, 0x01, 0x02, 0x00, 0x00,          # header, opcode=GET, meas=ACC, ok, more=0
+                 0x00, 0x01, 0x34, 0x00,                 # SAMPLE_RATE, 1 value, 52 Hz
+                 0x01, 0x01, 0x10, 0x00,                 # RESOLUTION, 1 value, 16-bit
+                 0x02, 0x01, 0x08, 0x00,                 # RANGE, 1 value, 8G
+                 0x04, 0x01, 0x03])                      # CHANNELS, 1 value, 3 -- ONE byte
+    resp = pmd.parse_control_response(raw)
+    assert resp["ok"] is True
+    assert resp["settings_by_name"] == {
+        "sample_rate": [52], "resolution": [16], "range": [8], "channels": [3],
+    }
+
+
+def test_control_response_factor_setting_is_a_four_byte_float():
+    """The FACTOR setting (id 5) is an IEEE-754 float32, not a uint16 -- confirmed by Polar's
+    official PMD PDF (Table 5) and polar-python's ``PmdSettingType.field_size``. This uses the
+    ACTUAL byte sequence from a real Verity Sense ACC START response captured in that PDF (sec
+    5.3): "F0 02 02 00 00 05 01 40 DA 7F 39". The PDF's own prose also decodes this as the
+    integer 964680256 (== ``int.from_bytes(bytes.fromhex('40DA7F39'), 'little')``, confirmed
+    below), which cross-checks the raw bytes; its accompanying float annotation in that same
+    sequence-diagram graphic is very likely OCR-garbled (the digits are a scramble of the
+    correct value's digits), so the expected float here is computed straight from the trusted
+    raw bytes rather than hand-copied from that annotation. Before this fix, this module had no
+    notion of a 4-byte setting value at all and would have misparsed (or dropped) this TLV.
+    """
+    raw = bytes.fromhex("F002020000050140DA7F39")
+    assert int.from_bytes(bytes.fromhex("40DA7F39"), "little") == 964680256  # PDF's own check
+    resp = pmd.parse_control_response(raw)
+    assert resp["ok"] is True
+    assert resp["opcode"] == pmd.OP_START_MEASUREMENT
+    assert resp["measurement_type"] == pmd.MEAS_ACC
+    factor_values = resp["settings_by_name"]["factor"]
+    assert len(factor_values) == 1
+    assert factor_values[0] == pytest.approx(0.00024399999529123306, rel=1e-9)
+
+
 # --------------------------------------------------------------------------------------
 # ACC frames
 # --------------------------------------------------------------------------------------
@@ -182,7 +260,7 @@ def test_acc_delta_3bit_negative_deltas_crossing_byte_boundaries():
     frame = _acc_delta(ref, [(3, deltas)])
     ts, frame_type, decoded = pmd.parse_acc_frame(frame)
     assert ts == 42
-    assert frame_type == 0x02
+    assert frame_type == 0x80
 
     expected = [ref]
     cur = list(ref)
@@ -236,15 +314,52 @@ def test_acc_malformed_frames_raise_parse_error():
     with pytest.raises(pmd.PmdParseError):
         pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x00, b"\x01\x02\x03"))  # not a multiple of 6
     with pytest.raises(pmd.PmdParseError):
-        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x02, b"\x01\x02"))      # short reference
+        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x80, b"\x01\x02"))      # short reference
     with pytest.raises(pmd.PmdParseError):
         pmd.parse_acc_frame(_ppi([(60, 1000, 0, 0)]))              # wrong measurement type
     with pytest.raises(pmd.PmdParseError):
         pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x07, b"\x00" * 6))      # unknown frame type
     # truncated delta block: claims 4 samples of 8-bit deltas but supplies 2 bytes
     with pytest.raises(pmd.PmdParseError):
-        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x02,
+        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x80,
                                    b"\x00\x00\x00\x00\x00\x00" + b"\x08\x04" + b"\x01\x02"))
+
+
+def test_acc_frame_type_0x02_without_compression_bit_is_not_delta():
+    """Regression test for a real bug: a bare frame-type byte of 0x02 (bit 7 CLEAR) used to be
+    treated as "always delta" by this module. Per Polar's official PMD PDF (sec 4.2.9, "Parse
+    meta data") and two independent real-hardware-tested codecs (bleakheart, polar-python),
+    compression is signalled SOLELY by bit 7; a bare 0x02 is the (here-unimplemented)
+    uncompressed 24-bit ACC layout (Table 9), not a delta frame. It must be rejected, not
+    silently mis-decoded as delta.
+    """
+    frame = _frame(pmd.MEAS_ACC, 1, 0x02, b"\x00" * 9)  # 24-bit uncompressed layout, 1 sample
+    with pytest.raises(pmd.PmdParseError):
+        pmd.parse_acc_frame(frame)
+
+
+def test_acc_delta_real_verity_sense_capture_from_official_polar_pdf():
+    """Byte-for-byte regression test using an ACTUAL Verity Sense capture (not our own encoder),
+    taken from Polar's official PMD PDF (polarofficial/polar-ble-sdk,
+    technical_documentation/online_measurement.pdf, sec 5.3, "Start Stream"). This pins the
+    header layout, the compressed-bit frame-type detection, and the reference-sample-is-first
+    behaviour against real hardware output, independent of our own synthetic-frame helpers.
+
+    The PDF worked example decodes as: timestamp (last-sample) 540368444604181604 ns, reference
+    sample (-48, 357, 4068), delta block bit_width=8/count=29 (only the first two 8-bit-wide
+    delta samples are reproduced here since the PDF truncates the rest with "..."), delta
+    sample 1 (-4, 7, -1) -> (-52, 364, 4067), delta sample 2 (12, 19, -14) -> (-40, 383, 4053).
+    """
+    header = bytes([0x02]) + (540368444604181604).to_bytes(8, "little") + bytes([0x80])
+    reference = bytes.fromhex("D0FF" "6501" "E40F")           # (-48, 357, 4068)
+    delta_header = bytes([0x08, 0x02])                        # bit_width=8, count=2 (truncated)
+    delta_samples = bytes.fromhex("FC07FF" "0C13F2")           # deltas 1 and 2
+    frame = header + reference + delta_header + delta_samples
+
+    ts, frame_type, decoded = pmd.parse_acc_frame(frame)
+    assert ts == 540368444604181604
+    assert frame_type == 0x80
+    assert decoded == [(-48, 357, 4068), (-52, 364, 4067), (-40, 383, 4053)]
 
 
 # --------------------------------------------------------------------------------------
