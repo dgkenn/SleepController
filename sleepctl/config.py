@@ -176,13 +176,20 @@ class Tunables:
     use_learned_stager: bool = True
     stager_min_hr_samples: int = 5           # need at least this many recent HR samples to trust it
     est_model_conf_cap: float = 0.7          # cap the learned model's stage confidence
-    # Feed a movement signal into the stager's HR+motion variant. Kept OFF -- and now for a
-    # MEASURED reason rather than the original unit-mismatch worry. Same-subjects CV (smoothed):
+    # Feed a movement signal into the stager's HR+motion variant. Kept OFF -- for a MEASURED
+    # reason rather than the original unit-mismatch worry. Final CV, all 31 subjects / 25,663
+    # epochs (an earlier read of this used a 5,711-epoch partial set and is superseded):
     #
     #                        4-class k   wake k   deep MAE   onset MAE
-    #   HR only                 0.385     0.217     36.3m       7.8m
-    #   HR + motion             0.374     0.294     39.4m       8.8m
-    #   HR + motion (absolute)  0.342     0.223     39.1m      12.9m
+    #   HR only                 0.436     0.450     23.0m       5.4m
+    #   HR + motion             0.455     0.516     26.5m       6.7m
+    #   HR + motion scale-free  0.444     0.536     28.5m       5.3m
+    #
+    # On the full data motion DOES help staging (+0.019 kappa) and wake (+0.066) -- more than it
+    # did on the partial set -- but it still degrades the two outputs the controller actually
+    # consumes: realized deep minutes (23.0 -> 26.5 min error, the architecture steering's input)
+    # and onset timing (5.4 -> 6.7 min). The decision therefore stands, but it is now a genuine
+    # trade rather than a clear win, and is worth revisiting per-user.
     #
     # Motion buys wake detection (+0.077 kappa) but degrades precisely what the stager's output is
     # USED for: 4-class staging, realized deep minutes (which the architecture steering compares
