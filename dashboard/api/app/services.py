@@ -1409,6 +1409,169 @@ def _rmssd(rr_ms: list) -> "float | None":
     return val if math.isfinite(val) else None
 
 
+# ---------------------------------------------------- Verity Sense data-quality guards
+# Two behaviours documented in Polar's official Verity Sense documentation will silently corrupt
+# both the live controller and the personal-model training data we accumulate from this sensor:
+#
+#  1. "If movement is detected, the heart rate is fixed to the last reliable value." The device
+#     FREEZES HR during movement rather than reporting bad data. A frozen HR has near-zero
+#     variability, and low HR variability is itself a strong SLEEP signal to our stager -- so
+#     movement (i.e. likely wakefulness) can masquerade as deep sleep. This is the more dangerous
+#     of the two failure modes, because it looks like clean, good data.
+#  2. "Skin contact detection is very unreliable... it might be possible for the device to output
+#     a heart rate that is not 0 even when the device is not worn." So the device's own
+#     skin-contact bit cannot be trusted; a Verity sitting on a nightstand can emit a
+#     plausible-looking HR that would otherwise be ingested as if it were the user's physiology.
+#
+# Also documented: with PPI streaming enabled, HR updates only every ~5s, and the FIRST PPI batch
+# can take ~25s to arrive. So "HR unchanged for a few seconds" is completely NORMAL and must NOT
+# trip the frozen-HR guard.
+
+# How long the SAME hr value may repeat before it's suspicious. Comfortably above the documented
+# ~5s PPI-mode HR cadence (and the ~25s first-batch delay only ever affects one single value, not
+# a repeating run) so normal streaming never trips this, while still catching a freeze well within
+# a minute of it starting.
+HR_FROZEN_MIN_DURATION_S = 20.0
+
+# Actigraphy PIM (movement energy; same units as scripts/reduce_motion_activity.py) at/above this
+# is treated as "moving" for the frozen-HR check. Deliberately coarse -- this only needs to tell
+# "clearly moving" from "essentially still", not finely grade activity level.
+MOVEMENT_PIM_THRESHOLD = 5.0
+
+# Actigraphy PIM at/below this is treated as "essentially motionless" for the not-worn stillness
+# check. Set BELOW MOVEMENT_PIM_THRESHOLD so a settled sleeper's residual micro-movement is never
+# mistaken for "not worn".
+STILLNESS_PIM_FLOOR = 1.0
+
+# How long stillness (+ absent/implausible RR) must persist before suspecting the device is off
+# the body. Deliberately long: a genuinely motionless deep-sleep stretch is completely normal and
+# common, and NOT_WORN gates whether training data gets discarded, so this errs conservative (see
+# the false-negative note below) rather than flagping every quiet stretch of sleep.
+NOT_WORN_MIN_DURATION_S = 300.0
+
+# A real human at rest always has SOME beat-to-beat variability. RMSSD this low is far more
+# consistent with a sensor reading electrical/optical noise off a bare, unworn window than with an
+# actual sleeping pulse.
+RMSSD_IMPLAUSIBLY_LOW_MS = 2.0
+
+
+def _parse_epoch(ts) -> "float | None":
+    """``ts`` (an epoch-seconds number or an ISO8601 string) -> epoch seconds, or None if
+    unparseable. Tolerant so a malformed history entry can't crash the quality check."""
+    if ts is None:
+        return None
+    if isinstance(ts, (int, float)):
+        return float(ts) if math.isfinite(ts) else None
+    try:
+        return datetime.fromisoformat(str(ts)).timestamp()
+    except Exception:
+        return None
+
+
+def _frozen_run_start(hr: float, history: list) -> "float | None":
+    """Walk ``history`` (oldest -> newest, NOT including the current sample) backward from the
+    newest entry, accumulating a contiguous run of samples whose hr matches ``hr``. Returns the
+    epoch-seconds timestamp of the OLDEST sample in that unbroken run, or None if the very last
+    history entry doesn't already match (i.e. there is no run at all)."""
+    run_start = None
+    for entry in reversed(history):
+        h = entry.get("hr")
+        t = _parse_epoch(entry.get("ts"))
+        if h is None or t is None or abs(float(h) - float(hr)) > 0.5:
+            break
+        run_start = t
+    return run_start
+
+
+def _stillness_run_start(history: list) -> "float | None":
+    """Mirror of ``_frozen_run_start`` for actigraphy PIM: the epoch-seconds start of the newest
+    unbroken run of history entries with PIM at/below ``STILLNESS_PIM_FLOOR``, or None."""
+    run_start = None
+    for entry in reversed(history):
+        p = entry.get("pim")
+        t = _parse_epoch(entry.get("ts"))
+        if p is None or t is None or float(p) > STILLNESS_PIM_FLOOR:
+            break
+        run_start = t
+    return run_start
+
+
+def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
+                           now: float | None = None) -> dict:
+    """Pure, deterministic Verity Sense data-quality guard -- see the module comments above the
+    threshold constants for the documented Polar behaviours this defends against.
+
+    Args:
+      hr: the current batch's heart rate (bpm), or None.
+      rr: the current batch's RR intervals (ms), or None/[].
+      acc: the current batch's actigraphy block (``{"pim":..,...}``), or None.
+      history: recent PRIOR samples for this same source, OLDEST -> NEWEST, as dicts
+        ``{"ts": epoch_seconds|ISO8601 str, "hr": bpm|None, "pim": PIM|None}``. Does NOT include
+        the current sample. ``[]`` is always safe -- no flag can fire without at least one prior
+        sample corroborating a sustained run.
+      now: epoch seconds for "the current sample's time"; defaults to the real current time.
+
+    Returns ``{"hr_frozen": bool, "not_worn": bool, "usable": bool, "reason": str}``. No hidden
+    global state -- same inputs always produce the same output, so this is trivially unit-testable
+    independent of the DB/ingest path.
+    """
+    now_ts = float(now) if now is not None else datetime.now(timezone.utc).timestamp()
+    pim = None
+    if isinstance(acc, dict):
+        try:
+            pim = float(acc.get("pim"))
+        except (TypeError, ValueError):
+            pim = None
+        else:
+            if not math.isfinite(pim):
+                pim = None
+
+    reasons = []
+
+    # ---- hr_frozen: repeated HR value spanning > threshold, WHILE moving. Both conditions
+    # required -- see the docstring above: repeating HR alone is normal resting HR (or normal PPI
+    # cadence), and movement alone (with fresh HR) is normal wakeful activity.
+    hr_frozen = False
+    if hr is not None and pim is not None and pim >= MOVEMENT_PIM_THRESHOLD:
+        run_start = _frozen_run_start(hr, history)
+        if run_start is not None:
+            duration = now_ts - run_start
+            if duration >= HR_FROZEN_MIN_DURATION_S:
+                hr_frozen = True
+                reasons.append(
+                    f"hr stuck at {hr:g} bpm for ~{duration:.0f}s while moving "
+                    f"(pim={pim:g} >= {MOVEMENT_PIM_THRESHOLD:g}) -- Verity freezes HR on motion")
+
+    # ---- not_worn: dead-flat actigraphy for a SUSTAINED period AND (no RR or implausibly low
+    # RR variability). Conservative by design: we would rather MISS a genuinely off-body reading
+    # (false negative) than wrongly discard real, motionless deep-sleep training data (false
+    # positive) -- hence requiring BOTH a long stillness run and corroborating absent/flat RR,
+    # not actigraphy stillness alone (which, by itself, describes ordinary deep sleep).
+    not_worn = False
+    if pim is not None and pim <= STILLNESS_PIM_FLOOR:
+        still_start = _stillness_run_start(history)
+        # the current sample extends the run even if it's the first still reading seen
+        run_start = still_start if still_start is not None else now_ts
+        duration = now_ts - run_start
+        if duration >= NOT_WORN_MIN_DURATION_S:
+            rmssd = _rmssd(rr) if rr else None
+            no_rr = not rr
+            implausible_rr = rmssd is not None and rmssd < RMSSD_IMPLAUSIBLY_LOW_MS
+            if no_rr or implausible_rr:
+                not_worn = True
+                rr_note = "no RR intervals" if no_rr else f"RMSSD {rmssd:.1f}ms implausibly low"
+                reasons.append(
+                    f"actigraphy flat for ~{duration:.0f}s (pim={pim:g} <= "
+                    f"{STILLNESS_PIM_FLOOR:g}) with {rr_note} -- device likely not worn")
+
+    return {
+        "hr_frozen": hr_frozen,
+        "not_worn": not_worn,
+        "usable": not (hr_frozen or not_worn),
+        "reason": "; ".join(reasons) if reasons else "ok",
+    }
+
+
 def ingest_hr(repo, payload: dict) -> dict:
     """Ingest a cardiac batch from a DEDICATED BLE HR sensor — e.g. a Polar Verity Sense armband
     forwarded by ``scripts/verity_forwarder.py``: an instantaneous ``hr`` (bpm) plus optional
@@ -1455,13 +1618,31 @@ def ingest_hr(repo, payload: dict) -> dict:
     acc = payload.get("acc")
     if isinstance(acc, dict):
         bridge.append_actigraphy(repo.conn, acc, source)
+
+    # Data-quality guard (see assess_cardiac_quality above): needs to see recent history for THIS
+    # source to judge whether the current hr/stillness reading is a sustained run, not just a
+    # snapshot. Best-effort -- a history lookup hiccup degrades to "no flags" (assess with []),
+    # never breaks the real-time ingest path.
+    now_ts = datetime.now(timezone.utc).timestamp()
+    try:
+        lookback_s = NOT_WORN_MIN_DURATION_S + 60.0  # margin past the longer of the two windows
+        history = bridge.recent_cardiac_history(repo.conn, source, lookback_s=lookback_s)
+    except Exception:
+        history = []
+    quality = assess_cardiac_quality(hr, rr, acc if isinstance(acc, dict) else None,
+                                     history, now=now_ts)
+
     # Accumulate into the same overnight time-series as the phone samples (source-tagged so the
     # two channels stay distinguishable for model training). Best-effort; never fails the ingest.
     bridge.append_sensor_sample(repo.conn, {
         "hr": hr, "hrv": hrv, "movement": None, "source": source,
         "fs": None, "n_samples": len(rr),
+        "hr_frozen": quality["hr_frozen"], "not_worn": quality["not_worn"],
+        "quality_reason": quality["reason"],
     })
-    return {"ok": True, "hr": hr, "hrv": hrv, "rr_count": len(rr), "source": source}
+    return {"ok": True, "hr": hr, "hrv": hrv, "rr_count": len(rr), "source": source,
+            "hr_frozen": quality["hr_frozen"], "not_worn": quality["not_worn"],
+            "usable": quality["usable"], "quality_reason": quality["reason"]}
 
 
 def ingest_bcg(repo, payload: dict) -> dict:

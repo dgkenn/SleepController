@@ -167,6 +167,12 @@ _MIGRATIONS = [
     ("wake_log", "night_type", "TEXT"),
     ("wake_log", "onset_cold_settle_f", "REAL"),
     ("wake_log", "warm_pulse_on", "INTEGER"),
+    # Data-quality guards for the Polar Verity Sense feed (see app/services.py's
+    # assess_cardiac_quality): 0/1/NULL flags + a short human-readable reason, persisted per
+    # sample so the excluded-sample audit trail survives restarts and is queryable.
+    ("sensor_samples", "hr_frozen", "INTEGER"),
+    ("sensor_samples", "not_worn", "INTEGER"),
+    ("sensor_samples", "quality_reason", "TEXT"),
 ]
 
 
