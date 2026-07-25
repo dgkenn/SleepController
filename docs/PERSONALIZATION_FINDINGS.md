@@ -94,9 +94,30 @@ accelerometer **and** expert PSG stages **and** a healthy population.
 | **MMASH** | open | 22 healthy young males | real RR intervals + accel | no PSG stages (actigraphy-derived sleep only) — HRV reference only |
 | **CinC 2018** | open | clinical | ECG only, no PPG/accel, ~267 GB | reject — wrong modality, infeasible size |
 
-Consequence: true beat-to-beat intervals paired with expert stage labels in a healthy population do
-not exist in any reachable open corpus today. HRV therefore has to be treated as a feature we
-engineer from our own device's live data, not something we can pre-train on.
+### CORRECTION — that conclusion was wrong
+
+An earlier revision of this document concluded that "true beat-to-beat intervals paired with expert
+stage labels in a healthy population do not exist in any reachable open corpus." **That is false.**
+The first survey was PhysioNet-centric; widening it to general research repositories found several,
+the best by a wide margin being:
+
+| dataset | access | population | cardiac signal | labels | fetchability |
+|---|---|---|---|---|---|
+| **BOAS** (Bitbrain Open Access Sleep, OpenNeuro `ds005555`) | **CC0, no login** (anonymous S3 verified) | **108 healthy adults / 128 nights**; ~91 with usable PPG | **PPG @ 256 Hz** — PSG pulse *and* a wearable **headband** PPG. No ECG. | AASM 30 s, **3 independent scorers + 4th tiebreaker**, ~85% inter-scorer agreement | per-subject EDF, ~155-240 MB each — cherry-pickable |
+| **DOD-H** (Dreem, Zenodo) | open, MIT | 25 healthy | ECG @ 250 Hz | **5 independent scorers** — best label quality found | 21.9 GB single zip, but HTTP Range requests work, so per-record extraction is possible |
+| **AAUWSS** (Aalborg, Zenodo) | open, CC-BY-4.0 | 13 healthy (ESS <10) | ECG 200 Hz **+ Empatica PPG 64 Hz + 3-axis accel**, with **pre-extracted IBI** | AASM, single scorer | one 6.57 GB zip |
+
+**BOAS is the primary target.** It is the largest open *healthy* cohort with beat-derivable cardiac
+data and consensus expert labels, and — unlike every ECG source — its signal is **PPG, the same
+optical modality as the Verity**. That matters concretely: the literature (van Gilst 2020) shows
+ECG-trained staging algorithms *lose* accuracy when applied to PPG, so training on PPG avoids a
+transfer penalty we would otherwise eat.
+
+Still genuinely unusable: **MASS** and **Wearanize+** (both require signed data-use agreements),
+and **WildPPG** / multi-site PPG sets (no sleep-stage labels at all).
+
+Lesson worth keeping: the first survey's negative result was an artefact of searching one catalogue.
+"Does not exist" claims need a wider search than "I checked the obvious place."
 
 ## Consequent plan
 
