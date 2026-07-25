@@ -49,6 +49,19 @@ def test_estimator_light_default_when_asleep_but_not_deep():
     assert stage is SleepStage.LIGHT
 
 
+def _onset_hr(i: int) -> float:
+    """A physiological fall-asleep heart-rate profile: settle awake-in-bed, decline through onset,
+    then steady sleep HR -- all with natural beat-to-beat jitter."""
+    import math
+    if i < 5:
+        base = 66.0
+    elif i < 15:
+        base = 66.0 - 1.2 * (i - 5)
+    else:
+        base = 54.0
+    return base + 0.9 * math.sin(i * 1.3) + 0.5 * math.cos(i * 2.7)
+
+
 # --------------------------------------------------------------------- integration: it steers
 def test_verity_only_feed_reaches_maintenance_and_runs_steering():
     cfg = AppConfig.default()
@@ -58,23 +71,29 @@ def test_verity_only_feed_reaches_maintenance_and_runs_steering():
     start = datetime(2026, 6, 23, 23, 0)
 
     reached = False
-    for i in range(25):
+    for i in range(60):
         now = start + timedelta(minutes=i)
-        # Polar-only: NO Pod stage (UNKNOWN), still, steady low HR, regular breathing.
+        # Polar-only: NO Pod stage (UNKNOWN), still, regular breathing, and a PHYSIOLOGICAL
+        # fall-asleep HR profile -- a few minutes settling awake-in-bed, then the normal onset
+        # decline, then steady sleep HR with natural beat-to-beat jitter. (A dead-flat HR is
+        # out-of-distribution: zero variability never occurs in a real recording, and the stager
+        # reads HR variability + a downward trend as core onset evidence.)
         frame = SensorFrame(timestamp=now, stage=SleepStage.UNKNOWN, presence=True,
-                            heart_rate=56.0, hrv=62.0, respiratory_rate=14.0, movement=0.03,
-                            bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+                            heart_rate=_onset_hr(i), hrv=62.0, respiratory_rate=14.0,
+                            movement=0.03, bed_temp_f=72.0, room_temp_f=68.0,
+                            data_age_seconds=20)
         d = c.decide(frame, ctx, recent, now)
         recent.append(frame)
         # the stage the whole pipeline saw was DERIVED from vitals (learned model or heuristic),
         # not a Pod label
         assert d.log_payload["stage_source"] in ("model", "heuristic")
-        assert d.log_payload["stage"] in ("light", "deep", "rem")
+        assert d.log_payload["stage"] in ("awake", "light", "deep", "rem")
         if c.sm.state is ControllerState.MAINTENANCE:
             reached = True
             break
 
     assert reached, f"stage-less feed never reached MAINTENANCE (stuck in {c.sm.state})"
+    assert c._sleep_onset_time is not None
 
     # Now prove maintenance-time steering ACTUALLY RUNS off the wearable: the arousal detector
     # must execute on a maintenance tick (it never ran while the feed was stuck in INDUCTION). A
