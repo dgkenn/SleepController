@@ -13,7 +13,9 @@ system is conservative and explainable.
 > deliberately conservative. Use at your own discretion.
 
 See **[DESIGN.md](DESIGN.md)** for the full architecture, state machine, control rules,
-learning algorithm, data schema, and failure-mode analysis.
+learning algorithm, data schema, and failure-mode analysis, and **[docs/README.md](docs/README.md)**
+for the full documentation index (control law, sensing/hardware, ML, operations, research findings —
+grouped and one-line-described so you can find the right doc in seconds).
 
 ## How it controls / reads the Pod (and the no-brick promise)
 
@@ -35,6 +37,14 @@ unless a step is 100% reversible, necessary, and minimal.
   [`sleepctl/recon/pod2_teardown.md`](sleepctl/recon/pod2_teardown.md).
 
 The controller consumes whichever tier is active without any code change.
+
+**Independent of all three tiers: a Polar Verity Sense wearable.** A separate, zero-Pod-risk sensing
+path streams heart rate, beat-to-beat RR intervals (→ HRV), and the armband's own accelerometer
+(→ actigraphy) over Polar's PMD Bluetooth LE service, and can *drive the controller entirely on its
+own* — a `state_estimator` overlay derives a coarse sleep stage from the wearable when the Pod's own
+stage is unavailable (no Autopilot membership, sensors not reporting), so onset detection, arousal
+detection, and wake-risk pre-emption all still work off the wearable alone. See
+**[docs/VERITY_RESEARCH.md](docs/VERITY_RESEARCH.md)** and **[deploy/VERITY_SENSOR.md](deploy/VERITY_SENSOR.md)**.
 
 ## Install
 
@@ -124,6 +134,7 @@ override location with `--lat/--lon`; disable the weather fallback with `--no-we
 |-------------|--------------|
 | `replay`    | Drive synthetic nights (normal / short_sleep / clustered_awakenings) through the controller offline |
 | `report`    | Print rolling baselines + recent nightly summaries from the dataset |
+| `night-report` | Explainable nightly intelligence report (what happened, why, what was learned); `--json` |
 | `run`       | Live closed-loop daemon. Flags: `--dry-run`, `--wake HH:MM`, `--poll-seconds`, `--side`, `--simulate`, `--max-ticks`, `--db` |
 | `auth`      | Store Eight Sleep credentials (0600 file or env vars); `--test` verifies the connection |
 | `calibrate` | Read-only probe of the live Pod (capabilities, current level, bed/room temp, biometrics) |
@@ -131,7 +142,10 @@ override location with `--lat/--lon`; disable the weather fallback with `--no-we
 | `train`     | Refit the ML models and propose (or `--apply`) the next setpoint |
 | `checkin`   | Log subjective morning data (`--quality/--grogginess/--performance`, 0–10) |
 | `recalibrate` | Monthly re-anchor + ML status report |
+| `backtest`  | Prove the closed loop beats no-control on a response-aware model (`--nights`, `--scenario`, `--seed`) |
 | `doctor`    | Data + learning + config health check — `[OK]/[WARN]/[FAIL]/[INFO]` report, `--json`; see **[docs/DIAGNOSTICS_CLI.md](docs/DIAGNOSTICS_CLI.md)** |
+| `repair`    | Safe, idempotent self-repair actions (stuck commands, stale daemon heartbeat, stuck device, stale watchdog alert); `--json` |
+| `backup`    | Consistent rotating DB backup, safe while a daemon/API has the file open (`--keep`) |
 
 ## Self-learning (ML)
 
@@ -166,6 +180,17 @@ all chase the same numbers.
   **wake-causation audit** checks every adjustment against the base wake rate (netting out "you'd
   have woken anyway") and never blames a confounded reactive maneuver.
 
+**Personal n-of-1 thermal dose-response trial (disabled by default).** Separate from the learners
+above: a randomized, block-balanced trial of the maintenance-temperature offset itself — including
+*warming* arms, motivated by a published result that mild warming can suppress awakenings in some
+sleepers — to find *this* user's personal optimum rather than assume the population hot-sleeper
+default. Opt-in because it changes what the bed does overnight. See
+**[docs/THERMAL_DOSE_RESPONSE.md](docs/THERMAL_DOSE_RESPONSE.md)**.
+
+**Advisory-only CBT-I sleep-window guidance.** A side feature that never touches control: sleep
+restriction / stimulus-control recommendations, shift-aware (refuses to recommend restriction before
+an on-call night or when already sleep-deprived). See **[docs/CBTI.md](docs/CBTI.md)**.
+
 Typical cadence: `train` weekly, `recalibrate` monthly, `checkin` each morning. See
 **[DESIGN.md](DESIGN.md)**, **[docs/CONTROL_LAW.md](docs/CONTROL_LAW.md)**,
 **[docs/SELF_LEARNING.md](docs/SELF_LEARNING.md)**, and
@@ -175,9 +200,13 @@ Typical cadence: `train` weekly, `recalibrate` monthly, `checkin` each morning. 
 
 A self-hosted FastAPI + Next.js dashboard (`dashboard/`) is the command center: live status over
 SSE, Tonight controls (temp/mode/wake/Emergency-Stop), **Help-me-fall-asleep** + **Nap** sessions,
-analytics, and a Learning page showing every phase converge. A decoupled control **daemon** owns the
-device and exchanges a command queue + runtime snapshot with the API (race-free; the daemon's safety
-net always wraps overrides). See **[docs/DASHBOARD.md](docs/DASHBOARD.md)** and
+analytics, and a Learning page showing every phase converge (now including the thermal dose-response
+trial and CBT-I advice). A decoupled control **daemon** owns the device and exchanges a command queue
++ runtime snapshot with the API (race-free; the daemon's safety net always wraps overrides). A
+token-gated `/diag*` HTTP surface lets a remote operator (including a fresh Claude session with no
+repo checkout) diagnose and self-repair a live deployment — see
+**[docs/CLAUDE_REMOTE_OPS.md](docs/CLAUDE_REMOTE_OPS.md)**. See **[docs/DASHBOARD.md](docs/DASHBOARD.md)**
+(the original design doc — some newer endpoints aren't covered there, see the note at its top) and
 **[deploy/](deploy/)** (Docker, Windows home server, Oracle Cloud, Codespaces).
 
 ## Project layout
@@ -199,25 +228,32 @@ sleepctl/
                        #   wake_tuning, lead_time, deepening (causal A/B), wake_causation (audit +
                        #   personalized awakening precursors)
   ml/                  # action-value learner: features, model (ridge), reward, select, recommend,
-                       #   confounders, phenotype, preference, wake_profile
+                       #   confounders, phenotype, preference, wake_profile, efficacy_trial +
+                       #   thermal_trial (n-of-1 randomized trials), sleep_staging/ (wearable stager)
   storage/             # SQLite schema (3 layers + ledgers, incl. steer_events) + repository
   loop/                # runtime (tick/replay), cycle (shared decide/log), live, nightly (learn)
   recon/               # non-invasive network spike + gated teardown reference
+  cbti.py, shift_manager.py, gym_advisor.py, night_report.py  # advisory-only side features
   cli.py
 dashboard/             # FastAPI api/ + Next.js web/ (iPhone PWA) + control daemon/
-deploy/                # Docker compose, Windows home server, Oracle Cloud, Codespaces, live bring-up
-docs/                  # DESIGN, CONTROL_LAW, ARCHITECTURE_STEERING, SELF_LEARNING, DASHBOARD, …
-scripts/               # verify_live_pod.py (round-trip device verifier), in_bed_calibration, setup
+deploy/                # Docker compose, Windows home server, Oracle Cloud, Codespaces, live bring-up,
+                       #   VERITY_SENSOR.md (wearable setup)
+docs/                  # see docs/README.md for the full index (control law, sensing/hardware, ML,
+                       #   operations, research findings)
+scripts/               # verify_live_pod.py (round-trip device verifier), in_bed_calibration, setup,
+                       #   polar_pmd.py + verity_forwarder.py (Verity Sense codec/forwarder)
 tests/                 # unit + end-to-end tests (engine + dashboard API)
 DESIGN.md              # full design spec
 ```
 
 ## Status
 
-The full system is implemented and tested (`pytest`: **427 engine + 383 API** green): the controller,
-the two-timescale learning loop (nightly setpoint learner + per-phase + in-night steering with causal
-A/B), storage, simulator, offline runtime, **live device wiring** (`run`/`auth`/`calibrate` + the
-async live dashboard daemon), and the **iPhone dashboard**. A round-trip verifier
-(`scripts/verify_live_pod.py`) drives every UI control and confirms the bed responded by reading the
-Pod's own state back from the cloud (validated end-to-end on the simulator: 0 failed). The Tier 1/2
-raw-data paths remain scaffolded behind the common adapter interface (Tier 0 cloud is the live path).
+The full system is implemented and tested (`pytest`: **943 engine + 678 API** green, verified
+2026-07-25): the controller, the two-timescale learning loop (nightly setpoint learner + per-phase +
+in-night steering with causal A/B), the wearable sensing path (Polar Verity Sense), the n-of-1
+thermal dose-response trial, CBT-I advisory guidance, storage, simulator, offline runtime, **live
+device wiring** (`run`/`auth`/`calibrate` + the async live dashboard daemon), and the **iPhone
+dashboard**. A round-trip verifier (`scripts/verify_live_pod.py`) drives every UI control and
+confirms the bed responded by reading the Pod's own state back from the cloud (validated end-to-end
+on the simulator: 0 failed). The Tier 1/2 raw-data paths remain scaffolded behind the common adapter
+interface (Tier 0 cloud is the live path).
