@@ -15,8 +15,10 @@ import sys
 import pytest
 
 from sleepctl.ml.sleep_staging.features import (
+    ACT_FEATURES_SCALEFREE,
     FEATURE_NAMES_HR,
     FEATURE_NAMES_HRMOTION,
+    FEATURE_NAMES_HRMOTION_SCALEFREE,
     compute_features,
     compute_norm_stats,
     feature_vector,
@@ -99,8 +101,7 @@ def test_activity_features_are_scale_free():
     f_a = compute_features(hr, act, 3000.0, norm_stats=compute_norm_stats(hr, act))
     f_b = compute_features(hr, act_scaled, 3000.0,
                            norm_stats=compute_norm_stats(hr, act_scaled))
-    scale_free = [n for n in FEATURE_NAMES_HRMOTION if n.startswith(("act_", "actn_"))]
-    for name in scale_free:
+    for name in ACT_FEATURES_SCALEFREE:
         assert f_a[name] == pytest.approx(f_b[name], rel=1e-6, abs=1e-9), name
 
 
@@ -205,43 +206,59 @@ def test_predict_is_deterministic():
 
 
 # ------------------------------------------------------------------ smoothing reduces flap
-def _alternating_noise_night(minutes=90, seed=5):
-    """HR that flips between sleep-like and wake-like every couple of minutes."""
+def _oscillating_night(period_min, amp, base=54.0, minutes=150, seed=5):
+    """HR that swings around a settled-sleep baseline — the sort of noisy stretch that
+    makes a memoryless classifier alternate labels epoch to epoch."""
     rnd = random.Random(seed)
-    hr = []
-    for i in range(int(minutes * 60 / 10)):
+    out = []
+    n = int(minutes * 60 / 10)
+    for i in range(n):
         t = i * 10.0
-        hot = int(t // 120) % 2 == 0
-        base = 68.0 if hot else 54.0
-        hr.append((t, base + rnd.uniform(-4, 4)))
-    return hr
+        phase = (t / 60.0) % period_min < (period_min / 2.0)
+        v = base + (amp if phase else -amp) * 0.5 + rnd.uniform(-2.0, 2.0)
+        out.append((t, v))
+    return out
+
+
+def _changes(seq):
+    return sum(1 for i in range(1, len(seq)) if seq[i] != seq[i - 1])
+
+
+def _walk_night(stager, hr, smooth, minutes_back=45):
+    """Label the last ``minutes_back`` minutes one 30 s epoch at a time, as the controller
+    would call us tick by tick."""
+    end = hr[-1][0]
+    out = []
+    for t in range(int(end) - minutes_back * 60, int(end) + 1, 30):
+        hist = [s for s in hr if s[0] <= t]
+        if len(hist) < 60:
+            continue
+        est = stager.predict(hist, None, minutes_since_start=t / 60.0,
+                             minutes_since_onset=t / 60.0 - 20.0, smooth=smooth)
+        if est is not None:
+            out.append(est.stage_label)
+    return out
 
 
 def test_smoothing_reduces_label_flipflop():
+    """On an input the unsmoothed model is unstable on, the HMM must flap strictly less.
+
+    The precondition assert matters: without it this test would silently pass whenever the
+    unsmoothed sequence happened to be constant (0 changes vs 0 changes).
+    """
     stager = SleepStager.load()
-    hr = _alternating_noise_night()
-    end = hr[-1][0]
+    rough = hr = None
+    for period, amp in ((2, 8), (3, 10), (4, 12), (2, 14), (5, 16), (3, 20), (6, 24)):
+        hr = _oscillating_night(period, amp)
+        rough = _walk_night(stager, hr, smooth=False)
+        if _changes(rough) >= 3:
+            break
+    assert len(rough) > 20
+    assert _changes(rough) >= 3, "no probe input made the unsmoothed model flip-flop"
 
-    def labels(smooth):
-        out = []
-        # walk the night one 30 s epoch at a time, as the controller would
-        for t in range(int(end) - 40 * 60, int(end) + 1, 30):
-            hist = [s for s in hr if s[0] <= t]
-            if len(hist) < 30:
-                continue
-            est = stager.predict(hist, None, minutes_since_start=t / 60.0, smooth=smooth)
-            if est is not None:
-                out.append(est.stage_label)
-        return out
-
-    rough = labels(False)
-    smooth = labels(True)
-    assert len(rough) == len(smooth) and len(smooth) > 20
-
-    def changes(seq):
-        return sum(1 for i in range(1, len(seq)) if seq[i] != seq[i - 1])
-
-    assert changes(smooth) < changes(rough)
+    smooth = _walk_night(stager, hr, smooth=True)
+    assert len(smooth) == len(rough)
+    assert _changes(smooth) < _changes(rough)
 
 
 # ------------------------------------------------------- stale weights must not be scored
@@ -299,17 +316,21 @@ def test_bundled_weights_match_current_feature_lists():
     from sleepctl.ml.sleep_staging.infer import WEIGHTS_DIR
 
     expected = {
-        "wake_hr.json": FEATURE_NAMES_HR,
-        "stage4_hr.json": FEATURE_NAMES_HR,
-        "wake_hrmotion.json": FEATURE_NAMES_HRMOTION,
-        "stage4_hrmotion.json": FEATURE_NAMES_HRMOTION,
+        "wake_hr.json": [FEATURE_NAMES_HR],
+        "stage4_hr.json": [FEATURE_NAMES_HR],
+        "wake_hr_sparse.json": [FEATURE_NAMES_HR],
+        "stage4_hr_sparse.json": [FEATURE_NAMES_HR],
+        # the motion variant ships whichever of the two vocabularies wins grouped CV
+        "wake_hrmotion.json": [FEATURE_NAMES_HRMOTION, FEATURE_NAMES_HRMOTION_SCALEFREE],
+        "stage4_hrmotion.json": [FEATURE_NAMES_HRMOTION, FEATURE_NAMES_HRMOTION_SCALEFREE],
     }
-    for name, names in expected.items():
+    for name, allowed in expected.items():
         path = os.path.join(WEIGHTS_DIR, name)
         if not os.path.exists(path):
             continue
         with open(path) as fh:
-            assert json.load(fh)["feature_names"] == list(names), name
+            got = json.load(fh)["feature_names"]
+        assert any(got == list(a) for a in allowed), name
 
 
 def test_unavailable_stager_returns_none(tmp_path):

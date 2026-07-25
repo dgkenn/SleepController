@@ -46,7 +46,11 @@ from .dataset import (
     concat,
     subjects_with_activity,
 )
-from .features import FEATURE_NAMES_HR, FEATURE_NAMES_HRMOTION, FEATURE_NAMES_HRMOTION_ABS
+from .features import (
+    FEATURE_NAMES_HR,
+    FEATURE_NAMES_HRMOTION,
+    FEATURE_NAMES_HRMOTION_SCALEFREE,
+)
 from .infer import DEFAULT_SMOOTHING_EPOCHS, blend_emission, forward_filter
 
 WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "weights")
@@ -518,6 +522,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--quick", action="store_true", help="tiny model grid (smoke test)")
     ap.add_argument("--subjects", nargs="*", default=None)
     ap.add_argument("--skip-sparse", action="store_true")
+    ap.add_argument("--motion-only", action="store_true",
+                    help="reuse the HR-only settings and only (re)train the motion variant")
     ap.add_argument("--no-motion", action="store_true",
                     help="skip the HR+motion variant (e.g. actigraphy still reducing)")
     args = ap.parse_args(argv)
@@ -626,18 +632,23 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         # is far slower, so it is only benchmarked on the production-critical HR-only path
         motion_grid = [(c, s) for c, s in _candidates(args.quick) if _exportable(s)]
         cname_m, spec_m, res_m, smooth_motion = select(
-            "HR+motion (scale-free)", ds_motion, FEATURE_NAMES_HRMOTION, fixed=smooth_hr,
-            grid=motion_grid)
-        chosen["hrmotion"] = (cname_m, spec_m)
+            "HR+motion (counts + scale-free)", ds_motion, FEATURE_NAMES_HRMOTION,
+            fixed=smooth_hr, grid=motion_grid)
         results["hrmotion"] = res_m
-        report(f"HR+motion CV, scale-free features [{cname_m}]", res_m)
+        report(f"HR+motion CV, unit-matched counts + scale-free [{cname_m}]", res_m)
 
-        # how much do we give up by dropping unit-dependent (absolute) count features?
-        res_abs = cv_evaluate(ds_motion, FEATURE_NAMES_HRMOTION_ABS, spec_m,
-                              smoothing=smooth_motion, n_folds=args.folds)
-        results["hrmotion_abs"] = res_abs
-        report(f"HR+motion CV, + ABSOLUTE count features [{cname_m}] (offline only)",
-               res_abs)
+        # transfer-safe alternative: no feature depends on the counts' units. Shipped as
+        # the primary model if it is at least as good, since it survives a sensor change.
+        res_sf = cv_evaluate(ds_motion, FEATURE_NAMES_HRMOTION_SCALEFREE, spec_m,
+                             smoothing=smooth_motion, n_folds=args.folds)
+        results["hrmotion_scalefree"] = res_sf
+        report(f"HR+motion CV, SCALE-FREE features only [{cname_m}]", res_sf)
+        motion_names = FEATURE_NAMES_HRMOTION
+        if res_sf["sm"]["kappa4"] > res_m["sm"]["kappa4"] + 0.005:
+            print("  -> scale-free-only wins on CV; shipping it as the HR+motion model",
+                  flush=True)
+            motion_names = FEATURE_NAMES_HRMOTION_SCALEFREE
+        chosen["hrmotion"] = (cname_m, spec_m)
         # HR-only on the SAME subjects and the SAME model spec, for an apples-to-apples
         # measure of what the movement channel actually adds
         ds_hr_same = (ds_hr if set(with_act) == set(subs)
@@ -675,7 +686,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     fit_and_export(ds_union, FEATURE_NAMES_HR, chosen["hr"][1], "hr", smooth_hr)
     if ds_motion is not None:
-        fit_and_export(ds_motion, FEATURE_NAMES_HRMOTION, chosen["hrmotion"][1],
+        fit_and_export(ds_motion, motion_names, chosen["hrmotion"][1],
                        "hrmotion", smooth_motion)
     if ds_sparse is not None:
         fit_and_export(ds_sparse, FEATURE_NAMES_HR, chosen["hr"][1], "hr_sparse", smooth_hr)

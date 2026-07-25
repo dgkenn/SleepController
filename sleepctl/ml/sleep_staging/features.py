@@ -109,10 +109,12 @@ def _hr_names() -> List[str]:
 def _activity_scalefree_names() -> List[str]:
     """Activity features invariant to a monotone rescaling of the movement signal.
 
-    The training signal is PhysioNet actigraphy counts (PIM), but at deployment the motion
-    input is an iPhone-derived movement index on a completely different 0..1 scale. Only
-    features expressed *relative to the recording's own movement distribution* transfer, so
-    these are the ones the shipped HR+motion model is built on.
+    The Polar Verity Sense exposes its own triaxial accelerometer over Polar's PMD BLE
+    service, so deployment can feed actigraphy counts in the *same* units as training
+    (see ``scripts/reduce_motion_activity.py``) — the unit-dependent block below is
+    therefore the primary path. These scale-free features are kept alongside it because
+    they are what still transfers if the movement signal ever arrives on a different scale
+    (a phone's 0..1 movement index, a different epoch length, a different sensor placement).
     """
     names: List[str] = ["act_present", "actn_present", "act_n_w10"]
     for w in WINDOWS_MIN:
@@ -136,10 +138,14 @@ def _activity_scalefree_names() -> List[str]:
 
 
 def _activity_absolute_names() -> List[str]:
-    """Activity features that depend on the raw units of the movement signal.
+    """Activity features in the raw units of the actigraphy counts.
 
-    Kept available (and compared in training) but NOT used by the shipped model, because
-    absolute PIM/ZCM magnitudes do not transfer to a different sensor's scale.
+    Valid because training and deployment share the modality: PIM/ZCM/MAD/std/peak reduced
+    per 30 s epoch from a wrist triaxial accelerometer, exactly as
+    ``scripts/reduce_motion_activity.py`` defines them (PIM/ZCM in counts, MAD/std/peak in
+    g). Absolute magnitudes are highly discriminative — awake epochs run pim~11-47 /
+    zcm~150-400 against pim~2 / zcm~0-4 asleep — so they lead, with the scale-free block
+    above as the transfer-safe backup.
     """
     names: List[str] = []
     for w in WINDOWS_MIN:
@@ -165,10 +171,16 @@ FEATURE_NAMES_HR: List[str] = _hr_names()
 ACT_FEATURES_SCALEFREE: List[str] = _activity_scalefree_names()
 ACT_FEATURES_ABSOLUTE: List[str] = _activity_absolute_names()
 
-#: shipped HR+motion column order — scale-free activity features only.
-FEATURE_NAMES_HRMOTION: List[str] = FEATURE_NAMES_HR + ACT_FEATURES_SCALEFREE
-#: superset including unit-dependent activity features (offline comparison only).
-FEATURE_NAMES_HRMOTION_ABS: List[str] = FEATURE_NAMES_HRMOTION + ACT_FEATURES_ABSOLUTE
+#: primary HR+motion column order: unit-matched actigraphy counts AND their scale-free
+#: normalizations. Requires ``(t, pim, zcm, mad, std, pmax)`` activity samples.
+FEATURE_NAMES_HRMOTION: List[str] = (
+    FEATURE_NAMES_HR + ACT_FEATURES_SCALEFREE + ACT_FEATURES_ABSOLUTE
+)
+#: transfer-safe subset: no feature depends on the movement signal's units, so a model
+#: trained on it still works if the movement channel is a different scale entirely.
+FEATURE_NAMES_HRMOTION_SCALEFREE: List[str] = FEATURE_NAMES_HR + ACT_FEATURES_SCALEFREE
+#: backwards-compatible alias (the "with absolute counts" list is now the primary one)
+FEATURE_NAMES_HRMOTION_ABS: List[str] = FEATURE_NAMES_HRMOTION
 
 
 # --------------------------------------------------------------------------- small utils
@@ -609,6 +621,7 @@ def feature_vector(feats: Dict[str, float], feature_names: Sequence[str]) -> Lis
 __all__ = [
     "FEATURE_NAMES_HR",
     "FEATURE_NAMES_HRMOTION",
+    "FEATURE_NAMES_HRMOTION_SCALEFREE",
     "FEATURE_NAMES_HRMOTION_ABS",
     "ACT_FEATURES_SCALEFREE",
     "ACT_FEATURES_ABSOLUTE",

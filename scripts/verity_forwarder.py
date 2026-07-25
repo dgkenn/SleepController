@@ -7,6 +7,22 @@ plus beat-to-beat RR intervals to the dashboard's ``/hr/ingest`` endpoint. The A
 (RMSSD) from the RR intervals and MERGES this authoritative cardiac signal with the iPhone
 accelerometer's movement (``/bcg/ingest``) into a single fused frame the controller consumes.
 
+Two transports are supported (``--mode``):
+
+  * ``hr``  -- the generic 0x180D Heart Rate Service (HR + RR). The long-standing production path.
+  * ``pmd`` -- Polar's vendor **Polar Measurement Data** service, which additionally gives us the
+    armband's OWN triaxial accelerometer (ACC) and pulse-to-pulse intervals (PPI, with a per-beat
+    error estimate and blocker bit). ACC means actigraphy WITHOUT the user's iPhone, in the same
+    modality/units as the PhysioNet training data.
+  * ``auto`` (default) -- try PMD; if the PMD service is missing or a stream refuses to start,
+    silently fall back to the generic HR path for that session.
+
+In PMD mode the POST body gains an ``acc`` block of actigraphy counts computed exactly the way
+``scripts/reduce_motion_activity.py`` computes the training counts::
+
+    {"hr": 58.0, "rr": [948.0, ...], "source": "verity",
+     "acc": {"pim":.., "zcm":.., "mad":.., "std":.., "pmax":.., "n":.., "fs":52}}
+
 The Verity is a SEPARATE device: nothing here ever touches, modifies, or risks the Eight Sleep
 Pod. This is the physiology path that works even when the Pod's own sleep-tracking is unavailable
 (e.g. no Eight Sleep membership).
@@ -32,6 +48,12 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
+
+try:  # running as a script puts scripts/ on sys.path; importing it as a module may not
+    import polar_pmd as pmd
+except ImportError:  # pragma: no cover - import-path fallback
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import polar_pmd as pmd
 
 # Standard BLE Heart Rate Measurement characteristic (GATT 0x2A37).
 HR_MEASUREMENT_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
@@ -127,15 +149,8 @@ async def _discover(BleakScanner, address_hint: str | None):
     return None
 
 
-async def _run_once(args, env) -> None:
-    from bleak import BleakClient, BleakScanner  # lazy: only needed at runtime
-
-    address = await _discover(BleakScanner, args.address)
-    if not address:
-        _log("no Polar/HR sensor found this scan; will retry")
-        await asyncio.sleep(args.retry_seconds)
-        return
-
+async def _hr_session(client, args) -> None:
+    """Generic 0x180D Heart Rate Service path (the long-standing production behaviour)."""
     # Coalesce notifications into small batches so we POST a few times a second, not per-beat.
     batch_rr: list[float] = []
     last_hr: dict = {"v": None}
@@ -167,17 +182,214 @@ async def _run_once(args, env) -> None:
             except Exception as exc:  # network blip -> drop this batch, keep streaming
                 _log(f"POST failed ({exc}); dropping batch")
 
-    _log(f"connecting to {address} ...")
-    async with BleakClient(address) as client:
-        _log(f"connected; subscribing to HR notifications; forwarding to {args.url}")
-        await client.start_notify(HR_MEASUREMENT_UUID, _on_hr)
+    _log(f"subscribing to HR notifications; forwarding to {args.url}")
+    await client.start_notify(HR_MEASUREMENT_UUID, _on_hr)
+    try:
+        await _flusher(client)
+    finally:
         try:
-            await _flusher(client)
-        finally:
+            await client.stop_notify(HR_MEASUREMENT_UUID)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------------------
+# Polar PMD path (vendor service: ACC + PPI)
+# --------------------------------------------------------------------------------------
+async def _pmd_service_present(client) -> bool:
+    """True if the device advertises Polar's PMD service. Unknown -> True (let START decide)."""
+    services = None
+    try:
+        services = client.services
+    except Exception:
+        services = None
+    if services is None:
+        try:
+            services = await client.get_services()  # bleak < 0.21
+        except Exception:
+            return True
+    try:
+        uuids = {str(s.uuid).lower() for s in services}
+    except Exception:
+        return True
+    if not uuids:
+        return True
+    return pmd.PMD_SERVICE_UUID in uuids
+
+
+async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str,
+                       timeout: float) -> dict | None:
+    """Write a control-point command and wait for its indication. None -> failed (already logged)."""
+    while not responses.empty():
+        try:
+            responses.get_nowait()
+        except Exception:
+            break
+    try:
+        await client.write_gatt_char(pmd.PMD_CONTROL_UUID, cmd, response=True)
+    except Exception as exc:
+        _log(f"PMD {what}: write failed ({exc})")
+        return None
+    try:
+        raw = await asyncio.wait_for(responses.get(), timeout=timeout)
+    except asyncio.TimeoutError:
+        _log(f"PMD {what}: no control-point response within {timeout}s")
+        return None
+    try:
+        resp = pmd.parse_control_response(raw)
+    except Exception as exc:
+        _log(f"PMD {what}: unparseable response ({exc})")
+        return None
+    if not resp["ok"]:
+        _log(f"PMD {what}: device refused ({resp['error']}, code {resp['error_code']})")
+        return None
+    return resp
+
+
+async def _pmd_session(client, args) -> bool:
+    """Stream ACC + PPI over Polar's PMD service.
+
+    Returns True if the streams started (the coroutine then runs until disconnect), False if PMD
+    is unavailable/refused so the caller can fall back to the generic HR service.
+    """
+    if not await _pmd_service_present(client):
+        _log("PMD service not present on this device")
+        return False
+
+    responses: asyncio.Queue = asyncio.Queue()
+
+    batch_rr: list[float] = []
+    acc_mags: list[float] = []
+    last_hr: dict = {"v": None}
+    stats = {"blocked": 0, "bad_frames": 0}
+    acc_cap = max(int(args.acc_rate * 300), 1000)  # ~5 min of samples; bounds memory if POSTs fail
+
+    def _on_control(_handle, data: bytearray) -> None:
+        try:
+            responses.put_nowait(bytes(data))
+        except Exception:
+            pass
+
+    def _on_data(_handle, data: bytearray) -> None:
+        try:
+            mtype = pmd.frame_measurement_type(data)
+            if mtype == pmd.MEAS_ACC:
+                _ts, _ft, samples = pmd.parse_acc_frame(data)
+                acc_mags.extend(pmd.acc_magnitudes_g(samples))
+                if len(acc_mags) > acc_cap:
+                    del acc_mags[:len(acc_mags) - acc_cap]
+            elif mtype == pmd.MEAS_PPI:
+                _ts, samples = pmd.parse_ppi_frame(data)
+                for s in samples:
+                    if s["hr"]:
+                        last_hr["v"] = s["hr"]
+                    if s["ok"]:
+                        batch_rr.append(float(s["ppi_ms"]))
+                    else:
+                        stats["blocked"] += 1
+        except Exception as exc:  # malformed frame -> log sparsely, never break the stream
+            stats["bad_frames"] += 1
+            if stats["bad_frames"] <= 5 or stats["bad_frames"] % 100 == 0:
+                _log(f"PMD: dropping malformed frame ({exc})")
+
+    await client.start_notify(pmd.PMD_CONTROL_UUID, _on_control)
+    started: list[int] = []
+    data_notify = False
+    try:
+        await client.start_notify(pmd.PMD_DATA_UUID, _on_data)
+        data_notify = True
+
+        # PPI takes no settings (02 03). ACC is configurable; defaults 52 Hz / 16-bit / 8 G.
+        acc_settings = {
+            pmd.SETTING_RANGE: args.acc_range,
+            pmd.SETTING_SAMPLE_RATE: args.acc_rate,
+            pmd.SETTING_RESOLUTION: args.acc_resolution,
+        }
+        wanted = [
+            (pmd.MEAS_PPI, "start PPI", pmd.build_start_command(pmd.MEAS_PPI, None)),
+            (pmd.MEAS_ACC, f"start ACC @{args.acc_rate}Hz/{args.acc_resolution}bit/{args.acc_range}G",
+             pmd.build_start_command(pmd.MEAS_ACC, acc_settings)),
+        ]
+        for meas_type, what, cmd in wanted:
+            resp = await _pmd_command(client, responses, cmd, what, args.control_timeout)
+            if resp is None:
+                return False  # caller falls back to the generic HR service
+            started.append(meas_type)
+            _log(f"PMD: {what} ok")
+
+        _log(f"PMD: streaming ACC+PPI; forwarding to {args.url}")
+        while client.is_connected:
+            await asyncio.sleep(args.batch_seconds)
+            hr = last_hr["v"]
+            rr = batch_rr[:]
+            batch_rr.clear()
+            mags = acc_mags[:]
+            acc_mags.clear()
+
+            payload: dict = {"source": args.source}
+            if hr is not None:
+                payload["hr"] = float(hr)
+            if rr:
+                payload["rr"] = rr
+            if len(mags) >= pmd.MIN_EPOCH_SAMPLES:
+                counts = pmd.actigraphy_counts(mags)
+                counts["fs"] = args.acc_rate
+                payload["acc"] = counts
+            if len(payload) == 1:  # nothing but the source tag -> nothing to send
+                continue
             try:
-                await client.stop_notify(HR_MEASUREMENT_UUID)
+                _post(args.url, payload)
+            except Exception as exc:  # network blip -> drop this batch, keep streaming
+                _log(f"POST failed ({exc}); dropping batch")
+        return True
+    finally:
+        for meas_type in reversed(started):
+            try:
+                await client.write_gatt_char(pmd.PMD_CONTROL_UUID,
+                                             pmd.build_stop_command(meas_type), response=True)
             except Exception:
                 pass
+        if data_notify:
+            try:
+                await client.stop_notify(pmd.PMD_DATA_UUID)
+            except Exception:
+                pass
+        try:
+            await client.stop_notify(pmd.PMD_CONTROL_UUID)
+        except Exception:
+            pass
+        if stats["blocked"] or stats["bad_frames"]:
+            _log(f"PMD: {stats['blocked']} blocked/implausible PPI, "
+                 f"{stats['bad_frames']} malformed frames this session")
+
+
+async def _run_once(args, env) -> None:
+    from bleak import BleakClient, BleakScanner  # lazy: only needed at runtime
+
+    address = await _discover(BleakScanner, args.address)
+    if not address:
+        _log("no Polar/HR sensor found this scan; will retry")
+        await asyncio.sleep(args.retry_seconds)
+        return
+
+    _log(f"connecting to {address} ...")
+    async with BleakClient(address) as client:
+        _log("connected")
+        if args.mode in ("pmd", "auto"):
+            ok = False
+            try:
+                ok = await _pmd_session(client, args)
+            except Exception as exc:
+                _log(f"PMD session error ({exc})")
+            if ok:
+                _log("disconnected")
+                return
+            if args.mode == "pmd":
+                _log(f"PMD unavailable on this device; retrying in {args.retry_seconds}s")
+                await asyncio.sleep(args.retry_seconds)
+                return
+            _log("falling back to the generic HR service")
+        await _hr_session(client, args)
     _log("disconnected")
 
 
@@ -203,6 +415,14 @@ def main(argv=None) -> int:
     p.add_argument("--source", default="verity", help="source tag stored with the samples")
     p.add_argument("--batch-seconds", type=float, default=2.0, help="POST cadence")
     p.add_argument("--retry-seconds", type=float, default=10.0, help="reconnect backoff")
+    p.add_argument("--mode", choices=("hr", "pmd", "auto"), default="auto",
+                   help="hr: generic 0x180D only; pmd: Polar PMD (ACC+PPI) only; "
+                        "auto: try PMD, fall back to the HR service (default)")
+    p.add_argument("--acc-rate", type=int, default=52, help="PMD accelerometer sample rate (Hz)")
+    p.add_argument("--acc-range", type=int, default=8, help="PMD accelerometer range (G)")
+    p.add_argument("--acc-resolution", type=int, default=16, help="PMD accelerometer resolution (bits)")
+    p.add_argument("--control-timeout", type=float, default=5.0,
+                   help="seconds to wait for a PMD control-point response")
     args = p.parse_args(argv)
 
     if not args.url:
@@ -215,7 +435,7 @@ def main(argv=None) -> int:
         _log("ERROR: 'bleak' is not installed. Run:  pip install bleak")
         return 2
 
-    _log(f"Polar Verity forwarder starting (source={args.source})")
+    _log(f"Polar Verity forwarder starting (source={args.source}, mode={args.mode})")
     try:
         asyncio.run(_main_async(args, env))
     except KeyboardInterrupt:
