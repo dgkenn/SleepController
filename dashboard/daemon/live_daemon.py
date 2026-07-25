@@ -116,8 +116,20 @@ class LiveDashboardDaemon:
         self.last_target_f: Optional[float] = None
         self.wake = None
         self.session_mode = "night"
-        self.nap_plan = None
-        self.nap_deadline = None
+        self.nap_plan = None          # NapPlan.to_dict() (dashboard-facing) when a nap is active
+        self.nap_deadline = None      # CURRENT operative deadline fed to required_wake_time
+        # Time-anchoring bookkeeping for the active nap (see sleepctl.controller.nap): the actual
+        # NapPlan object (kept internally so it can be re-planned once onset is known), when the
+        # button was pressed (duration-nap fallback math), the immutable hard wake-by deadline
+        # (wake-by requests only; None for a duration nap, whose deadline is onset-derived) and
+        # whether the one-time re-plan-on-onset has already run this session.
+        self._nap_plan_obj = None
+        self.nap_start = None
+        self.nap_hard_deadline = None
+        self._nap_replanned = False
+        # "Help me fall asleep" surfaced constraint when a wake deadline leaves little sleep
+        # opportunity remaining (see ``_apply_induce_deadline_awareness``); None otherwise.
+        self._induce_note = None
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
         self._consec_errors = 0
@@ -131,6 +143,7 @@ class LiveDashboardDaemon:
         self.active_experiment = None  # tonight's applied n-of-1 arm, if any
         self.efficacy_arm = None  # tonight's standing efficacy-trial arm, if the trial is enabled
         self.efficacy_trial_arm = None  # tonight's randomized efficacy MICRO-trial arm, if any
+        self.thermal_trial_arm = None   # tonight's n-of-1 thermal DOSE-RESPONSE arm, if any
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
@@ -155,31 +168,122 @@ class LiveDashboardDaemon:
         self.session_mode = "induce"
         self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
         self.nap_plan, self.nap_deadline = None, None
+        self._nap_plan_obj, self.nap_start = None, None
+        self.nap_hard_deadline, self._nap_replanned = None, False
+        self._induce_note = None
+        self._apply_induce_deadline_awareness()
         self.cycle.controller.set_session("induce", keep_light=False)
 
+    def _apply_induce_deadline_awareness(self) -> None:
+        """'Help me fall asleep' must know how much sleep opportunity is actually left. If a wake
+        deadline is set and the opportunity remaining RIGHT NOW (not whatever ``plan_night``
+        computed back when the alarm was set — the user may have been awake a while since) is
+        short, route tonight onto the EXISTING short-night/DAMAGE_CONTROL compression path
+        (``InductionRoutine`` halves the warm-opener phase — see induction.py) so a slow,
+        luxurious cascade doesn't eat the little time left. This reuses the same classification
+        the controller already understands (``context.is_short_sleep_day`` ->
+        ``NightObjective.DAMAGE_CONTROL``); it does not invent any new behaviour. Best-effort:
+        never raises."""
+        try:
+            ctx = self.context
+            wake = ctx.required_wake_time
+            if wake is None:
+                return
+            remaining_min = (wake - datetime.now()).total_seconds() / 60.0
+            if remaining_min <= 0:
+                return
+            from sleepctl.benchmarks import CONSTRAINED_OPPORTUNITY_MIN
+            if remaining_min < CONSTRAINED_OPPORTUNITY_MIN:
+                ctx.is_short_sleep_day = True
+                self._induce_note = (
+                    f"only ~{remaining_min / 60.0:.1f}h left before your wake time — "
+                    "keeping the onset cascade short so it doesn't eat the time you have")
+                self._log(f"induce: {self._induce_note}")
+                self._emit_event(
+                    "induction", "info", "induce_deadline_constrained", self._induce_note,
+                    {"remaining_min": round(remaining_min, 1)})
+        except Exception as exc:
+            self._log(f"induce deadline-awareness skipped: {exc}")
+
     def _start_nap(self, duration_min=None, wake_time=None) -> None:
-        from sleepctl.controller.nap import NapStrategy, nap_strategy
+        from sleepctl.controller.nap import NapRequestKind, NapStrategy, fallback_deadline, nap_strategy
         now = datetime.now()
         if wake_time:
             hh, mm = (int(x) for x in str(wake_time).split(":"))
-            deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            if deadline <= now:
-                deadline += timedelta(days=1)
+            hard_deadline = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if hard_deadline <= now:
+                hard_deadline += timedelta(days=1)
+            requested_window_min = max(5, int((hard_deadline - now).total_seconds() // 60))
+            plan = nap_strategy(requested_window_min, now_hour=now.hour, cfg=self.cfg,
+                                request_kind=NapRequestKind.WAKE_BY.value,
+                                requested_window_min=requested_window_min)
+            deadline = hard_deadline
         else:
-            deadline = now + timedelta(minutes=int(duration_min or 20))
-        window = max(5, int((deadline - now).total_seconds() // 60))
-        plan = nap_strategy(window, now_hour=now.hour, cfg=self.cfg)
+            requested_window_min = max(1, int(duration_min or 20))
+            plan = nap_strategy(requested_window_min, now_hour=now.hour, cfg=self.cfg,
+                                request_kind=NapRequestKind.DURATION.value,
+                                requested_window_min=requested_window_min)
+            hard_deadline = None  # no externally-fixed wall for a pure duration nap
+            # Anchor the wake to onset once it's known (see _maybe_replan_nap); until then this
+            # fallback cap guards the "never actually falls asleep" case (see fallback_deadline).
+            deadline = fallback_deadline(now, plan)
         ctrl_mode = "nap_power" if plan.strategy in (NapStrategy.POWER, NapStrategy.TRAP) \
             else "nap_cycle"
         self.session_mode = "nap"
         self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
-        self.nap_plan, self.nap_deadline = plan.to_dict(), deadline
+        self._nap_plan_obj = plan
+        self.nap_plan = plan.to_dict()
+        self.nap_deadline = deadline
+        self.nap_start = now
+        self.nap_hard_deadline = hard_deadline
+        self._nap_replanned = False
+        self._induce_note = None
         self.context.required_wake_time = deadline
         self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+
+    def _maybe_replan_nap(self) -> None:
+        """Once sleep onset is CONFIRMED (see ``SleepController.sleep_onset_time``), re-plan the
+        active nap against the TRUE sleep window instead of the press-time estimate — the fix for
+        the historical bug where a nap's deadline was anchored to button-press time (time in bed)
+        rather than onset (time asleep). Runs once per nap session, right when onset first
+        confirms. Best-effort: a failure here must never break the control loop; the fallback
+        cap / hard wake-by deadline already set by ``_start_nap`` remains the safety backstop."""
+        if self.session_mode != "nap" or self._nap_replanned or self._nap_plan_obj is None:
+            return
+        onset = self.cycle.controller.sleep_onset_time
+        if onset is None:
+            return
+        try:
+            from sleepctl.controller.nap import NapRequestKind, replan_on_onset
+            deadline_for_replan = self.nap_hard_deadline or self.nap_deadline
+            new_plan = replan_on_onset(self._nap_plan_obj, onset, deadline_for_replan, cfg=self.cfg)
+            self._nap_plan_obj = new_plan
+            self.nap_plan = new_plan.to_dict()
+            self._nap_replanned = True
+            planned_wake = onset + timedelta(minutes=new_plan.target_sleep_min)
+            if new_plan.request_kind == NapRequestKind.WAKE_BY.value and self.nap_hard_deadline:
+                # The hard wake-by wall is NEVER exceeded; a trap-zone "cap short" resolution
+                # (see nap.py) brings the effective planned wake EARLIER than the wall the user
+                # asked for -- min() enforces that (planned_wake is always <= the wall by
+                # construction of replan_on_onset, so this is a no-op outside the trap case).
+                self.nap_deadline = min(self.nap_hard_deadline, planned_wake)
+            else:
+                self.nap_deadline = planned_wake
+            self.context.required_wake_time = self.nap_deadline
+            self.cycle.controller.update_nap_keep_light(new_plan.keep_light)
+            self._log(f"nap replanned on confirmed onset: {new_plan.headline} "
+                      f"(realized_sleep_min={new_plan.realized_sleep_min}, "
+                      f"deadline={self.nap_deadline.isoformat()})")
+            self._emit_event("nap", "info", "nap_replanned", new_plan.headline, new_plan.to_dict())
+        except Exception as exc:
+            self._log(f"nap replan skipped: {exc}")
 
     def _end_session(self) -> None:
         self.session_mode = "night"
         self.nap_plan, self.nap_deadline = None, None
+        self._nap_plan_obj, self.nap_start = None, None
+        self.nap_hard_deadline, self._nap_replanned = None, False
+        self._induce_note = None
         self.context.required_wake_time = None
         self.cycle.controller.set_session("night", keep_light=False)
 
@@ -348,6 +452,40 @@ class LiveDashboardDaemon:
         # Night TYPE is only known now (plan_night just classified it) -- the randomized efficacy
         # micro-trial's eligibility gate needs that, so it's applied here, not at daemon start-up.
         self._apply_efficacy_micro_trial()
+        self._apply_thermal_dose_trial()
+
+    def _apply_thermal_dose_trial(self) -> None:
+        """n-of-1 thermal DOSE-RESPONSE trial: randomize tonight's maintenance temperature OFFSET
+        across a comfort-clamped ladder, so we can measure THIS user's personal response curve
+        (primary outcome: wake events) instead of shipping population defaults. Off unless
+        ``cfg.thermal_trial.enabled`` -- it changes what the bed does overnight, so it is opt-in.
+
+        Applied AFTER the efficacy micro-trial, and DELIBERATELY SKIPPED on a sham night: a sham
+        night is defined as a neutral do-no-harm hold, so layering an experimental offset on top
+        would both corrupt that arm and confound the two experiments with each other. Same for a
+        HELD night from the older standing trial. When we skip, we say so, so the audit trail
+        shows why a night carries no thermal arm."""
+        try:
+            trial_cfg = getattr(self.cfg, "thermal_trial", None)
+            if trial_cfg is None or not getattr(trial_cfg, "enabled", False):
+                return
+            # Never stack this on top of another experiment's arm (validity + do-no-harm).
+            eff = (self.efficacy_trial_arm or {}).get("arm")
+            if eff == "sham":
+                self._log("thermal dose-trial: skipped (efficacy micro-trial assigned SHAM tonight)")
+                return
+
+            from sleepctl.ml.thermal_trial import apply_trial_arm
+            base = self.cycle.controller.thermal.profile
+            context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
+            prof, info = apply_trial_arm(
+                self.repo, self.cfg, datetime.now().date().isoformat(), context, base)
+            self.cycle.controller.set_setpoints(prof)
+            self.thermal_trial_arm = info
+            self._log(f"thermal dose-trial: offset {info.get('offset_f'):+.2f}F "
+                      f"(eligible={info.get('eligible')})")
+        except Exception as exc:
+            self._log(f"thermal dose-trial apply skipped: {exc}")
 
     def _apply_efficacy_micro_trial(self) -> None:
         """Randomized efficacy MICRO-trial (on by default, conservative): assign 'active' vs
@@ -650,6 +788,20 @@ class LiveDashboardDaemon:
                 self._phone_fused = fuse_sample(frame, self.wearable.read_sample())
             except Exception as exc:
                 self._log(f"wearable fusion skipped: {exc}")
+            # Attach the DENSE trailing HR/movement series (~1 sample/2 s from the Verity) for the
+            # wearable sleep-stager. The frame fields alone are ~1 sample/minute, which washes out
+            # the short-timescale HR variability staging relies on. Purely additive and
+            # best-effort: on any failure the stager falls back to the frame buffer.
+            try:
+                reader = getattr(self.wearable, "read_history", None)
+                if reader is not None:
+                    hist = reader(minutes=45.0) or {}
+                    if hist.get("hr"):
+                        frame.hr_history = hist["hr"]
+                    if hist.get("activity"):
+                        frame.activity_history = hist["activity"]
+            except Exception as exc:
+                self._log(f"dense sensor history unavailable: {exc}")
         return frame
 
     def _refresh_shift_plan(self) -> None:
@@ -754,6 +906,10 @@ class LiveDashboardDaemon:
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
+                      # Surfaced constraint when "help me fall asleep" is pressed with little
+                      # sleep opportunity left before a wake deadline (see
+                      # _apply_induce_deadline_awareness); None outside that situation.
+                      "induce_note": self._induce_note,
                       "thermal_health": self.thermal.status().to_dict(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
@@ -791,6 +947,9 @@ class LiveDashboardDaemon:
                       # external HR sensor's vitals (no Pod stage); "sensor" => a real device stage.
                       "stage_source": (decision.log_payload or {}).get("stage_source")
                       if decision else None,
+                      # tonight's n-of-1 thermal dose-response arm (None when the trial is off,
+                      # the night is ineligible, or it was skipped to avoid confounding a sham night)
+                      "thermal_trial": self.thermal_trial_arm,
                       "wake_action": (decision.log_payload or {}).get("wake_action")
                       if decision else None},
         }
@@ -977,8 +1136,6 @@ class LiveDashboardDaemon:
             bridge.write_runtime_state(self.repo.conn, self._snapshot(self._last_decision, frame))
             return
         self._refresh_hue()
-        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
-            self._end_session()
         await self.client.update()
         frame = self._read_frame()
         now = self.client.now()
@@ -988,6 +1145,7 @@ class LiveDashboardDaemon:
         decision = None
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
+            self._maybe_replan_nap()
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
             elif self.mode == "auto":
@@ -1012,6 +1170,13 @@ class LiveDashboardDaemon:
         self._record_state_history(snapshot)
         self.blackbox.record(self._blackbox_entry(decision, frame))
         self._check_failure_alerts()
+        # A nap's deadline is checked LAST, after this tick's decide()/device-actuation already
+        # ran with the deadline still armed — so the tick that first crosses it still gets a full
+        # wake_orch pass (guaranteed "fire" action, should_wake=True, native alarm) instead of
+        # losing it to an end-of-session reset that would wipe required_wake_time out from under
+        # this same tick (which would previously drop the deadline-crossing wake action).
+        if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
+            self._end_session()
 
     async def command_tick(self) -> bool:
         """Fast path for realtime control: apply queued overrides and snapshot now.
@@ -1028,6 +1193,7 @@ class LiveDashboardDaemon:
             await self._comfort_set_level()
         elif self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
+            self._maybe_replan_nap()
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
         self._last_decision = decision
@@ -1082,6 +1248,16 @@ class LiveDashboardDaemon:
                     self.repo, night_date, wake_events=night.wake_events, deep_pct=deep_pct,
                     hrv=night.avg_hrv, efficiency=night.sleep_efficiency,
                     outcome_score=night.outcome_score)
+                # Same for the thermal dose-response arm (no-op when the night was never assigned
+                # one -- trial disabled, ineligible night, or skipped as a sham night).
+                try:
+                    from sleepctl.ml.thermal_trial import record_trial_outcome as record_thermal
+                    record_thermal(
+                        self.repo, night_date, wake_events=night.wake_events,
+                        deep_min=night.deep_min, sleep_efficiency=night.sleep_efficiency,
+                        hrv=night.avg_hrv)
+                except Exception as exc:
+                    self._log(f"thermal dose-trial outcome skipped: {exc}")
                 self._emit_event("nightly", "info", "nightly_close_out",
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})

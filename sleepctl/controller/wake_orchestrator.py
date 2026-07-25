@@ -137,6 +137,28 @@ class WakeOrchestrator:
         self._confirmed_at = None
         self.predictor.reset()
 
+    def observe_stage(self, now, stage) -> None:
+        """Feed the ultradian cycle predictor one stage observation.
+
+        ``evaluate`` only runs inside WAKE_WINDOW, but the predictor is designed to watch stage
+        transitions across the WHOLE night -- its confidence grows with observed transitions and it
+        learns this night's typical deep-bout length from them. The controller therefore calls this
+        every tick once asleep, so the wake window is entered with a real cycle history instead of
+        an empty one (which would pin confidence low and fall back to a generic 22-min bout).
+        Idempotent for a repeated stage: ``observe`` only records on a stage CHANGE."""
+        try:
+            self.predictor.observe(now, stage)
+        except Exception:
+            pass  # trajectory telemetry must never break the control tick
+
+    def cycle_state(self, now, stage) -> dict:
+        """Current ultradian trajectory estimate (in-light / minutes-to-next-light / confidence)
+        as a plain dict, for the decision log + dashboard. Never raises."""
+        try:
+            return self.predictor.predict(now, stage).to_dict()
+        except Exception:
+            return {}
+
     # -------------------------------------------------------------- signals
     def _p_wake(self, frame, recent, hr_base, hrv_base) -> Optional[float]:
         if self.classifier is None:

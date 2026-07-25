@@ -55,8 +55,8 @@ _CHECK_ORDER = [
     "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
-    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "eight_sleep_creds",
-    "version", "log_sizes", "calendar", "shift",
+    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
+    "eight_sleep_creds", "version", "log_sizes", "calendar", "shift",
 ]
 
 # History window handed to the thermal-capacity/conflict/frozen-telemetry detectors — plenty
@@ -612,6 +612,59 @@ def _check_shift(repo) -> dict:
     return _check("shift", "Shift plan", "info", "no upcoming shift configured", None)
 
 
+# ------------------------------------------------------------------ thermal dose-response trial
+def _check_thermal_trial(repo) -> dict:
+    """n-of-1 thermal dose-response trial (``sleepctl.ml.thermal_trial``) status. Metadata only
+    -- enablement + night counts + which arm (if any) is currently auto-stopped -- never raw
+    wake_events/HRV/etc. OFF by default (``ThermalTrialConfig.enabled``), so the common case is
+    just an informational note that nothing is running."""
+    try:
+        from sleepctl.config import AppConfig
+        tc = AppConfig.default().thermal_trial
+    except Exception as exc:
+        return _check("thermal_trial", "Thermal dose-response trial", "info",
+                      f"check could not run: {exc!r}", None)
+
+    if not getattr(tc, "enabled", False):
+        return _check("thermal_trial", "Thermal dose-response trial", "info",
+                      "not enabled (opt-in personal-offset trial -- off by default)", None)
+
+    min_n = int(getattr(tc, "min_nights_before_verdict", 8))
+    try:
+        n_resolved = len(repo.thermal_trial_rows(resolved_only=True))
+    except Exception:
+        n_resolved = 0
+
+    # An auto-stopped arm logs a "thermal_trial"/"auto_stop" warn event every night it's
+    # suppressed (see sleepctl.ml.thermal_trial._log_auto_stop) -- a RECENT one means an arm is
+    # currently being forced back to control, not just a historical blip from a trend that's
+    # since cleared.
+    stopped_arm = None
+    try:
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+        events = repo.recent_events(limit=10, category="thermal_trial", severity="warn",
+                                    since_iso=cutoff)
+        for e in events:
+            if e.get("code") == "auto_stop":
+                data = e.get("data") or {}
+                stopped_arm = data.get("arm")
+                if stopped_arm:
+                    break
+    except Exception:
+        stopped_arm = None
+
+    if stopped_arm:
+        return _check("thermal_trial", "Thermal dose-response trial", "warn",
+                      f"arm {stopped_arm} auto-stopped (trending worse than control on "
+                      "wake_events)",
+                      "no action needed -- that offset resolves to control automatically "
+                      "until the trend clears")
+    return _check("thermal_trial", "Thermal dose-response trial", "ok",
+                  f"enabled, collecting: {n_resolved} resolved night(s) so far "
+                  f"(>= {min_n} nights/arm needed for a verdict)", None)
+
+
 # ------------------------------------------------------------------ aggregation
 def _aggregate(checks: list[dict]) -> tuple[str, str, str | None]:
     """verdict, headline, primary_remedy from the check battery.
@@ -727,6 +780,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_recent_errors(run_dir, now, daemon_hb_age))
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
+    add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("calendar", "Work calendar (ICS)", lambda: _check_calendar(repo))
     add("shift", "Shift plan", lambda: _check_shift(repo))
     add("log_sizes", "Log file sizes", lambda: _check_log_sizes(run_dir))

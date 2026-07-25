@@ -1,5 +1,16 @@
 # Alternative physiology capture, independent of Eight Sleep's paywalled cloud (researched July 2026)
 
+> **Outcome note (verify against current code before treating the ranking below as a live
+> recommendation).** The path actually built out was **option 3 in the wearable table below — the
+> Polar Verity Sense** — and it went considerably deeper than "wearable fusion for the fast-movement/
+> HR overlay use case": it now streams the armband's *own* accelerometer and pulse-to-pulse intervals
+> over Polar's PMD BLE service (not just generic HR), drives a full learned sleep-stager off the
+> wearable alone when the Pod stage is unavailable, and persists raw RR/actigraphy for future
+> personalization. See `VERITY_RESEARCH.md`, `WHAT_THE_STAGER_IS_FOR.md`, and `deploy/VERITY_SENSOR.md`.
+> The #1 and #2 ranked options here (Emfit QS, Withings Sleep Analyzer) were **never implemented** —
+> this survey remains useful background on why they were considered and rejected/deferred, but the
+> "ranked recommendation" at the bottom no longer reflects what shipped.
+
 **Question:** the Pod 2 Pro has no Autopilot subscription, so `docs/TIER1_RAW_CAPTURE.md` (own raw
 sensor upload) and `docs/PASSIVE_CAPTURE.md`/`sleepctl/recon/*` (network intercept) are the
 Eight-Sleep-specific paths, and both dead-end without rooting (which Pod 2 hardware doesn't

@@ -104,6 +104,14 @@ class SensorFrame:
     device_level: Optional[int] = None
     target_level: Optional[int] = None
     data_age_seconds: Optional[float] = None
+    # Optional DENSE trailing sensor history as [(epoch_seconds, value), ...], supplied by the
+    # daemon from the ingest tables when an external sensor is streaming (a Polar Verity Sense
+    # writes ~1 HR sample every 2 s). The per-tick frame fields above are only ~1 sample/minute,
+    # which washes out the short-timescale HR variability the wearable sleep-stager relies on; when
+    # these are present the stager uses them instead. Purely additive — every consumer that doesn't
+    # know about them is unaffected, and they are excluded from the NaN sanitizer below (lists).
+    hr_history: Optional[list] = None
+    activity_history: Optional[list] = None
 
     def __post_init__(self) -> None:
         # Sanitize at the boundary: a bad sensor reading (NaN/Inf) must never enter the engine —

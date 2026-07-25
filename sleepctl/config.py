@@ -176,6 +176,31 @@ class Tunables:
     use_learned_stager: bool = True
     stager_min_hr_samples: int = 5           # need at least this many recent HR samples to trust it
     est_model_conf_cap: float = 0.7          # cap the learned model's stage confidence
+    # Feed a movement signal into the stager's HR+motion variant. Kept OFF -- for a MEASURED
+    # reason rather than the original unit-mismatch worry. Final CV, all 31 subjects / 25,663
+    # epochs (an earlier read of this used a 5,711-epoch partial set and is superseded):
+    #
+    #                        4-class k   wake k   deep MAE   onset MAE
+    #   HR only                 0.436     0.450     23.0m       5.4m
+    #   HR + motion             0.455     0.516     26.5m       6.7m
+    #   HR + motion scale-free  0.444     0.536     28.5m       5.3m
+    #
+    # On the full data motion DOES help staging (+0.019 kappa) and wake (+0.066) -- more than it
+    # did on the partial set -- but it still degrades the two outputs the controller actually
+    # consumes: realized deep minutes (23.0 -> 26.5 min error, the architecture steering's input)
+    # and onset timing (5.4 -> 6.7 min). The decision therefore stands, but it is now a genuine
+    # trade rather than a clear win, and is worth revisiting per-user.
+    #
+    # Motion buys wake detection (+0.077 kappa) but degrades precisely what the stager's output is
+    # USED for: 4-class staging, realized deep minutes (which the architecture steering compares
+    # against the ideal curve) and onset timing. And the controller does not need the stager for
+    # wake anyway -- its arousal / wake-risk / precursor detectors already consume movement
+    # directly, so that gain is largely redundant while the staging loss is not.
+    # Note the scale-free variant BEAT absolute counts even though the Verity now supplies
+    # unit-matched actigraphy, contradicting the assumption that matched units would win --
+    # normalizing within the night evidently generalizes better across people.
+    # Revisit per-user once enough of the user's own nights exist to evaluate on them directly.
+    stager_use_motion: bool = False
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded
@@ -324,12 +349,49 @@ class EfficacyTrialConfig:
 
 
 @dataclass
+class ThermalTrialConfig:
+    """Gates for the n-of-1 THERMAL DOSE-RESPONSE trial (sleepctl.ml.thermal_trial): on a
+    capped, block-balanced fraction of ELIGIBLE (normal, full-length) nights, randomize the
+    MAINTENANCE-phase neutral setpoint across ``offset_ladder_f`` -- a small ladder of °F
+    offsets around the learned neutral -- to find which offset minimizes THIS user's
+    wake_events (the #1 complaint: staying asleep). Deliberately includes mild WARMING
+    arms (+0.4, +0.8) alongside cooling ones: Raymann et al. 2008 (Brain,
+    DOI 10.1093/brain/awm315) found a +0.4 C skin-temperature rise SUPPRESSED nocturnal
+    wakefulness, the opposite of this controller's default cool bias -- we don't know this
+    user's personal dose-response, so the trial has to be able to test both directions.
+
+    OFF by default: unlike the efficacy micro-trial (which only toggles active/sham CONTROL,
+    never the temperature itself), this changes what temperature the bed actually runs at
+    overnight, so it must be explicitly opted into.
+    """
+
+    enabled: bool = False              # OFF by default -- changes what the bed does at night
+    # Maintenance-offset ladder (°F, relative to the learned neutral_f). 0.0 (or
+    # ``control_offset_f``) is the current policy / control arm. Offsets are clamped to
+    # +/-``comfort_band_f`` before use -- see sleepctl.ml.thermal_trial._clamped_ladder.
+    offset_ladder_f: list = field(default_factory=lambda: [-1.5, -0.75, 0.0, 0.4, 0.8])
+    control_offset_f: float = 0.0      # the "do nothing different" arm -- today's real policy
+    comfort_band_f: float = 2.0        # hard comfort clamp on any offset, regardless of ladder
+    # Target share of ELIGIBLE nights that run a NON-control offset (the rest run control).
+    # Hard-capped at sleepctl.ml.thermal_trial.MAX_EXPERIMENTAL_FRACTION (0.6) -- a dose-response
+    # ladder has several experimental arms (unlike the single-arm efficacy sham), so a larger
+    # cap is defensible, but the trial must still not dominate the schedule.
+    experimental_fraction: float = 0.5
+    min_nights_before_verdict: int = 8  # per-arm nights required before analyze_dose_response
+                                        # will name a winner (never trusts a 3-night difference)
+    auto_stop_min_n: int = 6           # per-arm nights required before auto-stop may evaluate
+    auto_stop_threshold: float = 1.0   # an arm's mean wake_events must exceed control's by at
+                                       # least this many events/night to be auto-suspended
+
+
+@dataclass
 class AppConfig:
     profile: UserProfile = field(default_factory=UserProfile)
     benchmarks: Benchmarks = field(default_factory=Benchmarks)
     tunables: Tunables = field(default_factory=Tunables)
     ml: MLConfig = field(default_factory=MLConfig)
     efficacy_trial: EfficacyTrialConfig = field(default_factory=EfficacyTrialConfig)
+    thermal_trial: ThermalTrialConfig = field(default_factory=ThermalTrialConfig)
 
     @classmethod
     def default(cls) -> "AppConfig":
@@ -356,7 +418,8 @@ class AppConfig:
         """Load overrides from a YAML file; missing file -> defaults.
 
         YAML may contain top-level keys ``profile``, ``benchmarks``, ``tunables``,
-        ``ml``, ``efficacy_trial``, each a mapping of field -> value. Unknown keys are ignored.
+        ``ml``, ``efficacy_trial``, ``thermal_trial``, each a mapping of field -> value.
+        Unknown keys are ignored.
         """
         import os
 
@@ -374,6 +437,7 @@ class AppConfig:
             ("tunables", cfg.tunables),
             ("ml", cfg.ml),
             ("efficacy_trial", cfg.efficacy_trial),
+            ("thermal_trial", cfg.thermal_trial),
         ):
             overrides = data.get(section_name) or {}
             if not is_dataclass(section_obj):

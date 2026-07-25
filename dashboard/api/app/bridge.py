@@ -8,6 +8,7 @@ keeps control race-free and means a UI/API crash can never disrupt the closed lo
 from __future__ import annotations
 
 import json
+import math
 import os
 import sqlite3
 import time
@@ -120,14 +121,25 @@ def append_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
     """Append one phone/sensor-derived sample (never overwrites) so overnight data ACCUMULATES
     into a time-series dataset for later model training / nightly learning, unlike the
     ``live_sensor`` singleton above which only ever holds the latest reading. Best-effort: a
-    logging failure here must never break /bcg/ingest for the daemon's real-time fusion path."""
+    logging failure here must never break /bcg/ingest for the daemon's real-time fusion path.
+
+    ``hr_frozen`` / ``not_worn`` / ``quality_reason`` are the Verity Sense data-quality flags from
+    ``services.assess_cardiac_quality`` (see its docstring for the documented Polar behaviours
+    they guard against). All three are optional so callers that don't compute quality (the phone
+    BCG path, existing callers, direct test inserts) are unaffected -- they persist as NULL."""
     global _last_sensor_prune_monotonic
     try:
+        hr_frozen = sample.get("hr_frozen")
+        not_worn = sample.get("not_worn")
         conn.execute(
-            """INSERT INTO sensor_samples (ts, hr, hrv, movement, source, fs, n_samples)
-                VALUES (?,?,?,?,?,?,?)""",
+            """INSERT INTO sensor_samples
+                (ts, hr, hrv, movement, source, fs, n_samples, hr_frozen, not_worn, quality_reason)
+                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (_now(), sample.get("hr"), sample.get("hrv"), sample.get("movement"),
-             sample.get("source", "phone"), sample.get("fs"), sample.get("n_samples")),
+             sample.get("source", "phone"), sample.get("fs"), sample.get("n_samples"),
+             None if hr_frozen is None else int(bool(hr_frozen)),
+             None if not_worn is None else int(bool(not_worn)),
+             sample.get("quality_reason")),
         )
         now_mono = time.monotonic()
         if now_mono - _last_sensor_prune_monotonic >= _SENSOR_PRUNE_INTERVAL_S:
@@ -152,6 +164,246 @@ def recent_sensor_samples(conn: sqlite3.Connection, limit: int = 500, since: str
             "SELECT * FROM sensor_samples ORDER BY ts DESC LIMIT ?", (limit,)
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+# Raw RR intervals are the irreplaceable input for a PERSONAL model (every HRV metric derives
+# from them and they cannot be reconstructed later), so they are kept far longer than the derived
+# sensor_samples window. The SQLite file is covered by the encrypted off-box backup, so this is
+# durably preserved; local retention just bounds the live table.
+_RR_RETENTION_DAYS = 400
+_RR_PRUNE_INTERVAL_S = 3600.0
+_last_rr_prune_monotonic = 0.0
+
+
+def append_rr_intervals(conn: sqlite3.Connection, rr_ms: list, source: str = "verity") -> None:
+    """Persist one batch of RAW beat-to-beat RR intervals (milliseconds).
+
+    ``append_sensor_sample`` stores only a single derived HRV scalar (RMSSD) per batch; this keeps
+    the underlying series so any HRV metric -- SDNN, pNN50, Poincare SD1/SD2, LF/HF -- can be
+    computed later, including for training a model personalized to this user. Best-effort: a
+    logging failure must never break /hr/ingest's real-time fusion path."""
+    global _last_rr_prune_monotonic
+    if not rr_ms:
+        return
+    try:
+        vals = [round(float(x), 1) for x in rr_ms
+                if isinstance(x, (int, float)) and 200.0 <= float(x) <= 3000.0]
+        if not vals:
+            return
+        conn.execute(
+            "INSERT INTO rr_intervals (ts, rr_ms, n, source) VALUES (?,?,?,?)",
+            (_now(), json.dumps(vals), len(vals), source),
+        )
+        now_mono = time.monotonic()
+        if now_mono - _last_rr_prune_monotonic >= _RR_PRUNE_INTERVAL_S:
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(days=_RR_RETENTION_DAYS)).isoformat()
+            conn.execute("DELETE FROM rr_intervals WHERE ts < ?", (cutoff,))
+            _last_rr_prune_monotonic = now_mono
+        conn.commit()
+    except Exception:
+        pass  # never disrupt the ingest path over a telemetry write
+
+
+def recent_rr_intervals(conn: sqlite3.Connection, minutes: float = 45.0,
+                        max_rows: int = 5000) -> list:
+    """Flattened recent RR series as ``[(epoch_seconds, rr_ms), ...]`` (batch timestamp carried on
+    each interval in the batch). For HRV features at inference and for personal-model training."""
+    out: list = []
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        rows = conn.execute(
+            "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+            (cutoff, int(max_rows)),
+        ).fetchall()
+        for r in rows:
+            try:
+                t = datetime.fromisoformat(r["ts"]).timestamp()
+                for v in json.loads(r["rr_ms"]):
+                    out.append((t, float(v)))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
+
+_ACTIGRAPHY_RETENTION_DAYS = 400
+_last_actigraphy_prune_monotonic = 0.0
+
+
+def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "verity") -> None:
+    """Persist one batch of actigraphy counts from the wearable's own accelerometer.
+
+    Fields mirror ``scripts/reduce_motion_activity.py`` (pim/zcm/mad/std/pmax/n) so live counts are
+    unit-comparable with the training set. Kept for the same long window as the RR intervals -- this
+    is personal training data. Best-effort; never breaks the ingest path."""
+    global _last_actigraphy_prune_monotonic
+    if not counts:
+        return
+    try:
+        def _num(key):
+            v = counts.get(key)
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                return None
+            return v if math.isfinite(v) else None
+
+        pim, mad, std, pmax = _num("pim"), _num("mad"), _num("std"), _num("pmax")
+        if pim is None and mad is None and std is None:
+            return  # nothing usable
+        zcm = counts.get("zcm")
+        zcm = int(zcm) if isinstance(zcm, (int, float)) and math.isfinite(float(zcm)) else None
+        n = counts.get("n")
+        n = int(n) if isinstance(n, (int, float)) and math.isfinite(float(n)) else None
+        conn.execute(
+            """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source),
+        )
+        now_mono = time.monotonic()
+        if now_mono - _last_actigraphy_prune_monotonic >= _RR_PRUNE_INTERVAL_S:
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(days=_ACTIGRAPHY_RETENTION_DAYS)).isoformat()
+            conn.execute("DELETE FROM actigraphy WHERE ts < ?", (cutoff,))
+            _last_actigraphy_prune_monotonic = now_mono
+        conn.commit()
+    except Exception:
+        pass
+
+
+def recent_actigraphy(conn: sqlite3.Connection, minutes: float = 45.0,
+                      max_rows: int = 5000) -> list:
+    """Recent actigraphy batches as ``[(epoch_seconds, pim), ...]`` for the stager's activity
+    features. PIM is the primary movement-energy count; the other columns stay available in the
+    table for later modelling."""
+    out: list = []
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        rows = conn.execute(
+            "SELECT ts, pim FROM actigraphy WHERE ts >= ? AND pim IS NOT NULL"
+            " ORDER BY ts ASC LIMIT ?", (cutoff, int(max_rows)),
+        ).fetchall()
+        for r in rows:
+            try:
+                out.append((datetime.fromisoformat(r["ts"]).timestamp(), float(r["pim"])))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
+
+def recent_cardiac_history(conn: sqlite3.Connection, source: str, lookback_s: float,
+                           max_rows: int = 500) -> list:
+    """Recent (ts, hr, pim) history for THIS source, OLDEST -> NEWEST, as a list of
+    ``{"ts": epoch_seconds, "hr": bpm|None, "pim": actigraphy PIM|None}`` dicts. Feeds
+    ``services.assess_cardiac_quality``'s frozen-HR / not-worn checks, which need to see how long
+    a value has persisted, not just the latest one.
+
+    ``hr`` comes from ``sensor_samples``, ``pim`` from the separate ``actigraphy`` table -- the two
+    are written by separate INSERTs within the same ``/hr/ingest`` call (see ``services.ingest_hr``)
+    so they're joined here by NEAREST timestamp (2s tolerance) rather than assumed row-aligned,
+    since a caller that omits ``acc`` on some batches would otherwise desync a naive zip.
+    Best-effort: returns ``[]`` on any failure so a lookup hiccup degrades the quality check to
+    'insufficient history -> no flags' rather than breaking the real-time ingest path."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=float(lookback_s))).isoformat()
+        hr_rows = conn.execute(
+            "SELECT ts, hr FROM sensor_samples WHERE source = ? AND ts >= ? ORDER BY ts ASC LIMIT ?",
+            (source, cutoff, int(max_rows)),
+        ).fetchall()
+        acc_rows = conn.execute(
+            "SELECT ts, pim FROM actigraphy WHERE source = ? AND ts >= ? ORDER BY ts ASC LIMIT ?",
+            (source, cutoff, int(max_rows)),
+        ).fetchall()
+        acc_pts = []
+        for r in acc_rows:
+            try:
+                acc_pts.append((datetime.fromisoformat(r["ts"]).timestamp(), r["pim"]))
+            except Exception:
+                continue
+        out = []
+        for r in hr_rows:
+            try:
+                t = datetime.fromisoformat(r["ts"]).timestamp()
+            except Exception:
+                continue
+            pim = None
+            best_dt = 2.0  # seconds; the paired acc row of the same ingest call is ~instantaneous
+            for at, ap in acc_pts:
+                dt = abs(at - t)
+                if dt < best_dt:
+                    best_dt = dt
+                    pim = ap
+            out.append({"ts": t, "hr": r["hr"], "pim": pim})
+        return out
+    except Exception:
+        return []
+
+
+def sensor_history_series(conn: sqlite3.Connection, minutes: float = 45.0,
+                          max_rows: int = 4000) -> dict:
+    """DENSE trailing HR + movement series for the wearable sleep-stager, as
+    ``{"hr": [(epoch_seconds, bpm), ...], "activity": [(epoch_seconds, movement), ...]}``.
+
+    The daemon's per-tick frame carries only ~1 sample/minute, but ``sensor_samples`` accumulates
+    every ingest (a Polar Verity Sense writes ~1 HR sample every 2 s). Short-timescale HR
+    variability is a major staging signal, so the stager scores far better on this dense series
+    than on the 1/min frame buffer. Best-effort: any failure returns empty series so the caller
+    silently falls back to the frame buffer.
+
+    ``activity`` prefers the wearable's OWN actigraphy counts (Polar PMD ACC -> PIM), which are
+    unit-comparable with the model's training data. It falls back to the iPhone's 0..1 movement
+    index only when no wearable actigraphy is present -- that index is a different unit, so it is
+    usable only via the model's scale-free (percentile / robust-z within the night) features.
+    ``activity_units`` reports which one is in play so the caller can pick the right feature path.
+
+    Samples flagged ``hr_frozen`` or ``not_worn`` (see ``services.assess_cardiac_quality``) are
+    EXCLUDED from the returned ``hr`` series -- a frozen HR has near-zero variability, which is
+    itself a strong SLEEP signal to the stager, so leaving it in would let movement (i.e. likely
+    wakefulness) masquerade as deep sleep. ``activity`` is left untouched: actigraphy stays valid
+    while the device is worn/moving even when the paired HR reading is bad. ``excluded`` reports
+    how many HR samples were dropped this way, so the guard is observable rather than silent.
+    """
+    out = {"hr": [], "activity": [], "activity_units": None, "excluded": 0}
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        rows = conn.execute(
+            "SELECT ts, hr, movement, hr_frozen, not_worn FROM sensor_samples"
+            " WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+            (cutoff, int(max_rows)),
+        ).fetchall()
+        excluded = 0
+        for r in rows:
+            ts = r["ts"]
+            if not ts:
+                continue
+            try:
+                t = datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                continue
+            if r["hr"] is not None:
+                if r["hr_frozen"] or r["not_worn"]:
+                    excluded += 1
+                else:
+                    out["hr"].append((t, float(r["hr"])))
+            if r["movement"] is not None:
+                out["activity"].append((t, float(r["movement"])))
+        out["excluded"] = excluded
+        # Prefer the wearable's own actigraphy counts when present: they are in the SAME units as
+        # the model's training data, whereas the phone index is unitless and only usable through
+        # scale-free features.
+        acti = recent_actigraphy(conn, minutes=minutes, max_rows=max_rows)
+        if acti:
+            out["activity"] = acti
+            out["activity_units"] = "counts"
+        elif out["activity"]:
+            out["activity_units"] = "phone_index"
+    except Exception:
+        return {"hr": [], "activity": [], "activity_units": None, "excluded": 0}
+    return out
 
 
 def write_wake_log(conn: sqlite3.Connection, row: dict) -> None:

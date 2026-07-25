@@ -435,6 +435,10 @@ class HRBody(BaseModel):
     hr: float | None = None
     rr: list[float] | None = Field(default=None, max_length=services.BCG_MAX_SAMPLES)
     source: str | None = None
+    # Actigraphy counts from the wearable's own accelerometer (Polar PMD ACC stream):
+    # {"pim":..,"zcm":..,"mad":..,"std":..,"pmax":..,"n":..,"fs":..}. Same definitions as the
+    # training-set reduction, so unit-comparable with training data.
+    acc: dict | None = None
 
 
 @app.post("/hr/ingest")
@@ -1112,6 +1116,24 @@ def diag_sensor_history(token: str = "", limit: int = 500, since: str = "", repo
     from app import bridge
     limit = max(1, min(limit, 5000))
     return bridge.recent_sensor_samples(repo.conn, limit=limit, since=since or None)
+
+
+@app.get("/diag/rr-history")
+def diag_rr_history(token: str = "", minutes: float = 720.0, repo=Depends(repo_dep)):
+    """Remote pull of the RAW beat-to-beat RR-interval series (the personal-model training data).
+
+    ``sensor_samples`` keeps only a derived RMSSD scalar per batch; this returns the underlying
+    intervals, from which any HRV metric can be recomputed. Same token gating as ``/diag``
+    (secret ``DIAG_TOKEN``, constant-time compare, 404 when missing/wrong so it's invisible to
+    scanners). ``minutes`` is the trailing window, capped at 30 days."""
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+    from app import bridge
+    minutes = max(1.0, min(float(minutes), 60.0 * 24 * 30))
+    series = bridge.recent_rr_intervals(repo.conn, minutes=minutes, max_rows=200000)
+    return {"n": len(series), "minutes": minutes, "rr": series}
 
 
 # ---------------------------------------------------------------- remote deep-dive (token-gated)
@@ -2328,3 +2350,50 @@ def efficacy_trials_view(repo=Depends(repo_dep), user: str = AuthDep):
         "n_ineligible": n_ineligible,
         "analysis": analysis,
     }
+
+
+# n-of-1 THERMAL DOSE-RESPONSE trial (sleepctl.ml.thermal_trial): randomizes tonight's maintenance
+# temperature OFFSET across a comfort-clamped ladder so the user's PERSONAL response curve can be
+# measured (primary outcome: wake events -- their #1 complaint) rather than shipping population
+# defaults. Opt-in: it changes what the bed does overnight, so it is disabled until explicitly
+# enabled. Read-only surface; assignment lives in the engine + daemon wiring.
+@app.get("/thermal/dose-response")
+def thermal_dose_response_view(repo=Depends(repo_dep), user: str = AuthDep):
+    """Personal thermal dose-response: per-offset arm counts, the mean wake-events difference vs
+    the 0.0 control arm with a confidence interval, a monotonic-trend readout, and an explicit
+    ``confident`` flag so a 3-night difference is never presented as an answer."""
+    from sleepctl.config import AppConfig
+    from sleepctl.ml.thermal_trial import analyze_dose_response
+
+    cfg = AppConfig.default()
+    tc = cfg.thermal_trial
+    rows = repo.thermal_trial_rows(resolved_only=True)
+    analysis = analyze_dose_response(rows, cfg=tc)
+    all_rows = repo.thermal_trial_rows(resolved_only=False)
+    n_eligible = sum(1 for r in all_rows if r.get("eligible"))
+    return {
+        "config": {
+            "enabled": tc.enabled,
+            "offset_ladder_f": tc.offset_ladder_f,
+            "control_offset_f": tc.control_offset_f,
+            "comfort_band_f": tc.comfort_band_f,
+            "experimental_fraction": tc.experimental_fraction,
+            "min_nights_before_verdict": tc.min_nights_before_verdict,
+        },
+        "n_nights_planned": len(all_rows),
+        "n_eligible": n_eligible,
+        "n_ineligible": len(all_rows) - n_eligible,
+        "n_resolved": len(rows),
+        "analysis": analysis,
+    }
+
+
+# Advisory CBT-I sleep-window guidance (sleepctl.cbti). PURELY ADVISORY -- it never changes
+# controller behaviour, never forces a schedule, and refuses to recommend restriction before
+# high-stakes (on-call) nights, since daytime sleepiness in an anaesthesia trainee is a real
+# safety issue rather than an inconvenience.
+@app.get("/cbti/advice")
+def cbti_advice_view(repo=Depends(repo_dep), user: str = AuthDep):
+    """Sleep-window recommendation (compress/expand/hold) derived from recent sleep efficiency,
+    with its plain-language rationale, confidence, and any safety notes."""
+    return services.cbti_advice(repo)

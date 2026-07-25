@@ -39,7 +39,23 @@ function Install-Pkg($id) {
 Install-Pkg "Git.Git"
 Install-Pkg "Python.Python.3.11"
 Install-Pkg "OpenJS.NodeJS.LTS"
-Install-Pkg "tailscale.tailscale"
+Install-Pkg "Tailscale.Tailscale"
+
+# Resilience: if winget's package ID/index ever misses Tailscale again (happened once -- the
+# exact-match `-e` flag is case-sensitive and a stale/renamed ID silently "succeeds" with no
+# package found), fall straight back to Tailscale's own direct-download installer so the
+# bootstrap doesn't get stuck on a manual step.
+if (-not (Test-Path "C:\Program Files\Tailscale\tailscale.exe")) {
+    Write-Host "==> Tailscale not found after winget install -- falling back to direct download..." -ForegroundColor Yellow
+    try {
+        $tsSetup = Join-Path $env:TEMP "tailscale-setup.exe"
+        Invoke-WebRequest -Uri "https://pkgs.tailscale.com/stable/tailscale-setup-latest.exe" -OutFile $tsSetup
+        Start-Process -FilePath $tsSetup -ArgumentList "/quiet" -Wait
+    } catch {
+        Write-Host "    Direct Tailscale download also failed: $_" -ForegroundColor Red
+        Write-Host "    Continuing setup -- install Tailscale manually later, then run 'tailscale up' + 'tailscale funnel --bg 3000'." -ForegroundColor Yellow
+    }
+}
 
 # --- 2. refresh PATH in this session so the new tools are usable now ---------
 $env:Path = [Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
@@ -101,15 +117,21 @@ Write-Host "==> Enabling always-on (no AC sleep + auto-start watchdog)..." -Fore
 powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root "scripts\windows-always-on.ps1")
 
 # --- 8. Tailscale funnel so the iPhone can reach it from anywhere ------------
+# Resolve the exe directly rather than relying on a bare `tailscale` command -- the installer
+# doesn't always land on PATH in the SAME session it was installed in (bit us once), even after
+# refreshing $env:Path from the registry.
 Write-Host ""
 Write-Host "==> Tailscale (remote access). A browser will open to log in..." -ForegroundColor Cyan
+$tsExe = (Get-Command tailscale -ErrorAction SilentlyContinue).Source
+if (-not $tsExe -and (Test-Path "C:\Program Files\Tailscale\tailscale.exe")) { $tsExe = "C:\Program Files\Tailscale\tailscale.exe" }
 try {
-    tailscale up 2>&1 | Out-Host
+    if (-not $tsExe) { throw "tailscale.exe not found on PATH or at C:\Program Files\Tailscale\" }
+    & $tsExe up 2>&1 | Out-Host
     # Expose the dashboard (web on :3000, which proxies /api) over the public funnel.
-    tailscale funnel --bg 3000 2>&1 | Out-Host
+    & $tsExe funnel --bg 3000 2>&1 | Out-Host
     Start-Sleep -Seconds 3
     $dns = $null
-    try { $dns = (tailscale status --json | ConvertFrom-Json).Self.DNSName.TrimEnd(".") } catch {}
+    try { $dns = (& $tsExe status --json | ConvertFrom-Json).Self.DNSName.TrimEnd(".") } catch {}
     if ($dns) {
         $url = "https://$dns"
         # point CORS at the real funnel host so the PWA's requests aren't rejected

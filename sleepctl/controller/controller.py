@@ -113,6 +113,7 @@ class SleepController:
         self.last_arousal = None          # last ArousalAssessment
         self._stage_estimated = False     # was frame.stage derived from vitals this tick (no Pod stage)
         self._stage_source = "sensor"     # "sensor" | "model" | "heuristic" (which supplied the stage)
+        self.last_cycle_state = {}        # ultradian trajectory estimate (see wake_orch.cycle_state)
         self.last_wake_risk = None        # last WakeRisk
         self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
         self.last_precursor_profile = None  # learned personalized awakening-precursor trajectory
@@ -330,6 +331,13 @@ class SleepController:
         # --- accrue the realized architecture (drives in-night steering) -------
         if self._sleep_onset_time is not None and frame.presence is not False:
             self._accrue_architecture(now, frame.stage)
+            # Feed the ultradian cycle predictor ALL night, not just inside WAKE_WINDOW (where
+            # wake_orch.evaluate runs). It learns this night's deep-bout length from observed stage
+            # transitions and its confidence grows with them, so observing only during the wake
+            # window left it with an empty history, a generic bout estimate and pinned-low
+            # confidence -- i.e. an uninformed trajectory prediction exactly when it matters.
+            self.wake_orch.observe_stage(now, frame.stage)
+        self.last_cycle_state = self.wake_orch.cycle_state(now, frame.stage)
 
         # --- pick thermal intent per state -------------------------------------
         self.should_wake = False
@@ -495,6 +503,23 @@ class SleepController:
             if self.sm.state in (ControllerState.IDLE, ControllerState.CALIBRATION):
                 self.sm.state = ControllerState.INDUCTION
                 self.sm.reason = "induction forced on user request (help me fall asleep)"
+
+    @property
+    def sleep_onset_time(self) -> Optional[datetime]:
+        """The measured, confirmed sleep-onset timestamp for the current bed session (None until
+        onset is confirmed by ``SleepOnsetDetector``). This is what on-demand nap/induce sessions
+        must anchor their dosing to — NOT the moment the user pressed the button — since sleep
+        inertia is governed by time actually ASLEEP, not time in bed (see ``sleepctl.controller.
+        nap``)."""
+        return self._sleep_onset_time
+
+    def update_nap_keep_light(self, keep_light: bool) -> None:
+        """Adjust the active session's keep-light policy WITHOUT re-forcing the onset cascade
+        (unlike ``set_session``). Used when a nap is RE-PLANNED after onset is already confirmed
+        (see ``sleepctl.controller.nap.replan_on_onset``) — onset has already happened, so
+        restarting the induction cascade here would be wrong; only whether maintenance keeps the
+        bed light (avoids driving deep cooling) needs to change."""
+        self.session_keep_light = bool(keep_light)
 
     def preemption_summary(self) -> dict:
         """Live predictive-pre-emption state for the dashboard: is the controller actively
@@ -878,6 +903,9 @@ class SleepController:
             #   "model"     => the learned wearable stager (HR -> stage; PhysioNet-trained)
             #   "heuristic" => the interpretable HR/HRV/movement fallback
             "stage_source": self._stage_source if self._stage_estimated else "sensor",
+            # Ultradian trajectory: in_light / minutes_to_next_light / typical_deep_bout_min /
+            # confidence, accumulated across the whole night (see wake_orch.observe_stage).
+            "cycle": self.last_cycle_state or None,
             "heart_rate": frame.heart_rate,
             "hrv": frame.hrv,
             "respiratory_rate": frame.respiratory_rate,

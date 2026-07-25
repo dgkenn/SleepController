@@ -107,7 +107,12 @@ the logged nudge with the night summary's measured `sleep_onset_latency_min`.
   separate per-mode models). Per-mode baselines are a sensible future step; today the per-mode
   segmentation lives in the three thermal phase-learners where it matters most.
 - **Gym / shift / bedtime guidance remain advisory** — their decisions aren't yet scored against
-  realized outcomes.
+  realized outcomes. The same is true of the newer **CBT-I sleep-window advisor**
+  (`docs/CBTI.md`) — it computes a recommendation and explains it, but never closes a loop against
+  outcomes and never touches control, by design.
+- **Nap dosing is not yet onset-anchored** — see `docs/NAPS_AND_INDUCTION.md` for the shipped
+  nap-strategy selection (POWER/CYCLE/TRAP) and the planned (not yet implemented) design to anchor a
+  nap's duration to *measured* sleep onset rather than button-press time.
 
 ## Files
 
@@ -124,3 +129,6 @@ the logged nudge with the night summary's measured `sleep_onset_latency_min`.
   `dashboard/daemon/{run,live}_daemon.py` (apply all learners nightly) · `dashboard/api/app/db.py`
   (`wake_log` columns + migration) · `services.py` (`learning_phases`) · `main.py` (`/learning/phases`).
 - `dashboard/web/components/LearningPhasesCard.tsx` + `lib/api.ts` + `app/learning/page.tsx`.
+- Sibling n-of-1 instrument (separate from the nightly setpoint learner above, disabled by default):
+  `docs/THERMAL_DOSE_RESPONSE.md` (`sleepctl/ml/thermal_trial.py`) — a randomized, block-balanced
+  trial of the maintenance-temperature offset itself, rather than a learned adjustment to it.

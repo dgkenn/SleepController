@@ -51,41 +51,21 @@ supplies *staging + trajectory*, not the final say on wake. Retrain any time wit
 `python scripts/fetch_sleep_accel.py` then `python -m sleepctl.ml.sleep_staging.train`.
 Tunable via `use_learned_stager` / `estimate_stage_from_vitals` in config.
 
-## Easiest: one command
+## One-time setup
 
-1. **Charge & wear.** Put the Verity Sense on your upper forearm/bicep, single-press the button so
-   it enters **heart-rate broadcast mode** (blue LED). Battery is ~20 h in this mode.
-2. **Run the setup script** from the SleepController folder:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File scripts\verity-setup.ps1
-   ```
-   It installs the BLE library, scans to confirm your sensor is visible, sets `SLEEPCTL_VERITY=1`,
-   and restarts the watchdog so the forwarder launches. That's it — within a minute or two the
-   dashboard's **Cardiac Sensor (Verity)** card shows a live HR, and HR/HRV start steering the
-   controller (fused with the phone's movement).
-
-Everything below is the manual equivalent / reference if you'd rather do it by hand.
-
-## Manual setup
-
-1. **Pair to the PC.** Make the sensor available to the OS Bluetooth stack (Settings → Bluetooth →
-   Add device), or just let the forwarder auto-discover it.
-2. **Install the BLE library** into the same venv the daemon uses:
+1. **Charge & wear.** Put the Verity Sense on your upper forearm/bicep. Single-press the button so
+   it enters **heart-rate broadcast mode** (the LED indicates the Bluetooth/HR mode). Battery is
+   ~20 h in this mode, so charge it during the day.
+2. **Pair to the PC.** On the always-on Windows box, make the sensor available to the OS Bluetooth
+   stack (Settings → Bluetooth → Add device), or just let the forwarder auto-discover it.
+3. **Install the BLE library** (one-time), into the same venv the daemon uses:
    ```powershell
    .\.venv\Scripts\python.exe -m pip install bleak
    ```
-   (The watchdog also auto-installs this the first time `SLEEPCTL_VERITY=1` is set, so you can skip
-   it.)
-3. **Token.** The forwarder authenticates exactly like the phone: it reads `BCG_INGEST_TOKEN`
+4. **Token.** The forwarder authenticates exactly like the phone: it reads `BCG_INGEST_TOKEN`
    from `deploy\.env` (already set for the iPhone). Nothing else to configure.
 
 ## Run the forwarder
-
-**Preferred — let the watchdog run it.** Set `SLEEPCTL_VERITY=1` in `deploy\.env` and restart the
-watchdog (or wait for its next auto-update). The watchdog then launches `verity_forwarder.py`,
-keeps it alive (relaunches if it dies), and — deliberately — treats it as *non-critical*, so a
-missing sensor or Bluetooth hiccup can never make the box report unhealthy. Its log is
-`.run\verity.log`.
 
 By hand (foreground, to confirm it works):
 ```powershell

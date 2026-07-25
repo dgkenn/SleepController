@@ -125,6 +125,35 @@ CREATE TABLE IF NOT EXISTS sensor_samples (
     n_samples INTEGER          -- raw accel readings ingested in this batch
 );
 CREATE INDEX IF NOT EXISTS idx_sensor_samples_ts ON sensor_samples(ts);
+-- Append-only RAW beat-to-beat RR intervals from the dedicated cardiac sensor (Polar Verity
+-- Sense / H10). ``sensor_samples`` keeps only a single derived HRV scalar (RMSSD) per batch, but
+-- EVERY other HRV metric -- SDNN, pNN50, Poincare SD1/SD2, LF/HF -- is computable only from the
+-- raw intervals, and they cannot be recovered after the fact. Since the whole point is a model
+-- tailored to THIS user, these nights are irreplaceable training data, so we persist the raw
+-- series: one row per ingest batch, intervals as a compact JSON array of milliseconds.
+CREATE TABLE IF NOT EXISTS rr_intervals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,          -- ingest time (UTC ISO) of this batch
+    rr_ms TEXT NOT NULL,       -- JSON array of RR intervals, milliseconds
+    n INTEGER,                 -- count in the batch
+    source TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rr_intervals_ts ON rr_intervals(ts);
+-- Append-only ACTIGRAPHY COUNTS from the wearable's OWN triaxial accelerometer (the Polar Verity
+-- Sense streams ACC over Polar's PMD BLE service). Columns deliberately mirror the reduction in
+-- scripts/reduce_motion_activity.py -- the same PIM/ZCM/MAD/std/peak definitions used to build the
+-- training set -- so live counts are directly comparable to training counts rather than merely
+-- similar. This is a DIFFERENT signal from sensor_samples.movement, which is the iPhone's
+-- unitless 0..1 index; keeping them apart avoids silently mixing incompatible scales.
+CREATE TABLE IF NOT EXISTS actigraphy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    pim REAL, zcm INTEGER, mad REAL, std REAL, pmax REAL,
+    n INTEGER,                 -- raw accel samples in the batch
+    fs REAL,                   -- accelerometer sample rate (Hz)
+    source TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_actigraphy_ts ON actigraphy(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
@@ -138,6 +167,12 @@ _MIGRATIONS = [
     ("wake_log", "night_type", "TEXT"),
     ("wake_log", "onset_cold_settle_f", "REAL"),
     ("wake_log", "warm_pulse_on", "INTEGER"),
+    # Data-quality guards for the Polar Verity Sense feed (see app/services.py's
+    # assess_cardiac_quality): 0/1/NULL flags + a short human-readable reason, persisted per
+    # sample so the excluded-sample audit trail survives restarts and is queryable.
+    ("sensor_samples", "hr_frozen", "INTEGER"),
+    ("sensor_samples", "not_worn", "INTEGER"),
+    ("sensor_samples", "quality_reason", "TEXT"),
 ]
 
 
