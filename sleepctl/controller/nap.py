@@ -11,10 +11,9 @@ Naps live or die by duration because of **sleep inertia**:
 So we pick one of three strategies from the available SLEEP window (not the time-in-bed window):
   - POWER  (<= ~25 min): stay light (avoid SWS), hard-cap the wake -> minimal grogginess.
   - CYCLE  (~60-110 min): allow one full NREM-REM cycle, smart-wake in light sleep near ~90 min.
-  - TRAP   (~25-60 min): the danger zone (wakes you out of deep sleep). Capped SHORT by default
-            (stay light, wake at the power-nap cap) -- see ``replan_on_onset`` for the one case
-            (a wake-by request with deadline slack) where extending to a full cycle instead is
-            possible and preferred.
+  - TRAP   (~25-60 min): the danger zone (wakes you out of deep sleep). Always capped SHORT (stay
+            light, wake at the power-nap cap) -- see ``replan_on_onset`` and the TRAP-ZONE POLICY
+            note below for why capping short is the only policy consistent with a hard deadline.
 
 Naps starting late in the day erode night sleep, so we flag that. After a longer nap we advise a
 short inertia buffer before anything safety-critical.
@@ -44,15 +43,18 @@ duration request the estimate is already correct by construction, since the targ
 requested duration itself). ``replan_on_onset()`` is the second pass, run once onset is confirmed,
 that corrects this for a wake-by request and confirms/finalizes it for a duration request.
 
-TRAP-ZONE POLICY on replan (documented, not implicit): a realized sleep window landing in the
-~25-60 min inertia trap is capped SHORT (wake before slow-wave sleep sets in) UNLESS the deadline
-has room to extend all the way to a full ~90-min cycle instead, in which case we extend. For a
-genuinely HARD wake-by deadline this is mathematically one-directional: ``nap_strategy`` always
-returns ``target_sleep_min <= window_min``, so a trap-zone ``available_sleep_min`` (< 60 min) can
-never leave room to reach a 90-min cycle (that needs ``available_sleep_min >= 90``) without
-violating the deadline. So a wake-by trap always resolves to capping short in practice; the
-"extend" branch is implemented and tested for a caller with a softer/movable deadline, and is
-still the documented, principled choice over silently proceeding into the trap.
+TRAP-ZONE POLICY on replan (documented, not implicit -- see ``replan_on_onset``): a realized sleep
+window landing in the ~25-60 min inertia trap is capped SHORT (wake before slow-wave sleep sets
+in) rather than silently letting the nap ride out to the trap-zone deadline. We deliberately do
+NOT offer "extend to a full cycle instead" as a live alternative here, and that is itself a
+reasoned choice, not an oversight: ``nap_strategy`` guarantees ``target_sleep_min <= window_min``
+for every window, and the trap zone is *defined* as ``window_min`` below the cycle threshold
+(<< the ~90-min cycle target). So a trap-zone ``available_sleep_min`` (< 60 min, by definition)
+can never leave enough room to reach a ~90-min cycle without exceeding the available window --
+i.e. without exceeding the HARD wake-by deadline. Extending would only ever be sound for a caller
+with a softer/movable deadline than the "never exceeded" wake-by contract this module implements;
+capping short is therefore not a preference among two live options, it is the only policy
+consistent with the deadline guarantee.
 """
 
 from __future__ import annotations
@@ -89,7 +91,7 @@ class NapPlan:
     requested_window_min: int = 0        # what the user actually asked for, never overwritten
     realized_sleep_min: Optional[int] = None   # set once onset is known (see replan_on_onset)
     onset_grace_min: int = 0             # fallback grace (duration requests only; else 0)
-    trap_resolution: Optional[str] = None      # "capped_short" | "extended_cycle" | None
+    trap_resolution: Optional[str] = None      # "capped_short" | None (see module docstring)
     replanned: bool = False              # has this plan been through replan_on_onset?
 
     def to_dict(self) -> dict:
@@ -158,8 +160,8 @@ def nap_strategy(window_min: int, now_hour: Optional[int] = None, cfg=None, *,
             request_kind=request_kind, requested_window_min=requested_window_min,
             onset_grace_min=onset_grace,
         )
-    # 25-60 min: the inertia trap. Policy: cap SHORT (see module docstring for when
-    # ``replan_on_onset`` instead extends toward a full cycle).
+    # 25-60 min: the inertia trap. Policy: always cap SHORT (see module docstring's TRAP-ZONE
+    # POLICY note for why this is the only policy consistent with a hard deadline).
     return NapPlan(
         strategy=NapStrategy.TRAP, window_min=window_min, target_sleep_min=power_max,
         keep_light=True, late_day=late_day, inertia_buffer_min=buffer_min,
@@ -196,11 +198,10 @@ def replan_on_onset(plan: NapPlan, onset: datetime, deadline: datetime, cfg=None
         contract on sleep, not on wall-clock window) and drops the now-moot onset grace.
       - WAKE_BY request: the fixed, hard, never-exceeded wake-by time. ``available_sleep_min =
         deadline - onset`` is the true sleep opportunity, and the strategy is re-run against it.
-        See the module docstring for the trap-zone cap-short-vs-extend policy.
+        A realized window landing in the trap zone is capped SHORT — see the module docstring
+        for why that is the ONLY policy consistent with a hard, never-exceeded deadline (there is
+        never room to extend to a full cycle without violating it).
     """
-    t = getattr(cfg, "tunables", None)
-    cycle_target = getattr(t, "nap_cycle_target_min", 90)
-
     if plan.request_kind == NapRequestKind.DURATION.value:
         return replace(plan, realized_sleep_min=plan.target_sleep_min, onset_grace_min=0,
                        replanned=True)
@@ -212,24 +213,14 @@ def replan_on_onset(plan: NapPlan, onset: datetime, deadline: datetime, cfg=None
         requested_window_min=plan.requested_window_min,
     )
     if replanned.strategy is NapStrategy.TRAP:
-        can_extend_to_cycle = onset + timedelta(minutes=cycle_target) <= deadline
-        if can_extend_to_cycle:
-            replanned = replace(
-                replanned, strategy=NapStrategy.CYCLE, target_sleep_min=cycle_target,
-                keep_light=False, trap_resolution="extended_cycle",
-                headline=f"Extending to a full cycle (~{cycle_target} min)",
-                advice=(f"~{available_min} min of real sleep would have woken you out of deep "
-                        f"sleep (the grogginess trap). Your wake-by time has room, so I'm "
-                        f"extending to a full ~{cycle_target}-min cycle and smart-waking you in "
-                        "light sleep near the end instead."),
-            )
-        else:
-            replanned = replace(
-                replanned, trap_resolution="capped_short",
-                headline=f"Capping short at ~{replanned.target_sleep_min} min",
-                advice=(f"~{available_min} min of real sleep would land you in the grogginess "
-                        f"trap (out of deep sleep). Keeping the bed light and capping to "
-                        f"~{replanned.target_sleep_min} min instead of riding it out to your "
-                        "wake-by time."),
-            )
+        # See the module docstring: for a HARD, never-exceeded wake-by deadline, capping short is
+        # the only policy that cannot violate the deadline -- there is no slack to extend into.
+        replanned = replace(
+            replanned, trap_resolution="capped_short",
+            headline=f"Capping short at ~{replanned.target_sleep_min} min",
+            advice=(f"~{available_min} min of real sleep would land you in the grogginess trap "
+                    f"(out of deep sleep). Keeping the bed light and capping to "
+                    f"~{replanned.target_sleep_min} min instead of riding it out to your "
+                    "wake-by time."),
+        )
     return replace(replanned, realized_sleep_min=replanned.target_sleep_min, replanned=True)

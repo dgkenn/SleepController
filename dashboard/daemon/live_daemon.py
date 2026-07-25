@@ -262,8 +262,10 @@ class LiveDashboardDaemon:
             self._nap_replanned = True
             planned_wake = onset + timedelta(minutes=new_plan.target_sleep_min)
             if new_plan.request_kind == NapRequestKind.WAKE_BY.value and self.nap_hard_deadline:
-                # The hard wake-by wall is NEVER exceeded; capping short may bring the effective
-                # planned wake earlier than it, extending never brings it later (see nap.py).
+                # The hard wake-by wall is NEVER exceeded; a trap-zone "cap short" resolution
+                # (see nap.py) brings the effective planned wake EARLIER than the wall the user
+                # asked for -- min() enforces that (planned_wake is always <= the wall by
+                # construction of replan_on_onset, so this is a no-op outside the trap case).
                 self.nap_deadline = min(self.nap_hard_deadline, planned_wake)
             else:
                 self.nap_deadline = planned_wake
