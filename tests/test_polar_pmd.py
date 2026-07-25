@@ -353,17 +353,25 @@ def test_module_has_no_ble_dependency():
 
 
 class _FakeBleClient:
-    """Minimal stand-in for bleak's BleakClient: echoes control responses, records writes."""
+    """Minimal stand-in for bleak's BleakClient: echoes control responses, records writes.
 
-    def __init__(self, error_code: int = 0):
+    ``errors`` maps a measurement type to the error code its START should return; ``no_hr_service``
+    makes subscribing to the generic 0x180D characteristic fail the way a non-HR device would.
+    """
+
+    def __init__(self, errors: dict | None = None, no_hr_service: bool = False):
         self.services = [_Svc(pmd.PMD_SERVICE_UUID)]
         self.is_connected = True
         self.notify: dict = {}
         self.written: list[bytes] = []
-        self._error_code = error_code
+        self._errors = errors or {}
+        self._no_hr_service = no_hr_service
 
     async def start_notify(self, uuid, cb):
-        self.notify[str(uuid).lower()] = cb
+        uuid = str(uuid).lower()
+        if self._no_hr_service and uuid == HR_UUID:
+            raise RuntimeError("characteristic 00002a37 not found")
+        self.notify[uuid] = cb
 
     async def stop_notify(self, uuid):
         self.notify.pop(str(uuid).lower(), None)
@@ -373,11 +381,26 @@ class _FakeBleClient:
         self.written.append(data)
         cb = self.notify.get(pmd.PMD_CONTROL_UUID)
         if cb is not None:
-            err = self._error_code if data[0] == pmd.OP_START_MEASUREMENT else 0
+            err = self._errors.get(data[1], 0) if data[0] == pmd.OP_START_MEASUREMENT else 0
             cb(0, bytes([0xF0, data[0], data[1], err, 0x00]))
 
     def feed(self, frame: bytes):
         self.notify[pmd.PMD_DATA_UUID](0, frame)
+
+    def feed_hr(self, frame: bytes):
+        self.notify[HR_UUID](0, frame)
+
+
+HR_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
+
+
+def _hr_measurement(bpm: int, rr_ms: list[float] | None = None) -> bytes:
+    """Build a generic 0x2A37 Heart Rate Measurement notification (8-bit HR, RR in 1/1024 s)."""
+    flags = 0x10 if rr_ms else 0x00
+    out = bytearray([flags, bpm])
+    for rr in rr_ms or []:
+        out += int(round(rr * 1024.0 / 1000.0)).to_bytes(2, "little")
+    return bytes(out)
 
 
 class _Svc:
@@ -390,42 +413,60 @@ def _pmd_args(**over):
 
     ns = argparse.Namespace(url="http://localhost:8000/hr/ingest", source="verity",
                             batch_seconds=0.01, retry_seconds=0.01, mode="pmd",
-                            acc_rate=52, acc_range=8, acc_resolution=16, control_timeout=1.0)
+                            acc_rate=52, acc_range=8, acc_resolution=16, control_timeout=1.0,
+                            pmd_grace_seconds=pmd.PMD_STARTUP_GRACE_S,
+                            scan=False, scan_seconds=1.0)
     for k, v in over.items():
         setattr(ns, k, v)
     return ns
 
 
-def test_pmd_session_streams_acc_and_ppi_into_the_post_body(monkeypatch):
+def _run_pmd_session(client, args=None, feed=(), until_posted=True, timeout=10):
+    """Run _pmd_session against the fake client, injecting frames once it has subscribed."""
     import asyncio
     import importlib
 
     fwd = importlib.import_module("verity_forwarder")
+    args = args or _pmd_args()
     posted: list[dict] = []
-    monkeypatch.setattr(fwd, "_post", lambda url, payload, timeout=5.0: posted.append(payload))
-
-    client = _FakeBleClient()
+    original_post = fwd._post
+    fwd._post = lambda url, payload, t=5.0: posted.append(payload)
 
     async def _drive():
-        for _ in range(200):  # wait for the data subscription, then inject frames
+        for _ in range(400):
             if pmd.PMD_DATA_UUID in client.notify:
                 break
             await asyncio.sleep(0.005)
-        client.feed(_acc_uncompressed([(10 * i, -5 * i, 1000) for i in range(10)]))
-        client.feed(_ppi([(58, 1034, 2, 0b110), (58, 999, 4, 0b111)]))  # 2nd sample blocked
-        for _ in range(200):
-            if posted:
+        await asyncio.sleep(0.01)  # let the START handshake finish
+        for kind, frame in feed:
+            (client.feed_hr if kind == "hr" else client.feed)(frame)
+        for _ in range(400):
+            if posted or not until_posted:
                 break
             await asyncio.sleep(0.005)
+        if not until_posted:
+            await asyncio.sleep(0.05)
         client.is_connected = False
 
     async def _go():
         driver = asyncio.ensure_future(_drive())
-        ok = await fwd._pmd_session(client, _pmd_args())
+        ok = await fwd._pmd_session(client, args)
         await driver
         return ok
 
-    ok = asyncio.run(asyncio.wait_for(_go(), timeout=10))
+    try:
+        ok = asyncio.run(asyncio.wait_for(_go(), timeout=timeout))
+    finally:
+        fwd._post = original_post
+    return ok, posted
+
+
+def test_pmd_session_streams_acc_and_ppi_into_the_post_body():
+    client = _FakeBleClient()
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", _acc_uncompressed([(10 * i, -5 * i, 1000) for i in range(10)])),
+        ("data", _ppi([(58, 1034, 2, 0b110), (58, 999, 4, 0b111)])),  # 2nd sample blocked
+    ])
     assert ok is True
 
     starts = [w.hex() for w in client.written if w[0] == pmd.OP_START_MEASUREMENT]
@@ -444,13 +485,50 @@ def test_pmd_session_streams_acc_and_ppi_into_the_post_body(monkeypatch):
     assert body["acc"]["pim"] > 0
 
 
-def test_pmd_session_returns_false_when_a_stream_is_refused():
-    """A non-zero control-point error must make auto mode fall back to the HR service."""
+def test_pmd_degrades_to_ppi_only_when_acc_is_refused():
+    """ACC refused must NOT cost us PPI -- the cardiac stream keeps running."""
+    client = _FakeBleClient(errors={pmd.MEAS_ACC: 3})  # 3 = not supported
+    ok, posted = _run_pmd_session(client, feed=[("data", _ppi([(57, 1050, 2, 0b110)]))])
+    assert ok is True
+    assert posted[0]["rr"] == [1050.0]
+    assert posted[0]["hr"] == 57.0
+    assert "acc" not in posted[0]
+    stops = {w.hex() for w in client.written if w[0] == pmd.OP_STOP_MEASUREMENT}
+    assert stops == {"0303"}          # only the stream we actually started is stopped
+    assert HR_UUID not in client.notify  # PPI is live, so no generic-HR fallback needed
+
+
+def test_pmd_degrades_to_acc_plus_generic_hr_when_ppi_is_refused():
+    """PPI refused -> keep ACC and take heart rate from the generic 0x180D service."""
+    client = _FakeBleClient(errors={pmd.MEAS_PPI: 3})
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", _acc_uncompressed([(0, 0, 1000 + 5 * i) for i in range(8)])),
+        ("hr", _hr_measurement(62, [900.0])),
+    ])
+    assert ok is True
+    assert posted[0]["hr"] == 62.0
+    assert posted[0]["rr"] == pytest.approx([900.0], abs=1.0)
+    assert posted[0]["acc"]["n"] == 8
+    stops = {w.hex() for w in client.written if w[0] == pmd.OP_STOP_MEASUREMENT}
+    assert stops == {"0302"}
+
+
+def test_pmd_acc_only_when_ppi_refused_and_no_hr_service():
+    client = _FakeBleClient(errors={pmd.MEAS_PPI: 3}, no_hr_service=True)
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", _acc_uncompressed([(0, 0, 1000 + 5 * i) for i in range(8)])),
+    ])
+    assert ok is True
+    assert posted[0]["acc"]["n"] == 8
+    assert "hr" not in posted[0] and "rr" not in posted[0]
+
+
+def test_pmd_session_returns_false_only_when_both_streams_are_refused():
     import asyncio
     import importlib
 
     fwd = importlib.import_module("verity_forwarder")
-    client = _FakeBleClient(error_code=3)  # "not supported"
+    client = _FakeBleClient(errors={pmd.MEAS_ACC: 3, pmd.MEAS_PPI: 3})
     ok = asyncio.run(asyncio.wait_for(fwd._pmd_session(client, _pmd_args()), timeout=10))
     assert ok is False
     assert client.notify == {}  # subscriptions cleaned up
@@ -467,38 +545,201 @@ def test_pmd_session_returns_false_without_the_pmd_service():
     assert ok is False
 
 
-def test_pmd_data_callback_survives_malformed_frames(monkeypatch):
+def test_pmd_data_callback_survives_malformed_frames():
     """A garbage notification must be logged and dropped, never break the stream."""
-    import asyncio
+    client = _FakeBleClient()
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", b"\x02\xff"),                                  # truncated ACC frame
+        ("data", _frame(pmd.MEAS_PPI, 1, 0x00, b"\x01\x02")),   # bad PPI length
+        ("data", _ppi([(61, 980, 1, 0b110)])),                  # good frame still lands
+    ])
+    assert ok is True
+    assert posted[0]["rr"] == [980.0]
+
+
+# --------------------------------------------------------------------------------------
+# PPI warm-up / SDK-mode detection
+# --------------------------------------------------------------------------------------
+def test_warmup_state_respects_the_documented_ppi_warm_up():
+    # Polar: ~25 s to the first PPI batch, HR only every ~5 s -> silence is not failure.
+    assert pmd.PPI_FIRST_SAMPLE_S == 25.0
+    assert pmd.PPI_HR_UPDATE_S == 5.0
+    assert pmd.PMD_STARTUP_GRACE_S >= 40.0
+    assert pmd.warmup_state(0.0, 0) == "warming_up"
+    assert pmd.warmup_state(24.0, 0) == "warming_up"
+    assert pmd.warmup_state(39.9, 0) == "warming_up"
+    assert pmd.warmup_state(41.0, 0) == "stalled"
+    assert pmd.warmup_state(59.9, 0) == "stalled"
+    assert pmd.warmup_state(60.0, 0) == "sdk_mode_suspect"
+    assert pmd.warmup_state(120.0, 0) == "sdk_mode_suspect"
+    # Any frame at all means the stream is alive, whatever the clock says.
+    for elapsed in (0.0, 30.0, 300.0):
+        assert pmd.warmup_state(elapsed, 1) == "streaming"
+    # A caller cannot shrink the grace below the documented warm-up.
+    assert pmd.warmup_state(10.0, 0, grace_s=0.0) == "warming_up"
+
+
+def test_sdk_mode_hint_is_actionable():
+    msg = pmd.SDK_MODE_HINT.format(seconds=60)
+    assert "60s" in msg and "SDK MODE" in msg
+    assert "power-cycle" in msg.lower()
+    assert pmd.SDK_MODE_REMEDY in msg
+
+
+def test_no_ble_command_can_enable_sdk_mode():
+    """We must never enable SDK mode: no opcode for it exists, and none may be inferred."""
+    src = open(os.path.join(_SCRIPTS, "polar_pmd.py")).read().lower()
+    fwd_src = open(os.path.join(_SCRIPTS, "verity_forwarder.py")).read().lower()
+    for name in dir(pmd):
+        if name.startswith("OP_") or name.startswith("op_"):
+            assert "sdk" not in name.lower()
+    # Every control-point byte string we can emit is a get-settings/start/stop of a known stream.
+    for meas in (pmd.MEAS_ECG, pmd.MEAS_PPG, pmd.MEAS_ACC, pmd.MEAS_PPI):
+        assert pmd.build_start_command(meas, None)[0] == pmd.OP_START_MEASUREMENT
+        assert pmd.build_stop_command(meas)[0] == pmd.OP_STOP_MEASUREMENT
+    # Only these three command builders exist, and none of them is SDK-mode related.
+    builders = {n for n in dir(pmd) if n.startswith("build_")}
+    assert builders == {"build_start_command", "build_stop_command", "build_get_settings_command"}
+    # SDK mode is mentioned only as documentation/diagnostics, never as a command.
+    assert "sdk" in src and "sdk" in fwd_src
+    assert "start_sdk" not in src and "stop_sdk" not in src and "sdk_mode_command" not in src
+
+
+def test_quiet_ppi_during_the_grace_period_produces_no_warning_and_no_reconnect(monkeypatch):
+    """The ~25 s PPI warm-up must not be mistaken for a dead stream."""
     import importlib
 
     fwd = importlib.import_module("verity_forwarder")
-    posted: list[dict] = []
-    monkeypatch.setattr(fwd, "_post", lambda url, payload, timeout=5.0: posted.append(payload))
+    logs: list[str] = []
+    monkeypatch.setattr(fwd, "_log", logs.append)
+
     client = _FakeBleClient()
+    ok, posted = _run_pmd_session(client, feed=[], until_posted=False)
 
-    async def _drive():
-        for _ in range(200):
-            if pmd.PMD_DATA_UUID in client.notify:
-                break
-            await asyncio.sleep(0.005)
-        client.feed(b"\x02\xff")                                  # truncated ACC frame
-        client.feed(_frame(pmd.MEAS_PPI, 1, 0x00, b"\x01\x02"))   # bad PPI length
-        client.feed(_ppi([(61, 980, 1, 0b110)]))                  # good frame still lands
-        for _ in range(200):
-            if posted:
-                break
-            await asyncio.sleep(0.005)
-        client.is_connected = False
+    assert ok is True          # silence never aborts the session
+    assert posted == []        # and nothing is POSTed with no data
+    joined = " ".join(logs).lower()
+    assert "sdk mode" not in joined
+    assert "no ppi yet" not in joined
+    assert any("warm-up" in line.lower() for line in logs)  # just the informational notice
 
-    async def _go():
-        driver = asyncio.ensure_future(_drive())
-        ok = await fwd._pmd_session(client, _pmd_args())
-        await driver
-        return ok
 
-    assert asyncio.run(asyncio.wait_for(_go(), timeout=10)) is True
-    assert posted[0]["rr"] == [980.0]
+def test_stalled_ppi_surfaces_the_sdk_mode_hint(monkeypatch):
+    """Past the warm-up with no PPI, the log must name SDK mode and the power-cycle remedy."""
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    logs: list[str] = []
+    monkeypatch.setattr(fwd, "_log", logs.append)
+    # Simulate the clock having passed SDK_MODE_SUSPECT_S with no PPI frames.
+    monkeypatch.setattr(pmd, "warmup_state", lambda *a, **k: "sdk_mode_suspect")
+
+    client = _FakeBleClient()
+    ok, _posted = _run_pmd_session(client, feed=[], until_posted=False)
+    assert ok is True
+
+    hints = [ln for ln in logs if "SDK MODE" in ln]
+    assert len(hints) == 1  # said once, not spammed every batch
+    assert "power-cycle" in hints[0].lower()
+
+
+def test_refused_ppi_start_also_mentions_sdk_mode(monkeypatch):
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    logs: list[str] = []
+    monkeypatch.setattr(fwd, "_log", logs.append)
+    client = _FakeBleClient(errors={pmd.MEAS_PPI: 3})
+    _run_pmd_session(client, feed=[
+        ("data", _acc_uncompressed([(0, 0, 1000) for _ in range(8)])),
+    ])
+    assert any("SDK MODE" in ln for ln in logs)
+
+
+# --------------------------------------------------------------------------------------
+# --scan
+# --------------------------------------------------------------------------------------
+class _FakeDevice:
+    def __init__(self, address, name, uuids=()):
+        self.address = address
+        self.name = name
+        self.metadata = {"uuids": list(uuids)}
+
+
+def _install_fake_bleak(monkeypatch, devices, raise_exc=None):
+    import types
+
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0):
+            if raise_exc is not None:
+                raise raise_exc
+            return devices
+
+    fake = types.ModuleType("bleak")
+    fake.BleakScanner = _Scanner
+    fake.BleakClient = object
+    monkeypatch.setitem(sys.modules, "bleak", fake)
+    return fake
+
+
+def test_scan_lists_candidate_sensors_and_exits_zero(monkeypatch, capsys):
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    _install_fake_bleak(monkeypatch, [
+        _FakeDevice("AA:BB:CC:DD:EE:FF", "Polar Sense B1234567"),
+        _FakeDevice("11:22:33:44:55:66", "SomeWatch", uuids=["0000180d-0000-1000-8000-00805f9b34fb"]),
+        _FakeDevice("99:99:99:99:99:99", None),
+    ])
+    assert fwd.main(["--scan", "--scan-seconds", "0.1"]) == 0
+    out = capsys.readouterr().out
+    assert "AA:BB:CC:DD:EE:FF" in out and "Polar Sense B1234567" in out
+    assert "11:22:33:44:55:66" in out and "0x180D" in out
+    assert "--address" in out           # tells the user how to pin it
+    assert "SDK MODE" in out            # and how to fix the silent-failure case
+    assert "connecting" not in out.lower()  # --scan never connects or streams
+
+
+def test_scan_with_no_match_prints_the_hr_mode_hint_and_all_devices(monkeypatch, capsys):
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    _install_fake_bleak(monkeypatch, [_FakeDevice("00:00:00:00:00:01", "Fridge")])
+    assert fwd.main(["--scan"]) == 0
+    out = capsys.readouterr().out
+    assert "no Polar/heart-rate sensor found" in out
+    assert "single press" in out and "blue LED" in out
+    assert "00:00:00:00:00:01" in out and "Fridge" in out
+
+
+def test_scan_survives_a_missing_adapter_without_a_traceback(monkeypatch, capsys):
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    _install_fake_bleak(monkeypatch, [], raise_exc=RuntimeError("no Bluetooth adapter found"))
+    assert fwd.main(["--scan"]) == 0
+    out = capsys.readouterr().out
+    assert "scan failed" in out and "adapter" in out
+
+
+def test_scan_without_bleak_installed_degrades_cleanly(monkeypatch, capsys):
+    """scripts/verity-setup.ps1 runs --scan as a setup step: it must never hard-fail."""
+    import builtins
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    monkeypatch.delitem(sys.modules, "bleak", raising=False)
+    real_import = builtins.__import__
+
+    def _no_bleak(name, *a, **k):
+        if name == "bleak":
+            raise ImportError("No module named 'bleak'")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", _no_bleak)
+    assert fwd.main(["--scan"]) == 0
+    assert "pip install bleak" in capsys.readouterr().out
 
 
 def test_forwarder_cli_exposes_the_new_flags(capsys):

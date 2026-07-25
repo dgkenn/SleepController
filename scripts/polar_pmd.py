@@ -15,6 +15,16 @@ This module is deliberately I/O free: it only builds command bytes and parses fr
 fully unit-testable without hardware (see ``tests/test_polar_pmd.py``). ``verity_forwarder.py``
 owns all of the bleak/BLE plumbing.
 
+**SDK MODE: we never enable it, and this module intentionally defines no opcode for it.** Polar's
+docs are explicit that SDK mode disables every on-device algorithm -- "any computed data such as
+heart rate, PP intervals, RR intervals, etc. is not available anymore" -- in exchange for raw PPG
+and higher ACC rates we do not need. Our entire cardiac path is the device-computed PPI/HR, so SDK
+mode would silently destroy exactly the signal we came for. The one real hazard is a device left
+in SDK mode by *another* app: PPI then starts "successfully" and simply never delivers a sample.
+:func:`warmup_state` detects that symptom (no PPI well past the documented ~25 s warm-up) so the
+forwarder can print :data:`SDK_MODE_HINT` -- power-cycle the armband -- instead of looking like a
+generic connection fault.
+
 Frame layouts implemented here (see the module tests for worked examples):
 
   Control point START  : [0x02][meas_type] then per-setting TLVs [type][count:uint8][value:uint16 LE]
@@ -35,9 +45,10 @@ __all__ = [
     "CONTROL_RESPONSE_HEADER", "ERROR_NAMES", "PmdParseError",
     "build_start_command", "build_stop_command", "parse_control_response",
     "frame_measurement_type", "parse_acc_frame", "parse_ppi_frame",
-    "acc_magnitudes_g", "actigraphy_counts",
+    "acc_magnitudes_g", "actigraphy_counts", "warmup_state",
     "ZCM_THRESHOLD_G", "MIN_EPOCH_SAMPLES", "PPI_MIN_MS", "PPI_MAX_MS",
-    "DEFAULT_ACC_SETTINGS",
+    "DEFAULT_ACC_SETTINGS", "PPI_FIRST_SAMPLE_S", "PPI_HR_UPDATE_S", "PMD_STARTUP_GRACE_S",
+    "SDK_MODE_SUSPECT_S", "SDK_MODE_HINT", "SDK_MODE_REMEDY",
 ]
 
 # --------------------------------------------------------------------------------------
@@ -60,6 +71,14 @@ MEAS_ACC = 0x02
 MEAS_PPI = 0x03
 MEAS_GYRO = 0x05
 MEAS_MAG = 0x06
+
+# NOTE (deliberate omission): there is NO SDK-mode opcode here, and none may be added. Polar's SDK
+# mode shuts down the on-device algorithms -- HR, PP intervals and RR intervals all stop existing,
+# and PPI is documented as unavailable in SDK mode -- which is precisely the data this bridge
+# exists to collect. It also shuts down the sensors until each stream is explicitly requested, and
+# it survives until the device is powered off or explicitly told to stop. Higher raw PPG/ACC rates
+# are NOT worth losing PPI/HR: do not "helpfully" turn SDK mode on. We also refuse to guess its
+# control-point bytes -- an unverified write to the control point is not something we will ship.
 
 MEAS_NAMES = {
     MEAS_ECG: "ecg", MEAS_PPG: "ppg", MEAS_ACC: "acc",
@@ -127,6 +146,23 @@ MIN_EPOCH_SAMPLES = 5
 # Plausibility window for a pulse-to-pulse interval (240 bpm .. 24 bpm).
 PPI_MIN_MS = 250
 PPI_MAX_MS = 2500
+
+# PPI warm-up, per Polar's official Verity Sense documentation: with PPI enabled the heart rate
+# only updates every ~5 s and the FIRST PPI batch takes ~25 s to arrive. Silence during this
+# window is normal, NOT a failure -- callers must not reconnect or warn inside the grace period.
+PPI_FIRST_SAMPLE_S = 25.0
+PPI_HR_UPDATE_S = 5.0
+PMD_STARTUP_GRACE_S = 40.0
+
+# Well past the warm-up with still no PPI: the most likely cause is a device left in SDK MODE by
+# another app (SDK mode disables the HR/PPI algorithms, so the stream starts and stays empty).
+SDK_MODE_SUSPECT_S = 60.0
+SDK_MODE_REMEDY = (
+    "The Verity may be in SDK MODE, which disables the device's HR/PPI algorithms. Power-cycle "
+    "the armband (hold the button until it switches off, then back on) to exit SDK mode, then "
+    "restart this forwarder."
+)
+SDK_MODE_HINT = "No PPI data after {seconds:.0f}s. " + SDK_MODE_REMEDY
 
 
 class PmdParseError(ValueError):
@@ -424,6 +460,25 @@ def parse_ppi_frame(data: bytes | bytearray) -> tuple[int, list[dict]]:
             "ok": (not blocker) and PPI_MIN_MS <= ppi_ms <= PPI_MAX_MS,
         })
     return timestamp_ns, samples
+
+
+def warmup_state(elapsed_s: float, frames_seen: int,
+                 grace_s: float = PMD_STARTUP_GRACE_S,
+                 sdk_suspect_s: float = SDK_MODE_SUSPECT_S) -> str:
+    """Classify a quiet PMD stream: ``streaming`` / ``warming_up`` / ``stalled`` / ``sdk_mode_suspect``.
+
+    PPI legitimately produces nothing for ~25 s after START, so a stream that has delivered no
+    frames is only ``stalled`` once the grace period (>= that warm-up, with margin) has elapsed,
+    and only ``sdk_mode_suspect`` past :data:`SDK_MODE_SUSPECT_S`. Nothing may reconnect or warn
+    while the state is ``warming_up``.
+    """
+    if frames_seen > 0:
+        return "streaming"
+    if elapsed_s >= max(sdk_suspect_s, grace_s):
+        return "sdk_mode_suspect"
+    if elapsed_s < max(grace_s, PPI_FIRST_SAMPLE_S):
+        return "warming_up"
+    return "stalled"
 
 
 def usable_ppi(samples: Iterable[dict]) -> list[float]:

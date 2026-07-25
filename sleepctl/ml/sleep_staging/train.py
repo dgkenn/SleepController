@@ -11,7 +11,8 @@ Pipeline
    per-night errors (deep minutes, sleep onset, TST, WASO, stage flip rate).
 4. Refit on all subjects and export compact JSON to ``weights/``:
    ``wake_hr``/``stage4_hr``, ``wake_hrmotion``/``stage4_hrmotion``,
-   ``wake_hr_sparse``/``stage4_hr_sparse`` (1 sample/min HR fallback), and ``hmm.json``.
+   and ``hmm.json``. The HR model trains on dense AND 1-sample/min copies of every night,
+   so one model covers both streaming rates.
 
 Run::
 
@@ -23,9 +24,11 @@ numpy/sklearn are used here only; :mod:`features` and :mod:`infer` stay pure-std
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import pickle
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -54,6 +57,11 @@ from .features import (
 from .infer import DEFAULT_SMOOTHING_EPOCHS, blend_emission, forward_filter
 
 WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "weights")
+#: feature-set fingerprint: a cached dataset built against different features is unusable
+FEATURE_TAG = "{}_{}".format(
+    len(FEATURE_NAMES_HRMOTION),
+    hashlib.md5("|".join(FEATURE_NAMES_HRMOTION).encode()).hexdigest()[:10],
+)
 STAGE4_LABELS = ["wake", "light", "deep", "rem"]
 N_FOLDS = 5
 ONSET_EPOCHS = 20  # 10 min of sustained sleep defines onset
@@ -385,8 +393,8 @@ def score_emissions(cache: dict, *, smoothing_epochs: int = DEFAULT_SMOOTHING_EP
     return out
 
 
-def tune_smoothing(cache: dict, *, epochs_grid=(20, 40),
-                   temper_grid=(0.1, 0.2, 0.35, 0.6),
+def tune_smoothing(cache: dict, *, epochs_grid=(20,),
+                   temper_grid=(0.2, 0.35),
                    prior_modes=("uniform", "empirical"),
                    wake_modes=("balanced", "natural"), verbose: bool = True) -> dict:
     """Pick the wake head + forward-filter hyper-parameters by the same grouped CV.
@@ -486,6 +494,30 @@ def write_json(path: str, obj: dict) -> int:
     return os.path.getsize(path)
 
 
+def cached_dataset(cache_dir: Optional[str], key: str, build) -> StagingDataset:
+    """Build a dataset once and reuse it across runs (raw data + cache stay off-repo)."""
+    if not cache_dir:
+        return build()
+    os.makedirs(cache_dir, exist_ok=True)
+    tag = hashlib.md5((key + "|" + FEATURE_TAG).encode()).hexdigest()[:16]
+    path = os.path.join(cache_dir, f"ds_{tag}.pkl")
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as fh:
+                ds = pickle.load(fh)
+            print(f"  (loaded {len(ds)} epochs from cache)", flush=True)
+            return ds
+        except Exception:  # noqa: BLE001 — a corrupt cache must never be fatal
+            pass
+    ds = build()
+    try:
+        with open(path, "wb") as fh:
+            pickle.dump(ds, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    except Exception:  # noqa: BLE001
+        pass
+    return ds
+
+
 def _sm(smoothing: dict) -> dict:
     """Smoothing settings dict -> :func:`score_emissions` keyword arguments."""
     return dict(smoothing_epochs=smoothing["epochs"], temper=smoothing["temper"],
@@ -522,8 +554,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--quick", action="store_true", help="tiny model grid (smoke test)")
     ap.add_argument("--subjects", nargs="*", default=None)
     ap.add_argument("--skip-sparse", action="store_true")
-    ap.add_argument("--motion-only", action="store_true",
-                    help="reuse the HR-only settings and only (re)train the motion variant")
+    ap.add_argument("--cache-dir", default=None,
+                    help="directory for pickled datasets (keep OUT of the repo)")
+    ap.add_argument("--candidates", default=None,
+                    help="comma-separated subset of the model grid to search")
+    ap.add_argument("--hr-spec", default=None,
+                    help="skip HR-only model selection and use this candidate directly")
     ap.add_argument("--no-motion", action="store_true",
                     help="skip the HR+motion variant (e.g. actigraphy still reducing)")
     args = ap.parse_args(argv)
@@ -533,8 +569,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     with_act = subjects_with_activity(args.data_dir, subs)
     print(f"subjects: {len(subs)} total, {len(with_act)} with reduced actigraphy")
 
+    cache_dir = args.cache_dir
     print("building HR-only dataset ...", flush=True)
-    ds_hr = build_dataset(args.data_dir, subs, use_activity=False)
+    ds_hr = cached_dataset(
+        cache_dir, f"hr|{','.join(subs)}",
+        lambda: build_dataset(args.data_dir, subs, use_activity=False))
     print(f"  {len(ds_hr)} epochs from {len(set(ds_hr.groups))} subjects "
           f"({time.time() - t0:.0f}s)")
 
@@ -542,8 +581,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ds_union = ds_hr
     if not args.skip_sparse:
         print("building decimated (1 sample/min) HR dataset ...", flush=True)
-        ds_sparse = build_dataset(args.data_dir, subs, use_activity=False,
-                                  hr_decimate_s=60.0, night_suffix="#sparse")
+        ds_sparse = cached_dataset(
+            cache_dir, f"sparse60|{','.join(subs)}",
+            lambda: build_dataset(args.data_dir, subs, use_activity=False,
+                                  hr_decimate_s=60.0, night_suffix="#sparse"))
         print(f"  {len(ds_sparse)} epochs ({time.time() - t0:.0f}s)")
         # The shipped HR model trains on dense AND decimated copies of every night, so it
         # works whether the controller streams ~1 sample/2 s or ~1 sample/min.
@@ -552,20 +593,29 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ds_motion = None
     if len(with_act) >= args.folds and not args.no_motion:
         print("building HR+motion dataset ...", flush=True)
-        ds_motion = build_dataset(args.data_dir, with_act, use_activity=True,
-                                  require_activity=True)
+        ds_motion = cached_dataset(
+            cache_dir, f"motion|{','.join(with_act)}",
+            lambda: build_dataset(args.data_dir, with_act, use_activity=True,
+                                  require_activity=True))
         print(f"  {len(ds_motion)} epochs from {len(set(ds_motion.groups))} subjects "
               f"({time.time() - t0:.0f}s)")
 
     results: Dict[str, dict] = {}
     chosen: Dict[str, Tuple[str, dict]] = {}
 
+    def _grid() -> List[Tuple[str, dict]]:
+        g = _candidates(args.quick)
+        if args.candidates:
+            want = {c.strip() for c in args.candidates.split(",")}
+            g = [(c, s) for c, s in g if c in want]
+        return g
+
     def select(tag: str, ds: StagingDataset, names: Sequence[str],
                fixed: Optional[dict] = None, grid: Optional[List] = None):
         """Pick the ensemble by unsmoothed 4-class kappa, then tune the forward filter."""
         print(f"\n=== model selection [{tag}] ===", flush=True)
         best = None
-        for cname, spec in (grid or _candidates(args.quick)):
+        for cname, spec in (grid or _grid()):
             t1 = time.time()
             cache = cv_emissions(ds, names, spec, n_folds=args.folds)
             res = score_emissions(cache)
@@ -592,79 +642,65 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return cname, spec, res, smoothing
 
     # ---- HR-only (production-critical: the live controller runs this path) ----
-    cname, spec, res, smooth_hr = select("HR-only", ds_hr, FEATURE_NAMES_HR)
-    chosen["hr"] = (cname, spec)
-    results["hr_dense_only"] = res
-    report(f"HR-only CV, dense train/test [{cname}] smoothing={smooth_hr}", res)
-
-    if ds_sparse is not None:
-        # (a) how badly does a dense-trained model degrade on 1 sample/min HR?
-        cache_dense = cv_emissions_multi(
-            ds_hr, FEATURE_NAMES_HR, spec, n_folds=args.folds,
-            test_sets={"dense": ds_hr, "sparse": ds_sparse})
-        res_ds = score_emissions(cache_dense["sparse"], **_sm(smooth_hr))
-        results["hr_denseTrain_sparseTest"] = res_ds
-        report("HR-only, trained DENSE / tested SPARSE (1 sample/min)", res_ds)
-
-        # (b) the shipped model: trained on dense+decimated, scored on both
-        cache_union = cv_emissions_multi(
-            ds_union, FEATURE_NAMES_HR, spec, n_folds=args.folds,
-            test_sets={"dense": ds_hr, "sparse": ds_sparse})
-        tuned_u = tune_smoothing(cache_union["dense"])
-        smooth_hr = dict(temper=tuned_u["temper"], epochs=tuned_u["epochs"],
-                         prior_mode=tuned_u["prior_mode"], wake_mode=tuned_u["wake_mode"])
-        res_u_dense = tuned_u["res"]
-        res_u_dense["hmm"] = cache_union["dense"]["hmm_full"]
-        res_u_sparse = score_emissions(cache_union["sparse"], **_sm(smooth_hr))
-        results["hr"] = res_u_dense
-        results["hr_sparseTest"] = res_u_sparse
-        report(f"HR-only SHIPPED (dense+sparse training), tested DENSE  "
-               f"smoothing={smooth_hr}", res_u_dense)
-        report("HR-only SHIPPED (dense+sparse training), tested SPARSE (1 sample/min)",
-               res_u_sparse)
+    # The shipped model trains on dense AND 1-sample/min copies of every night; a single
+    # round of CV fits is scored against both test rates.
+    if args.hr_spec:
+        grid = [(c, sp) for c, sp in _candidates(False) if c == args.hr_spec]
+        if not grid:
+            raise SystemExit(f"unknown --hr-spec {args.hr_spec}")
+        cname, spec = grid[0]
+        print(f"\n=== HR-only: using pre-selected model {cname} ===", flush=True)
     else:
-        results["hr"] = res
+        cname, spec, res_sel, _sm0 = select("HR-only", ds_hr, FEATURE_NAMES_HR)
+        results["hr_selection"] = res_sel
+    chosen["hr"] = (cname, spec)
+
+    test_sets = {"dense": ds_hr}
+    if ds_sparse is not None:
+        test_sets["sparse"] = ds_sparse
+    caches = cv_emissions_multi(ds_union, FEATURE_NAMES_HR, spec,
+                                test_sets=test_sets, n_folds=args.folds)
+    tuned = tune_smoothing(caches["dense"])
+    smooth_hr = dict(temper=tuned["temper"], epochs=tuned["epochs"],
+                     prior_mode=tuned["prior_mode"], wake_mode=tuned["wake_mode"])
+    res = tuned["res"]
+    res["hmm"] = caches["dense"]["hmm_full"]
+    results["hr"] = res
+    report(f"HR-only CV [{cname}] tested on DENSE HR  smoothing={smooth_hr}", res)
+    if "sparse" in caches:
+        res_sp = score_emissions(caches["sparse"], **_sm(smooth_hr))
+        results["hr_sparseTest"] = res_sp
+        report("HR-only CV [same model] tested on SPARSE HR (1 sample/min)", res_sp)
 
     # ---- HR+motion ----
     smooth_motion = smooth_hr
+    motion_names = FEATURE_NAMES_HRMOTION
     if ds_motion is not None:
-        # forests only here: gradient boosting is not exportable to the stdlib runtime and
-        # is far slower, so it is only benchmarked on the production-critical HR-only path
-        motion_grid = [(c, s) for c, s in _candidates(args.quick) if _exportable(s)]
-        cname_m, spec_m, res_m, smooth_motion = select(
-            "HR+motion (counts + scale-free)", ds_motion, FEATURE_NAMES_HRMOTION,
-            fixed=smooth_hr, grid=motion_grid)
+        print(f"\n=== HR+motion: model {cname} (reusing the HR-only selection) ===",
+              flush=True)
+        cache_m = cv_emissions(ds_motion, FEATURE_NAMES_HRMOTION, spec,
+                               n_folds=args.folds)
+        tuned_m = tune_smoothing(cache_m, epochs_grid=(smooth_hr["epochs"],),
+                                 temper_grid=(smooth_hr["temper"],),
+                                 prior_modes=(smooth_hr["prior_mode"],))
+        smooth_motion = dict(temper=tuned_m["temper"], epochs=tuned_m["epochs"],
+                             prior_mode=tuned_m["prior_mode"],
+                             wake_mode=tuned_m["wake_mode"])
+        res_m = tuned_m["res"]
+        res_m["hmm"] = cache_m["hmm_full"]
+        chosen["hrmotion"] = (cname, spec)
         results["hrmotion"] = res_m
-        report(f"HR+motion CV, unit-matched counts + scale-free [{cname_m}]", res_m)
+        report(f"HR+motion CV, unit-matched counts + scale-free [{cname}]", res_m)
 
-        # transfer-safe alternative: no feature depends on the counts' units. Shipped as
-        # the primary model if it is at least as good, since it survives a sensor change.
-        res_sf = cv_evaluate(ds_motion, FEATURE_NAMES_HRMOTION_SCALEFREE, spec_m,
+        # transfer-safe alternative: nothing depends on the counts' units
+        res_sf = cv_evaluate(ds_motion, FEATURE_NAMES_HRMOTION_SCALEFREE, spec,
                              smoothing=smooth_motion, n_folds=args.folds)
         results["hrmotion_scalefree"] = res_sf
-        report(f"HR+motion CV, SCALE-FREE features only [{cname_m}]", res_sf)
-        motion_names = FEATURE_NAMES_HRMOTION
+        report(f"HR+motion CV, SCALE-FREE features only [{cname}]", res_sf)
         if res_sf["sm"]["kappa4"] > res_m["sm"]["kappa4"] + 0.005:
             print("  -> scale-free-only wins on CV; shipping it as the HR+motion model",
                   flush=True)
             motion_names = FEATURE_NAMES_HRMOTION_SCALEFREE
-        chosen["hrmotion"] = (cname_m, spec_m)
-        # HR-only on the SAME subjects and the SAME model spec, for an apples-to-apples
-        # measure of what the movement channel actually adds
-        ds_hr_same = (ds_hr if set(with_act) == set(subs)
-                      else build_dataset(args.data_dir, with_act, use_activity=False))
-        res_hr_same = cv_evaluate(ds_hr_same, FEATURE_NAMES_HR, spec_m,
-                                  smoothing=smooth_motion, n_folds=args.folds)
-        results["hr_same_subjects"] = res_hr_same
-        report("HR-only CV, same subjects + same spec (motion baseline)", res_hr_same)
-
-    # ---- dedicated decimated-HR fallback variant ----
-    if ds_sparse is not None:
-        res_sparse = cv_evaluate(ds_sparse, FEATURE_NAMES_HR, chosen["hr"][1],
-                                 smoothing=smooth_hr, n_folds=args.folds)
-        results["hr_sparse_only_model"] = res_sparse
-        report("HR-only, trained SPARSE / tested SPARSE (exported as *_hr_sparse)",
-               res_sparse)
 
     # ---- final fits on all subjects + export ----
     print("\n=== final fits + export ===", flush=True)
@@ -688,8 +724,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if ds_motion is not None:
         fit_and_export(ds_motion, motion_names, chosen["hrmotion"][1],
                        "hrmotion", smooth_motion)
-    if ds_sparse is not None:
-        fit_and_export(ds_sparse, FEATURE_NAMES_HR, chosen["hr"][1], "hr_sparse", smooth_hr)
+    # no separate sparse-only export: the shipped HR model already trains on both rates
 
     hmm = estimate_hmm(np.asarray(ds_hr.y_stage4), ds_hr.groups, ds_hr.times)
     # smoothing hyper-parameters chosen by the same grouped CV (see tune_smoothing)
