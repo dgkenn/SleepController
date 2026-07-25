@@ -237,6 +237,54 @@ def test_missing_eight_sleep_creds_is_warn(repo, run_dir, tmp_path, monkeypatch)
     assert "SIMULATOR" in c["remedy"]
 
 
+# ------------------------------------------------------------------ thermal dose-response trial
+def _set_thermal_trial_enabled(monkeypatch, enabled: bool, **overrides) -> None:
+    """Force ``sleepctl.config.AppConfig.default().thermal_trial`` for one test -- the
+    ``thermal_trial`` check (like the /thermal/dose-response endpoint it mirrors) reads config
+    via a fresh ``AppConfig.default()`` each call, not anything persisted, so this patches the
+    classmethod itself rather than an instance."""
+    from sleepctl.config import AppConfig, ThermalTrialConfig
+
+    tc = ThermalTrialConfig(enabled=enabled, **overrides)
+    cfg = AppConfig.default()
+    cfg.thermal_trial = tc
+    monkeypatch.setattr(AppConfig, "default", classmethod(lambda cls: cfg))
+
+
+def test_thermal_trial_disabled_is_info(repo, run_dir, tmp_path, monkeypatch):
+    _seed_runtime_state(repo)
+    _set_thermal_trial_enabled(monkeypatch, False)
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+    c = _by_id(report, "thermal_trial")
+    assert c["status"] == "info"
+    assert "not enabled" in c["detail"]
+
+
+def test_thermal_trial_enabled_collecting_is_ok(repo, run_dir, tmp_path, monkeypatch):
+    _seed_runtime_state(repo)
+    _set_thermal_trial_enabled(monkeypatch, True, min_nights_before_verdict=8)
+    repo.assign_thermal_trial_night("2026-07-01", "+0.00", 0.0, True, block_key="normal")
+    repo.record_thermal_trial_outcome("2026-07-01", wake_events=2)
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+    c = _by_id(report, "thermal_trial")
+    assert c["status"] == "ok"
+    assert "1 resolved night" in c["detail"]
+    assert "8 nights/arm" in c["detail"]
+
+
+def test_thermal_trial_auto_stopped_arm_is_warn(repo, run_dir, tmp_path, monkeypatch):
+    _seed_runtime_state(repo)
+    _set_thermal_trial_enabled(monkeypatch, True)
+    repo.log_event("thermal_trial", "warn", "auto_stop",
+                   "thermal dose-response trial auto-stopped arm -1.50 for 2026-07-24: ...",
+                   {"night_date": "2026-07-24", "arm": "-1.50"})
+    report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
+    c = _by_id(report, "thermal_trial")
+    assert c["status"] == "warn"
+    assert "-1.50" in c["detail"]
+    assert c["remedy"] is not None
+
+
 def test_web_port_down_is_warn(repo, run_dir, tmp_path, monkeypatch):
     _seed_runtime_state(repo)
     monkeypatch.setattr(diagnostics, "_port_open", lambda *a, **k: False)

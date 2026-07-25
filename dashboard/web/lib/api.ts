@@ -566,6 +566,92 @@ export interface EfficacyStatusResponse {
   analysis: EfficacyAnalysis;
 }
 
+// ---- n-of-1 thermal dose-response trial: "what maintenance offset works best for ME?" ----
+// Mirrors sleepctl.ml.thermal_trial.analyze_dose_response(). Disabled by default -- unlike the
+// efficacy trial above, this changes what temperature the bed actually runs at overnight.
+
+export interface ThermalTrialConfig {
+  enabled: boolean;
+  offset_ladder_f: number[];
+  control_offset_f: number;
+  comfort_band_f: number;
+  experimental_fraction: number;
+  min_nights_before_verdict: number;
+}
+
+export interface ThermalTrialArmStat {
+  offset_f: number;
+  n: number;
+  mean_wake_events: number | null;
+  se_wake_events: number | null;
+  mean_deep_min: number | null;
+  mean_sleep_efficiency: number | null;
+  mean_hrv: number | null;
+  mean_subjective_rating: number | null;
+}
+
+export interface ThermalTrialComparison {
+  offset_f: number;
+  diff_vs_control: number | null;
+  ci_low: number | null;
+  ci_high: number | null;
+  p: number | null;
+  n: number;
+  n_control: number;
+}
+
+export interface ThermalTrialTrendPoint {
+  offset_f: number;
+  mean_wake_events: number;
+}
+
+export interface ThermalTrialTrend {
+  direction: 'insufficient_data' | 'warmer_is_better' | 'cooler_is_better' | 'no_clear_trend';
+  note: string;
+  points: ThermalTrialTrendPoint[];
+}
+
+export interface ThermalTrialAnalysis {
+  control_arm: string;
+  min_nights_per_arm: number;
+  confident: boolean;
+  arms: Record<string, ThermalTrialArmStat>;
+  comparisons: Record<string, ThermalTrialComparison>;
+  trend: ThermalTrialTrend;
+  verdict: string;
+}
+
+export interface ThermalDoseResponseResponse {
+  config: ThermalTrialConfig;
+  n_nights_planned: number;
+  n_eligible: number;
+  n_ineligible: number;
+  n_resolved: number;
+  analysis: ThermalTrialAnalysis;
+}
+
+// ---- Advisory CBT-I sleep-window guidance: never changes controller behavior -----------------
+// Mirrors app/services.cbti_advice() (sleepctl.cbti.recommend_sleep_window +
+// stimulus_control_tips).
+
+export type CBTIDirection = 'compress' | 'expand' | 'hold';
+
+export interface CBTIAdviceResponse {
+  direction: CBTIDirection;
+  recommended_tib_min: number;
+  change_min: number;
+  rationale: string;
+  confidence: number;
+  safety_notes: string[];
+  baseline_tib_min: number | null;
+  mean_efficiency: number | null;
+  mean_total_sleep_min: number | null;
+  eligible_nights: number;
+  upcoming_high_stakes: boolean;
+  tips: string[];
+  advisory_only: true;
+}
+
 // ---------------------------------------------------------------------------
 // Fetch wrapper
 // ---------------------------------------------------------------------------
@@ -1160,6 +1246,13 @@ export const api = {
 
   // Decision guardrail (Feature #8)
   guardrail: () => apiFetch<GuardrailResponse>('/api/safety/guardrail'),
+
+  // n-of-1 thermal dose-response trial (personal maintenance-offset finder). Read-only —
+  // enabled/disabled via config, not exposed as a dashboard toggle.
+  thermalDoseResponse: () => apiFetch<ThermalDoseResponseResponse>('/api/thermal/dose-response'),
+
+  // Advisory CBT-I sleep-window guidance. Read-only; never changes controller behavior.
+  cbtiAdvice: () => apiFetch<CBTIAdviceResponse>('/api/cbti/advice'),
 };
 
 // ---------------------------------------------------------------------------
