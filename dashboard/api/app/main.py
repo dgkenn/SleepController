@@ -1107,6 +1107,24 @@ def diag_sensor_history(token: str = "", limit: int = 500, since: str = "", repo
     return bridge.recent_sensor_samples(repo.conn, limit=limit, since=since or None)
 
 
+@app.get("/diag/rr-history")
+def diag_rr_history(token: str = "", minutes: float = 720.0, repo=Depends(repo_dep)):
+    """Remote pull of the RAW beat-to-beat RR-interval series (the personal-model training data).
+
+    ``sensor_samples`` keeps only a derived RMSSD scalar per batch; this returns the underlying
+    intervals, from which any HRV metric can be recomputed. Same token gating as ``/diag``
+    (secret ``DIAG_TOKEN``, constant-time compare, 404 when missing/wrong so it's invisible to
+    scanners). ``minutes`` is the trailing window, capped at 30 days."""
+    expected = os.environ.get("DIAG_TOKEN")
+    if not expected or not token or not secrets.compare_digest(token, expected):
+        raise HTTPException(404, "not found")
+
+    from app import bridge
+    minutes = max(1.0, min(float(minutes), 60.0 * 24 * 30))
+    series = bridge.recent_rr_intervals(repo.conn, minutes=minutes, max_rows=200000)
+    return {"n": len(series), "minutes": minutes, "rr": series}
+
+
 # ---------------------------------------------------------------- remote deep-dive (token-gated)
 # Two "give me the exact data, not a summary" tools for the maintainer, gated identically to
 # /diag (secret DIAG_TOKEN, 404 on missing/wrong token so it's invisible to scanners). /diag's

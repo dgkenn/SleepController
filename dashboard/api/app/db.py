@@ -125,6 +125,20 @@ CREATE TABLE IF NOT EXISTS sensor_samples (
     n_samples INTEGER          -- raw accel readings ingested in this batch
 );
 CREATE INDEX IF NOT EXISTS idx_sensor_samples_ts ON sensor_samples(ts);
+-- Append-only RAW beat-to-beat RR intervals from the dedicated cardiac sensor (Polar Verity
+-- Sense / H10). ``sensor_samples`` keeps only a single derived HRV scalar (RMSSD) per batch, but
+-- EVERY other HRV metric -- SDNN, pNN50, Poincare SD1/SD2, LF/HF -- is computable only from the
+-- raw intervals, and they cannot be recovered after the fact. Since the whole point is a model
+-- tailored to THIS user, these nights are irreplaceable training data, so we persist the raw
+-- series: one row per ingest batch, intervals as a compact JSON array of milliseconds.
+CREATE TABLE IF NOT EXISTS rr_intervals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,          -- ingest time (UTC ISO) of this batch
+    rr_ms TEXT NOT NULL,       -- JSON array of RR intervals, milliseconds
+    n INTEGER,                 -- count in the batch
+    source TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rr_intervals_ts ON rr_intervals(ts);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);

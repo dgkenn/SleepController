@@ -1444,6 +1444,11 @@ def ingest_hr(repo, payload: dict) -> dict:
         return {"ok": False, "error": "no usable hr/rr in batch", "ingested": 0}
 
     bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source})
+    # Persist the RAW beat-to-beat intervals, not just the derived RMSSD scalar. Every other HRV
+    # metric (SDNN, pNN50, Poincare SD1/SD2, LF/HF) is computable only from these, and they cannot
+    # be reconstructed after the fact -- so for a model personalized to this user each night's raw
+    # series is irreplaceable training data.
+    bridge.append_rr_intervals(repo.conn, rr, source)
     # Accumulate into the same overnight time-series as the phone samples (source-tagged so the
     # two channels stay distinguishable for model training). Best-effort; never fails the ingest.
     bridge.append_sensor_sample(repo.conn, {

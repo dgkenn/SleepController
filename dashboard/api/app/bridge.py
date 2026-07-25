@@ -154,6 +154,68 @@ def recent_sensor_samples(conn: sqlite3.Connection, limit: int = 500, since: str
     return [dict(r) for r in rows]
 
 
+# Raw RR intervals are the irreplaceable input for a PERSONAL model (every HRV metric derives
+# from them and they cannot be reconstructed later), so they are kept far longer than the derived
+# sensor_samples window. The SQLite file is covered by the encrypted off-box backup, so this is
+# durably preserved; local retention just bounds the live table.
+_RR_RETENTION_DAYS = 400
+_RR_PRUNE_INTERVAL_S = 3600.0
+_last_rr_prune_monotonic = 0.0
+
+
+def append_rr_intervals(conn: sqlite3.Connection, rr_ms: list, source: str = "verity") -> None:
+    """Persist one batch of RAW beat-to-beat RR intervals (milliseconds).
+
+    ``append_sensor_sample`` stores only a single derived HRV scalar (RMSSD) per batch; this keeps
+    the underlying series so any HRV metric -- SDNN, pNN50, Poincare SD1/SD2, LF/HF -- can be
+    computed later, including for training a model personalized to this user. Best-effort: a
+    logging failure must never break /hr/ingest's real-time fusion path."""
+    global _last_rr_prune_monotonic
+    if not rr_ms:
+        return
+    try:
+        vals = [round(float(x), 1) for x in rr_ms
+                if isinstance(x, (int, float)) and 200.0 <= float(x) <= 3000.0]
+        if not vals:
+            return
+        conn.execute(
+            "INSERT INTO rr_intervals (ts, rr_ms, n, source) VALUES (?,?,?,?)",
+            (_now(), json.dumps(vals), len(vals), source),
+        )
+        now_mono = time.monotonic()
+        if now_mono - _last_rr_prune_monotonic >= _RR_PRUNE_INTERVAL_S:
+            cutoff = (datetime.now(timezone.utc)
+                      - timedelta(days=_RR_RETENTION_DAYS)).isoformat()
+            conn.execute("DELETE FROM rr_intervals WHERE ts < ?", (cutoff,))
+            _last_rr_prune_monotonic = now_mono
+        conn.commit()
+    except Exception:
+        pass  # never disrupt the ingest path over a telemetry write
+
+
+def recent_rr_intervals(conn: sqlite3.Connection, minutes: float = 45.0,
+                        max_rows: int = 5000) -> list:
+    """Flattened recent RR series as ``[(epoch_seconds, rr_ms), ...]`` (batch timestamp carried on
+    each interval in the batch). For HRV features at inference and for personal-model training."""
+    out: list = []
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        rows = conn.execute(
+            "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+            (cutoff, int(max_rows)),
+        ).fetchall()
+        for r in rows:
+            try:
+                t = datetime.fromisoformat(r["ts"]).timestamp()
+                for v in json.loads(r["rr_ms"]):
+                    out.append((t, float(v)))
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return out
+
+
 def sensor_history_series(conn: sqlite3.Connection, minutes: float = 45.0,
                           max_rows: int = 4000) -> dict:
     """DENSE trailing HR + movement series for the wearable sleep-stager, as
