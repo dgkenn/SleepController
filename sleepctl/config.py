@@ -176,9 +176,23 @@ class Tunables:
     use_learned_stager: bool = True
     stager_min_hr_samples: int = 5           # need at least this many recent HR samples to trust it
     est_model_conf_cap: float = 0.7          # cap the learned model's stage confidence
-    # Feed the phone's movement into the stager's HR+motion variant. Off until that variant is
-    # verified to transfer from the actigraphy counts it was trained on to the phone's 0..1 motion
-    # index (scale-free features). HR-only always works -- it's what lets the Verity run ALONE.
+    # Feed a movement signal into the stager's HR+motion variant. Kept OFF -- and now for a
+    # MEASURED reason rather than the original unit-mismatch worry. Same-subjects CV (smoothed):
+    #
+    #                        4-class k   wake k   deep MAE   onset MAE
+    #   HR only                 0.385     0.217     36.3m       7.8m
+    #   HR + motion             0.374     0.294     39.4m       8.8m
+    #   HR + motion (absolute)  0.342     0.223     39.1m      12.9m
+    #
+    # Motion buys wake detection (+0.077 kappa) but degrades precisely what the stager's output is
+    # USED for: 4-class staging, realized deep minutes (which the architecture steering compares
+    # against the ideal curve) and onset timing. And the controller does not need the stager for
+    # wake anyway -- its arousal / wake-risk / precursor detectors already consume movement
+    # directly, so that gain is largely redundant while the staging loss is not.
+    # Note the scale-free variant BEAT absolute counts even though the Verity now supplies
+    # unit-matched actigraphy, contradicting the assumption that matched units would win --
+    # normalizing within the night evidently generalizes better across people.
+    # Revisit per-user once enough of the user's own nights exist to evaluate on them directly.
     stager_use_motion: bool = False
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
