@@ -14,13 +14,26 @@ Eight Sleep Pod.
 | signal | source | role |
 |---|---|---|
 | **heart rate + HRV** | Polar Verity Sense → `/hr/ingest` | **authoritative** cardiac channel (optical HR + RR-interval HRV) |
-| **movement** | iPhone (Sensor Logger) → `/bcg/ingest` | sub-second actigraphy / arousal precursor |
+| **movement** | iPhone (Sensor Logger) → `/bcg/ingest`, else the Verity's own accelerometer (PMD ACC) → `/hr/ingest` | sub-second actigraphy / arousal precursor |
 
 `bridge.read_fused_sensor` merges them **per field**, each gated by its own freshness:
 - HR/HRV come from the Verity when it's fresh (it overrides the phone's best-effort
   ballistocardiogram HR); if the Verity disconnects, HR/HRV fall back to the phone.
-- Movement always comes from the phone.
+- Movement prefers the phone's 0..1 index — every movement threshold in the controller was
+  calibrated against it — and falls back to the **Verity's own accelerometer** when the phone is
+  absent or stale, so a Verity-only night keeps its motion channel. That matters because motion
+  feeds onset confirmation, arousal scoring, awakening detection and wake risk: without the
+  fallback, going phone-less silently disables the machinery that protects sleep *maintenance*.
 - A lone phone, a lone Verity, or **both together** all work — whichever is streaming contributes.
+- `runtime_state` reports `hr_source` and `movement_source` so you can see which channel supplied
+  each field.
+
+**On units.** The phone reports a unitless 0..1 movement index; the Verity's accelerometer reduces
+to PIM counts (same definition as the model's training data, kept in native units so live data
+stays comparable with it). `bridge.actigraphy_movement_index` maps counts onto the index using the
+two anchors the data-quality guards already define — PIM 1.0 "essentially motionless" → 0.06 (under
+the 0.15 onset-stillness line) and PIM 5.0 "clearly moving" → 0.30 (exactly the wake-risk line),
+saturating at 1.0. The raw counts are still stored separately and are what the stager consumes.
 
 Together this gives the controller clean HR + HRV (for arousal / onset detection, your #1 priority:
 staying asleep) plus movement (for actigraphy-style light/deep estimation) — fully independent of
@@ -63,7 +76,16 @@ Tunable via `use_learned_stager` / `estimate_stage_from_vitals` in config.
    .\.venv\Scripts\python.exe -m pip install bleak
    ```
 4. **Token.** The forwarder authenticates exactly like the phone: it reads `BCG_INGEST_TOKEN`
-   from `deploy\.env` (already set for the iPhone). Nothing else to configure.
+   from `deploy\.env`. If neither that nor `BCG_INGEST_OPEN=1` is set, the armband connects and
+   streams while every POST is rejected `401` — so `verity-setup.ps1` mints a token when one is
+   missing rather than leaving that failure to be discovered at 2 a.m.
+
+The one-command path does all four steps, then **waits for real samples** and tells you whether
+the feed actually came up:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verity-setup.ps1
+```
 
 ## Run the forwarder
 

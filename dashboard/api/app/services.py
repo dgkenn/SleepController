@@ -1440,12 +1440,16 @@ HR_FROZEN_MIN_DURATION_S = 20.0
 # Actigraphy PIM (movement energy; same units as scripts/reduce_motion_activity.py) at/above this
 # is treated as "moving" for the frozen-HR check. Deliberately coarse -- this only needs to tell
 # "clearly moving" from "essentially still", not finely grade activity level.
-MOVEMENT_PIM_THRESHOLD = 5.0
-
-# Actigraphy PIM at/below this is treated as "essentially motionless" for the not-worn stillness
-# check. Set BELOW MOVEMENT_PIM_THRESHOLD so a settled sleeper's residual micro-movement is never
-# mistaken for "not worn".
-STILLNESS_PIM_FLOOR = 1.0
+#
+# Below it, PIM at/under STILLNESS_PIM_FLOOR is "essentially motionless" for the not-worn
+# stillness check -- set BELOW MOVEMENT_PIM_THRESHOLD so a settled sleeper's residual
+# micro-movement is never mistaken for "not worn".
+#
+# Both live in bridge.py, which also maps these two anchors onto the controller's 0..1 movement
+# index (see bridge.actigraphy_movement_index). Imported rather than redefined so the quality
+# guards here and that conversion can never drift apart.
+MOVEMENT_PIM_THRESHOLD = bridge.MOVEMENT_PIM_THRESHOLD
+STILLNESS_PIM_FLOOR = bridge.STILLNESS_PIM_FLOOR
 
 # How long stillness (+ absent/implausible RR) must persist before suspecting the device is off
 # the body. Deliberately long: a genuinely motionless deep-sleep stretch is completely normal and

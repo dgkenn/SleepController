@@ -527,13 +527,76 @@ def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
     return d
 
 
+def read_actigraphy_sample(conn: sqlite3.Connection) -> dict | None:
+    """Latest actigraphy batch (the wearable's OWN accelerometer, via Polar PMD) with a computed
+    ``age_seconds``, or None. Counterpart to ``read_cardiac_sample`` for the motion channel."""
+    try:
+        row = conn.execute(
+            "SELECT ts, pim, source FROM actigraphy WHERE pim IS NOT NULL"
+            " ORDER BY ts DESC LIMIT 1").fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    age = None
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["ts"])).total_seconds()
+    except Exception:
+        age = None
+    return {"pim": row["pim"], "source": row["source"], "age_seconds": age}
+
+
+# ---- actigraphy counts -> the controller's movement index --------------------------------
+# The two motion channels are in DIFFERENT UNITS. The iPhone reports a unitless 0..1 movement
+# index; the Verity's accelerometer reduces to PIM counts (same definition as the training-set
+# reduction, deliberately kept in native units so live data stays unit-comparable with it). Every
+# movement threshold in the controller -- onset stillness 0.15, data-quality 0.2, wake-risk 0.3,
+# arousal 0.4, onset-unreliable 0.45 -- is calibrated against the 0..1 index, so PIM counts cannot
+# be passed through raw. Map them onto the index using the two PIM anchors the quality guards
+# already define, so a single semantic scale governs both:
+#
+#     PIM <= STILLNESS_PIM_FLOOR (1.0)      "essentially motionless"  -> 0.06, safely under the
+#                                                                        0.15 onset-stillness line
+#     PIM >= MOVEMENT_PIM_THRESHOLD (5.0)   "clearly moving"          -> 0.30, exactly the
+#                                                                        wake-risk movement line
+#
+# and continue at that slope above the upper anchor, saturating at 1.0 (~PIM 17). That puts the
+# arousal threshold (0.4) at PIM ~6.7 -- meaningfully more motion than "clearly moving" -- which
+# is the ordering these thresholds assume.
+STILLNESS_PIM_FLOOR = 1.0
+MOVEMENT_PIM_THRESHOLD = 5.0
+_STILL_INDEX = 0.06
+_MOVING_INDEX = 0.30
+
+
+def actigraphy_movement_index(pim: float | None) -> float | None:
+    """Convert a PIM actigraphy count to the controller's unitless 0..1 movement index."""
+    try:
+        p = float(pim)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(p) or p < 0:
+        return None
+    slope = (_MOVING_INDEX - _STILL_INDEX) / (MOVEMENT_PIM_THRESHOLD - STILLNESS_PIM_FLOOR)
+    if p <= STILLNESS_PIM_FLOOR:
+        # Below the "motionless" anchor, ramp linearly to 0 so a dead-still sleeper reads ~0
+        # rather than a constant floor.
+        return round(_STILL_INDEX * (p / STILLNESS_PIM_FLOOR), 4)
+    return round(min(1.0, _STILL_INDEX + slope * (p - STILLNESS_PIM_FLOOR)), 4)
+
+
 def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
                       movement_max_age_s: float = 30.0,
                       phone_hr_max_age_s: float = 30.0) -> dict | None:
-    """MERGE the two independent fast-sensor channels into one per-field snapshot for the daemon:
+    """MERGE the independent fast-sensor channels into one per-field snapshot for the daemon:
 
-      * **movement** — from the iPhone accelerometer (``live_sensor``); the phone is the only
-        source of the sub-second motion signal.
+      * **movement** — from the iPhone accelerometer (``live_sensor``) when it is fresh; its 0..1
+        index is what every movement threshold in the controller was calibrated against, so it
+        keeps priority. With no phone (or a stale one) we fall back to the WEARABLE's own
+        accelerometer (``actigraphy``, Polar PMD ACC), converted onto that same index by
+        ``actigraphy_movement_index``. Without this fallback a Verity-only night loses the motion
+        channel entirely, and motion feeds onset confirmation, arousal scoring, awakening
+        detection and wake risk — i.e. exactly the machinery that protects sleep MAINTENANCE.
       * **hr / hrv** — from the dedicated cardiac sensor (``live_cardiac``, e.g. Polar Verity
         Sense) when it is fresh; that optical/ECG HR + RR-interval HRV is AUTHORITATIVE and wins
         over the phone's best-effort ballistocardiogram HR. If the cardiac sensor is absent or
@@ -541,7 +604,7 @@ def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
 
     Each field is gated by ITS OWN freshness (a disconnected Verity doesn't strand a live phone,
     and vice-versa). Returns per-field values + ages, or None if nothing fresh is available.
-    ``hr_source`` records which channel actually supplied HR ("verity"/"phone"), for the UI."""
+    ``hr_source``/``movement_source`` record which channel actually supplied each, for the UI."""
     phone = read_sensor_sample(conn)
     card = read_cardiac_sample(conn)
 
@@ -554,8 +617,17 @@ def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
             return (None, None)
         return (v, a)
 
-    # movement: phone only
+    # movement: phone first (native 0..1 index), else the wearable's own accelerometer
     mv, mv_age = _fresh(phone, "movement", movement_max_age_s)
+    mv_source = "phone" if mv is not None else None
+    if mv is None:
+        act = read_actigraphy_sample(conn)
+        pim, pim_age = _fresh(act, "pim", movement_max_age_s)
+        if pim is not None:
+            idx = actigraphy_movement_index(pim)
+            if idx is not None:
+                mv, mv_age = idx, pim_age
+                mv_source = (act.get("source") or "verity")
     # HR: dedicated cardiac sensor first (authoritative), else phone best-effort BCG
     hr, hr_age = _fresh(card, "hr", cardiac_max_age_s)
     hr_source = (card.get("source") or "verity") if card and hr is not None else None
@@ -572,7 +644,7 @@ def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
     return {
         "hr": hr, "hrv": hrv, "movement": mv,
         "hr_age_seconds": hr_age, "hrv_age_seconds": hrv_age, "movement_age_seconds": mv_age,
-        "hr_source": hr_source,
+        "hr_source": hr_source, "movement_source": mv_source,
     }
 
 

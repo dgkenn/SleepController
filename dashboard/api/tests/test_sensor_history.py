@@ -28,6 +28,10 @@ def test_sensor_history_series_returns_dense_hr(client):
     from app.db import get_repo
     repo = get_repo()
     repo.conn.execute("DELETE FROM sensor_samples")
+    # These tests assert on the ACTIVITY series, and sensor_history_series prefers wearable
+    # actigraphy counts over the phone index whenever any exist -- so this test owns that table
+    # too, or a stray row left by an earlier test silently replaces the series under it.
+    repo.conn.execute("DELETE FROM actigraphy")
     repo.conn.commit()
     _seed(repo.conn, n=40, step_s=2.0)
     hist = bridge.sensor_history_series(repo.conn, minutes=45.0)
@@ -49,6 +53,10 @@ def test_sensor_history_series_respects_window(client):
     from app.db import get_repo
     repo = get_repo()
     repo.conn.execute("DELETE FROM sensor_samples")
+    # These tests assert on the ACTIVITY series, and sensor_history_series prefers wearable
+    # actigraphy counts over the phone index whenever any exist -- so this test owns that table
+    # too, or a stray row left by an earlier test silently replaces the series under it.
+    repo.conn.execute("DELETE FROM actigraphy")
     repo.conn.commit()
     # one very old row + fresh rows; the old one must fall outside the window
     old = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
@@ -80,6 +88,10 @@ def test_bridge_wearable_source_exposes_history(client):
     from sleepctl.adapters.bcg import BridgeWearableSource
     repo = get_repo()
     repo.conn.execute("DELETE FROM sensor_samples")
+    # These tests assert on the ACTIVITY series, and sensor_history_series prefers wearable
+    # actigraphy counts over the phone index whenever any exist -- so this test owns that table
+    # too, or a stray row left by an earlier test silently replaces the series under it.
+    repo.conn.execute("DELETE FROM actigraphy")
     repo.conn.commit()
     _seed(repo.conn, n=20, step_s=2.0)
     hist = BridgeWearableSource(repo).read_history(minutes=45.0)
