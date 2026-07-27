@@ -129,14 +129,76 @@ if (Get-Command tailscale -ErrorAction SilentlyContinue) {
     Write-Host "(tailscale CLI not found)"
 }
 
+# ------------------------------------------------------------------ supervisor + power
+# The single most common "everything silently stopped days ago" cause is NOT a crash -- the
+# watchdog auto-restarts those within ~15s and the Scheduled Task relaunches the watchdog itself
+# within a minute. It's the box going away: powered off, or asleep on BATTERY (windows-always-on
+# only disables sleep on AC), or the task being stopped/disabled/unregistered. None of that is
+# visible in the logs -- the logs just END -- so print the supervisor and power state explicitly.
+Section "SCHEDULED TASK 'SleepController' + POWER"
+try {
+    $task = Get-ScheduledTask -TaskName "SleepController" -ErrorAction Stop
+    $info = Get-ScheduledTaskInfo -TaskName "SleepController" -ErrorAction Stop
+    Write-Host ("state          : {0}" -f $task.State)   # Ready | Running | Disabled
+    Write-Host ("last run       : {0}" -f $info.LastRunTime)
+    # 0 = the action exited cleanly; 0x41301 (267009) = "task is currently running" -- the normal,
+    # healthy value here, because the watchdog is meant to never exit.
+    $note = "(non-zero -- the watchdog exited; see watchdog.log tail below)"
+    if ($info.LastTaskResult -eq 0) { $note = "(exited cleanly -- watchdog is NOT supervising)" }
+    if ($info.LastTaskResult -eq 267009) { $note = "(running -- normal)" }
+    Write-Host ("last result    : 0x{0:X} {1}" -f $info.LastTaskResult, $note)
+    Write-Host ("next run       : {0}" -f $info.NextRunTime)
+    Write-Host ("missed runs    : {0}" -f $info.NumberOfMissedRuns)
+    if ($task.State -eq "Disabled") {
+        Write-Host "TASK IS DISABLED -- nothing will start it. Fix: Enable-ScheduledTask SleepController" -ForegroundColor Red
+    } elseif ($task.State -ne "Running") {
+        Write-Host "TASK IS NOT RUNNING -- fix: Start-ScheduledTask SleepController" -ForegroundColor Red
+    }
+} catch {
+    Write-Host "TASK NOT REGISTERED -- the controller will NOT survive a reboot." -ForegroundColor Red
+    Write-Host "Fix: run scripts\windows-always-on.ps1 in an ADMINISTRATOR PowerShell."
+}
+
+Write-Host ""
+try {
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+    $boot = $os.LastBootUpTime
+    $up = (Get-Date) - $boot
+    Write-Host ("last boot      : {0}  (up {1}d {2}h {3}m)" -f $boot, $up.Days, $up.Hours, $up.Minutes)
+    Write-Host "                 (if 'last boot' is RECENT but the health snapshot is DAYS old, the box"
+    Write-Host "                  was off/asleep for that gap -- not a software fault.)"
+} catch { Write-Host "last boot      : (could not read)" }
+try {
+    $bat = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($bat) {
+        # BatteryStatus 2 = AC connected. Anything else means we're on battery, where the
+        # always-on power policy does NOT apply and Windows will sleep the box out from under us.
+        $onAc = ($bat.BatteryStatus -eq 2)
+        Write-Host ("power          : {0} (charge {1}%)" -f $(if ($onAc) { "AC" } else { "ON BATTERY" }), $bat.EstimatedChargeRemaining)
+        if (-not $onAc) {
+            Write-Host "RUNNING ON BATTERY -- plug it in. Sleep is only disabled on AC, so an unplugged" -ForegroundColor Red
+            Write-Host "laptop will suspend and the controller stops until something wakes it." -ForegroundColor Red
+        }
+    } else {
+        Write-Host "power          : no battery detected (desktop/AC-only)"
+    }
+} catch { Write-Host "power          : (could not read)" }
+
 # ------------------------------------------------------------------ heartbeats + logs
 Section "HEARTBEATS (.run)"
 function HeartbeatAge($name) {
     $path = Join-Path $run "$name.heartbeat"
     if (-not (Test-Path $path)) { Write-Host "$name.heartbeat : MISSING"; return }
     $lastWrite = (Get-Item $path).LastWriteTime
-    $age = [int]((Get-Date) - $lastWrite).TotalSeconds
-    Write-Host "$name.heartbeat : last write ${age}s ago  ($lastWrite)"
+    $span = (Get-Date) - $lastWrite
+    # A heartbeat measured in DAYS is the tell that the box was away, not that a process is slow --
+    # don't bury that in a six-digit second count.
+    $age = "{0}s" -f [int]$span.TotalSeconds
+    if ($span.TotalMinutes -ge 5) {
+        $age = "{0}d {1}h {2}m" -f $span.Days, $span.Hours, $span.Minutes
+    }
+    $line = "$name.heartbeat : last write $age ago  ($lastWrite)"
+    if ($span.TotalMinutes -gt 5) { Write-Host $line -ForegroundColor Red } else { Write-Host $line }
 }
 if (-not (Test-Path $run)) {
     Write-Host "$run does not exist -- nothing has ever run here."
@@ -151,7 +213,8 @@ if (-not (Test-Path $run)) {
     } else {
         Write-Host "watchdog.alert : (none -- no active restart-storm or smoke-test failure)"
     }
-    foreach ($resultFile in @("validate.result", "smoke.result")) {
+    foreach ($resultFile in @("validate.result", "smoke.result", "health-publish.result",
+                              "update.result", "webbuild.result")) {
         $p = Join-Path $run $resultFile
         if (Test-Path $p) {
             Write-Host "${resultFile} :"
@@ -194,9 +257,19 @@ if (-not (Test-Path $envPath)) {
     }
     # Secrets: NEVER print the value, only whether it's present.
     foreach ($k in @("EIGHTSLEEP_EMAIL", "EIGHTSLEEP_PASSWORD", "DIAG_TOKEN", "CALENDAR_ICS_URL",
-                     "DASHBOARD_PASSWORD", "JWT_SECRET")) {
+                     "DASHBOARD_PASSWORD", "JWT_SECRET", "GIT_PUSH_TOKEN", "HEALTHCHECKS_URL")) {
         $present = $vars.ContainsKey($k) -and $vars[$k]
         Write-Host ("{0,-20} = {1}" -f $k, $(if ($present) { "SET" } else { "MISSING" }))
+    }
+    # These two are why an outage can go unnoticed for days, so call them out rather than
+    # leaving them as one more MISSING line in a list.
+    if (-not ($vars.ContainsKey("HEALTHCHECKS_URL") -and $vars["HEALTHCHECKS_URL"])) {
+        Write-Host "NO DEAD-MAN'S SWITCH: nothing off-box notices if this machine goes dark." -ForegroundColor Yellow
+        Write-Host "  Fix: create a free healthchecks.io check and set HEALTHCHECKS_URL in deploy\.env."
+    }
+    if (-not ($vars.ContainsKey("GIT_PUSH_TOKEN") -and $vars["GIT_PUSH_TOKEN"])) {
+        Write-Host "NO GIT_PUSH_TOKEN: the health snapshot / offsite backup pushes rely on whatever" -ForegroundColor Yellow
+        Write-Host "  credential the Scheduled Task's user happens to have -- which is usually none."
     }
 }
 
