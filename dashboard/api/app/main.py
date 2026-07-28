@@ -1289,6 +1289,34 @@ async def _run_diag_probe() -> dict:
 _DIAG_PROBE_TIMEOUT_S = 20.0
 
 
+@app.get("/diag/preflight")
+def diag_preflight(token: str = "", sensor: int = 1, format: str = "",
+                   repo=Depends(repo_dep)):
+    """GO / NO-GO for tonight — the same verdict ``sleepctl preflight`` prints, over HTTP.
+
+    ``/diag`` answers "what is wrong"; this answers "can it do its job tonight", which is a
+    different question with a different answer. DEGRADED spans both "the web UI is down" and "the
+    bed is being sent no commands at all", and a HEALTHY box in dry-run mode steers nothing while
+    every check stays green. Existing as an endpoint means the answer is reachable from a phone
+    without shelling into the host — which is the situation this is actually needed in.
+
+    ``?sensor=0`` for a Pod-only night (a silent Verity stops being blocking). ``?format=json``
+    (default) returns the structured report; anything else renders the text form. Gated exactly
+    like ``/diag`` (404 on a missing/wrong ``DIAG_TOKEN``); operational metadata only, no
+    biometrics. Read-only — it runs the diagnostic battery and reads the DB, nothing else."""
+    _diag_gate(token)
+    from app.diagnostics import run_diagnostics
+    from sleepctl.preflight import evaluate, format_report
+
+    # Reuse ONE battery for both the checks and the verdict derived from them, so the two can
+    # never disagree, and a request costs one battery rather than two.
+    checks = (run_diagnostics(repo, run_dir=_run_dir()) or {}).get("checks") or []
+    rep = evaluate(repo, want_sensor=bool(sensor), checks=checks)
+    if format and format != "json":
+        return PlainTextResponse(format_report(rep))
+    return JSONResponse(rep.to_dict())
+
+
 @app.get("/diag/probe")
 def diag_probe(token: str = ""):
     """A fresh, READ-ONLY Eight Sleep cloud round-trip -- bypasses the daemon's (possibly

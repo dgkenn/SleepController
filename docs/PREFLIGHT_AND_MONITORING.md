@@ -17,6 +17,18 @@ sleepctl preflight --no-sensor     # Pod-only night
 sleepctl preflight --json          # for scripts; exit code 1 == NO_GO
 ```
 
+Reachable remotely too, because standing at the machine is not the situation you need it in:
+
+```
+GET /diag/preflight?token=<DIAG_TOKEN>              # JSON
+GET /diag/preflight?token=...&format=text           # the rendered report
+GET /diag/preflight?token=...&sensor=0              # Pod-only night
+```
+
+and the verdict rides in the published health snapshot (`preflight` block on the `health`
+branch) — the only window into the box from off-site. All three derive the verdict from the
+**same** battery whose checks are reported beside it, so they can never disagree with each other.
+
 Thirty checks across two batteries with three severities is not an answer to "can I rely on this
 tonight", and the severities aren't tuned for that question anyway. The preflight re-reads the
 **same** checks through that one lens and sorts them:

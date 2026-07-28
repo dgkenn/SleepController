@@ -25,6 +25,7 @@ and no third battery to keep in sync.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -87,7 +88,14 @@ class PreflightReport:
                 "notes": _items(self.notes), "sources": self.sources}
 
 
-def api_port_open(host: str = "127.0.0.1", port: int = 8000, timeout: float = 0.5) -> bool:
+#: Where the API listens. The Windows watchdog starts uvicorn on 8000 (scripts/windows-watchdog.ps1
+#: Start-Api), which is the deployment this runs on — but a hardcoded port would turn any other
+#: layout into a permanent, unexplained NO_GO, which is worse than not checking at all. Overridable.
+DEFAULT_API_PORT = int(os.environ.get("SLEEPCTL_API_PORT") or 8000)
+
+
+def api_port_open(host: str = "127.0.0.1", port: Optional[int] = None,
+                  timeout: float = 0.5) -> bool:
     """Is something listening on the API port?
 
     The runtime battery's own ``api`` check is a TAUTOLOGY — it reasons "this function is running,
@@ -99,7 +107,7 @@ def api_port_open(host: str = "127.0.0.1", port: int = 8000, timeout: float = 0.
     import socket
 
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with socket.create_connection((host, int(port or DEFAULT_API_PORT)), timeout=timeout):
             return True
     except Exception:
         return False
@@ -128,11 +136,17 @@ def _runtime_checks(repo) -> Optional[List[dict]]:
         return None
 
 
-def evaluate(repo, want_sensor: bool = True, cfg=None) -> PreflightReport:
+def evaluate(repo, want_sensor: bool = True, cfg=None, checks=None) -> PreflightReport:
     """Build the go/no-go. ``want_sensor`` treats a silent Verity as blocking — the right default
-    when the whole point of tonight is a wearable-driven night; pass False for a Pod-only run."""
+    when the whole point of tonight is a wearable-driven night; pass False for a Pod-only run.
+
+    ``checks`` accepts an already-computed runtime battery. Callers that just ran diagnostics (the
+    ``/diag`` endpoint, the health-snapshot publisher) pass theirs rather than paying for a second
+    full battery — and, more importantly, get a verdict derived from the SAME observations they are
+    reporting, instead of a second sample taken moments later that can disagree with it."""
     rep = PreflightReport()
-    checks = _runtime_checks(repo)
+    if checks is None:
+        checks = _runtime_checks(repo)
 
     if checks is None:
         rep.notes.append(PreflightItem(
@@ -147,7 +161,7 @@ def evaluate(repo, want_sensor: bool = True, cfg=None) -> PreflightReport:
         # blocking set, so one entry in one place governs it (see ``api_port_open``).
         if not api_port_open():
             by_id["api"] = {"id": "api", "title": "API process", "status": "fail",
-                            "detail": "nothing is listening on 127.0.0.1:8000",
+                            "detail": f"nothing is listening on 127.0.0.1:{DEFAULT_API_PORT}",
                             "remedy": "the API isn't up — the watchdog should start it; "
                                       "check .run/api.log and .run/api.err"}
 

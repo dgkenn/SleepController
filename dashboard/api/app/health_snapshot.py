@@ -184,8 +184,43 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "version": {"sha": version.get("sha"), "branch": version.get("branch")},
         "checks": _copy_checks(diag.get("checks")),
         "playbook_matches": _copy_playbook_matches(diag.get("playbook_matches")),
+        "preflight": _preflight_block(repo, diag.get("checks")),
     }
     return scrub(snapshot)
+
+
+def _preflight_block(repo, checks) -> dict:
+    """The GO / NO-GO verdict, alongside the raw checks.
+
+    This branch is the ONLY window into the box from off-site, and a list of check statuses is not
+    an answer to the question an off-site reader actually has: can it do its job tonight? The
+    battery's own verdict doesn't answer it either — DEGRADED spans "the web UI is down" and "the
+    bed is receiving no commands at all", and HEALTHY covers dry-run mode, where every check is
+    green and nothing is being steered.
+
+    Built from the checks ALREADY computed above rather than a second battery, so the verdict can
+    never disagree with the checks published beside it. Operational metadata only: ids, titles and
+    the same details already in ``checks``. Best-effort — a failure here degrades to
+    ``available: false`` rather than costing us the whole snapshot."""
+    try:
+        from sleepctl.preflight import evaluate
+    except Exception as exc:
+        return {"available": False, "error": f"preflight unavailable: {exc!r}"}
+    try:
+        rep = evaluate(repo, want_sensor=True, checks=checks)
+    except Exception as exc:
+        return {"available": False, "error": repr(exc)}
+
+    def _items(xs):
+        return [{"id": i.id, "title": i.title, "detail": i.detail, "remedy": i.remedy}
+                for i in xs]
+
+    return {
+        "available": True,
+        "verdict": rep.verdict,
+        "blocking": _items(rep.blocking),
+        "degraded": _items(rep.degraded),
+    }
 
 
 def snapshot_json_bytes(snapshot: dict) -> bytes:
