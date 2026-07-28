@@ -2600,6 +2600,86 @@ def check_and_alert_failures(repo) -> list[dict]:
     return result
 
 
+# ---------------------------------------------------------------- pre-bed readiness alert
+# The preflight only helps if somebody runs it, and nobody remembers to run a health check before
+# bed. Worse, the failure detector above is deliberately a NIGHTTIME pager: it fires once you're
+# already in bed, which is the point for "the reservoir just ran dry" and exactly the wrong time
+# for "the daemon has been dead since this afternoon" -- by then the night is already lost and
+# there is nothing to do but sleep through it.
+#
+# So: check ONCE in the evening, before the night window opens, while there is still time to fix
+# something. Runs at most once per calendar day (the full battery is far too expensive for a
+# per-tick path) and only pages on NO_GO -- a degraded night still goes ahead.
+_PREBED_LAST_RUN_KEY = "prebed_readiness_last_run"      # settings_kv -> ISO date string
+_PREBED_LEAD_HOURS = 2                                  # how long before the night window to check
+
+
+def _prebed_window(now: datetime) -> bool:
+    """True in the couple of hours before the night window opens (default 19:00-21:00)."""
+    start = (_NIGHT_WINDOW_START_HOUR - _PREBED_LEAD_HOURS) % 24
+    end = _NIGHT_WINDOW_START_HOUR
+    h = now.hour
+    return start <= h < end if start <= end else (h >= start or h < end)
+
+
+def check_pre_bed_readiness(repo, now: datetime | None = None, force: bool = False) -> dict | None:
+    """Run the preflight once each evening; page if tonight is a NO_GO.
+
+    Returns the pushed condition dict, or None when nothing was pushed (outside the window,
+    already run today, or the verdict was GO/GO_DEGRADED). ``force`` bypasses the window and the
+    once-a-day guard, for ``POST /diag/action/preflight-alert`` and tests.
+
+    Best-effort throughout: this is called from the control tick, and no failure here may affect
+    the loop."""
+    now = now or datetime.now(timezone.utc)
+    if not force:
+        if not _prebed_window(now):
+            return None
+        if _kv_get_json(repo, _PREBED_LAST_RUN_KEY) == now.date().isoformat():
+            return None
+        _kv_set_json(repo, _PREBED_LAST_RUN_KEY, now.date().isoformat())
+
+    try:
+        from sleepctl.preflight import evaluate
+        rep = evaluate(repo, want_sensor=True)
+    except Exception as exc:
+        try:
+            repo.log_event("alert", "info", "prebed_readiness",
+                           f"pre-bed readiness check failed to run: {exc!r}", None)
+        except Exception:
+            pass
+        return None
+
+    if rep.verdict != "NO_GO":
+        try:
+            repo.log_event("alert", "info", "prebed_readiness",
+                           f"pre-bed readiness: {rep.verdict}", {"verdict": rep.verdict})
+        except Exception:
+            pass
+        return None
+
+    reasons = "; ".join(b.title for b in rep.blocking) or "unknown"
+    cond = {
+        "code": "prebed_not_ready",
+        "title": "Tonight will not work",
+        "body": (f"Preflight says NO-GO: {reasons}. There is still time to fix it — "
+                 f"see the Alerts tab or run scripts\\doctor.ps1."),
+        "verdict": rep.verdict,
+        "blocking": [b.id for b in rep.blocking],
+    }
+    try:
+        repo.log_event("alert", "warn", cond["code"], cond["body"], cond)
+    except Exception:
+        pass
+    try:
+        push_sender.deliver_custom(title=cond["title"], body=cond["body"],
+                                   subscriptions=list_push_subscriptions(repo),
+                                   tag="sleepctl-prebed")
+    except Exception:
+        pass
+    return cond
+
+
 def send_test_night_alert(repo) -> dict:
     """Send a single TEST nighttime-failure push end-to-end (bypassing the live/night gate and
     the per-condition throttle) so delivery can be verified without waiting for a real failure

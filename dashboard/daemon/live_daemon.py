@@ -1027,7 +1027,16 @@ class LiveDashboardDaemon:
             from app import services
             services.check_and_alert_failures(self.repo)
         except Exception as exc:
-            self._log(f"failure-alert check skipped: {exc}")
+            self._skip("failure-alert check", exc)
+        # Separately: the once-an-evening readiness check. The detector above is a NIGHTTIME
+        # pager — right for "the reservoir just ran dry", useless for "the daemon died this
+        # afternoon", which you can only act on BEFORE you're in bed. Self-gated to the pre-bed
+        # window and once per calendar day, so calling it every tick costs nothing.
+        try:
+            from app import services
+            services.check_pre_bed_readiness(self.repo)
+        except Exception as exc:
+            self._skip("pre-bed readiness check", exc)
 
     def _refresh_hue(self) -> None:
         """(Re)build the Hue dawn driver from the stored config; toggle the orchestrator's light

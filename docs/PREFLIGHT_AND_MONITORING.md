@@ -29,6 +29,22 @@ and the verdict rides in the published health snapshot (`preflight` block on the
 branch) — the only window into the box from off-site. All three derive the verdict from the
 **same** battery whose checks are reported beside it, so they can never disagree with each other.
 
+### It runs itself once an evening
+
+The preflight only helps if somebody runs it, and nobody remembers to run a health check before
+bed. So the daemon calls `services.check_pre_bed_readiness` every tick; it self-gates to the two
+hours before the night window opens (default 19:00–21:00), runs at most once per calendar day, and
+pages the phone **only on NO_GO**.
+
+The distinction from the existing nighttime failure pager matters: that one fires once you're in
+bed, which is right for "the reservoir just ran dry" and useless for "the daemon died this
+afternoon" — by then the night is already lost. This one fires while there is still time to fix
+something. A GO_DEGRADED night still goes ahead and is deliberately not paged; alerting on a night
+that will happen anyway is how you teach someone to ignore alerts.
+
+Either way the evening verdict is written to the event log, so not paging is not the same as not
+knowing.
+
 Thirty checks across two batteries with three severities is not an answer to "can I rely on this
 tonight", and the severities aren't tuned for that question anyway. The preflight re-reads the
 **same** checks through that one lens and sorts them:
