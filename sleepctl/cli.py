@@ -472,6 +472,29 @@ def _fetch_live_diag(timeout: float = 1.5):
     return data, None
 
 
+def _cmd_preflight(args: argparse.Namespace) -> int:
+    """GO / NO-GO for tonight. See ``sleepctl.preflight`` for why this exists alongside the two
+    diagnostic batteries: it re-reads their checks through the single question "can the controller
+    do its job tonight", which several merely-informational states (dry-run, most of all) answer
+    NO to. Exit code is the verdict, so a watchdog or scheduled task can gate on it."""
+    import json as _json
+
+    from sleepctl.preflight import evaluate, format_report
+    from sleepctl.storage.repository import Repository
+
+    repo = Repository(args.db)
+    try:
+        rep = evaluate(repo, want_sensor=not args.no_sensor, cfg=AppConfig.default())
+    finally:
+        repo.close()
+
+    if args.json:
+        print(_json.dumps(rep.to_dict(), indent=2))
+    else:
+        print(format_report(rep))
+    return 1 if rep.verdict == "NO_GO" else 0
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     """Data + learning + config health check (engine-side). See ``sleepctl.diagnostics``.
 
@@ -643,6 +666,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_doctor.add_argument("--db", default="sleepctl.db")
     p_doctor.add_argument("--json", action="store_true", help="emit the full report as JSON")
     p_doctor.set_defaults(func=_cmd_doctor)
+
+    p_preflight = sub.add_parser(
+        "preflight", help="GO/NO-GO for tonight: can the controller actually do its job?")
+    p_preflight.add_argument("--db", default="sleepctl.db")
+    p_preflight.add_argument("--no-sensor", action="store_true",
+                             help="Pod-only night: don't treat a silent Verity as blocking")
+    p_preflight.add_argument("--json", action="store_true", help="emit the report as JSON")
+    p_preflight.set_defaults(func=_cmd_preflight)
 
     p_repair = sub.add_parser(
         "repair", help="Run safe, idempotent self-repair actions (stuck commands, stale "

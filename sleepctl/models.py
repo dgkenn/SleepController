@@ -64,6 +64,11 @@ class ThermalIntent(Enum):
     # onset and suppresses wakefulness (Raymann/Van Someren); kept small + comfort-capped for
     # a hot sleeper, then the controller cools once asleep to deepen sleep.
     ONSET_WARM = "onset_warm"
+    # OPT-IN post-wake alerting stimulus: once you're CONFIRMED up, briefly run the bed cold.
+    # Cool skin is wake-promoting exactly as warm skin is sleep-permissive (Te Lindert & Van
+    # Someren 2018), so this attacks sleep inertia from the same lever that produced it. Only ever
+    # reached after wake is confirmed, so it can never cool someone who is still asleep.
+    WAKE_COLD_SNAP = "wake_cold_snap"
     # LEGACY: Genuinely COLD opening phase of induction (no longer part of the on-demand cascade).
     # Sheds a hot sleeper's heat and primes peripheral vasoconstriction so the later warm pulse
     # produces a stronger vasodilation contrast. Retained for compatibility but replaced by the

@@ -64,13 +64,15 @@ class Tunables:
     # many minutes AFTER you've surfaced, then stand them down. Dawn-simulation trials hold light
     # for ~20 min past wake to lock in alertness (Gabel 2014; SAD light-box dosing 30–60 min).
     post_wake_light_min: int = 20
-    # Active cool-snap on waking (OPT-IN, not yet wired): once you're confirmed up, briefly drop
-    # the bed cool to kill residual sleepiness via a cool-skin alerting stimulus (Te Lindert & Van
-    # Someren 2018) — plausibly well-suited to a hot sleeper. Off by default; flipping this on is a
-    # no-op until the cooling maneuver is implemented (the flag is plumbed so the wiring is a small
-    # follow-up, and the per-person thermal_wake learner can later own the magnitude/direction).
+    # Active cool-snap on waking (OPT-IN): once you're CONFIRMED up, briefly run the bed cold to
+    # kill residual sleepiness via a cool-skin alerting stimulus (Te Lindert & Van Someren 2018) —
+    # the same lever that makes warm skin sleep-permissive, run in reverse. Plausibly well-suited
+    # to a hot sleeper. OFF by default because it changes what the bed does around your alarm;
+    # turning it on emits ThermalIntent.WAKE_COLD_SNAP during the post-wake phase, bounded by the
+    # usual slew/clamp chain. Gated on CONFIRMED wake, so it can never cool you while asleep.
     wake_cold_snap_enabled: bool = False
-    wake_cold_snap_f: float = 62.0   # intended post-wake cool target (placeholder until wired)
+    wake_cold_snap_f: float = 62.0   # post-wake cool target (absolute, not an offset from neutral)
+    wake_cold_snap_min: int = 10     # how long to hold it after you surface
     induction_minutes_normal: int = 30
     induction_minutes_short: int = 15
     # On-demand onset induction: a small WARM nudge speeds sleep onset (cutaneous warming,

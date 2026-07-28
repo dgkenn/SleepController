@@ -56,6 +56,7 @@ _CHECK_ORDER = [
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
+    "calibration", "prevention_timing",
     "eight_sleep_creds", "version", "log_sizes", "calendar", "shift",
 ]
 
@@ -692,6 +693,92 @@ def _aggregate(checks: list[dict]) -> tuple[str, str, str | None]:
     return "HEALTHY", "all systems nominal", None
 
 
+def _check_calibration(repo) -> dict:
+    """The three measurements that turn evidence PRIORS into this user's physics.
+
+    Everything the controller does with timing is sized off the thermal self-test, and every
+    thermal intent is expressed RELATIVE to the comfort sweep's neutral. Missing, the system still
+    runs — on generic numbers — which is invisible in every other check because nothing is broken.
+    This is the check that says so out loud, with the command to fix each one."""
+    missing: list[str] = []
+    have: list[str] = []
+
+    try:
+        cal = repo.get_thermal_calibration() or {}
+    except Exception:
+        cal = {}
+    if cal.get("cool_lag_min") is not None or cal.get("cool_f_per_min") is not None:
+        have.append("thermal self-test")
+    else:
+        missing.append("thermal self-test (bed's real heat/cool rates + lags — sizes the pre-cool "
+                       "lead, onset cascade and wake ramp; without it those use generic presets)")
+
+    try:
+        comfort = repo.get_comfort_profile() or {}
+    except Exception:
+        comfort = {}
+    if comfort.get("neutral_f") is not None:
+        have.append("comfort sweep")
+    else:
+        missing.append("comfort sweep (your neutral °F — every thermal intent is an offset from "
+                       "it, so a wrong neutral shifts the whole night)")
+
+    try:
+        n_checkins = repo.conn.execute(
+            "SELECT COUNT(*) c FROM context WHERE subjective_quality IS NOT NULL"
+        ).fetchone()["c"]
+    except Exception:
+        n_checkins = 0
+    if n_checkins >= 5:
+        have.append(f"{n_checkins} morning check-ins")
+    else:
+        missing.append(f"morning check-ins ({n_checkins}/5 — they are the ground truth the "
+                       "felt-recovery learners personalize against)")
+
+    if not missing:
+        return _check("calibration", "Personal calibration", "ok",
+                      "all three personalizing measurements present: " + "; ".join(have), None)
+    # INFO, never warn: nothing is broken — the controller runs correctly on priors, it just
+    # isn't yours yet. Degrading the verdict for a setup step the user can only do in bed would
+    # pin the dashboard to DEGRADED for weeks and teach them to ignore the verdict entirely.
+    # Readiness belongs in the preflight (scripts/preflight.py), not in the health gate.
+    status = "info"
+    detail = f"{len(missing)} of 3 missing — the controller is running on evidence priors: " \
+             + " | ".join(missing)
+    if have:
+        detail += f"  (have: {', '.join(have)})"
+    return _check("calibration", "Personal calibration", status, detail,
+                  "in bed: POST /diag/action/self-test, then the comfort sweep from the "
+                  "dashboard; log a check-in each morning (`sleepctl checkin`). Fix the water "
+                  "loop first — both in-bed batteries need a loop that can move heat.")
+
+
+def _check_prevention_timing(repo) -> dict:
+    """Whether pre-emptive cooling can physically arrive before the awakening it targets.
+
+    A prevention loop that is timing-limited looks identical to a weak one in the prevention-rate
+    number the settle learner reads, so surface the split explicitly (see
+    ``sleepctl.learning.prevention_timing``)."""
+    try:
+        from sleepctl.learning.prevention_timing import from_repo as _timing_from_repo
+        rep = _timing_from_repo(repo)
+    except Exception as exc:
+        return _check("prevention_timing", "Awakening pre-emption timing", "info",
+                      f"not computable yet ({exc!r})", None)
+
+    if rep.verdict == "no_thermal_response":
+        return _check("prevention_timing", "Awakening pre-emption timing", "fail",
+                      rep.detail, rep.remedy)
+    if rep.verdict == "timing_limited":
+        return _check("prevention_timing", "Awakening pre-emption timing", "warn",
+                      rep.detail, rep.remedy)
+    if rep.verdict == "insufficient_data":
+        return _check("prevention_timing", "Awakening pre-emption timing", "info",
+                      rep.detail or "no resolved pre-cool events yet", None)
+    return _check("prevention_timing", "Awakening pre-emption timing", "ok",
+                  rep.detail, rep.remedy)
+
+
 def _check_cardiac_sensor(repo) -> dict:
     """Dedicated BLE cardiac sensor (Polar Verity Sense -> /hr/ingest) freshness. Metadata only —
     reports streaming state, not raw HR/HRV."""
@@ -781,6 +868,9 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
+    add("calibration", "Personal calibration", lambda: _check_calibration(repo))
+    add("prevention_timing", "Awakening pre-emption timing",
+        lambda: _check_prevention_timing(repo))
     add("calendar", "Work calendar (ICS)", lambda: _check_calendar(repo))
     add("shift", "Shift plan", lambda: _check_shift(repo))
     add("log_sizes", "Log file sizes", lambda: _check_log_sizes(run_dir))

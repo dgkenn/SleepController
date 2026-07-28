@@ -52,7 +52,14 @@ DEEP_BIAS_COOL → deep_bias_f            (cool)     REM_NEUTRAL → neutral + r
 INDUCTION_COOL → neutral − 2            (cool)     ONSET_WARM  → neutral + onset_warm      (warm)
 SETTLE_COOL    → neutral + settle_nudge (signed)   WAKE_RAMP   → wake_ramp_f               (warm)
 NEUTRAL        → neutral                            STABILIZE   → hold last
+WAKE_COLD_SNAP → wake_cold_snap_f       (cold, absolute — OPT-IN, post-wake only)
 ```
+
+`WAKE_COLD_SNAP` is the one intent that can only be reached *after* wake is CONFIRMED (bed-exit or
+sustained surfacing), so it can never cool a sleeper. It's an absolute target rather than an offset
+because its job is a cool-skin alerting stimulus against sleep inertia — the same lever that makes
+warm skin sleep-permissive, run in reverse (Te Lindert & Van Someren 2018) — and that shouldn't
+shrink just because your comfort neutral is already low. Off by default (`wake_cold_snap_enabled`).
 
 Biases then layer **additively and deterministically**, not competitively:
 - **hot-sleeper cool bias** + **ambient (weather) pre-compensation** shift the cool/neutral targets

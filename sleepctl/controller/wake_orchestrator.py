@@ -74,7 +74,8 @@ class WakeConfig:
     silent_only: bool = True
     light_enabled: bool = False     # drive a smart-bulb dawn via the daemon webhook
     post_wake_light_min: int = 20   # hold the bright light dose this long AFTER you've surfaced
-    cold_snap_enabled: bool = False  # OPT-IN post-wake cool snap (plumbed; behavior not yet wired)
+    cold_snap_enabled: bool = False  # OPT-IN post-wake cool snap (Te Lindert & Van Someren 2018)
+    cold_snap_min: int = 10         # ...held this long after you surface; a jolt, not a soak
     debt_window_shrink: float = 0.4  # high debt shrinks the early window by up to this fraction
     debt_threshold_raise: float = 0.15  # ...and raises the liftable bar by up to this
 
@@ -84,6 +85,7 @@ class WakeConfig:
         c.window_min = int(getattr(t, "wake_window_min", c.window_min))
         c.post_wake_light_min = int(getattr(t, "post_wake_light_min", c.post_wake_light_min))
         c.cold_snap_enabled = bool(getattr(t, "wake_cold_snap_enabled", c.cold_snap_enabled))
+        c.cold_snap_min = int(getattr(t, "wake_cold_snap_min", c.cold_snap_min))
         if getattr(t, "wake_vibration_enabled", True):
             c.gentle_vibration = int(getattr(t, "wake_vibration_power", c.gentle_vibration))
         else:
@@ -266,13 +268,27 @@ class WakeOrchestrator:
             # trials hold light ~20 min past wake — Gabel 2014, doi:10.1016/j.bbr.2014.12.043),
             # while the bed stops warming (warm skin is sleep-permissive — Te Lindert & Van
             # Someren 2018, doi:10.1016/B978-0-444-63912-7.00021-7). In bed only; bed-exit ends it.
-            held = (self._confirmed_at is not None
-                    and (now - self._confirmed_at).total_seconds() < c.post_wake_light_min * 60)
-            if held and frame.presence is not False and c.light_enabled:
-                return WakeAction("post_wake", True, 0, ThermalIntent.NEUTRAL, required_wake,
-                                  p_wake, 1.0, cyc,
-                                  f"awake — bright light dose ({c.post_wake_light_min} min) to "
-                                  "lock in alertness")
+            since_up = ((now - self._confirmed_at).total_seconds()
+                        if self._confirmed_at is not None else None)
+            light_held = (since_up is not None and c.light_enabled
+                          and since_up < c.post_wake_light_min * 60)
+            # OPT-IN cool snap: cool skin is alerting the same way warm skin is sleep-permissive
+            # (Te Lindert & Van Someren 2018), so a brief cold stimulus after you're confirmed up
+            # attacks sleep inertia with the lever that caused it. Shorter than the light dose —
+            # it's a jolt, not a soak. Gated on CONFIRMED wake, so it can never cool a sleeper.
+            snap_held = (since_up is not None and c.cold_snap_enabled
+                         and since_up < c.cold_snap_min * 60)
+            # In bed only; bed-exit ends both.
+            if (light_held or snap_held) and frame.presence is not False:
+                intent = ThermalIntent.WAKE_COLD_SNAP if snap_held else ThermalIntent.NEUTRAL
+                bits = []
+                if light_held:
+                    bits.append(f"bright light dose ({c.post_wake_light_min} min)")
+                if snap_held:
+                    bits.append(f"cool snap ({c.cold_snap_min} min)")
+                return WakeAction("post_wake", True, 0, intent, required_wake,
+                                  p_wake, 1.0 if light_held else 0.0, cyc,
+                                  "awake — " + " + ".join(bits) + " to lock in alertness")
             return WakeAction("done", True, 0, ThermalIntent.WAKE_RAMP, required_wake, p_wake,
                               0.0, cyc, "confirmed up — alarm stood down")
 

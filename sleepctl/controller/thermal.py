@@ -166,6 +166,14 @@ class ThermalController:
             target = self.onset_cold_settle_f + self.ambient_bias_f
         elif intent is ThermalIntent.WAKE_RAMP:
             target = p.wake_ramp_f  # warm toward wake (no cool bias)
+        elif intent is ThermalIntent.WAKE_COLD_SNAP:
+            # Post-wake alerting cool. Deliberately an ABSOLUTE target rather than an offset from
+            # neutral: its job is a cool-skin stimulus against sleep inertia, which shouldn't
+            # shrink just because your comfort neutral is already low. The hot-sleeper bias is
+            # NOT applied for the same reason it isn't to the warm maneuvers — it would double
+            # down on a target that is already deliberately at one extreme. Slew/clamp downstream
+            # still bound how fast it gets there.
+            target = t.wake_cold_snap_f + self.ambient_bias_f
         elif intent is ThermalIntent.STABILIZE:
             target = last_target_f if last_target_f is not None else neutral
         else:  # NEUTRAL
