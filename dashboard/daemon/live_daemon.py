@@ -203,7 +203,7 @@ class LiveDashboardDaemon:
                     "induction", "info", "induce_deadline_constrained", self._induce_note,
                     {"remaining_min": round(remaining_min, 1)})
         except Exception as exc:
-            self._log(f"induce deadline-awareness skipped: {exc}")
+            self._skip("induction deadline-awareness", exc)
 
     def _start_nap(self, duration_min=None, wake_time=None) -> None:
         from sleepctl.controller.nap import NapRequestKind, NapStrategy, fallback_deadline, nap_strategy
@@ -276,7 +276,7 @@ class LiveDashboardDaemon:
                       f"deadline={self.nap_deadline.isoformat()})")
             self._emit_event("nap", "info", "nap_replanned", new_plan.headline, new_plan.to_dict())
         except Exception as exc:
-            self._log(f"nap replan skipped: {exc}")
+            self._skip("nap replan", exc)
 
     def _end_session(self) -> None:
         self.session_mode = "night"
@@ -302,6 +302,23 @@ class LiveDashboardDaemon:
                 print(msg.encode("ascii", "replace").decode("ascii"), flush=True)
             except Exception:
                 pass
+
+    def _skip(self, subsystem: str, exc, note: str = "") -> None:
+        """Record a SWALLOWED subsystem failure, then log it.
+
+        The bare ``_log`` this replaces was invisible twice over: it no-ops entirely when
+        ``verbose`` is off, and even when on it lands in daemon.log, which the watchdog overwrites
+        on the next restart. A subsystem could therefore fail on every tick all night while /diag,
+        the published health snapshot and the verdict all stayed green — the loop is fine, the
+        feature just isn't running. ``sleepctl.degradation`` persists the tally so that shows up.
+        See the ``degraded`` diagnostics check."""
+        try:
+            from sleepctl import degradation
+
+            degradation.record(subsystem, exc, repo=self.repo)
+        except Exception:
+            pass
+        self._log(f"{subsystem} skipped: {exc}" + (f" ({note})" if note else ""))
 
     def _emit_event(self, category: str, severity: str, code: str, message: str,
                     data: Optional[dict] = None) -> None:
@@ -345,7 +362,7 @@ class LiveDashboardDaemon:
                 from sleepctl.controller.thermal_latency import ThermalLatencyModel
                 controller.set_induction_latency(ThermalLatencyModel.from_repo(self.repo))
             except Exception as exc:
-                self._log(f"induction latency skipped: {exc}")
+                self._skip("induction latency", exc)
             # In-bed resting-physiology baseline → arousal/wake-risk anchor.
             controller.set_resting_baseline(self.repo.get_resting_baseline())
             # Personal comfort mapping → the controller's neutral is what YOU feel neutral, not the
@@ -396,7 +413,7 @@ class LiveDashboardDaemon:
             self._precursor_profile = awakening_precursor_profile(self.repo)
             controller.set_precursor_profile(self._precursor_profile)
         except Exception as exc:
-            self._log(f"profile load skipped: {exc}")
+            self._skip("learned profile load", exc)
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the
         # n-of-1 loop: the assigned arm now actually drives the controller).
         try:
@@ -448,7 +465,7 @@ class LiveDashboardDaemon:
             # Hand tonight's PERSONALIZED ideal architecture to the in-night steerer.
             self.cycle.controller.set_night_targets(plan.targets, plan.est_sleep_min)
         except Exception as exc:
-            self._log(f"night-type planning skipped: {exc}")
+            self._skip("night-type planning", exc)
         # Night TYPE is only known now (plan_night just classified it) -- the randomized efficacy
         # micro-trial's eligibility gate needs that, so it's applied here, not at daemon start-up.
         self._apply_efficacy_micro_trial()
@@ -485,7 +502,7 @@ class LiveDashboardDaemon:
             self._log(f"thermal dose-trial: offset {info.get('offset_f'):+.2f}F "
                       f"(eligible={info.get('eligible')})")
         except Exception as exc:
-            self._log(f"thermal dose-trial apply skipped: {exc}")
+            self._skip("thermal dose-trial apply", exc)
 
     def _apply_efficacy_micro_trial(self) -> None:
         """Randomized efficacy MICRO-trial (on by default, conservative): assign 'active' vs
@@ -602,7 +619,7 @@ class LiveDashboardDaemon:
                             self.cycle.controller.set_wake_window(win)
                             self.wake["window_min"] = win
                         except Exception as exc:
-                            self._log(f"wake window selection skipped: {exc}")
+                            self._skip("wake window selection", exc)
                 elif t == "clear_wake":
                     cs.apply_clear_wake(self)
                 elif t == "induce_sleep":
@@ -770,7 +787,7 @@ class LiveDashboardDaemon:
             self.precomp = compute_precompensation(fc, self.cfg)
             self.cycle.controller.thermal.set_ambient_bias(self.precomp.get("bias_f", 0.0))
         except Exception as exc:
-            self._log(f"precompensation refresh skipped: {exc}")
+            self._skip("ambient precompensation", exc)
 
     def _read_frame(self):
         """Read the Pod frame and fuse a fresh wearable sample over it (if a wearable is
@@ -787,7 +804,7 @@ class LiveDashboardDaemon:
                 from sleepctl.adapters.wearable import fuse_sample
                 self._phone_fused = fuse_sample(frame, self.wearable.read_sample())
             except Exception as exc:
-                self._log(f"wearable fusion skipped: {exc}")
+                self._skip("wearable fusion", exc)
             # Attach the DENSE trailing HR/movement series (~1 sample/2 s from the Verity) for the
             # wearable sleep-stager. The frame fields alone are ~1 sample/minute, which washes out
             # the short-timescale HR variability staging relies on. Purely additive and
@@ -801,7 +818,7 @@ class LiveDashboardDaemon:
                     if hist.get("activity"):
                         frame.activity_history = hist["activity"]
             except Exception as exc:
-                self._log(f"dense sensor history unavailable: {exc}")
+                self._skip("dense sensor history", exc)
         return frame
 
     def _refresh_shift_plan(self) -> None:
@@ -812,7 +829,7 @@ class LiveDashboardDaemon:
             from app import services
             self.shift_plan = services.shift_plan_view(self.repo)
         except Exception as exc:
-            self._log(f"shift plan skipped: {exc}")
+            self._skip("shift plan", exc)
             return
         # Calendar-driven auto-wake (mirrors the gym advisor's effective-wake pattern above in
         # `set_wake`): only when the user has NOT set tonight's wake by hand (self.wake is None
@@ -828,7 +845,7 @@ class LiveDashboardDaemon:
                 if auto_wake is not None:
                     self.context.required_wake_time = auto_wake
             except Exception as exc:
-                self._log(f"calendar auto-wake skipped: {exc}")
+                self._skip("calendar auto-wake", exc)
 
     def _safe_device_status(self) -> dict:
         fn = getattr(self.client, "device_status", None)
@@ -874,7 +891,7 @@ class LiveDashboardDaemon:
                         "session_mode": self.session_mode,
                     })
         except Exception as exc:
-            self._log(f"thermal sample skipped: {exc}")
+            self._skip("thermal sampling", exc)
 
     # ------------------------------------------------------------------ snapshot
     def _snapshot(self, decision, frame, error: Optional[str] = None) -> dict:
@@ -1094,7 +1111,7 @@ class LiveDashboardDaemon:
             date = nights[-1].date if nights else datetime.now().date().isoformat()
             bridge.write_wake_log(self.repo.conn, {"date": date, **self._pending_wake})
         except Exception as exc:
-            self._log(f"wake log skipped: {exc}")
+            self._skip("wake log", exc)
         finally:
             self._pending_wake, self._wake_last_stage = None, None
 
@@ -1257,7 +1274,7 @@ class LiveDashboardDaemon:
                         deep_min=night.deep_min, sleep_efficiency=night.sleep_efficiency,
                         hrv=night.avg_hrv)
                 except Exception as exc:
-                    self._log(f"thermal dose-trial outcome skipped: {exc}")
+                    self._skip("thermal dose-trial outcome", exc)
                 self._emit_event("nightly", "info", "nightly_close_out",
                                  f"nightly close-out ran for {night_date}",
                                  {"night_date": night_date})
@@ -1279,7 +1296,7 @@ class LiveDashboardDaemon:
                 bridge.prune_thermal_samples(self.repo.conn)
                 self._maybe_backup()      # rotating DB backup: once/day, gated on-disk
             except Exception as exc:
-                self._log(f"nightly close-out skipped: {exc}")
+                self._skip("nightly close-out", exc)
             self._attach_profiles(self.cycle.controller)  # learn from the night just ended
             self._saw_sleep = False
 

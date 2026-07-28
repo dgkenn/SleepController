@@ -188,14 +188,27 @@ def first_wake_min(samples: Sequence[dict], start: datetime,
 
 
 def _as_dt(v) -> Optional[datetime]:
+    """Parse to a NAIVE-LOCAL datetime.
+
+    Callers in this codebase are inconsistent about naive-vs-aware timestamps: the daemon writes
+    ``raw_samples``/``precool_events`` as naive local (``datetime.now()``), while other paths use
+    ``datetime.now(timezone.utc)``. Subtracting one from the other raises TypeError, which here
+    would take out every duration this module computes. Normalize on the way in — same defensive
+    posture as ``sleepctl.diagnostics_thermal._parse_iso`` — so one aware row can't poison the
+    analysis. Aware values are converted to local time first, not merely stripped, so the arrival
+    and wake offsets stay correct rather than being silently shifted by the UTC offset."""
     if isinstance(v, datetime):
-        return v
-    if not v:
+        dt = v
+    elif not v:
         return None
-    try:
-        return datetime.fromisoformat(str(v))
-    except (TypeError, ValueError):
-        return None
+    else:
+        try:
+            dt = datetime.fromisoformat(str(v))
+        except (TypeError, ValueError):
+            return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone().replace(tzinfo=None)
+    return dt
 
 
 def analyze(events: Sequence[PreventionEvent]) -> PreventionTimingReport:

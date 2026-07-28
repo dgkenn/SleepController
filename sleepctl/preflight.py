@@ -53,6 +53,7 @@ _DEGRADE_ON_WARN = {
     "frozen_telemetry": "sensor values have stopped changing",
     "external_conflict": "something else is also commanding the Pod",
     "prevention_timing": "awakening pre-emption is arriving too late to work",
+    "degraded": "subsystems are failing silently and being skipped",
     "recent_errors": "the daemon logged errors recently",
     "cloud_errors": "Eight Sleep cloud calls are failing",
 }

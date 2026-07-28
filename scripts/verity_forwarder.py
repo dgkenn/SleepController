@@ -139,6 +139,36 @@ def _log(msg: str) -> None:
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {msg}", flush=True)
 
 
+# Repeated-identical-failure throttle. This process runs unattended all night at a ~2s POST
+# cadence, so a PERSISTENT failure -- a missing ingest token 401ing every batch is the likely one
+# -- writes ~43k identical lines a night into .run\verity.log, which nothing rotates. That fills
+# the disk that also holds the SQLite DB, and a full disk fails WRITES while deletes still work,
+# so it presents as the controller mysteriously losing data. Log the first occurrence, then back
+# off geometrically, always reporting the true count so the volume never hides the severity.
+_repeat_state: dict = {"key": None, "count": 0, "next_at": 1}
+
+
+def _log_repeating(key: str, msg: str) -> None:
+    """Log ``msg`` for a condition identified by ``key``, throttled while it keeps repeating."""
+    st = _repeat_state
+    if st["key"] != key:
+        if st["key"] is not None and st["count"] > st.get("last_reported", 0):
+            _log(f"(previous condition '{st['key']}' ended after {st['count']} occurrences)")
+        st.update({"key": key, "count": 0, "next_at": 1, "last_reported": 0})
+    st["count"] += 1
+    if st["count"] >= st["next_at"]:
+        suffix = f" [x{st['count']}]" if st["count"] > 1 else ""
+        _log(msg + suffix)
+        st["last_reported"] = st["count"]
+        st["next_at"] = max(2, st["count"] * 4)
+
+
+def _reset_repeat_log() -> None:
+    """Clear the throttle after a success, so the next failure is reported immediately."""
+    if _repeat_state["key"] is not None:
+        _repeat_state.update({"key": None, "count": 0, "next_at": 1, "last_reported": 0})
+
+
 def _adv_uuids(device) -> list[str]:
     """Service UUIDs a scan result advertised (empty if the bleak backend doesn't expose them)."""
     try:
@@ -245,8 +275,10 @@ async def _hr_session(client, args) -> None:
             try:
                 _post(args.url, payload)
                 last_flush["t"] = time.monotonic()
+                _reset_repeat_log()
             except Exception as exc:  # network blip -> drop this batch, keep streaming
-                _log(f"POST failed ({exc}); dropping batch")
+                _log_repeating(f"post:{type(exc).__name__}",
+                               f"POST failed ({exc}); dropping batch")
 
     _log(f"subscribing to HR notifications; forwarding to {args.url}")
     await client.start_notify(HR_MEASUREMENT_UUID, _on_hr)
@@ -452,8 +484,10 @@ async def _pmd_session(client, args) -> bool:
             if len(payload) > 1:  # more than the source tag -> something worth sending
                 try:
                     _post(args.url, payload)
+                    _reset_repeat_log()
                 except Exception as exc:  # network blip -> drop this batch, keep streaming
-                    _log(f"POST failed ({exc}); dropping batch")
+                    _log_repeating(f"post:{type(exc).__name__}",
+                                   f"POST failed ({exc}); dropping batch")
 
             # Quiet PPI is NOT a failure during the documented warm-up: never reconnect on it,
             # and warn at most once per state so the log doesn't fill up while we wait.

@@ -192,6 +192,29 @@ try {
     if (-not (Test-Path $agePath)) { throw "age step produced no output file" }
     Remove-Item -Path $gzPath -Force -ErrorAction SilentlyContinue
 
+    # --- 3b. size guard -------------------------------------------------------------------------
+    # GitHub hard-rejects any blob over 100MB, and warns past 50MB. Once the Verity is streaming,
+    # the DB grows FAST -- roughly 70k rows a night between rr_intervals (one row per heartbeat)
+    # and actigraphy, both retained for 400 days as irreplaceable training data. Left alone this
+    # eventually turns into a nightly push that fails with a confusing remote error. Fail EARLY
+    # with the real reason and the actual number instead.
+    $ageMB = [math]::Round((Get-Item $agePath).Length / 1MB, 1)
+    Log "encrypted blob is ${ageMB}MB"
+    if ($ageMB -ge 95) {
+        $msg = ("encrypted backup is ${ageMB}MB, at/over GitHub's 100MB per-file limit -- the push " +
+                "would be rejected. The DB has outgrown a whole-file offsite backup (per-beat " +
+                "rr_intervals + actigraphy are retained 400 days). Either shorten those retention " +
+                "windows in dashboard/api/app/bridge.py, or switch the offsite leg to backing up " +
+                "only the derived tables. LOCAL rotating backups are unaffected and still running.")
+        Log "FAIL: $msg"
+        Write-Result "FAIL $msg"
+        exit 1
+    }
+    if ($ageMB -ge 50) {
+        Log ("WARN: ${ageMB}MB is past GitHub's 50MB soft warning; the 100MB hard limit is the " +
+             "point where this stops working -- plan the retention change now, not then.")
+    }
+
     # --- 4. push to db-backups branch via a DEDICATED clone (never touch the live working tree)
     $backupRepo = Join-Path $run "backup-repo"
     if (-not (Test-Path (Join-Path $backupRepo ".git"))) {
@@ -262,19 +285,40 @@ try {
         }
     }
 
-    # --- commit + push ---------------------------------------------------------------------------
+    # --- commit as a SINGLE ROOT COMMIT ----------------------------------------------------------
+    # Pruning above deletes old blobs from the WORKING TREE, which is all that a normal commit
+    # changes -- every blob ever pushed stays reachable from the branch's earlier commits, forever.
+    # So the branch grew by one full encrypted database EVERY DAY and nothing ever reclaimed it:
+    # after a year of Verity-sized snapshots that is hundreds of GB of git objects on the remote,
+    # a `git fetch` in the dedicated clone that gets slower every day, and eventually a repo the
+    # host complains about. The 14-blob "prune" gave every appearance of bounding it.
+    #
+    # These are ARTIFACTS, not source: history has no value here, only the current blob set does.
+    # Re-root the branch on each run so it holds exactly one commit containing exactly the blobs we
+    # want to keep, then force-push. Old objects fall out of reach and are collected remotely.
+    # Nothing is lost that the pruned worktree wasn't already discarding.
+    # A run that died between the orphan checkout and the rename would leave _backup_tmp behind and
+    # wedge every subsequent run at "branch already exists". Clear it first; it never holds
+    # anything we need, since the blobs live in the working tree at this point.
+    & git -C $backupRepo branch -D _backup_tmp *> $null
+    & git -C $backupRepo checkout --quiet --orphan _backup_tmp 2>> $logFile
+    Assert-Success "git checkout --orphan _backup_tmp"
     & git -C $backupRepo add -A 2>> $logFile
     Assert-Success "git add -A"
 
     $statusOut = & git -C $backupRepo status --porcelain
     if (-not $statusOut) {
-        Log "nothing changed to commit (unexpected -- the dated blob should always be new); treating as success"
+        Log "nothing staged (unexpected -- the dated blob should always be present); treating as success"
         Write-Result "OK $ts $destName"
         exit 0
     }
 
-    & git -C $backupRepo commit --quiet -m "backup $ts" 2>> $logFile
+    & git -C $backupRepo commit --quiet -m "backup $ts (single-commit artifact branch)" 2>> $logFile
     Assert-Success "git commit"
+    # Move the branch label onto the new root commit, discarding the old chain locally too, so the
+    # dedicated clone doesn't keep growing on this box either.
+    & git -C $backupRepo branch --quiet -M _backup_tmp db-backups 2>> $logFile
+    Assert-Success "git branch -M db-backups"
 
     Log "pushing db-backups to origin"
     # Push using a token from deploy\.env (GIT_PUSH_TOKEN) when set, so it works regardless of WHICH
@@ -291,8 +335,12 @@ try {
             }
         } catch {}
     }
-    & git -C $backupRepo push --quiet $pushTarget db-backups 2>> $logFile
-    Assert-Success "git push origin db-backups"
+    # --force is REQUIRED, not a shortcut: the branch was just re-rooted, so this push is
+    # deliberately not a fast-forward. It is safe here for the same reason the re-rooting is —
+    # db-backups holds artifacts only, and every blob we intend to keep is in the commit being
+    # pushed. It is never used against a source branch.
+    & git -C $backupRepo push --quiet --force $pushTarget db-backups 2>> $logFile
+    Assert-Success "git push --force origin db-backups"
 
     Log "OK: pushed $destName"
     Write-Result "OK $ts $destName"

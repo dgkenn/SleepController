@@ -56,7 +56,7 @@ _CHECK_ORDER = [
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
-    "calibration", "prevention_timing",
+    "degraded", "calibration", "prevention_timing",
     "eight_sleep_creds", "version", "log_sizes", "calendar", "shift",
 ]
 
@@ -693,6 +693,28 @@ def _aggregate(checks: list[dict]) -> tuple[str, str, str | None]:
     return "HEALTHY", "all systems nominal", None
 
 
+def _check_degraded(repo) -> dict:
+    """Subsystems that failed QUIETLY and were skipped.
+
+    The control loop wraps every optional subsystem so a failure degrades that feature instead of
+    killing the night. The blind spot that creates: a feature can be absent for eight hours while
+    every other check stays green, because nothing IS broken — the loop is healthy, it just isn't
+    doing the thing. See ``sleepctl.degradation``."""
+    try:
+        from sleepctl.degradation import recent, summarize
+
+        agg = recent(repo, hours=24.0)
+        status, detail = summarize(agg)
+    except Exception as exc:
+        return _check("degraded", "Silently skipped subsystems", "info",
+                      f"not computable ({exc!r})", None)
+    remedy = None
+    if status == "warn":
+        remedy = ("these ran into an error every time and were skipped — read the daemon.log tail "
+                  "for the traceback; the night ran WITHOUT them")
+    return _check("degraded", "Silently skipped subsystems", status, detail, remedy)
+
+
 def _check_calibration(repo) -> dict:
     """The three measurements that turn evidence PRIORS into this user's physics.
 
@@ -868,6 +890,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
+    add("degraded", "Silently skipped subsystems", lambda: _check_degraded(repo))
     add("calibration", "Personal calibration", lambda: _check_calibration(repo))
     add("prevention_timing", "Awakening pre-emption timing",
         lambda: _check_prevention_timing(repo))

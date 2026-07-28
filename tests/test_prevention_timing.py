@@ -215,3 +215,30 @@ def test_from_repo_never_raises_on_a_broken_repo():
 
     rep = from_repo(Boom())
     assert rep.verdict == "insufficient_data" and rep.n_resolved == 0
+
+
+# ------------------------------------------------------------------ timestamp hygiene
+def test_aware_and_naive_timestamps_can_be_mixed():
+    """The daemon writes naive-local; other paths write aware UTC. Subtracting one from the other
+    raises TypeError, which would take out every duration this module computes."""
+    from datetime import timezone
+
+    start = datetime(2026, 7, 28, 2, 0, 0)
+    aware = [{"ts": (start + timedelta(minutes=i)).replace(tzinfo=timezone.utc).astimezone(),
+              "bed_temp_f": 72.0 if i < 6 else 70.0, "wake_event": 1 if i == 3 else 0}
+             for i in range(-5, 20)]
+    # Must not raise, and must find the same offsets as the naive equivalent.
+    assert measure_arrival_min(aware, start) == 6.0
+    assert first_wake_min(aware, start) == 3.0
+
+
+def test_aware_timestamps_are_converted_not_merely_stripped():
+    """Stripping tzinfo off a UTC value would shift every offset by the local UTC offset."""
+    from datetime import timezone
+
+    start = datetime(2026, 7, 28, 2, 0, 0)
+    naive = _trace(start, 20, lambda i: 72.0 if i < 6 else 70.0)
+    aware = [{"ts": s["ts"].replace(tzinfo=None).astimezone(), **{k: v for k, v in s.items()
+                                                                 if k != "ts"}}
+             for s in naive]
+    assert measure_arrival_min(aware, start) == measure_arrival_min(naive, start)
