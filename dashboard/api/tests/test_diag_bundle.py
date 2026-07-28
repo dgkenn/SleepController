@@ -32,12 +32,8 @@ def test_diag_bundle_requires_token(client, monkeypatch):
     assert client.get("/diag/bundle?token=nope").status_code == 404  # wrong token
 
 
-def test_diag_playbook_requires_token(client, monkeypatch):
-    monkeypatch.delenv("DIAG_TOKEN", raising=False)
-    assert client.get("/diag/playbook").status_code == 404
-    monkeypatch.setenv("DIAG_TOKEN", "s3cret-xyz")
-    assert client.get("/diag/playbook").status_code == 404
-    assert client.get("/diag/playbook?token=nope").status_code == 404
+# (The identical /diag/playbook token-gate test lives in test_diag_playbook_endpoint.py, which is
+# that endpoint's home. It was duplicated verbatim here; one copy is enough.)
 
 
 # ------------------------------------------------------------------ text bundle: shape + redaction

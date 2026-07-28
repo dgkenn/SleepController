@@ -172,8 +172,14 @@ def test_format_report_renders_every_verdict():
         assert verdict.split("_")[0] in text
 
 
-def test_to_dict_is_json_safe(monkeypatch, repo):
+def test_to_dict_round_trips_through_json(monkeypatch, repo):
+    """It is served over HTTP and written into the published snapshot, so it must both encode
+    and survive encoding with its content intact -- not merely fail to crash."""
     import json
 
-    _with(monkeypatch, _ALL_GREEN)
-    json.dumps(evaluate(repo).to_dict())
+    _with(monkeypatch, _ALL_GREEN + [_check("priming", "warn", detail="priming")])
+    rep = evaluate(repo)
+    out = json.loads(json.dumps(rep.to_dict()))
+    assert out["verdict"] == rep.verdict
+    assert [d["id"] for d in out["degraded"]] == [d.id for d in rep.degraded]
+    assert out["sources"] == rep.sources

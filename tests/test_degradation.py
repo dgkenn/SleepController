@@ -64,15 +64,18 @@ def test_accepts_a_plain_string_reason():
     assert led.snapshot()["thing"]["error"] == "no weather provider configured"
 
 
-def test_record_never_raises():
-    """It runs inside the except blocks that keep the night alive."""
+def test_record_never_raises_and_keeps_working_afterwards():
+    """It runs inside the except blocks that keep the night alive, so it must not raise -- but
+    swallowing everything would also pass that. It must still be FUNCTIONAL after a bad input."""
     class Nasty:
         def __str__(self):
             raise RuntimeError("even str() explodes")
 
     led = DegradationLedger()
-    led.record("x", Nasty())          # must not raise
+    led.record("x", Nasty())           # must not raise
     led.record(None, ValueError("v"))  # must not raise
+    led.record("stager", ValueError("a real one"))
+    assert led.snapshot()["stager"]["count"] == 1, "the ledger must survive bad input intact"
 
 
 def test_record_survives_a_broken_repo():
@@ -186,3 +189,17 @@ def test_diagnostics_check_is_ok_on_a_clean_night(repo):
     from app import diagnostics
 
     assert diagnostics._check_degraded(repo)["status"] == "ok"
+
+
+def test_a_non_string_subsystem_name_cannot_empty_the_whole_ledger():
+    """Regression: snapshot() sorts its entries, and a None key mixed with strings raised
+    TypeError -- swallowed by its own defensive except into an EMPTY dict, discarding every
+    failure recorded that night. A ledger that loses its contents is worse than none at all."""
+    led = DegradationLedger()
+    led.record(None, ValueError("v"))
+    led.record(42, ValueError("v"))
+    led.record("stager", ValueError("real one"))
+    snap = led.snapshot()
+    assert snap["stager"]["count"] == 1
+    assert len(snap) == 3, snap
+    assert all(isinstance(k, str) for k in snap)

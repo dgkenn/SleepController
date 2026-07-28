@@ -36,6 +36,12 @@ def _dates(n, start=date(2026, 1, 1)):
 
 
 # --------------------------------------------------------------------------- eligibility
+# NOTE: the three eligibility tests below are byte-identical to their counterparts in
+# tests/test_thermal_trial.py. That is deliberate, not redundancy: sleepctl.ml.efficacy_trial.is_eligible is a
+# LITERAL DUPLICATE of the other module's by design (see its docstring) precisely so a change
+# to one trial's gate can never silently change the other's. Two independent tests are what
+# make that guarantee real -- deleting either would defeat the arrangement they exist for.
+
 
 
 def test_eligible_only_on_normal_night_sessions():

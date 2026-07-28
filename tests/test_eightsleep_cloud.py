@@ -514,7 +514,10 @@ def _run(coro):
 
 class TestPrimePod:
     def test_swallows_409_already_priming(self):
+        calls = []
+
         async def failing_prime():
+            calls.append(1)
             try:
                 raise RuntimeError("Conflict")
             except RuntimeError as inner:
@@ -525,6 +528,9 @@ class TestPrimePod:
         client = _make_client(user=user)
 
         _run(client.prime_pod())  # must not raise
+        # ...and it must actually have TRIED. Without this, a prime_pod that silently did
+        # nothing at all would pass a "does not raise" test.
+        assert calls == [1]
 
     def test_propagates_non_409_errors(self):
         async def failing_prime():
@@ -546,14 +552,18 @@ class TestPrimePod:
         with pytest.raises(RuntimeError):
             _run(client.prime_pod())
 
-    def test_success_path_does_not_raise(self):
+    def test_success_path_reaches_the_device(self):
+        calls = []
+
         async def ok_prime():
+            calls.append(1)
             return None
 
         user = SimpleNamespace(prime_pod=ok_prime)
         client = _make_client(user=user)
 
         _run(client.prime_pod())
+        assert calls == [1], "the happy path must actually call the device, not just not raise"
 
 
 # --------------------------------------------------------------------------------------

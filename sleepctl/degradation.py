@@ -59,6 +59,13 @@ class DegradationLedger:
         """Note that ``subsystem`` failed. Persists a row at most once per PERSIST_INTERVAL_S."""
         try:
             err = f"{type(exc).__name__}: {exc}" if isinstance(exc, BaseException) else str(exc)
+            # Coerce the key to a string. ``snapshot()`` sorts the entries, and sorting a dict
+            # whose keys mix None (or anything else non-str) with strings raises TypeError --
+            # which its own defensive except would swallow into an EMPTY snapshot, silently
+            # discarding every subsystem failure recorded that night. A ledger that loses its
+            # contents because one caller passed a None name is worse than no ledger, since the
+            # whole point is to make silent failures visible.
+            subsystem = subsystem if isinstance(subsystem, str) else str(subsystem)
             now = datetime.now()
             mono = time.monotonic()
             with self._lock:
