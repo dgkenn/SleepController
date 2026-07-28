@@ -194,10 +194,12 @@ try {
 
     # --- 3b. size guard -------------------------------------------------------------------------
     # GitHub hard-rejects any blob over 100MB, and warns past 50MB. Once the Verity is streaming,
-    # the DB grows FAST -- roughly 70k rows a night between rr_intervals (one row per heartbeat)
-    # and actigraphy, both retained for 400 days as irreplaceable training data. Left alone this
-    # eventually turns into a nightly push that fails with a confusing remote error. Fail EARLY
-    # with the real reason and the actual number instead.
+    # the DB grows FAST: the forwarder POSTs every ~2s, and each batch appends a row to
+    # rr_intervals, actigraphy AND sensor_samples -- ~14k rows per table per 8h night, with the
+    # first two retained for 400 days as irreplaceable training data. That is on the order of 12M
+    # rows and a multi-hundred-MB compressed blob within months. Left alone it eventually turns
+    # into a nightly push that fails with a confusing remote error. Fail EARLY with the real
+    # reason and the actual number instead.
     $ageMB = [math]::Round((Get-Item $agePath).Length / 1MB, 1)
     Log "encrypted blob is ${ageMB}MB"
     if ($ageMB -ge 95) {

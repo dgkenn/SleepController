@@ -54,6 +54,7 @@ The physical devices, their data paths, and field-debugging notes.
 |---|---|
 | [DASHBOARD.md](DASHBOARD.md) | **Original v1 design doc** — architecture, auth, and data model are still accurate, but the API surface has grown since it was written (see the note at the top of the doc for what's not covered: thermal dose-response, CBT-I, learning phases, shift planning, nap/induce sessions, the `/diag*` surface). Treat `dashboard/api/app/main.py` as the source of truth for the current route list. |
 | [DIAGNOSTICS_CLI.md](DIAGNOSTICS_CLI.md) | `sleepctl doctor` — the offline, data-side health check (schema, data volume/completeness, learner maturity, calibration, setpoint/config sanity, outcome trend). Distinct from the live-runtime `/diag*` surface below. |
+| [PREFLIGHT_AND_MONITORING.md](PREFLIGHT_AND_MONITORING.md) | **New.** `sleepctl preflight` (GO/NO-GO for tonight — the one surface that catches dry-run mode and a dead API port), the silent-failure ledger (`sleepctl/degradation.py`: subsystems that fail every tick while every indicator stays green), and the `calibration` / `prevention_timing` checks. Also documents the offsite-backup re-rooting and forwarder log throttling. |
 | [CLAUDE_REMOTE_OPS.md](CLAUDE_REMOTE_OPS.md) | Runbook for a fresh Claude session operating a live deployment remotely over the token-gated `/diag*` HTTP surface: discovery, health, known-issue playbook matching, remote actions (restart/reconnect/backup/self-test), and the self-update-and-redeploy flow with its threat model. |
 
 ## Notes on how this index was built

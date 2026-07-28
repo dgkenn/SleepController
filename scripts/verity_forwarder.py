@@ -141,10 +141,11 @@ def _log(msg: str) -> None:
 
 # Repeated-identical-failure throttle. This process runs unattended all night at a ~2s POST
 # cadence, so a PERSISTENT failure -- a missing ingest token 401ing every batch is the likely one
-# -- writes ~43k identical lines a night into .run\verity.log, which nothing rotates. That fills
-# the disk that also holds the SQLite DB, and a full disk fails WRITES while deletes still work,
-# so it presents as the controller mysteriously losing data. Log the first occurrence, then back
-# off geometrically, always reporting the true count so the volume never hides the severity.
+# -- writes ~14k identical lines a night into .run\verity.log, which nothing rotates. Left running
+# that is tens of MB a month onto the disk that also holds the SQLite DB, and a full disk fails
+# WRITES while deletes still succeed, so it presents as the controller mysteriously losing data
+# rather than as a disk problem. Log the first occurrence, then back off geometrically, always
+# reporting the true count so the reduced volume never hides the severity.
 _repeat_state: dict = {"key": None, "count": 0, "next_at": 1}
 
 
