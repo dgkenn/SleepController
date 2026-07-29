@@ -305,3 +305,42 @@ def test_determinism_unaffected_by_input_list_order():
     adv2 = recommend_sleep_window(reversed_nights, cfg=cfg)
     assert adv1.direction == adv2.direction
     assert adv1.recommended_tib_min == adv2.recommended_tib_min
+
+
+# ------------------------------------------------------------------ time-of-day coercion
+def test_parse_time_of_day_accepts_a_full_datetime():
+    """REGRESSION: NightSummary.bedtime/wake_time are full datetimes, and a datetime is NOT an
+    instance of datetime.time -- so this raised TypeError on every night that actually had a
+    bedtime recorded. The tests here all passed because they supply strings and time objects;
+    only calling it the way services.cbti_advice does exposed it."""
+    from datetime import datetime as _dt, time as _t
+
+    from sleepctl.cbti import _parse_time_of_day
+
+    assert _parse_time_of_day(_dt(2026, 7, 1, 23, 30)) == _t(23, 30)
+    assert _parse_time_of_day(_t(23, 30)) == _t(23, 30)
+    assert _parse_time_of_day("23:30") == _t(23, 30)
+    assert _parse_time_of_day("23:30:59") == _t(23, 30)
+
+
+def test_parse_time_of_day_still_rejects_nonsense():
+    import pytest as _pytest
+
+    from sleepctl.cbti import _parse_time_of_day
+
+    for bad in (None, 1234, [], {}):
+        with _pytest.raises(TypeError):
+            _parse_time_of_day(bad)
+
+
+def test_stimulus_control_tips_handles_datetime_bedtimes():
+    """The end-to-end shape services.cbti_advice actually passes."""
+    from datetime import datetime as _dt
+
+    from sleepctl.cbti import stimulus_control_tips
+
+    rows = [{"date": f"2026-07-{i + 1:02d}", "time_in_bed_min": 480.0,
+             "total_sleep_min": 420.0, "sleep_efficiency": 0.875, "wake_events": 1,
+             "bedtime": _dt(2026, 7, i + 1, 21 + (i % 3), 0)} for i in range(10)]
+    tips = stimulus_control_tips(rows)      # must not raise
+    assert isinstance(tips, list)

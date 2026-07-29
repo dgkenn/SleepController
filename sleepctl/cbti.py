@@ -209,7 +209,18 @@ def _wake_count(rec: Any) -> Optional[float]:
     return None
 
 
-def _parse_time_of_day(t: Union[str, dt_time]) -> dt_time:
+def _parse_time_of_day(t: Union[str, dt_time, datetime]) -> dt_time:
+    """Coerce a time-of-day from any of the shapes this module is handed.
+
+    ``datetime`` MUST be accepted and checked FIRST: ``NightSummary.bedtime``/``wake_time`` are
+    full datetimes, which is what ``services.cbti_advice`` passes straight through, and a
+    ``datetime`` is not an instance of ``datetime.time`` — so without this the advisory raised
+    TypeError on any night that actually had a bedtime recorded, i.e. every real night. The
+    module's own tests passed because they supply strings and ``time`` objects; only calling it
+    the way the service does exposes it.
+    """
+    if isinstance(t, datetime):
+        return t.time()
     if isinstance(t, dt_time):
         return t
     if isinstance(t, str):
