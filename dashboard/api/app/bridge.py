@@ -479,8 +479,17 @@ def read_wake_logs(conn: sqlite3.Connection, limit: int = 30) -> list:
 
 
 def read_sensor_sample(conn: sqlite3.Connection) -> dict | None:
-    """Latest phone/sensor sample with a computed ``age_seconds``, or None if never written."""
-    row = conn.execute("SELECT * FROM live_sensor WHERE id = 1").fetchone()
+    """Latest phone/sensor sample with a computed ``age_seconds``, or None if never written.
+
+    Tolerates the table being ABSENT, not just empty: an engine-only database (one opened without
+    the dashboard DDL layered on -- which is what the CLI preflight and any bare tooling get)
+    otherwise turns "the sensor isn't streaming" into an OperationalError that surfaces to the
+    user as "check crashed". Same outcome either way -- no sample -- so say that plainly.
+    """
+    try:
+        row = conn.execute("SELECT * FROM live_sensor WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        return None
     if row is None:
         return None
     d = dict(row)
@@ -512,8 +521,17 @@ def write_cardiac_sample(conn: sqlite3.Connection, sample: dict) -> None:
 
 
 def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
-    """Latest dedicated-cardiac-sensor sample with a computed ``age_seconds``, or None."""
-    row = conn.execute("SELECT * FROM live_cardiac WHERE id = 1").fetchone()
+    """Latest dedicated-cardiac-sensor sample with a computed ``age_seconds``, or None.
+
+    Tolerates the table being ABSENT, not just empty: an engine-only database (one opened without
+    the dashboard DDL layered on -- which is what the CLI preflight and any bare tooling get)
+    otherwise turns "the sensor isn't streaming" into an OperationalError that surfaces to the
+    user as "check crashed". Same outcome either way -- no sample -- so say that plainly.
+    """
+    try:
+        row = conn.execute("SELECT * FROM live_cardiac WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        return None
     if row is None:
         return None
     d = dict(row)

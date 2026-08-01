@@ -179,3 +179,21 @@ def test_daemon_wearable_source_carries_the_fallback_movement(client):
         assert sample.heart_rate == 54.0
     finally:
         repo.close()
+
+
+# ---------------------------------------------------------------- engine-only databases
+def test_the_live_readers_tolerate_their_tables_being_absent(tmp_path):
+    """An ENGINE-ONLY database (no dashboard DDL) is what `sleepctl preflight` and any bare
+    tooling open. Without this the readers raised OperationalError, which the diagnostics battery
+    surfaced to the user as 'check crashed' instead of the truthful 'not streaming' -- confusing
+    output at exactly the moment someone is trying to work out why their sensor is quiet."""
+    from sleepctl.storage.repository import Repository
+    from app import bridge
+
+    repo = Repository(str(tmp_path / "engine_only.db"))
+    try:
+        assert bridge.read_cardiac_sample(repo.conn) is None
+        assert bridge.read_sensor_sample(repo.conn) is None
+        assert bridge.read_fused_sensor(repo.conn) is None
+    finally:
+        repo.close()

@@ -24,6 +24,25 @@ Write-Host "==== Polar Verity Sense setup ===="
 if (-not (Test-Path $py)) { Write-Host "ERROR: venv python missing ($py). Run scripts\windows-setup.ps1 first."; exit 1 }
 if (-not (Test-Path $envPath)) { Write-Host "ERROR: deploy\.env missing. Run scripts\windows-setup.ps1 first."; exit 1 }
 
+# --- 0. is this checkout current? -------------------------------------------------------------
+# A box that has been off for a while runs OLD scripts, so "run the setup script" runs the old
+# setup script -- the one without the ingest-token minting or the streaming verification below.
+# You would follow the instructions exactly and still end up with a silently dead feed. Say so
+# loudly rather than proceeding as if the newest logic were running.
+try {
+    & git -C $Root fetch --quiet origin 2>$null
+    $branch = (& git -C $Root rev-parse --abbrev-ref HEAD 2>$null)
+    $behind = (& git -C $Root rev-list --count "HEAD..origin/$branch" 2>$null)
+    if ($behind -and [int]$behind -gt 0) {
+        Write-Host ""
+        Write-Host "  WARNING: this checkout is $behind commit(s) behind origin/$branch." -ForegroundColor Yellow
+        Write-Host "  You may be running an OLDER version of this very script. Strongly prefer:" -ForegroundColor Yellow
+        Write-Host "      powershell -ExecutionPolicy Bypass -File scripts\go-live.ps1" -ForegroundColor Yellow
+        Write-Host "  which pulls first and re-runs itself on the new code. Continuing anyway..." -ForegroundColor Yellow
+        Write-Host ""
+    }
+} catch {}
+
 # --- 1. install the BLE stack -----------------------------------------------------------------
 Say "installing the Bluetooth library (bleak)..."
 & $py -c "import bleak" 2>$null
