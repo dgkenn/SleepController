@@ -111,6 +111,7 @@ class LiveDaemon:
                 alarm = self.cycle.pending_alarm()
                 if alarm is not None and not dry_run:
                     await self.client.set_wake_alarm(alarm)
+                    self.cycle.mark_alarm_sent()
                 self.cycle.log(frame, decision, now)
 
                 self._log(

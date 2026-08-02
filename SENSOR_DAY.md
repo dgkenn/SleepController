@@ -66,6 +66,18 @@ Run it any time on its own:
 .venv\Scripts\python.exe scripts\verify_sensors.py --db <your sleepctl.db>
 ```
 
+## One thing to check in the Eight Sleep app
+
+The Pod's alarm API can only **modify an existing alarm** — it cannot create one. If you have never
+made a wake alarm in the Eight Sleep app, there is no slot to drive and the vibration alarm cannot
+be programmed at all.
+
+So, once: open the Eight Sleep app and create a single wake alarm. Any time; sleepctl then manages
+its time, level and vibration silently from then on, and never enables audio.
+
+If it's missing you'll see `wake alarm programming` in the `degraded` check with that remedy. It
+retries every tick, so fixing it mid-night still works.
+
 ## Expected first-run outcome
 
 Realistically you will get **NO-GO on the first run**, and that is fine — it tells you what's left.

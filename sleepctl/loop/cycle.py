@@ -32,12 +32,24 @@ class ControlCycle:
         self._wake_alarm_sent = False
 
     def pending_alarm(self):
-        """Return the controller's wake alarm spec once (heat+vibration), else None."""
+        """The wake alarm spec while it still needs programming onto the device, else None.
+
+        Does NOT mark it sent — the caller must call :meth:`mark_alarm_sent` once the device has
+        actually ACCEPTED it. This used to flip the flag on the way out, which meant a single
+        failure in the send (a cloud 5xx, a token refresh, a network blip, or the Pod having no
+        alarm slot to drive) silently discarded the alarm for the WHOLE NIGHT: the spec was
+        recorded as delivered by the act of handing it over. For a user whose only wake mechanism
+        is vibration — audio is deliberately off — that is the difference between waking up and
+        not. Retrying on the next tick costs nothing; the device accepts the same PUT idempotently.
+        """
         spec = getattr(self.controller, "pending_wake_alarm", None)
         if spec is not None and not self._wake_alarm_sent:
-            self._wake_alarm_sent = True
             return spec
         return None
+
+    def mark_alarm_sent(self) -> None:
+        """Confirm the device accepted the alarm; stops ``pending_alarm`` re-offering it."""
+        self._wake_alarm_sent = True
 
     @staticmethod
     def night_date(now: datetime) -> str:

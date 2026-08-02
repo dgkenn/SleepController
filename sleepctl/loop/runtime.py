@@ -53,6 +53,7 @@ class Runtime:
         alarm = self.cycle.pending_alarm()
         if alarm is not None:
             self.actuator.set_alarm(alarm.time, alarm.vibration_power, alarm.thermal_level)
+            self.cycle.mark_alarm_sent()
         self.cycle.log(frame, decision, now)
         return decision
 

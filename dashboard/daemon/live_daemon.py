@@ -1180,7 +1180,22 @@ class LiveDashboardDaemon:
                     await self._set_level(level)
                 alarm = self.cycle.pending_alarm()
                 if alarm is not None and not self.dry_run:
-                    await self.client.set_wake_alarm(alarm)
+                    # Confirm-on-success: if this raises (cloud 5xx, token refresh, or the Pod
+                    # having no alarm slot), the spec stays pending and the next tick retries it,
+                    # rather than the night silently losing its only wake mechanism.
+                    #
+                    # Contained, too. Unhandled, the failure propagated to the tick handler, which
+                    # HOLDS the whole control loop for that tick -- so a missing alarm slot didn't
+                    # just cost the alarm, it stopped thermal steering on every tick through the
+                    # wake window. The alarm is a backstop for the in-loop escalation ladder;
+                    # losing it must never take maintenance down with it.
+                    try:
+                        await self.client.set_wake_alarm(alarm)
+                        self.cycle.mark_alarm_sent()
+                    except Exception as exc:
+                        self._skip("wake alarm programming", exc,
+                                   note="retrying next tick; if this says 'no alarm slot', "
+                                        "create one wake alarm in the Eight Sleep app once")
             self.cycle.log(frame, decision, now)
             self._capture_wake(decision, frame, now)
             await self._maybe_close_out(decision, now)
