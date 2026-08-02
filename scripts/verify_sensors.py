@@ -227,6 +227,31 @@ def check_calendar(r):
     r.path_ok(f"parsed {len(events)} event(s); garbage input rejected cleanly")
 
 
+def check_hue_dawn(r):
+    """The sunrise ramp: bulb levels through the dawn window + the therapy lamp at wake."""
+    from sleepctl.controller.wake_orchestrator import WakeConfig, WakeOrchestrator
+    from sleepctl.models import SensorFrame, SleepStage
+
+    deadline = datetime(2026, 8, 1, 7, 0)
+    orch = WakeOrchestrator(WakeConfig(window_min=30, light_enabled=True))
+    levels = []
+    for i in range(40, -1, -2):
+        t = deadline - timedelta(minutes=i)
+        f = SensorFrame(timestamp=t, stage=SleepStage.DEEP, presence=True, heart_rate=50.0,
+                        hrv=55.0, respiratory_rate=14.0, movement=0.01, bed_temp_f=72.0,
+                        room_temp_f=68.0, data_age_seconds=5)
+        levels.append(orch.evaluate(t, f, [], deadline).light_level)
+    rising = [x for x in levels if x > 0]
+    if not rising:
+        return r.path_dead("the dawn ramp never produced a light level")
+    if rising != sorted(rising):
+        return r.path_dead(f"the sunrise must only brighten, got {rising}")
+    if abs(rising[-1] - 1.0) > 1e-6:
+        return r.path_dead(f"the ramp must reach full brightness, peaked at {rising[-1]}")
+    r.path_ok(f"ramps {rising[0]:.2f} -> {rising[-1]:.2f} over the dawn window "
+              f"({len(rising)} steps)")
+
+
 def check_stager(r):
     """HR (+ optional motion) -> a sleep stage, the signal the controller steers on."""
     from sleepctl.ml.sleep_staging.infer import SleepStager
@@ -295,6 +320,22 @@ def live_state(results, db_path):
              "feed connected" if configured
              else "no feed connected — shift-aware wake planning is inactive")
 
+        # Hue: an OUTPUT, and configured-or-not rather than streaming-or-not. Without target
+        # bulb ids the orchestrator never computes a light level at all (set_dawn_light).
+        try:
+            hrow = repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key='hue_config'").fetchone()
+            import json as _json
+            hc = _json.loads(hrow["value"]) if hrow and hrow["value"] else {}
+        except Exception:
+            hc = {}
+        ready = bool(hc.get("enabled") and hc.get("bridge_ip") and hc.get("token")
+                     and (hc.get("target_ids") or hc.get("target_id")))
+        _set(results, "Hue dawn light (output)",
+             OK if ready else QUIET,
+             "bridge + target bulbs configured; the sunrise ramp is active" if ready
+             else "not configured — the wake still works, silently, with no light")
+
         # The stager is DERIVED, not a sensor: its liveness is "are usable weights loaded".
         try:
             from sleepctl.ml.sleep_staging.infer import SleepStager
@@ -348,6 +389,7 @@ CHANNELS = [
     ("Weather / ambient", "feed-forward setpoint pre-compensation", check_weather),
     ("Work calendar (ICS)", "the wake deadline the night is planned around", check_calendar),
     ("Sleep stager (derived)", "turns HR into the stage the controller steers on", check_stager),
+    ("Hue dawn light (output)", "sunrise ramp before the alarm + therapy lamp at wake", check_hue_dawn),
 ]
 
 

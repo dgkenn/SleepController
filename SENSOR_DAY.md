@@ -57,6 +57,7 @@ up. `scripts\verify_sensors.py` separates the three:
 | Weather / ambient | feed-forward setpoint pre-compensation | QUIET until a location is set |
 | Work calendar (ICS) | the wake deadline the night is planned around | QUIET — not connected |
 | Sleep stager (derived) | turns HR into the stage steered on | OK — weights are bundled |
+| Hue dawn light (output) | sunrise ramp + therapy lamp at wake | QUIET until a bridge is paired |
 
 QUIET is not broken. Only the Verity channels and the bed temperature actually matter for tonight.
 
@@ -77,6 +78,30 @@ its time, level and vibration silently from then on, and never enables audio.
 
 If it's missing you'll see `wake alarm programming` in the `degraded` check with that remedy. It
 retries every tick, so fixing it mid-night still works.
+
+## How the wake actually goes
+
+Verified tick by tick over a simulated window (`tests/test_wake_sequence.py` pins all of it):
+
+```
+06:30  deep   hold        vib   0            light 0.00   waiting for a light-sleep moment
+06:40  deep   dawn        vib   0            light 0.00   holding through deep — dawn ramp on
+06:46  deep   dawn        vib   0            light 0.30   holding through deep — dawn ramp on
+06:48  light  gentle      vib  30  slow      light 0.50   light moment in-window — waking gently
+06:50  light  escalate    vib  70  medium    light 0.50   waking in progress
+06:52  light  fire        vib 100  continuous light 0.60  waking in progress
+07:00  light  fire        vib 100  continuous light 1.00  deadline reached — guaranteed wake
+```
+
+Three things happening in order: the **light leads** (dawn ramp starts ~20 min out, while you're
+still asleep), the alarm **waits through deep sleep** rather than firing on a timer, and the
+**vibration builds** — gentle/slow, then stronger/medium, then full/continuous. Most mornings never
+reach the loud end. If no light moment ever comes, the deadline still fires at full power: no
+light-sleep moment must never mean no wake.
+
+**The light needs Hue configured** (bridge IP, token, and at least one target bulb) in the
+dashboard. Without it the wake works identically, just silently and in the dark — `verify_sensors`
+reports the channel as QUIET rather than broken.
 
 ## Expected first-run outcome
 
