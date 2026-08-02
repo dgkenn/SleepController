@@ -178,6 +178,29 @@ if (-not (Test-Path $verity)) {
     & powershell -NoProfile -ExecutionPolicy Bypass -File $verity
 }
 
+# ---------------------------------------------------------------- 3b. every sensor channel
+Step "3b" "Sensor channels"
+# Each channel is OPTIONAL by design, so a silent one looks exactly like a broken one and both
+# look exactly like one that was never set up. This separates them: PATH = does the code work,
+# LIVE = is data actually arriving.
+$verify = Join-Path $Root "scripts\verify_sensors.py"
+if (Test-Path $verify) {
+    $prevPP = $env:PYTHONPATH
+    $env:PYTHONPATH = "$Root;$Root\dashboard\api;$Root\pyEight"
+    $vdb = $null
+    if (Test-Path $envPath) {
+        Get-Content $envPath | ForEach-Object {
+            if ($_ -match '^\s*SLEEPCTL_DB\s*=\s*(.+)$') { $vdb = $matches[1].Trim() }
+        }
+    }
+    Push-Location $Root
+    if ($vdb) { & $py $verify --db $vdb } else { & $py $verify --paths-only }
+    Pop-Location
+    $env:PYTHONPATH = $prevPP
+} else {
+    Warn "scripts\verify_sensors.py not found -- skipping the per-channel report"
+}
+
 # ---------------------------------------------------------------- 4. the verdict
 Step 4 "Tonight's verdict"
 $prev = $env:PYTHONPATH

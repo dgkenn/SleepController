@@ -29,11 +29,42 @@ Five steps, each printing `[ok]` / `[warn]` / `[FAIL]`:
 | 1 | venv, `deploy\.env`, AC power, disk | Run `scripts\windows-setup.ps1` first |
 | 2 | Scheduled Task + api/daemon/web up | Needs `windows-always-on.ps1` once, as Administrator |
 | 3 | BLE library, scan, token, enable, **wait for samples** | It prints a ranked checklist |
+| 3b | Per-channel sensor report (PATH + LIVE) | See "Which sensors" below |
 | 4 | Preflight → **GO / NO-GO** | See below |
 
 At step 3 it pauses and asks you to put the armband on and press Enter. Single-press the button
 until the LED shows the Bluetooth/HR mode (blue). Wear it on the **upper forearm**, not the wrist —
 optical HR is much better there, and it's what the accuracy research assumed.
+
+## Which sensors, and what "working" means
+
+Every sensor here is optional by design — the controller degrades rather than stops — which makes
+a silent channel look identical to a broken one, and both look identical to one that was never set
+up. `scripts\verify_sensors.py` separates the three:
+
+- **PATH** — does the ingest/decode/fusion code work? Verified with synthetic data; needs no
+  hardware. **All eight channels currently pass.**
+- **LIVE** — is real data arriving right now? Read from the database, only meaningful on the box.
+- **ROLE** — what the controller loses without it.
+
+| Channel | Role | Expected on day one |
+|---|---|---|
+| Verity cardiac (HR/HRV) | onset, arousal, wake-risk, staging | OK once worn |
+| Verity accelerometer | motion **without** the phone | OK once worn |
+| iPhone accelerometer | sub-second motion when the phone's in bed | QUIET — never set up |
+| Eight Sleep Pod frame | stage/presence *if* the membership is active | likely QUIET |
+| Bed temperature | closed-loop feedback + arrival timing | blocked by the prime |
+| Weather / ambient | feed-forward setpoint pre-compensation | QUIET until a location is set |
+| Work calendar (ICS) | the wake deadline the night is planned around | QUIET — not connected |
+| Sleep stager (derived) | turns HR into the stage steered on | OK — weights are bundled |
+
+QUIET is not broken. Only the Verity channels and the bed temperature actually matter for tonight.
+
+Run it any time on its own:
+
+```powershell
+.venv\Scripts\python.exe scripts\verify_sensors.py --db <your sleepctl.db>
+```
 
 ## Expected first-run outcome
 
