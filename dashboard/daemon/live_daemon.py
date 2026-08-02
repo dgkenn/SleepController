@@ -146,6 +146,10 @@ class LiveDashboardDaemon:
         self.thermal_trial_arm = None   # tonight's n-of-1 thermal DOSE-RESPONSE arm, if any
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
+        # True once the Pod has refused an alarm WRITE with 402/403 (subscription-gated).
+        # Latched so we stop retrying a refusal no client can talk its way past, and so
+        # the snapshot can say plainly that vibration is unavailable this night.
+        self._alarm_write_denied = False
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
         self._wake_last_stage = None
         self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
@@ -921,6 +925,10 @@ class LiveDashboardDaemon:
                       "device_target_level": frame.target_level if frame else None,
                       "bed_presence": frame.presence if frame else None,
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
+                      # True once the Pod refused an alarm WRITE (subscription-gated). Published
+                      # so /diag, the health branch and the preflight can all say plainly that
+                      # vibration is unavailable and the wake is running on light + warmth.
+                      "alarm_write_denied": bool(getattr(self, "_alarm_write_denied", False)),
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
                       # Surfaced constraint when "help me fall asleep" is pressed with little
@@ -1192,10 +1200,30 @@ class LiveDashboardDaemon:
                     try:
                         await self.client.set_wake_alarm(alarm)
                         self.cycle.mark_alarm_sent()
+                        self._alarm_write_denied = False
                     except Exception as exc:
+                        # 402/403 is a SERVER-side refusal (Eight Sleep gating the alarm behind a
+                        # subscription). No client can work around that, so retrying it every tick
+                        # is pointless noise -- record it once, loudly, and stand down. The thermal
+                        # wake ramp and the Hue sunrise are driven by us through the ordinary
+                        # setpoint/light paths and keep working, so the wake degrades to
+                        # light + warmth rather than disappearing. That is worth PAGING about:
+                        # for a user who needs silence, vibration was the only tactile cue.
+                        msg = str(exc)
+                        permanent = "402" in msg or "403" in msg
+                        if permanent and not getattr(self, "_alarm_write_denied", False):
+                            self._alarm_write_denied = True
+                            self.cycle.mark_alarm_sent()   # stop re-offering a refused write
+                            self._emit_event(
+                                "alert", "warn", "alarm_write_denied",
+                                "The Pod refused the alarm write (subscription-gated). Vibration "
+                                "is unavailable; waking via the thermal ramp + dawn light only.",
+                                {"error": msg[:300]})
                         self._skip("wake alarm programming", exc,
-                                   note="retrying next tick; if this says 'no alarm slot', "
-                                        "create one wake alarm in the Eight Sleep app once")
+                                   note=("server refused (subscription) — falling back to thermal "
+                                         "+ light wake" if permanent else
+                                         "retrying next tick; if this says 'no alarm slot', "
+                                         "create one wake alarm in the Eight Sleep app once"))
             self.cycle.log(frame, decision, now)
             self._capture_wake(decision, frame, now)
             await self._maybe_close_out(decision, now)

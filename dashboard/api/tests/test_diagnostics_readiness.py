@@ -155,3 +155,41 @@ def test_both_checks_are_registered_in_the_battery(repo, tmp_path):
     report = diagnostics.run_diagnostics(repo, run_dir=str(tmp_path))
     ids = {c["id"] for c in report["checks"]}
     assert {"calibration", "prevention_timing"} <= ids
+
+
+# ------------------------------------------------------------------ wake alarm availability
+def test_wake_alarm_is_ok_when_no_refusal_recorded(repo):
+    c = diagnostics._check_wake_alarm(repo)
+    assert c["status"] == "ok"
+
+
+def test_a_subscription_refusal_is_surfaced_with_the_fallback_named(repo):
+    """Vibration is the only tactile cue for a user who needs silence, so losing it earns its own
+    line — and the message has to say what IS still waking them."""
+    from app import bridge
+
+    bridge.write_runtime_state(repo.conn, {"state": "IDLE", "extra": {
+        "live": True, "dry_run": False, "alarm_write_denied": True}})
+    c = diagnostics._check_wake_alarm(repo)
+    assert c["status"] == "warn"
+    assert "UNAVAILABLE" in c["detail"]
+    assert "thermal ramp" in c["detail"] and "dawn light" in c["detail"]
+    assert "alarm-probe" in c["remedy"]
+
+
+def test_wake_alarm_check_is_registered(repo, tmp_path):
+    report = diagnostics.run_diagnostics(repo, run_dir=str(tmp_path))
+    assert "wake_alarm" in {c["id"] for c in report["checks"]}
+
+
+def test_a_refused_alarm_degrades_the_night_but_does_not_block_it(repo, tmp_path):
+    """You still wake — with light and warmth. Blocking the night over it would be wrong."""
+    from sleepctl.preflight import evaluate
+    from app import bridge
+
+    bridge.write_runtime_state(repo.conn, {"state": "IDLE", "extra": {
+        "live": True, "dry_run": False, "alarm_write_denied": True}})
+    checks = diagnostics.run_diagnostics(repo, run_dir=str(tmp_path))["checks"]
+    rep = evaluate(repo, want_sensor=False, checks=checks)
+    assert "wake_alarm" not in {b.id for b in rep.blocking}
+    assert "wake_alarm" in {d.id for d in rep.degraded}

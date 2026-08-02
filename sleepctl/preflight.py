@@ -55,6 +55,7 @@ _DEGRADE_ON_WARN = {
     "external_conflict": "something else is also commanding the Pod",
     "prevention_timing": "awakening pre-emption is arriving too late to work",
     "degraded": "subsystems are failing silently and being skipped",
+    "wake_alarm": "the Pod refuses the alarm write — no vibration; light + warmth only",
     "recent_errors": "the daemon logged errors recently",
     "cloud_errors": "Eight Sleep cloud calls are failing",
 }

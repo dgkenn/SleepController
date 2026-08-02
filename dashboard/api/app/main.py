@@ -1286,6 +1286,65 @@ async def _run_diag_probe() -> dict:
             pass  # never let a close-time error mask (or crash past) the probe's real result
 
 
+async def _run_alarm_probe() -> dict:
+    """Can this account still write the Pod's alarm? Opens its own brief session, like the
+    read probe, and asks the server rather than inferring from what the app UI shows."""
+    from sleepctl.adapters.credentials import load_credentials
+
+    creds = load_credentials()
+    if not creds.is_complete():
+        return {"ok": False, "writable": False,
+                "detail": "no Eight Sleep credentials configured", "remedy": None}
+    try:
+        from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+    except Exception as exc:
+        return {"ok": False, "writable": False, "detail": f"pyEight import failed: {exc}",
+                "remedy": None}
+
+    client = EightSleepClient(creds.email, creds.password, creds.timezone, creds.side,
+                              creds.client_id, creds.client_secret)
+    try:
+        await client.connect()
+        inner = getattr(client, "_client", None) or getattr(client, "client", None) or client
+        probe = getattr(inner, "probe_alarm_capability", None)
+        if probe is None:
+            return {"ok": False, "writable": False,
+                    "detail": "this client build has no alarm probe", "remedy": None}
+        return await probe()
+    except Exception as exc:
+        return {"ok": False, "writable": False,
+                "detail": f"{type(exc).__name__}: {exc}", "remedy": None}
+    finally:
+        try:
+            await client.close()
+        except Exception:
+            pass
+
+
+@app.get("/diag/alarm-probe")
+def diag_alarm_probe(token: str = ""):
+    """Does the Pod's alarm API still accept a write from this account?
+
+    Eight Sleep put alarm editing behind a subscription IN THE APP. That says nothing about the
+    API — a paywall enforced in the UI leaves the endpoint working, and this controller has always
+    gone straight to the API with the owner's own credentials rather than through the app. Rather
+    than guess, this attempts the write and reports what the server actually said.
+
+    The attempt is a NO-OP: the existing alarm is read and PUT back byte-for-byte, so nothing
+    about the alarm changes while write access is proven either way. Gated exactly like /diag."""
+    _diag_gate(token)
+    try:
+        result = asyncio.run(asyncio.wait_for(_run_alarm_probe(), timeout=_DIAG_PROBE_TIMEOUT_S))
+    except asyncio.TimeoutError:
+        result = {"ok": False, "writable": False,
+                  "detail": f"alarm probe timed out after {_DIAG_PROBE_TIMEOUT_S:.0f}s",
+                  "remedy": None}
+    except Exception as exc:
+        result = {"ok": False, "writable": False,
+                  "detail": f"{type(exc).__name__}: {exc}", "remedy": None}
+    return JSONResponse(result)
+
+
 _DIAG_PROBE_TIMEOUT_S = 20.0
 
 

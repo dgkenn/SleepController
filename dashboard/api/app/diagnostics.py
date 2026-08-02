@@ -56,7 +56,7 @@ _CHECK_ORDER = [
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
-    "degraded", "calibration", "prevention_timing",
+    "wake_alarm", "degraded", "calibration", "prevention_timing",
     "eight_sleep_creds", "version", "log_sizes", "calendar", "shift",
 ]
 
@@ -693,6 +693,32 @@ def _aggregate(checks: list[dict]) -> tuple[str, str, str | None]:
     return "HEALTHY", "all systems nominal", None
 
 
+def _check_wake_alarm(repo) -> dict:
+    """Whether the Pod will actually buzz, or the wake has fallen back to light + warmth.
+
+    Eight Sleep gates alarm editing behind a subscription. If the API refuses the WRITE (402/403)
+    the controller keeps waking you with the thermal ramp and the dawn light — both of which it
+    drives itself — but the tactile cue is gone. For someone who needs silence that is the ONLY
+    cue they had, so it earns its own line rather than being one entry in a skip tally."""
+    try:
+        from app import bridge
+        rt = bridge.read_runtime_state(repo.conn, 180)
+        extra = rt.get("extra") or {}
+    except Exception as exc:
+        return _check("wake_alarm", "Wake alarm (vibration)", "info",
+                      f"not readable ({exc!r})", None)
+    if extra.get("alarm_write_denied"):
+        return _check(
+            "wake_alarm", "Wake alarm (vibration)", "warn",
+            "the Pod refused the alarm write (subscription-gated) — vibration is UNAVAILABLE; "
+            "waking via the thermal ramp + dawn light only",
+            "confirm with GET /diag/alarm-probe. If it reports the API still accepts writes, this "
+            "was transient. If not, make sure the Hue dawn light is configured — with vibration "
+            "gone it is the main wake cue left.")
+    return _check("wake_alarm", "Wake alarm (vibration)", "ok",
+                  "no alarm-write refusal recorded", None)
+
+
 def _check_degraded(repo) -> dict:
     """Subsystems that failed QUIETLY and were skipped.
 
@@ -890,6 +916,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
+    add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))
     add("degraded", "Silently skipped subsystems", lambda: _check_degraded(repo))
     add("calibration", "Personal calibration", lambda: _check_calibration(repo))
     add("prevention_timing", "Awakening pre-emption timing",

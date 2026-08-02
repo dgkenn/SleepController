@@ -182,6 +182,10 @@ def test_a_failed_send_is_recorded_as_a_degradation_not_swallowed():
     src = (Path(__file__).resolve().parent.parent
            / "dashboard" / "daemon" / "live_daemon.py").read_text()
     i = src.index("await self.client.set_wake_alarm")
-    window = src[i:i + 600]
+    window = src[i:i + 2400]
     assert "_skip(" in window, "a failed alarm send must be recorded to the degradation ledger"
     assert "Eight Sleep app" in window, "the remedy for a missing alarm slot must be stated"
+    # A 402/403 is a SERVER refusal no client can talk past: it must latch and name the fallback,
+    # not retry forever against a wall.
+    assert "402" in window and "403" in window, "a subscription refusal must be detected as such"
+    assert "alarm_write_denied" in window, "the refusal must be latched and published"

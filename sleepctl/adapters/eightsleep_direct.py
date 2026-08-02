@@ -818,6 +818,85 @@ class EightSleepDirectClient:
             "snoozing": False,
         }
 
+    async def probe_alarm_capability(self) -> dict:
+        """Can this account still WRITE the Pod's alarm? Answered by trying, not by guessing.
+
+        Eight Sleep moved alarm editing behind a subscription in the app. That tells us nothing
+        about the API: a paywall enforced only in the app UI leaves the endpoint working, and the
+        controller has always gone straight to the API with the user's own credentials rather than
+        through the app. The only honest way to know which it is, is to attempt the write.
+
+        So: read the existing alarm and PUT IT BACK BYTE-FOR-BYTE. A no-op write changes nothing
+        about the alarm — same time, same enabled state, same everything — while proving whether
+        the server accepts writes at all. Read-only in effect, write-path in what it tests.
+
+        Returns ``{"ok", "writable", "alarm_id", "status", "detail", "remedy"}``. Never raises.
+        """
+        out = {"ok": False, "writable": False, "alarm_id": None, "status": None,
+               "detail": "", "remedy": None}
+        try:
+            data = await self._request("GET", f"{APP_API_URL}/users/{self._user_id}/alarms")
+        except Exception as exc:
+            out["detail"] = f"could not list alarms: {exc}"
+            out["remedy"] = "check credentials / connectivity, then re-run"
+            return out
+
+        alarms = (data or {}).get("alarms") or []
+        if not alarms or not isinstance(alarms[0], dict):
+            out["ok"] = True
+            out["detail"] = "no alarm slot exists on this account"
+            out["remedy"] = ("the API can only MODIFY an existing alarm, never create one — make "
+                             "one wake alarm in the Eight Sleep app once and re-run this probe")
+            return out
+
+        existing = alarms[0]
+        out["alarm_id"] = existing.get("id")
+        out["ok"] = True
+
+        # Echo the alarm back exactly as the server reported it. Fall back to the current
+        # structure field-by-field so a missing sub-object can't turn the no-op into a change.
+        vib = existing.get("vibration") or {}
+        therm = existing.get("thermal") or {}
+        audio = existing.get("audio") or {}
+        smart = existing.get("smart") or {}
+        repeat = existing.get("repeat") or {}
+        payload = self._full_alarm_payload(
+            existing.get("id"),
+            enabled=bool(existing.get("enabled", False)),
+            time_str=str(existing.get("time", "07:00:00")),
+            vibration_enabled=bool(vib.get("enabled", False)),
+            vibration_power=int(vib.get("powerLevel", 0) or 0),
+            vibration_pattern=str(vib.get("pattern", "INTENSE")),
+            thermal_enabled=bool(therm.get("enabled", False)),
+            thermal_level=int(therm.get("level", 0) or 0),
+            audio_enabled=bool(audio.get("enabled", False)),
+            audio_level=int(audio.get("level", 0) or 0),
+            audio_track=str(audio.get("trackId", "futuristic")),
+            smart_light_sleep=bool(smart.get("lightSleepEnabled", False)),
+            smart_sleep_cap=bool(smart.get("sleepCapEnabled", False)),
+            smart_sleep_cap_minutes=int(smart.get("sleepCapMinutes", 0) or 0),
+            weekdays=repeat.get("weekDays"),
+        )
+        try:
+            await self._request(
+                "PUT", f"{APP_API_URL}/users/{self._user_id}/alarms/{existing.get('id')}",
+                json_body=payload)
+            out["writable"] = True
+            out["detail"] = ("the alarm API accepted a write — the controller can drive vibration "
+                             "normally, whatever the app UI says")
+            return out
+        except Exception as exc:
+            msg = str(exc)
+            out["detail"] = f"the alarm API refused the write: {msg}"
+            if "402" in msg or "403" in msg:
+                out["remedy"] = ("the refusal is server-side, so no client can work around it. "
+                                 "The controller falls back to waking you with the thermal ramp "
+                                 "and the Hue sunrise, which it drives itself — see "
+                                 "wake_fallback_enabled in config.")
+            else:
+                out["remedy"] = "unexpected refusal — re-run; if it persists, read the status above"
+            return out
+
     async def set_thermal_alarm(self, alarm_id, time, thermal_level: int) -> None:
         """Program a thermal-only alarm (vibration + audio disabled for silence)."""
         target_id = alarm_id or await self._resolve_alarm_id()

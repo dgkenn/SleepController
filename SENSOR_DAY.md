@@ -67,6 +67,32 @@ Run it any time on its own:
 .venv\Scripts\python.exe scripts\verify_sensors.py --db <your sleepctl.db>
 ```
 
+## If Eight Sleep says alarms are subscription-only
+
+The controller has never gone through the app UI — it talks to the Eight Sleep API directly with
+your own credentials. So a paywall enforced in the *app* may not apply to the *API*, and it can
+only ever MODIFY an existing alarm, which you already have from before the change. Whether the
+server still accepts the write is an empirical question, so ask it:
+
+```
+GET /diag/alarm-probe?token=<DIAG_TOKEN>
+```
+
+It reads your existing alarm and PUTs it back byte-for-byte — a no-op that changes nothing about
+the alarm while proving whether writes are accepted. Three possible answers:
+
+- **`writable: true`** — nothing more to do. Vibration works as designed.
+- **`writable: false` with 402/403** — the refusal is server-side, so no client can work around
+  it. The controller detects this, stops retrying, and says so; see the fallback below.
+- **no alarm slot** — see the next section.
+
+**If vibration really is gone, you still wake up.** The thermal wake ramp and the Hue sunrise are
+driven by the controller through the ordinary setpoint and light paths, which are not gated —
+they're the same mechanisms it uses all night. So the wake degrades from *light + warmth +
+vibration* to *light + warmth*. That is a real loss for someone who needs silence, which is why it
+raises an alert and shows as `Wake alarm (vibration)` in `/diag` rather than failing quietly. With
+vibration gone, **configuring the Hue bridge stops being optional** — it becomes your main cue.
+
 ## One thing to check in the Eight Sleep app
 
 The Pod's alarm API can only **modify an existing alarm** — it cannot create one. If you have never
