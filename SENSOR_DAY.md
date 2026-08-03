@@ -36,6 +36,36 @@ At step 3 it pauses and asks you to put the armband on and press Enter. Single-p
 until the LED shows the Bluetooth/HR mode (blue). Wear it on the **upper forearm**, not the wrist —
 optical HR is much better there, and it's what the accuracy research assumed.
 
+## First: does the armband stream everything?
+
+Before wiring it into the controller, prove the hardware end. One command, 60 seconds:
+
+```powershell
+.venv\Scripts\python.exe scripts\verity_stream_test.py --seconds 120
+```
+
+Wear it on your **upper forearm** and single-press until the LED shows Bluetooth/HR mode first —
+a Verity sitting on a desk streams HR happily and tells you nothing about whether it works on a
+body. Make sure the **Polar phone app is not connected**; it holds an exclusive link.
+
+It starts all four channels, listens, and reports each one as STREAMING / SILENT / REFUSED with
+sample counts and rates:
+
+| Channel | What it's for | Expected |
+|---|---|---|
+| Heart rate (0x180D) | the authoritative cardiac signal | ~1/s within seconds |
+| RR intervals (0x180D) | beat-to-beat -> HRV; irreplaceable training data | ~1/s |
+| Accelerometer (PMD) | actigraphy **without** the phone | ~52/s |
+| Pulse-to-pulse (PMD) | Polar's own beat intervals + error estimate | first batch ~25s in |
+
+**Use `--seconds 120`.** PPI takes ~25s for its first batch, so a 60s run can end before it
+arrives and look like a failure. If PPI is still silent past ~60s the armband is probably in SDK
+mode — power-cycle it (hold the button until it switches off, then on).
+
+Nothing is written to the database and no Pod command is sent; it is purely a listening test.
+It ends with a **PASTE THIS BACK** block — counts and rates only, no identifiers — which is what
+to send me.
+
 ## Which sensors, and what "working" means
 
 Every sensor here is optional by design — the controller degrades rather than stops — which makes
