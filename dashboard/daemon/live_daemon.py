@@ -1382,6 +1382,37 @@ class LiveDashboardDaemon:
                                  "Autopilot disabled for exclusive control", {})
             except Exception as exc:  # pragma: no cover - network dependent
                 self._log(f"WARNING: could not disable Autopilot: {exc!r}")
+        # The recurring bedtime SCHEDULE is a SEPARATE mechanism from Autopilot and can hold a
+        # target that fights our commanded level even when Autopilot is off/unavailable (seen
+        # live via diagnostics_thermal's external_setpoint_conflict on a non-Autopilot account).
+        # Attempt to disable it too. On a free account Eight Sleep's own server paywalls that
+        # write (verified live: 403 "Subscription required" on PUT .../bedtime), so here this can
+        # usually only DISCOVER the conflict, not fix it -- say so distinctly rather than
+        # emitting a generic warning that reads like a bug in this code.
+        if not self.dry_run and hasattr(self.client, "set_schedule_enabled"):
+            try:
+                result = await self.client.set_schedule_enabled(False)
+                if result.get("ok") and result.get("changed"):
+                    self._log("Eight Sleep bedtime SCHEDULE disabled (exclusive control).")
+                    self._emit_event("lifecycle", "info", "schedule_disabled",
+                                     "Bedtime schedule disabled for exclusive control", {})
+                elif result.get("ok"):
+                    self._log(f"Eight Sleep bedtime schedule: {result.get('detail')} "
+                              "(nothing to change).")
+                elif result.get("paywalled"):
+                    self._log("Eight Sleep bedtime schedule is still ACTIVE and CANNOT be "
+                              "disabled via the API on this account -- Eight Sleep's own server "
+                              "refuses the write with 'Subscription required'. It may keep "
+                              "fighting our commanded level; the only known fix is disabling "
+                              "the schedule in the Eight Sleep app itself.")
+                    self._emit_event("lifecycle", "warn", "schedule_disable_paywalled",
+                                     "Bedtime schedule disable blocked by Eight Sleep's "
+                                     "subscription paywall", {})
+                else:
+                    self._log("WARNING: could not disable the Eight Sleep bedtime schedule "
+                              f"({result.get('detail')}) -- it may still fight commanded levels.")
+            except Exception as exc:  # pragma: no cover - network dependent
+                self._log(f"WARNING: could not disable bedtime schedule: {exc!r}")
         # Away mode idles the pod to target 0 (bed does nothing) and poisons side
         # resolution. Something outside our control (Eight Sleep's own app/Autopilot)
         # can enable it -- so the daemon owns this flag: unless the *user* commanded

@@ -547,10 +547,12 @@ def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
 
 def read_actigraphy_sample(conn: sqlite3.Connection) -> dict | None:
     """Latest actigraphy batch (the wearable's OWN accelerometer, via Polar PMD) with a computed
-    ``age_seconds``, or None. Counterpart to ``read_cardiac_sample`` for the motion channel."""
+    ``age_seconds``, or None. Counterpart to ``read_cardiac_sample`` for the motion channel.
+    Carries zcm/n/fs alongside pim so a live-status UI can show the real streaming cadence
+    (samples per batch at the device's own accelerometer rate), not just the actigraphy scalar."""
     try:
         row = conn.execute(
-            "SELECT ts, pim, source FROM actigraphy WHERE pim IS NOT NULL"
+            "SELECT ts, pim, zcm, n, fs, source FROM actigraphy WHERE pim IS NOT NULL"
             " ORDER BY ts DESC LIMIT 1").fetchone()
     except Exception:
         return None
@@ -561,7 +563,8 @@ def read_actigraphy_sample(conn: sqlite3.Connection) -> dict | None:
         age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["ts"])).total_seconds()
     except Exception:
         age = None
-    return {"pim": row["pim"], "source": row["source"], "age_seconds": age}
+    return {"pim": row["pim"], "zcm": row["zcm"], "n": row["n"], "fs": row["fs"],
+            "source": row["source"], "age_seconds": age}
 
 
 # ---- actigraphy counts -> the controller's movement index --------------------------------

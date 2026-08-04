@@ -571,8 +571,39 @@ def data_health(repo) -> dict:
                    "age_seconds": round(c_age, 1) if c_age is not None else None,
                    "hr": cardiac.get("hr"), "hrv": cardiac.get("hrv"),
                    "streaming": bool(c_age is not None and c_age < 120)}
+    # The Verity's OWN accelerometer (Polar PMD ACC) — actigraphy WITHOUT the phone. Counterpart
+    # to the cardiac block above. PIM is also mapped onto the controller's unitless 0..1 movement
+    # index so it reads on the same scale as the phone card's "Movement".
+    actigraphy = bridge.read_actigraphy_sample(repo.conn)
+    if actigraphy is not None:
+        a_age = actigraphy.get("age_seconds")
+        actigraphy = {"age_seconds": round(a_age, 1) if a_age is not None else None,
+                      "source": actigraphy.get("source"),
+                      "pim": actigraphy.get("pim"),
+                      "movement_index": bridge.actigraphy_movement_index(actigraphy.get("pim")),
+                      "n": actigraphy.get("n"), "fs": actigraphy.get("fs"),
+                      "streaming": bool(a_age is not None and a_age < 120)}
+    # Which channel is ACTUALLY steering the controller right now — not merely which sensors are
+    # online. Read through bridge.read_fused_sensor so this can never disagree with the priority
+    # the daemon itself applied (dedicated cardiac > phone BCG for hr/hrv; phone > wearable ACC
+    # for movement).
+    fused = bridge.read_fused_sensor(repo.conn)
+    sensor_fusion = {
+        "hr_source": (fused or {}).get("hr_source"),
+        "movement_source": (fused or {}).get("movement_source"),
+        "movement_index": (fused or {}).get("movement"),
+        # stage_source: "sensor" = a real Pod stage; "model"/"heuristic" = derived from the
+        # wearable's vitals because no Pod stage is available (see docs/VERITY_RESEARCH.md).
+        "stage": rt.get("stage"),
+        "stage_confidence": rt.get("confidence"),
+        "stage_source": extra.get("stage_source"),
+        "bed_presence": extra.get("bed_presence"),
+        "phone_fused": bool(extra.get("phone_fused")),
+    }
     return {
         "cardiac": cardiac,
+        "actigraphy": actigraphy,
+        "sensor_fusion": sensor_fusion,
         "daemon": {"alive": rt.get("daemon_alive", False), "updated": rt.get("updated"),
                    "stale": rt.get("stale", True),
                    "live": bool(extra.get("live", False)),

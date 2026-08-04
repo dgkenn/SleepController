@@ -374,8 +374,10 @@ function ValidateCard() {
 }
 
 function AdminContent() {
+  // 3s (down from 10s): this page is the "is the sensor actually working RIGHT NOW" check, so
+  // it has to read as real-time. Every field it shows is a local SQLite read — cheap at this rate.
   const { data: health } = useSWR<AdminHealth>('/api/admin/health', fetcher, {
-    refreshInterval: 10000,
+    refreshInterval: 3000,
   });
 
   const { data: logs } = useSWR<LogEntry[]>('/api/admin/logs?limit=50', fetcher, {
@@ -588,6 +590,164 @@ function AdminContent() {
                     {health.cardiac.hrv != null ? `${Math.round(health.cardiac.hrv)} ms` : '—'}
                   </span>
                 </div>
+              </div>
+            )}
+          </div>
+
+          {/* Verity accelerometer — the wearable's OWN motion sensor (actigraphy, no phone) */}
+          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-gray-500 uppercase tracking-wider">Verity Accelerometer</p>
+              {health?.actigraphy?.streaming && (
+                <span className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+                  <span className="text-[10px] text-success font-medium">LIVE</span>
+                </span>
+              )}
+            </div>
+            {!health ? (
+              <p className="text-sm text-gray-600 text-center py-2">Loading…</p>
+            ) : !health.actigraphy ? (
+              <p className="text-sm text-gray-500 py-1">
+                Not streaming. Motion for onset/arousal/wake-risk falls back to the iPhone if
+                that&apos;s connected, else the night runs with no motion channel. See{' '}
+                <span className="text-brand">VERITY_SENSOR.md</span>.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Status</span>
+                  <span className="flex items-center gap-1.5">
+                    <span
+                      className={`w-2 h-2 rounded-full ${
+                        health.actigraphy.streaming ? 'bg-success' : 'bg-danger'
+                      }`}
+                    />
+                    <span className="text-sm font-semibold text-white">
+                      {health.actigraphy.streaming ? 'Streaming' : 'Idle'}
+                    </span>
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Last sample</span>
+                  <span className="text-sm text-gray-400">
+                    {health.actigraphy.age_seconds != null
+                      ? `${health.actigraphy.age_seconds.toFixed(0)}s ago`
+                      : 'N/A'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Movement index</span>
+                  <span className="text-sm text-white font-medium">
+                    {health.actigraphy.movement_index != null
+                      ? health.actigraphy.movement_index.toFixed(3)
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">PIM (raw)</span>
+                  <span className="text-sm text-gray-400">
+                    {health.actigraphy.pim != null ? health.actigraphy.pim.toFixed(2) : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Batch rate</span>
+                  <span className="text-sm text-gray-400">
+                    {health.actigraphy.n != null && health.actigraphy.fs != null
+                      ? `${health.actigraphy.n} samples @ ${health.actigraphy.fs}Hz`
+                      : '—'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-600 pt-0.5">
+                  Feeds onset confirmation, arousal scoring, awakening detection and wake risk
+                  when the phone isn&apos;t in bed. &quot;Controller Steering&quot; below shows
+                  which motion source is actually in use right now.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {/* Controller steering — which sensor is ACTUALLY driving the controller right now,
+              as opposed to merely being online. */}
+          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
+            <p className="text-xs text-gray-500 uppercase tracking-wider">Controller Steering</p>
+            {!health ? (
+              <p className="text-sm text-gray-600 text-center py-2">Loading…</p>
+            ) : !health.sensor_fusion ? (
+              <p className="text-sm text-gray-600 text-center py-2">No fused signal yet.</p>
+            ) : (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Heart rate from</span>
+                  <span className="text-sm font-semibold text-white capitalize">
+                    {health.sensor_fusion.hr_source ?? 'none'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Movement from</span>
+                  <span className="text-sm font-semibold text-white capitalize">
+                    {health.sensor_fusion.movement_source ?? 'none'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Movement index (fused)</span>
+                  <span className="text-sm text-gray-400">
+                    {health.sensor_fusion.movement_index != null
+                      ? health.sensor_fusion.movement_index.toFixed(3)
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Sleep stage</span>
+                  <span className="text-sm text-gray-400">
+                    {health.sensor_fusion.stage ? (
+                      <>
+                        <span className="text-white font-medium capitalize">
+                          {health.sensor_fusion.stage}
+                        </span>
+                        {health.sensor_fusion.stage_confidence != null &&
+                          ` (${Math.round(health.sensor_fusion.stage_confidence * 100)}%)`}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Stage derived from</span>
+                  <span
+                    className={`text-xs font-semibold px-2 py-0.5 rounded-full border ${
+                      health.sensor_fusion.stage_source === 'sensor'
+                        ? 'bg-success/10 border-success/30 text-success'
+                        : health.sensor_fusion.stage_source
+                        ? 'bg-warning/10 border-warning/30 text-warning'
+                        : 'bg-surface-raised border-surface-border text-gray-400'
+                    }`}
+                  >
+                    {health.sensor_fusion.stage_source === 'sensor'
+                      ? 'Pod stage'
+                      : health.sensor_fusion.stage_source
+                      ? `Wearable (${health.sensor_fusion.stage_source})`
+                      : '—'}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-sm text-gray-300">Bed presence</span>
+                  <span className="text-sm text-gray-400">
+                    {health.sensor_fusion.bed_presence == null
+                      ? '—'
+                      : health.sensor_fusion.bed_presence
+                      ? 'In bed'
+                      : 'Out of bed'}
+                  </span>
+                </div>
+                <p className="text-[10px] text-gray-600 pt-0.5">
+                  {health.sensor_fusion.stage_source === 'sensor'
+                    ? 'A real Eight Sleep Pod stage is available and always wins over the wearable estimate.'
+                    : health.sensor_fusion.stage_source
+                    ? 'No Pod stage available — the stage is being derived from the Verity’s HR/HRV/movement, and IS steering onset, arousal and wake-risk detection.'
+                    : 'Waiting for enough signal to read or derive a stage.'}
+                </p>
               </div>
             )}
           </div>

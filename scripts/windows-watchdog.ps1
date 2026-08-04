@@ -551,11 +551,43 @@ function Ensure-Verity {
         if ($LASTEXITCODE -eq 0) { Set-Content -Path $depMarker -Value "ok" -Encoding ASCII }
         else { Log "WARN: 'bleak' not importable yet; Verity forwarder will retry next cycle"; return }
     }
-    if (Verity-Running) { return }
+    # Stale-code self-heal, mirroring the "cleaned up stale process on port N" checks for
+    # api/web. A running forwarder is normally left alone, but if verity_forwarder.py on disk
+    # has CHANGED since the live process was launched, that process is running old bytecode
+    # that no git pull or pip install can hot-reload -- so a shipped fix would sit inert until
+    # someone noticed. Only this watchdog can close that gap: it runs elevated via the Scheduled
+    # Task, and an operator's own shell is denied killing the process even with taskkill /F.
+    $hashMarker = Join-Path $run "verity-code.hash"
+    $currentHash = (Get-FileHash -Path $script -Algorithm SHA256).Hash
+    $running = Verity-Running
+    if ($running) {
+        $lastHash = if (Test-Path $hashMarker) {
+            (Get-Content -Path $hashMarker -Raw -ErrorAction SilentlyContinue).Trim()
+        } else { $null }
+        if ($lastHash -and $lastHash -ne $currentHash) {
+            Log "verity_forwarder.py changed since the running forwarder was launched -- killing the stale process"
+            try {
+                Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                    Where-Object { $_.CommandLine -and $_.CommandLine -match 'verity_forwarder\.py' } |
+                    ForEach-Object {
+                        try {
+                            Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop
+                            Log "  killed stale verity_forwarder pid $($_.ProcessId)"
+                        } catch {
+                            Log "  WARN: could not kill stale verity_forwarder pid $($_.ProcessId): $_"
+                        }
+                    }
+            } catch { Log "WARN: stale-verity kill sweep failed: $_" }
+            Start-Sleep -Milliseconds 300
+            $running = Verity-Running
+        }
+    }
+    if ($running) { return }
     try {
         Start-Process -FilePath $py -WindowStyle Hidden `
             -ArgumentList @($script) `
             -RedirectStandardOutput "$run\verity.log" -RedirectStandardError "$run\verity.err" | Out-Null
+        Set-Content -Path $hashMarker -Value $currentHash -Encoding ASCII
         Log "launched Polar Verity forwarder (verity_forwarder.py)"
     } catch {
         Log "WARN: could not launch verity_forwarder: $_"

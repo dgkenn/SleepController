@@ -440,6 +440,124 @@ class TestSetHeatingLevel:
         assert calls[2][2] == {"timeBased": {"level": -100, "durationSeconds": 0}}
 
 
+class TestSetScheduleEnabled:
+    """The bedtime SCHEDULE toggle -- distinct from set_autopilot's smart.enabled, which only
+    gates the paid Autopilot engine. Shape verified live: a single top-level ``currentSchedule``
+    object on GET .../temperature, NOT the ``settings.schedules`` array the vendored pyEight fork
+    (and an earlier version of this method) assumed."""
+
+    _GET_BODY = {
+        "scheduleType": "timeBased",
+        "smart": {"bedTimeLevel": 0, "initialSleepLevel": 0, "finalSleepLevel": 0},
+        "currentSchedule": {
+            "id": "sched-1", "enabled": True, "time": "00:08:39",
+            "days": ["monday"], "tags": [],
+            "startSettings": {"bedtime": -48, "elevationPreset": "sleep", "pillowBedtime": 0},
+        },
+    }
+
+    def test_disables_schedule_preserving_other_fields(self):
+        client = _make_client()
+        client._user_id = "u1"
+        calls = []
+
+        async def fake_request(method, url, *, params=None, json_body=None, auth=True):
+            calls.append((method, url, json_body))
+            return dict(self._GET_BODY) if method == "GET" else {}
+
+        client._request = fake_request
+        result = _run(client.set_schedule_enabled(False))
+
+        assert result == {"ok": True, "changed": True, "paywalled": False,
+                          "detail": "schedule updated"}
+        assert calls[0] == ("GET", f"{APP_API_URL}/users/u1/temperature", None)
+        put_method, put_url, put_body = calls[1]
+        assert (put_method, put_url) == ("PUT", f"{APP_API_URL}/users/u1/bedtime")
+        assert put_body["schedules"] == [
+            {"id": "sched-1", "enabled": False, "time": "00:08:39",
+             "days": ["monday"], "tags": [],
+             "startSettings": {"bedtime": -48, "elevationPreset": "sleep", "pillowBedtime": 0}},
+        ]
+        # stage levels round-trip UNCHANGED -- this call must never invent or guess values.
+        assert put_body["smart"] == {"bedTimeLevel": 0, "initialSleepLevel": 0,
+                                     "finalSleepLevel": 0}
+
+    def test_noop_when_no_schedule_configured(self):
+        client = _make_client()
+        client._user_id = "u1"
+        calls = []
+
+        async def fake_request(method, url, *, params=None, json_body=None, auth=True):
+            calls.append((method, url, json_body))
+            return {"currentSchedule": None}
+
+        client._request = fake_request
+        result = _run(client.set_schedule_enabled(False))
+
+        assert result["ok"] is True and result["changed"] is False
+        assert len(calls) == 1  # only the GET -- no PUT for nothing to disable
+
+    def test_noop_when_already_in_requested_state(self):
+        client = _make_client()
+        client._user_id = "u1"
+        calls = []
+        body = dict(self._GET_BODY,
+                    currentSchedule=dict(self._GET_BODY["currentSchedule"], enabled=False))
+
+        async def fake_request(method, url, *, params=None, json_body=None, auth=True):
+            calls.append((method, url, json_body))
+            return body
+
+        client._request = fake_request
+        result = _run(client.set_schedule_enabled(False))
+
+        assert result["ok"] is True and result["changed"] is False
+        assert len(calls) == 1
+
+    def test_detects_the_subscription_paywall(self):
+        """Verified live on a real free-tier account: PUT .../bedtime returns exactly this 403.
+        It must be reported distinctly, not as a generic write failure."""
+        client = _make_client()
+        client._user_id = "u1"
+
+        async def fake_request(method, url, *, params=None, json_body=None, auth=True):
+            if method == "GET":
+                return dict(self._GET_BODY)
+            raise EightSleepRequestError(
+                f"PUT {url} -> HTTP 403: {{'message': 'Subscription required.'}}")
+
+        client._request = fake_request
+        result = _run(client.set_schedule_enabled(False))
+
+        assert result["ok"] is False
+        assert result["paywalled"] is True
+
+    def test_other_write_failure_is_not_reported_as_paywalled(self):
+        client = _make_client()
+        client._user_id = "u1"
+
+        async def fake_request(method, url, *, params=None, json_body=None, auth=True):
+            if method == "GET":
+                return dict(self._GET_BODY)
+            raise EightSleepRequestError("PUT rejected: HTTP 500")
+
+        client._request = fake_request
+        result = _run(client.set_schedule_enabled(False))
+
+        assert result["ok"] is False
+        assert result["paywalled"] is False
+
+    def test_returns_false_on_read_failure(self):
+        client = _make_client()
+        client._user_id = "u1"
+
+        async def fake_request(method, url, *, params=None, json_body=None, auth=True):
+            raise EightSleepRequestError("GET rejected")
+
+        client._request = fake_request
+        assert _run(client.set_schedule_enabled(False))["ok"] is False
+
+
 # --------------------------------------------------------------------------------------
 # (f) drop-in interface parity: same public methods as the pyEight client
 # --------------------------------------------------------------------------------------

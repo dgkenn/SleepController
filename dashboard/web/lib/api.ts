@@ -278,11 +278,34 @@ export interface CardiacSensor {
   streaming: boolean;
 }
 
+export interface ActigraphySensor {
+  age_seconds?: number | null;
+  source?: string;
+  pim?: number | null;
+  movement_index?: number | null;
+  n?: number | null;
+  fs?: number | null;
+  streaming: boolean;
+}
+
+export interface SensorFusion {
+  hr_source?: string | null;
+  movement_source?: string | null;
+  movement_index?: number | null;
+  stage?: string | null;
+  stage_confidence?: number | null;
+  stage_source?: string | null;
+  bed_presence?: boolean | null;
+  phone_fused: boolean;
+}
+
 export interface AdminHealth {
   daemon: { alive: boolean; updated: string; stale: boolean; live?: boolean; dry_run?: boolean };
   sources: Record<string, { ok: boolean; last_ok?: string; error?: string }>;
   phone_sensor?: PhoneSensor | null;
   cardiac?: CardiacSensor | null;
+  actigraphy?: ActigraphySensor | null;
+  sensor_fusion?: SensorFusion | null;
   pending_commands: number;
 }
 

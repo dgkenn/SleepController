@@ -722,6 +722,56 @@ class EightSleepDirectClient:
         smart["enabled"] = bool(enabled)
         await self._request("PUT", url, json_body={"smart": smart})
 
+    async def set_schedule_enabled(self, enabled: bool) -> dict:
+        """Enable/disable the account's recurring bedtime SCHEDULE for this side -- a mechanism
+        SEPARATE from ``set_autopilot`` that can independently hold a target fighting ours even
+        when Autopilot is off or unavailable.
+
+        The real API shape is NOT what the vendored pyEight fork's ``set_bedtime_schedule``
+        assumes. Verified live: the schedule is a single top-level ``currentSchedule`` OBJECT on
+        ``GET .../temperature`` (not an array under ``settings``), and that field is READ-ONLY --
+        PUTting it back through ``.../temperature`` is silently ignored, the value never changes.
+        The only writable path is ``PUT .../bedtime`` with a ``schedules: [...]`` array.
+
+        On a free account expect that write to fail with a real, server-side
+        ``403 Subscription required`` -- verified live against this project's own account.
+        Eight Sleep paywalls schedule editing; no client can work around it. This still attempts
+        the write (harmless, and covers paid accounts or a future change) but reports the paywall
+        distinctly so callers can log something actionable rather than a generic failure.
+
+        Returns ``{"ok", "changed", "paywalled", "detail"}`` and never raises:
+          - no schedule configured, or already in the requested state -> ok=True, changed=False
+          - write accepted -> ok=True, changed=True
+          - refused by the subscription paywall -> ok=False, paywalled=True
+          - any other failure (network, auth, ...) -> ok=False, paywalled=False
+        """
+        url = f"{APP_API_URL}/users/{self._user_id}/temperature"
+        try:
+            data = await self._request("GET", url)
+        except EightSleepRequestError as exc:
+            return {"ok": False, "changed": False, "paywalled": False,
+                    "detail": f"could not read current schedule: {exc}"}
+        sched = dict((data or {}).get("currentSchedule") or {})
+        if not sched:
+            return {"ok": True, "changed": False, "paywalled": False,
+                    "detail": "no schedule configured"}
+        if sched.get("enabled") == bool(enabled):
+            return {"ok": True, "changed": False, "paywalled": False,
+                    "detail": "schedule already in the requested state"}
+        sched["enabled"] = bool(enabled)
+        body = {
+            "scheduleType": (data or {}).get("scheduleType", "timeBased"),
+            "smart": (data or {}).get("smart", {}),
+            "schedules": [sched],
+        }
+        try:
+            await self._request("PUT", f"{APP_API_URL}/users/{self._user_id}/bedtime",
+                                json_body=body)
+            return {"ok": True, "changed": True, "paywalled": False, "detail": "schedule updated"}
+        except EightSleepRequestError as exc:
+            paywalled = "403" in str(exc) or "subscription" in str(exc).lower()
+            return {"ok": False, "changed": False, "paywalled": paywalled, "detail": str(exc)}
+
     async def turn_on_side(self) -> None:
         url = f"{APP_API_URL}/users/{self._user_id}/temperature"
         await self._request("PUT", url, json_body={"currentState": {"type": "smart"}})
