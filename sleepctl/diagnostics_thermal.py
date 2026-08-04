@@ -61,14 +61,24 @@ def _result(status: str, reason: str, remedy: str = "") -> dict:
 
 
 def _to_dt(value: Any) -> Optional[datetime]:
-    """Parse an ISO timestamp, normalizing to tz-AWARE (assume UTC when naive).
+    """Parse an ISO timestamp, normalizing to tz-AWARE (assume LOCAL time when naive).
 
     Callers in this codebase are inconsistent about naive-vs-aware timestamps (the daemon's
-    ``state_history`` rows are typically naive local time via ``datetime.now()``; a caller
-    computing "now" may pass a UTC-aware ``datetime.now(timezone.utc).isoformat()``). Without
+    ``state_history`` rows are naive LOCAL time via ``datetime.now()``; a caller computing
+    "now" may pass a UTC-aware ``datetime.now(timezone.utc).isoformat()``). Without
     normalizing, subtracting a naive from an aware datetime raises ``TypeError`` and would
-    crash every duration calculation in this module. Same defensive pattern as
-    ``app.diagnostics._age_seconds_iso``."""
+    crash every duration calculation in this module.
+
+    BUG FIXED: naive values used to be stamped as UTC. Every naive timestamp this module
+    actually receives comes from ``datetime.now()`` -- i.e. LOCAL time -- so stamping them
+    UTC shifted them by the machine's whole UTC offset. Verified live on a UTC-4 box: a
+    ``state_history`` row written 12 SECONDS earlier parsed as 240.2 minutes old, so the
+    20-minute ``CAPACITY_WINDOW_MINUTES`` window matched 0 of 181 rows and
+    :func:`analyze_thermal_capacity` returned ``insufficient_data`` forever -- the
+    air-bound/reduced-capacity detector was structurally blind in production. It also
+    inflated every reported duration by the same offset (a 60-min stuck prime read ~300 min).
+    Aware inputs (the API's ``...Z``/``+00:00`` device timestamps) are unaffected.
+    """
     if not value:
         return None
     try:
@@ -77,8 +87,9 @@ def _to_dt(value: Any) -> Optional[datetime]:
             s = s[:-1] + "+00:00"
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            from datetime import timezone as _timezone
-            dt = dt.replace(tzinfo=_timezone.utc)
+            # Naive here always means local wall-clock (datetime.now()); astimezone() with no
+            # argument attaches the system's local offset rather than silently claiming UTC.
+            dt = dt.astimezone()
         return dt
     except Exception:
         return None

@@ -554,6 +554,15 @@ def _run_pmd_session(client, args=None, feed=(), until_posted=True, timeout=10):
             await asyncio.sleep(0.005)
         await asyncio.sleep(0.01)  # let the START handshake finish
         for kind, frame in feed:
+            if kind == "hr":
+                # The generic-HR fallback only subscribes AFTER the PMD START handshake has
+                # decided PPI was refused, so wait for that subscription instead of a fixed
+                # delay -- feeding before it exists raced client.notify and dropped the frame
+                # (intermittent KeyError/assert failure in this test).
+                for _ in range(400):
+                    if HR_UUID in client.notify:
+                        break
+                    await asyncio.sleep(0.005)
             (client.feed_hr if kind == "hr" else client.feed)(frame)
         for _ in range(400):
             if posted or not until_posted:
@@ -586,7 +595,9 @@ def test_pmd_session_streams_acc_and_ppi_into_the_post_body():
 
     starts = [w.hex() for w in client.written if w[0] == pmd.OP_START_MEASUREMENT]
     assert starts[0] == "0203"                       # PPI first, no settings
-    assert starts[1] == "0202020108000001340001011000"  # ACC 8G / 52 Hz / 16-bit
+    # ACC 8G / 52 Hz / 16-bit / 3 channels. CHANNELS is required -- real Verity Sense firmware
+    # refuses an ACC start without it ("invalid number of channels", code 11), verified live.
+    assert starts[1] == "0202020108000001340001011000040103"
     stops = [w.hex() for w in client.written if w[0] == pmd.OP_STOP_MEASUREMENT]
     assert set(stops) == {"0303", "0302"}            # both streams stopped on teardown
 

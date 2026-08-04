@@ -148,6 +148,37 @@ def test_empty_history_never_raises():
     assert detect_external_conflict(device, [])["status"] in ("ok", "insufficient_data")
 
 
+def test_naive_local_rows_are_not_shifted_by_the_utc_offset():
+    """REGRESSION, found live: ``state_history`` rows are naive LOCAL time (``datetime.now()``)
+    while ``app.diagnostics`` passes an AWARE UTC ``now_iso``. ``_to_dt`` used to stamp naive
+    values as UTC, so on a UTC-4 box a row written 12 SECONDS earlier parsed as 240 minutes old
+    -- the 20-min window matched 0 of 181 real rows and this detector returned
+    ``insufficient_data`` forever, in production, blind to the exact fault it exists to catch.
+
+    Build the history from naive local ``datetime.now()`` (as the daemon really does) and the
+    ``now`` from aware UTC (as the caller really does): the two must line up on any TZ.
+    """
+    from datetime import timezone
+
+    now_local = datetime.now()
+    history = [
+        {
+            "ts": (now_local - timedelta(minutes=7 - i)).isoformat(),  # naive LOCAL
+            "target_level": -90,
+            "bed_temp_f": 69.5 + (i % 2) * 0.1,
+            "extra": {"device": {"priming": False, "device_level": 88 - i}},
+        }
+        for i in range(8)
+    ]
+    device = {"online": True, "has_water": True, "priming": False, "needs_priming": False}
+
+    result = analyze_thermal_capacity(
+        device, history, now_iso=datetime.now(timezone.utc).isoformat())
+
+    # Must actually reach a verdict on the data, NOT fall through to insufficient_data.
+    assert result["status"] == "reduced_capacity", result
+
+
 # --------------------------------------------------------------------------------- frozen telemetry
 def test_frozen_telemetry_flagged_when_bed_temp_and_level_never_move():
     history = [

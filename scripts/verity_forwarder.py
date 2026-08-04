@@ -419,10 +419,15 @@ async def _pmd_session(client, args) -> bool:
         data_notify = True
 
         # PPI takes no settings (02 03). ACC is configurable; defaults 52 Hz / 16-bit / 8 G.
+        # CHANNELS is REQUIRED: real Verity Sense firmware refuses an ACC start that omits it
+        # with "invalid number of channels" (error code 11) -- verified live on hardware. The
+        # standalone scripts/verity_stream_test.py always sent it and streamed ACC fine, which
+        # is what exposed that this forwarder (the production path) did not.
         acc_settings = {
             pmd.SETTING_RANGE: args.acc_range,
             pmd.SETTING_SAMPLE_RATE: args.acc_rate,
             pmd.SETTING_RESOLUTION: args.acc_resolution,
+            pmd.SETTING_CHANNELS: 3,
         }
         wanted = [
             (pmd.MEAS_PPI, "start PPI", pmd.build_start_command(pmd.MEAS_PPI, None)),
