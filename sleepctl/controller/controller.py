@@ -198,6 +198,29 @@ class SleepController:
         # the opposite of do-no-harm. So the hard early-hold only applies while still in bed
         # (or presence is unknown); the score/reasons are still computed + surfaced either way.
         if data_quality.score < cfg.tunables.data_quality_hold_score and frame.presence is not False:
+            # OBSERVE before holding. Holding the thermal COMMAND on low-trust data is correct
+            # (do no harm); refusing to even look for an awakening is not -- and this early
+            # return used to skip arousal detection entirely.
+            #
+            # The failure was self-inflicting: the dominant data-quality penalty is high
+            # movement, and high movement IS the awakening signal. So every real awakening
+            # pushed the score under the hold threshold and made the controller blind to the
+            # very event it was reacting to. Measured on a real night: 8 disruptions with
+            # movement up to 1.00 and HR 74->97, and `wake_events` logged ZERO -- while
+            # replaying the same frames through WakeDetector fired 4 events. Nothing learned
+            # from those awakenings, and `wake_causation`/precursor training saw an empty night.
+            #
+            # Detection here is READ-ONLY: no pre-emption, no thermal change, no state
+            # transition -- purely so the event is graded and logged.
+            if self.sm.state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY):
+                try:
+                    hr_base, hrv_base = self._sleep_baseline(recent)
+                    arousal = self.arousal_detector.assess(
+                        frame, recent, now, hr_base, hrv_base)
+                    self.last_arousal = arousal
+                    self.last_wake_event = arousal.wake_event
+                except Exception:
+                    pass  # observation must never break the do-no-harm hold
             level = self.thermal.to_level(self._last_target_f)
             reason = (f"data quality low (score={data_quality.score:.2f}"
                      f"{', ' + data_quality.top_reason if data_quality.top_reason else ''}); "
@@ -206,7 +229,8 @@ class SleepController:
                 now, self.sm.state, objective, ThermalIntent.STABILIZE,
                 self._last_target_f, level, CorrectionAction.HOLD,
                 reason, round(0.3 * data_quality.score, 2), frame,
-                wake_signals=[], data_quality=data_quality,
+                wake_signals=(self.last_wake_event.signals if self.last_wake_event else []),
+                data_quality=data_quality,
             )
             self._record_decision(decision)
             return decision

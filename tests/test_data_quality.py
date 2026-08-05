@@ -224,3 +224,49 @@ def test_data_quality_summary_reports_gating_state():
     bad = controller.data_quality_summary()
     assert bad["gating"] is True
     assert bad["top_reason"] is not None
+
+
+def test_low_quality_hold_still_detects_and_logs_the_awakening():
+    """REGRESSION, found on a real night: the data-quality HOLD returned before arousal
+    detection ran, so awakenings were never graded or logged.
+
+    The failure was self-inflicting -- the dominant quality penalty is high movement, and high
+    movement IS the awakening signal, so every genuine awakening drove the score under the hold
+    threshold and blinded the controller to the event it was reacting to. Observed: 8
+    disruptions (movement to 1.00, HR 74->97) and `wake_events` logged ZERO, while replaying the
+    same frames through WakeDetector fired 4 events. wake_causation and the precursor learners
+    therefore trained on an empty night.
+
+    Holding the thermal COMMAND on untrusted data is correct and must not change; refusing to
+    OBSERVE is the bug.
+    """
+    from sleepctl.controller.state_machine import SleepStateMachine
+    from sleepctl.models import ControllerState
+
+    cfg = AppConfig.default()
+    now = datetime(2026, 8, 5, 2, 0, 0)
+    ctrl = SleepController(cfg)
+    ctrl.sm = SleepStateMachine(cfg, state=ControllerState.MAINTENANCE)
+    ctrl.sm.state = ControllerState.MAINTENANCE
+
+    # a calm asleep run, then a violent movement burst + HR jump = an awakening
+    recent = [_good_frame(now - timedelta(minutes=10 - i), movement=0.02, heart_rate=58.0,
+                          presence=None)
+              for i in range(10)]
+    spike = _good_frame(now, movement=1.0, heart_rate=92.0, presence=None,
+                        respiratory_rate=None, bed_temp_f=None, room_temp_f=None)
+
+    dq = assess_data_quality(spike, cfg, now)
+    assert dq.score < cfg.tunables.data_quality_hold_score, (
+        "test premise: this frame must be low-quality enough to trigger the hold")
+
+    ctx = ContextRecord(date="2026-08-05")
+    decision = ctrl.decide(spike, ctx, recent, now)
+
+    # the thermal response must still be the conservative HOLD -- unchanged behaviour
+    assert decision.action is CorrectionAction.HOLD
+    # ...but the awakening must NOT have been thrown away
+    assert ctrl.last_wake_event is not None, (
+        "awakening was not detected during a low-data-quality hold -- the controller is blind "
+        "at exactly the moment it should be watching")
+    assert decision.log_payload.get("wake_signals"), "wake signals were not logged"
