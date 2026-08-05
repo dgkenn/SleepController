@@ -224,6 +224,13 @@ def test_steer_event_ledger_resolves_stage_response():
         assert eff["deepen"]["act"]["n"] == 1 and eff["deepen"]["act"]["deepened"] == 1
         assert eff["deepen"]["act"]["woke"] == 0
     finally:
+        # Close the SQLite connection BEFORE unlinking. A leaked handle makes os.remove raise
+        # PermissionError on Windows, so the test fails on CLEANUP even though every assertion
+        # above passed.
+        try:
+            repo.close()
+        except Exception:
+            pass
         os.remove(path)
 
 

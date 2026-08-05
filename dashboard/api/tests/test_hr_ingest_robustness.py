@@ -16,6 +16,24 @@ import math
 import pytest
 
 
+def _post_raw(client, body):
+    """POST a body that may contain NaN/Inf.
+
+    ``TestClient.post(json=...)`` serialises with httpx, which REFUSES non-finite floats and
+    raises before any request is made -- so the NaN/Inf cases never reached the server and the
+    tests failed on the client side while asserting nothing about the API. Real traffic can carry
+    them: JSON parsers (including the one FastAPI uses) accept the bare ``NaN``/``Infinity``
+    tokens Python's json emits with allow_nan=True, and a BLE codec turning garbled bytes into
+    floats is exactly how they would arise. Serialise them ourselves and send raw bytes so the
+    server path is genuinely exercised.
+    """
+    import json as _json
+
+    return client.post("/hr/ingest",
+                       content=_json.dumps(body, allow_nan=True),
+                       headers={"content-type": "application/json"})
+
+
 def _clear(conn):
     for t in ("live_cardiac", "rr_intervals", "actigraphy", "sensor_samples", "live_sensor"):
         conn.execute(f"DELETE FROM {t}")
@@ -57,7 +75,7 @@ def _clean():
     {"hr": 60, "acc": {"pim": float("nan")}},       # NaN counts
 ])
 def test_malformed_batches_never_500(auth_client, body):
-    r = auth_client.post("/hr/ingest", json=body)
+    r = _post_raw(auth_client, body)
     assert r.status_code in (200, 400, 422), f"{body} -> {r.status_code} {r.text[:200]}"
     if r.status_code == 200:
         assert isinstance(r.json().get("ok"), bool)
@@ -124,7 +142,7 @@ def test_no_batch_can_put_a_non_finite_value_into_fusion(auth_client):
     for body in ({"hr": float("nan")}, {"hr": float("inf")},
                  {"rr": [float("nan"), float("inf")]},
                  {"hr": 60, "acc": {"pim": float("inf")}}):
-        auth_client.post("/hr/ingest", json=body)
+        _post_raw(auth_client, body)
 
     repo = get_repo()
     try:

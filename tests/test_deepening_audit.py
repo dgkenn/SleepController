@@ -121,8 +121,9 @@ def test_wake_audit_computes_base_rate_and_flags_only_proactive():
     fd, path = tempfile.mkstemp(suffix=".db")
     os.close(fd)
     try:
-        _seed_audit_db(path)
-        repo = Repository(path)
+        # reuse the seeded connection rather than opening a SECOND one -- the helper returns
+        # its repo, and discarding it leaked a handle that blocked cleanup on Windows
+        repo = _seed_audit_db(path)
         audit = wake_causation_audit(repo, horizon_min=10, nights=5)
         assert audit["base_wake_rate"] is not None         # controls for "would've woken anyway"
         # a reactive settle would be confounded; here the cooling adjustment is proactive
@@ -131,6 +132,13 @@ def test_wake_audit_computes_base_rate_and_flags_only_proactive():
         for k in suspect_maneuvers(repo, horizon_min=10, nights=5):
             assert audit["maneuvers"][k]["confounded"] is False
     finally:
+        # Close the SQLite connection BEFORE unlinking. A leaked handle makes os.remove raise
+        # PermissionError on Windows, so the test fails on CLEANUP even though every assertion
+        # above passed.
+        try:
+            repo.close()
+        except Exception:
+            pass
         os.remove(path)
 
 
@@ -155,6 +163,13 @@ def test_settle_is_labelled_confounded_not_blamed():
         assert audit["maneuvers"]["settle_cool"]["confounded"] is True
         assert audit["maneuvers"]["settle_cool"]["suspect"] is False   # never auto-blamed
     finally:
+        # Close the SQLite connection BEFORE unlinking. A leaked handle makes os.remove raise
+        # PermissionError on Windows, so the test fails on CLEANUP even though every assertion
+        # above passed.
+        try:
+            repo.close()
+        except Exception:
+            pass
         os.remove(path)
 
 
@@ -197,6 +212,13 @@ def test_precursor_profile_learns_predictive_signals():
         assert det.personalized is True
         assert det.move_rise_slope != base_move        # tossing-turning trigger personalized
     finally:
+        # Close the SQLite connection BEFORE unlinking. A leaked handle makes os.remove raise
+        # PermissionError on Windows, so the test fails on CLEANUP even though every assertion
+        # above passed.
+        try:
+            repo.close()
+        except Exception:
+            pass
         os.remove(path)
 
 

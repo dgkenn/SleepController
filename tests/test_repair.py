@@ -266,9 +266,19 @@ def test_run_repair_never_raises_on_totally_empty_db(tmp_path):
     repo.close()
 
 
-def test_resolve_run_dir_matches_db_directory():
-    db_path = "/some/dir/sleepctl.db"
-    assert resolve_run_dir(db_path) == os.path.join("/some/dir", ".run")
+def test_resolve_run_dir_matches_db_directory(tmp_path):
+    """``.run`` sits beside the DB. Uses a REAL absolute path (tmp_path) rather than a POSIX
+    literal: resolve_run_dir calls os.path.abspath, which on Windows prepends the drive, so
+    "/some/dir" became "C:\some\dir" and the literal asserted a platform-specific string
+    instead of the behaviour."""
+    db_path = tmp_path / "sleepctl.db"
+    assert resolve_run_dir(str(db_path)) == os.path.join(str(tmp_path), ".run")
+
+
+def test_resolve_run_dir_handles_a_relative_db_path(tmp_path, monkeypatch):
+    """A relative --db must still resolve beside the DB, not into the cwd by accident."""
+    monkeypatch.chdir(tmp_path)
+    assert resolve_run_dir("sleepctl.db") == os.path.join(str(tmp_path), ".run")
 
 
 # ------------------------------------------------------------------ CLI

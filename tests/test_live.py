@@ -107,8 +107,9 @@ def test_credentials_roundtrip_and_env_override(tmp_path, monkeypatch):
     path = tmp_path / "creds.json"
     save_credentials(Credentials(email="a@b.com", password="pw", timezone="UTC", side="left"),
                      str(path))
-    # file is 0600
-    assert (os.stat(path).st_mode & 0o777) == 0o600
+    # file is 0600 -- POSIX-only; Windows has no st_mode permission bits to assert against.
+    if os.name == "posix":
+        assert (os.stat(path).st_mode & 0o777) == 0o600
     loaded = load_credentials(str(path))
     assert loaded.email == "a@b.com" and loaded.is_complete()
     # env overrides the file

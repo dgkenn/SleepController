@@ -53,10 +53,25 @@ def test_parses_all_vevents():
 
 
 def test_parses_utc_datetime_with_z_suffix():
+    """A Z-suffixed ICS time is CONVERTED to naive local, not stripped.
+
+    Stripping would hand callers 11:30 for an 11:30Z shift and let them compare it against
+    ``datetime.now()`` -- a whole-UTC-offset error in the wake deadline the night is planned
+    around (4 h on this machine). The parser converts on purpose; see the comment at
+    ``sleepctl/adapters/calendar.py``: "Convert to naive local time so callers can compare
+    directly against datetime.now()". This test previously asserted the stripped value, i.e. the
+    bug -- the same naive-vs-UTC confusion documented in ``sleepctl/storage/schema.py``.
+    """
+    from datetime import timezone as _tz
+
     events = parse_ics(SAMPLE_ICS)
     icu = next(e for e in events if "Night shift" in e.summary)
-    assert icu.start == datetime(2026, 7, 5, 11, 30)
-    assert icu.end == datetime(2026, 7, 5, 19, 30)
+    expect_start = (datetime(2026, 7, 5, 11, 30)
+                    .replace(tzinfo=_tz.utc).astimezone().replace(tzinfo=None))
+    expect_end = (datetime(2026, 7, 5, 19, 30)
+                  .replace(tzinfo=_tz.utc).astimezone().replace(tzinfo=None))
+    assert icu.start == expect_start
+    assert icu.end == expect_end
     assert icu.all_day is False
 
 

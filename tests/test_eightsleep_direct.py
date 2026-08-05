@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -140,7 +141,11 @@ class TestTokenCaching:
         assert token == "fresh"
         assert grants_seen == ["password"]
         assert cache.exists()  # written 0600
-        assert oct(cache.stat().st_mode)[-3:] == "600"
+        # POSIX-only: Windows does not implement st_mode permission bits (os.chmod is a
+        # near-no-op there), so this asserts the SECRET-FILE guarantee where it is enforceable
+        # rather than failing on a platform that cannot express it.
+        if os.name == "posix":
+            assert oct(cache.stat().st_mode)[-3:] == "600"
 
 
 # --------------------------------------------------------------------------------------
