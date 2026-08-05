@@ -1158,6 +1158,31 @@ class LiveDashboardDaemon:
         st = frame.stage.value if getattr(frame, "stage", None) else None
         if st and st.lower() not in ("awake", "unknown"):
             self._wake_last_stage = st
+
+        # Push the wake to the phone the moment the orchestrator commits to it. The Pod's
+        # vibration alarm is subscription-gated (403), so without this the wake is the thermal
+        # ramp alone -- silent, and easily slept through. Best-effort and idempotent per night:
+        # a push failure must never disturb the control loop that owns the ramp itself.
+        if la.get("should_wake"):
+            try:
+                from app import services as _svc
+                mins_early = None
+                dl = la.get("target_time")
+                if dl:
+                    try:
+                        mins_early = max(0.0, (datetime.fromisoformat(dl)
+                                               - now).total_seconds() / 60.0)
+                    except Exception:
+                        pass
+                res = _svc.deliver_wake_push(
+                    self.repo, stage=(self._wake_last_stage or st),
+                    minutes_early=mins_early,
+                    night_date=self.cycle.night_date(now), now=now)
+                if res.get("sent"):
+                    self._emit_event("wake", "info", "wake_push_sent",
+                                     "Wake pushed to your phone.", res)
+            except Exception as exc:
+                self._skip("wake push", exc)
         # Capture at confirmation — first "post_wake" (light dose held) or "done" — not after the
         # post-wake hold, so minutes_early/forced reflect the real wake instant.
         if la.get("phase") in ("post_wake", "done") and self._pending_wake is None:

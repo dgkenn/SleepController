@@ -2918,3 +2918,50 @@ def cbti_advice(repo, nights_back: int = 21) -> dict:
         "advisory_only": True,
     }
     return out
+
+
+# --------------------------------------------------------------- smart-wake push delivery
+# The Pod's vibration alarm is subscription-gated: the write returns 403 and no client can work
+# around that, so the wake had degraded to the thermal ramp alone (Hue is not configured here) --
+# which is why a phone alarm beat it. Web Push is the one wake channel Eight Sleep cannot gate, and
+# the whole stack (VAPID signing, subscriptions, delivery, stale-subscription pruning) already
+# existed for critical alerts; it had simply never been given keys. This is the wake-side hook.
+_WAKE_PUSH_SENT_KEY = "wake_push_last_sent"
+
+
+def deliver_wake_push(repo, *, stage: str | None = None, minutes_early: float | None = None,
+                      night_date: str | None = None, now=None) -> dict:
+    """Push the smart-wake moment to the phone. Idempotent per night.
+
+    Returns ``{"sent": bool, "reason": str, ...}`` and never raises: a failed push must never
+    propagate into the control loop, which owns the thermal ramp that is still the primary wake.
+    """
+    from datetime import datetime as _dt
+
+    now = now or _dt.now()
+    night_date = night_date or now.date().isoformat()
+
+    # One wake push per night. The orchestrator can re-assert should_wake across several ticks
+    # while it escalates, and a repeat buzz every 60 s would be its own kind of alarm clock.
+    last = _kv_get_json(repo, _WAKE_PUSH_SENT_KEY)
+    if last == night_date:
+        return {"sent": False, "reason": "already_sent_tonight"}
+
+    subs = list_push_subscriptions(repo)
+    if not subs:
+        return {"sent": False, "reason": "no_subscriptions"}
+
+    if stage in ("light", "awake") and minutes_early:
+        body = (f"Waking you {minutes_early:.0f} min early -- you're in {stage} sleep now, "
+                "which is the easiest moment to get up.")
+    elif minutes_early:
+        body = f"Waking you {minutes_early:.0f} min early to catch a lighter moment."
+    else:
+        body = "Time to get up."
+
+    result = push_sender.deliver_custom(title="SleepCtl: time to wake up", body=body,
+                                        subscriptions=subs, tag="sleepctl-wake")
+    if result.ok and result.sent:
+        _kv_set_json(repo, _WAKE_PUSH_SENT_KEY, night_date)
+    return {"sent": bool(result.ok and result.sent), "reason": result.reason or "ok",
+            "delivered": result.sent, "failed": result.failed}
