@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import json
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -624,8 +625,10 @@ class LiveDashboardDaemon:
                             self.wake["window_min"] = win
                         except Exception as exc:
                             self._skip("wake window selection", exc)
+                    self._persist_wake()
                 elif t == "clear_wake":
                     cs.apply_clear_wake(self)
+                    self._persist_wake()
                 elif t == "induce_sleep":
                     self._start_induce()
                 elif t == "start_nap":
@@ -978,6 +981,53 @@ class LiveDashboardDaemon:
                       "wake_action": (decision.log_payload or {}).get("wake_action")
                       if decision else None},
         }
+
+
+    # ---- wake persistence across daemon restarts ------------------------------------------
+    # `self.wake` used to live only in memory, so ANY daemon restart silently dropped the
+    # alarm -- and the watchdog restarts the daemon on its own (stale heartbeat, deploy,
+    # self-update). Observed live: a wake set at bedtime was gone twice before morning, each
+    # time with no error and no user-visible signal. The wake deadline is the one piece of
+    # state the whole night is planned around, so it is persisted here and restored on boot.
+    _WAKE_KV_KEY = "daemon_wake_state"
+
+    def _persist_wake(self) -> None:
+        """Best-effort: never let a persistence failure break the control loop."""
+        try:
+            payload = None
+            if self.wake and self.context.required_wake_time is not None:
+                payload = {"wake": self.wake,
+                           "required_wake_time": self.context.required_wake_time.isoformat()}
+            self.repo.conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._WAKE_KV_KEY, json.dumps(payload) if payload else ""))
+            self.repo.conn.commit()
+        except Exception as exc:
+            self._skip("wake persistence", exc)
+
+    def _restore_wake(self) -> None:
+        """Reload a persisted wake on startup. Ignores one already in the past -- a stale
+        deadline from a previous night must not arm a phantom alarm."""
+        try:
+            row = self.repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key=?", (self._WAKE_KV_KEY,)).fetchone()
+            if not row or not row[0]:
+                return
+            data = json.loads(row[0])
+            wk = datetime.fromisoformat(data["required_wake_time"])
+            if wk <= datetime.now():
+                self._log("persisted wake time is in the past; not restoring")
+                return
+            self.wake = data.get("wake")
+            self.context.required_wake_time = wk
+            win = (self.wake or {}).get("window_min")
+            if win:
+                self.cycle.controller.set_wake_window(int(win))
+            self._log(f"restored wake {wk.strftime('%H:%M')} "
+                      f"(window {win} min) after daemon restart")
+        except Exception as exc:
+            self._skip("wake restore", exc)
 
     # ---- diagnostics: 48h state-history trend + black-box crash pre-history --------------
     def _record_state_history(self, snapshot: dict) -> None:
@@ -1413,6 +1463,10 @@ class LiveDashboardDaemon:
                               f"({result.get('detail')}) -- it may still fight commanded levels.")
             except Exception as exc:  # pragma: no cover - network dependent
                 self._log(f"WARNING: could not disable bedtime schedule: {exc!r}")
+        # Reload a wake deadline persisted by a previous daemon instance (see _restore_wake):
+        # the watchdog restarts this process on its own, and losing the alarm silently is the
+        # worst possible failure for the one thing the night is planned around.
+        self._restore_wake()
         # Away mode idles the pod to target 0 (bed does nothing) and poisons side
         # resolution. Something outside our control (Eight Sleep's own app/Autopilot)
         # can enable it -- so the daemon owns this flag: unless the *user* commanded
