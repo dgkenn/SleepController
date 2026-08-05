@@ -310,3 +310,46 @@ def test_actigraphy_wake_refuses_phone_index_units():
 
     est2 = estimate_sleep_stage(_acc_frame([0.1, 40.0], units=None), 60.0, [], cfg)
     assert est2 is not None and est2[2] != "actigraphy_wake"
+
+
+# ------------------------------------------------- wake ledger: unblocking trajectory learning
+def test_accelerometer_wake_reaches_the_wake_ledger():
+    """``raw_samples.wake_event`` is the ONLY input to ``awakening_precursor_profile``
+    (``wake_times = [... if wake_event == 1]``), and it was written 0 on every row of a night
+    containing 6 message-proven awakenings -- so the personalized precursor trajectory has never
+    had a single observation to learn from.
+
+    The arousal voter already counts an AWAKE stage among its signals; it stayed silent because
+    the HR stager almost never emitted AWAKE during maintenance (it emitted REM at exactly those
+    moments). Once accelerometer counts can drive the stage to AWAKE, the existing voter path
+    fires and the ledger fills -- no separate fallback needed.
+    """
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_actigraphy_wake_enabled = True
+    c = SleepController(cfg)
+    ctx = ContextRecord(date="2026-06-23")
+    recent: list = []
+    start = datetime(2026, 6, 23, 23, 0)
+
+    def frame(i, pim):
+        f = SensorFrame(timestamp=start + timedelta(minutes=i), stage=SleepStage.UNKNOWN,
+                        presence=True, heart_rate=_onset_hr(i), hrv=62.0, respiratory_rate=14.0,
+                        movement=0.03, bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+        f.activity_history = [(1000.0 + i * 60 + k * 10.0, pim) for k in range(6)]
+        f.activity_units = "counts"
+        return f
+
+    i = 0
+    while c.sm.state is not ControllerState.MAINTENANCE and i < 90:
+        f = frame(i, 0.4)                       # quiet: well under the PIM gate
+        c.decide(f, ctx, recent, start + timedelta(minutes=i))
+        recent.append(f)
+        i += 1
+    assert c.sm.state is ControllerState.MAINTENANCE, "never reached maintenance"
+
+    f = frame(i, 25.6)                          # a real burst of wearable counts
+    d = c.decide(f, ctx, recent, start + timedelta(minutes=i))
+
+    assert d.log_payload["stage"] == "awake"
+    assert d.log_payload["stage_source"] == "actigraphy_wake"
+    assert c.last_wake_event is not None, "accelerometer wake left the learner's ledger empty"
