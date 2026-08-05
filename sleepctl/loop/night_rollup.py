@@ -75,12 +75,18 @@ def _mean(vals) -> Optional[float]:
     return round(statistics.fmean(vals), 2) if vals else None
 
 
-def reconstruct_night_summary(repo, night_date: str) -> NightSummary:
+def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightSummary:
     """Build a ``NightSummary`` for ``night_date`` from persisted ``raw_samples``.
 
     Returns a summary whose fields are ``None`` wherever the night lacks the evidence to support
     them (no rows at all yields a bare ``NightSummary(date=night_date)``, matching the old stub's
     contract so callers cannot regress).
+
+    ``stage_by_ts`` optionally supplies corrected ``{iso_ts: stage_label}`` labels (see
+    :func:`sleepctl.loop.restage.restage_night`) to use in place of the recorded
+    ``raw_samples.stage``. That lets a night recorded by a stale or defective build be scored
+    from its raw physiology instead of the labels that build happened to emit, without rewriting
+    the audit trail in ``raw_samples``.
     """
     ns = NightSummary(date=night_date)
     try:
@@ -117,11 +123,16 @@ def reconstruct_night_summary(repo, night_date: str) -> NightSummary:
     # on a night the user reported ~8 awakenings.
     period = [(t, r) for t, r in samples
               if (onset is None or t >= onset) and (ns.wake_time is None or t <= ns.wake_time)]
+    ov = stage_by_ts or {}
+
+    def _stage(t, r) -> str:
+        return ov.get(t.isoformat()) or r["stage"] or "unknown"
+
     if period:
         durs = _durations([t for t, _ in period])
         mins: dict = {}
-        for (_, r), d in zip(period, durs):
-            key = r["stage"] or "unknown"
+        for (t, r), d in zip(period, durs):
+            key = _stage(t, r)
             mins[key] = mins.get(key, 0.0) + d
         deep = mins.get("deep", 0.0)
         rem = mins.get("rem", 0.0)
@@ -146,8 +157,8 @@ def reconstruct_night_summary(repo, night_date: str) -> NightSummary:
         # report, so counting its rising edges always yields 0. Runs of AWAKE staging are the
         # standard WASO-awakening definition and use a field we actually populate.
         runs, run = 0, 0.0
-        for (_, r), d in zip(period, durs):
-            if (r["stage"] or "") == "awake":
+        for (t, r), d in zip(period, durs):
+            if _stage(t, r) == "awake":
                 run += d
             else:
                 if run >= _MIN_AWAKENING_MIN:

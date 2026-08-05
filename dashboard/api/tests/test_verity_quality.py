@@ -266,3 +266,45 @@ def test_ingest_of_clean_data_is_usable_with_no_flags(auth_client):
     assert body["not_worn"] is False
     assert body["usable"] is True
     assert body["quality_reason"] == "ok"
+
+
+def test_not_worn_flat_actigraphy_and_implausibly_HIGH_rr_is_flagged():
+    """The failure mode a charger actually produces.
+
+    A Verity resting on its charger keeps emitting RR intervals derived from optical noise. They
+    are present (so the "no RR" arm never fires) and nowhere near zero variability (so the
+    implausibly-LOW arm never fires either), which let six real hours of charger noise through as
+    usable -- and the stager then labelled 62% of it DEEP sleep. Measured 2026-08-05 with the band
+    confirmed on the charger, the populations are cleanly disjoint: worn-and-asleep RMSSD topped
+    out at 136 ms, while the charger never dropped below 184 ms.
+    """
+    from app.services import RMSSD_IMPLAUSIBLY_HIGH_MS, assess_cardiac_quality
+
+    now = 1_000_000.0
+    offsets = [400.0, 350.0, 300.0, 250.0, 200.0, 150.0, 100.0, 50.0]
+    history = _hist(now, offsets, hr=58.0, pim=0.0)
+    # wildly swinging intervals -> RMSSD in the hundreds of ms, as seen off-body
+    noisy_rr = [600.0, 1400.0, 700.0, 1500.0, 650.0, 1450.0]
+    out = assess_cardiac_quality(hr=58.0, rr=noisy_rr, acc={"pim": 0.0}, history=history, now=now)
+
+    assert out["not_worn"] is True
+    assert out["usable"] is False
+    assert "implausibly high" in out["reason"]
+    assert RMSSD_IMPLAUSIBLY_HIGH_MS == 160.0  # documents the threshold, set in the observed gap
+
+
+def test_real_sleeping_hrv_is_never_flagged_as_unworn():
+    """The ceiling must not discard genuine data. A high-but-physiological resting RMSSD (well
+    inside the observed worn range) has to stay usable, or the guard would throw away exactly the
+    deep, motionless sleep it is supposed to protect."""
+    from app.services import assess_cardiac_quality
+
+    now = 1_000_000.0
+    offsets = [400.0, 350.0, 300.0, 250.0, 200.0, 150.0, 100.0, 50.0]
+    history = _hist(now, offsets, hr=52.0, pim=0.0)
+    # ~60 ms RMSSD: a healthy, relaxed sleeper -- comfortably under the ceiling
+    calm_rr = [1150.0, 1090.0, 1145.0, 1085.0, 1140.0, 1095.0]
+    out = assess_cardiac_quality(hr=52.0, rr=calm_rr, acc={"pim": 0.0}, history=history, now=now)
+
+    assert out["not_worn"] is False
+    assert out["usable"] is True

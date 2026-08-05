@@ -1555,6 +1555,20 @@ NOT_WORN_MIN_DURATION_S = 300.0
 # actual sleeping pulse.
 RMSSD_IMPLAUSIBLY_LOW_MS = 2.0
 
+# ...and the SAME failure has an upper tail, which is what an unworn band actually does in
+# practice. A Verity sitting on its charger keeps emitting RR intervals derived from optical
+# noise: they are "present" and nowhere near the floor above, so the low-RMSSD corroboration
+# never fires and 6 hours of charger noise sailed through as usable. Measured on 2026-08-05
+# (band confirmed on the charger 07:00-13:00 local) the two populations are cleanly disjoint:
+#
+#     worn, asleep   RMSSD median  21.2 ms, range  12.2 - 136.2
+#     on the charger RMSSD median 236.9 ms, range 184.0 - 335.8
+#
+# Nothing near 200 ms is a physiological resting RMSSD -- even high-HRV endurance athletes sit
+# far below it -- so this ceiling is set in the empty gap between the two, closer to the observed
+# worn maximum than to the charger minimum so it stays conservative about discarding real data.
+RMSSD_IMPLAUSIBLY_HIGH_MS = 160.0
+
 
 def _parse_epoch(ts) -> "float | None":
     """``ts`` (an epoch-seconds number or an ISO8601 string) -> epoch seconds, or None if
@@ -1658,9 +1672,15 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
             rmssd = _rmssd(rr) if rr else None
             no_rr = not rr
             implausible_rr = rmssd is not None and rmssd < RMSSD_IMPLAUSIBLY_LOW_MS
-            if no_rr or implausible_rr:
+            implausible_high = rmssd is not None and rmssd > RMSSD_IMPLAUSIBLY_HIGH_MS
+            if no_rr or implausible_rr or implausible_high:
                 not_worn = True
-                rr_note = "no RR intervals" if no_rr else f"RMSSD {rmssd:.1f}ms implausibly low"
+                if no_rr:
+                    rr_note = "no RR intervals"
+                elif implausible_rr:
+                    rr_note = f"RMSSD {rmssd:.1f}ms implausibly low"
+                else:
+                    rr_note = f"RMSSD {rmssd:.1f}ms implausibly high"
                 reasons.append(
                     f"actigraphy flat for ~{duration:.0f}s (pim={pim:g} <= "
                     f"{STILLNESS_PIM_FLOOR:g}) with {rr_note} -- device likely not worn")
