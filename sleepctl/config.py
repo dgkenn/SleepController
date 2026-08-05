@@ -150,9 +150,16 @@ class Tunables:
     # after a *persistent* run of multi-signal sleep evidence; onset is back-dated to its
     # start so latency reflects when you actually fell asleep.
     onset_persistence_min: int = 10     # sustained sleep required (clinical persistent-sleep)
-    onset_min_signals: int = 3          # of: asleep stage, HR drop, stillness, slowed resp, HRV rise
+    # 2, not 3: respiration is PAYWALLED on this account (0 of 17k samples ever carried one), so
+    # `respiration_slowed` and `respiration_regular` can never fire -- 2 of the 7 signals, and the
+    # code's own strongest sleep-vs-quiet-wake discriminators. That left only `asleep_stage` and
+    # `stillness` dependable, so a 3-signal bar needed an intermittent third to hold for 10
+    # UNBROKEN minutes and onset could never confirm (observed: a full night stuck in INDUCTION).
+    # Compensated by the tighter stillness bar below. Revisit if RSA-derived respiration lands.
+    onset_min_signals: int = 2          # of: asleep stage, HR drop, stillness, slowed resp, HRV rise
     onset_hr_drop_bpm: float = 3.0      # HR below awake-in-bed baseline
-    onset_still_movement: float = 0.15  # movement at/under this = stillness
+    onset_still_movement: float = 0.10  # movement at/under this = stillness (tightened from 0.15
+                                        # to offset the lower onset_min_signals above)
     onset_movement_unreliable: float = 0.45  # above this, BCG HR/HRV/RR are untrustworthy
     onset_hrv_rise_frac: float = 0.08   # HRV this fraction above awake baseline
     onset_min_stage_conf: float = 0.4   # ignore low-confidence stage labels
