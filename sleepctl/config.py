@@ -274,7 +274,17 @@ class Tunables:
     # --- Wake-risk pre-emption thresholds (see controller/wake_risk.py) ------------------
     # Multi-signal vote (shared with the arousal detector's WakeDetector) + the precursor score
     # that drives proactive settle-cool pre-emption.
-    wake_min_signals: int = 3                # signals required for the multi-signal wake vote
+    # 2, not 3. Validated against 10 movement-measured awakenings on a real night, with
+    # RSA-derived respiration restoring the resp_variability signal that could never fire before:
+    #   min_signals=3 -> recall  5/10, false-positive fraction 0.00
+    #   min_signals=2 -> recall 10/10, false-positive fraction 0.16   <- chosen
+    # Two of the seven wake signals remain structurally dead here (confidence_drop -- stage
+    # confidence is pinned at est_model_conf_cap; stage_regression -- the HR stager rarely emits
+    # deep/REM to regress FROM), so a 3-signal bar demanded nearly every LIVE signal at once.
+    # Recall is the right thing to buy: this project treats awakenings as the #1 error signal, and
+    # a missed one is silent -- it teaches the precursor/lead-time learners nothing and skips
+    # pre-emption entirely -- whereas a false one only mis-scores a night.
+    wake_min_signals: int = 2                # signals required for the multi-signal wake vote
     wake_risk_hr_creep_bpm: float = 4.0      # HR above baseline that counts as "creeping up"
     wake_risk_movement: float = 0.3          # movement at/above this counts as restlessness
     wake_risk_warm_margin_f: float = 1.5     # bed this far above target counts as "running warm"
