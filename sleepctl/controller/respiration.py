@@ -46,7 +46,7 @@ import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
 __all__ = [
-    "estimate", "RespirationEstimate",
+    "estimate", "estimate_uniform", "RespirationEstimate",
     "RESP_BAND_LO_HZ", "RESP_BAND_HI_HZ", "DEFAULT_WINDOW_S",
     "MIN_INTERVALS", "MIN_CONCENTRATION", "MIN_PEAK_PROMINENCE",
 ]
@@ -159,6 +159,56 @@ def _goertzel_power(x: Sequence[float], freq_hz: float, sample_hz: float) -> flo
     return s1 * s1 + s2 * s2 - coeff * s1 * s2
 
 
+def estimate_uniform(samples: Sequence[float], sample_hz: float,
+                     *,
+                     min_concentration: float = MIN_CONCENTRATION,
+                     min_prominence: float = MIN_PEAK_PROMINENCE,
+                     n_source: int = 0,
+                     span_s: float = 0.0) -> Optional[RespirationEstimate]:
+    """Respiratory rate from an ALREADY uniformly-sampled signal.
+
+    Shared core so the accelerometer path reuses the exact gates the RR path was validated
+    with, rather than growing a second, separately-tuned copy. Breathing moves the body, so a
+    worn accelerometer carries the same 0.15-0.40 Hz rhythm as RSA does -- an INDEPENDENT
+    estimate, which is what makes it worth having: two physically different sensors agreeing is
+    far stronger evidence than either alone, and they fail differently (RSA dies under
+    sympathetic arousal; accelerometry dies under gross movement).
+    """
+    n = len(samples)
+    if n < 16:
+        return None
+    mean = sum(samples) / n
+    win = [(v - mean) * (0.5 - 0.5 * math.cos(2.0 * math.pi * i / (n - 1)))
+           for i, v in enumerate(samples)]
+    df = sample_hz / n
+    lo_bin = max(1, int(RESP_BAND_LO_HZ / df))
+    hi_bin = int(RESP_BAND_HI_HZ / df)
+    if hi_bin <= lo_bin + 2:
+        return None
+    freqs = [b * df for b in range(lo_bin, hi_bin + 1)]
+    powers = [_goertzel_power(win, f, sample_hz) for f in freqs]
+    total = sum(powers)
+    if total <= 0:
+        return None
+    best_i, best_p = -1, 0.0
+    for i in range(1, len(powers) - 1):
+        p = powers[i]
+        if p > powers[i - 1] and p >= powers[i + 1] and p > best_p:
+            best_i, best_p = i, p
+    if best_i < 0:
+        return None
+    peak_hz = freqs[best_i]
+    conc = sum(p for f, p in zip(freqs, powers) if abs(f - peak_hz) <= 0.03) / total
+    if conc < min_concentration:
+        return None
+    ordered = sorted(powers)
+    mid = len(ordered) // 2
+    median_p = ordered[mid] if len(ordered) % 2 else 0.5 * (ordered[mid - 1] + ordered[mid])
+    if median_p <= 0 or (best_p / median_p) < min_prominence:
+        return None
+    return RespirationEstimate(peak_hz * 60.0, conc, n_source or n, span_s or (n / sample_hz))
+
+
 def estimate(rr_ms: Iterable[float],
              *,
              min_intervals: int = MIN_INTERVALS,
@@ -179,45 +229,6 @@ def estimate(rr_ms: Iterable[float],
     x = _resample(rr, _GRID_HZ)
     if len(x) < 16:
         return None
-
-    mean = sum(x) / len(x)
-    n = len(x)
-    # Hann window: without it, spectral leakage from the large LF component smears across the
-    # respiratory band and produces the band-edge artefact described in the module docstring.
-    win = [(v - mean) * (0.5 - 0.5 * math.cos(2.0 * math.pi * i / (n - 1)))
-           for i, v in enumerate(x)]
-
-    # Evaluate the band on the natural DFT grid for this window length.
-    df = _GRID_HZ / n
-    lo_bin = max(1, int(RESP_BAND_LO_HZ / df))
-    hi_bin = int(RESP_BAND_HI_HZ / df)
-    if hi_bin <= lo_bin + 2:
-        return None
-    freqs = [b * df for b in range(lo_bin, hi_bin + 1)]
-    powers = [_goertzel_power(win, f, _GRID_HZ) for f in freqs]
-    total = sum(powers)
-    if total <= 0:
-        return None
-
-    # Interior local maximum only. A peak at either edge is the leakage signature (LF bleeding
-    # up through 0.15 Hz), not a breath rate -- rejecting it is what stopped this returning a
-    # confident 9-10 brpm on a night whose real rate was 14.
-    best_i = -1
-    best_p = 0.0
-    for i in range(1, len(powers) - 1):
-        p = powers[i]
-        if p > powers[i - 1] and p >= powers[i + 1] and p > best_p:
-            best_i, best_p = i, p
-    if best_i < 0:
-        return None
-
-    peak_hz = freqs[best_i]
-    conc = sum(p for f, p in zip(freqs, powers) if abs(f - peak_hz) <= 0.03) / total
-    if conc < min_concentration:
-        return None
-    ordered = sorted(powers)
-    mid = len(ordered) // 2
-    median_p = ordered[mid] if len(ordered) % 2 else 0.5 * (ordered[mid - 1] + ordered[mid])
-    if median_p <= 0 or (best_p / median_p) < min_prominence:
-        return None
-    return RespirationEstimate(peak_hz * 60.0, conc, len(rr), span_s)
+    return estimate_uniform(x, _GRID_HZ, min_concentration=min_concentration,
+                            min_prominence=min_prominence,
+                            n_source=len(rr), span_s=span_s)

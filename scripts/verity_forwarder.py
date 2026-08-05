@@ -53,6 +53,7 @@ LED shows the Bluetooth/HR mode).
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import asyncio
 import json
 import os
@@ -66,6 +67,11 @@ try:  # running as a script puts scripts/ on sys.path; importing it as a module 
 except ImportError:  # pragma: no cover - import-path fallback
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import polar_pmd as pmd
+
+# The repo root must be importable for the shared respiratory estimator -- the forwarder runs as
+# a bare script from scripts/, so it is not on sys.path by default.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from sleepctl.controller import respiration  # noqa: E402
 
 # Standard BLE Heart Rate Measurement characteristic (GATT 0x2A37).
 HR_MEASUREMENT_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
@@ -367,6 +373,15 @@ async def _pmd_session(client, args) -> bool:
     stats = {"blocked": 0, "bad_frames": 0}
     frames = {"acc": 0, "ppi": 0}
     acc_cap = max(int(args.acc_rate * 300), 1000)  # ~5 min of samples; bounds memory if POSTs fail
+    # SEPARATE rolling window for accelerometer-derived respiration. The per-batch `acc_mags`
+    # above is cleared every --batch-seconds (~2 s = ~104 samples), which is nowhere near enough
+    # to resolve a 0.15-0.40 Hz breathing rhythm -- that needs minutes. Breathing physically
+    # moves the body, so a worn accelerometer carries the same rhythm as RSA does in the RR
+    # intervals, but as an INDEPENDENT measurement that fails differently: RSA collapses under
+    # sympathetic arousal, accelerometry collapses under gross movement. Two disagreeing sensors
+    # is a far better signal than one confident one.
+    resp_win = int(args.acc_rate * respiration.DEFAULT_WINDOW_S)
+    acc_resp_buf: "deque[float]" = deque(maxlen=resp_win)
 
     def _on_control(_handle, data: bytearray) -> None:
         try:
@@ -380,7 +395,9 @@ async def _pmd_session(client, args) -> bool:
             if mtype == pmd.MEAS_ACC:
                 _ts, _ft, samples = pmd.parse_acc_frame(data)
                 frames["acc"] += 1
-                acc_mags.extend(pmd.acc_magnitudes_g(samples))
+                _mags = pmd.acc_magnitudes_g(samples)
+                acc_mags.extend(_mags)
+                acc_resp_buf.extend(_mags)
                 if len(acc_mags) > acc_cap:
                     del acc_mags[:len(acc_mags) - acc_cap]
             elif mtype == pmd.MEAS_PPI:
@@ -486,6 +503,19 @@ async def _pmd_session(client, args) -> bool:
             if len(mags) >= pmd.MIN_EPOCH_SAMPLES:
                 counts = pmd.actigraphy_counts(mags)
                 counts["fs"] = args.acc_rate
+                # Accelerometer-derived respiration over the ROLLING window (not this 2 s
+                # batch). None whenever it is not confidently measurable -- the same quality
+                # gates the RR path uses, so a movement burst or a flat spectrum yields nothing
+                # rather than a fabricated rate.
+                if len(acc_resp_buf) >= resp_win // 2:
+                    try:
+                        est = respiration.estimate_uniform(list(acc_resp_buf),
+                                                           float(args.acc_rate))
+                        if est is not None:
+                            counts["resp_brpm"] = round(est.breaths_per_min, 2)
+                            counts["resp_conc"] = round(est.concentration, 3)
+                    except Exception:
+                        pass    # telemetry extra must never break the forwarder
                 payload["acc"] = counts
             if len(payload) > 1:  # more than the source tag -> something worth sending
                 try:

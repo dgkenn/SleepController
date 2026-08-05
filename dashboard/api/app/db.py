@@ -179,6 +179,12 @@ _MIGRATIONS = [
     # the two sleep-onset signals (respiration_slowed / respiration_regular) that could
     # otherwise NEVER fire. NULL whenever it is not confidently measurable.
     ("live_cardiac", "respiratory_rate", "REAL"),
+    # Accelerometer-DERIVED respiration (forwarder-side, from the rolling 52 Hz magnitude
+    # window). Stored beside the RSA-derived value so the two INDEPENDENT estimates can be
+    # compared: they fail differently (RSA collapses under sympathetic arousal, accelerometry
+    # under gross movement), so agreement is much stronger evidence than either alone.
+    ("actigraphy", "resp_brpm", "REAL"),
+    ("actigraphy", "resp_conc", "REAL"),
     ("sensor_samples", "respiratory_rate", "REAL"),
 ]
 

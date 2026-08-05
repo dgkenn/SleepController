@@ -258,9 +258,11 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
         n = counts.get("n")
         n = int(n) if isinstance(n, (int, float)) and math.isfinite(float(n)) else None
         conn.execute(
-            """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
-            (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source),
+            """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source,
+                                       resp_brpm, resp_conc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source,
+             _num("resp_brpm"), _num("resp_conc")),
         )
         now_mono = time.monotonic()
         if now_mono - _last_actigraphy_prune_monotonic >= _RR_PRUNE_INTERVAL_S:

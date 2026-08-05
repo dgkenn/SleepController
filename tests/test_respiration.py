@@ -80,3 +80,29 @@ def test_implausible_intervals_are_filtered_not_trusted():
     est = R.estimate(series)
     assert est is not None
     assert abs(est.breaths_per_min - 14.0) <= 2.0
+
+
+def test_uniform_estimator_recovers_a_known_rate_from_a_motion_signal():
+    """The accelerometer path shares the RR path's spectral core and gates rather than growing a
+    second, separately-tuned copy. A worn accelerometer carries the breathing rhythm directly
+    (the body moves), giving an INDEPENDENT estimate that fails differently from RSA -- RSA dies
+    under sympathetic arousal, accelerometry under gross movement -- so agreement between them is
+    far stronger evidence than either alone.
+    """
+    fs = 52.0
+    for brpm in (12.0, 15.0):
+        hz = brpm / 60.0
+        # ~1 g gravity plus a small respiratory modulation, as an armband actually sees
+        sig = [1.0 + 0.01 * math.sin(2.0 * math.pi * hz * (i / fs))
+               for i in range(int(fs * 120))]
+        est = R.estimate_uniform(sig, fs)
+        assert est is not None, f"failed to detect {brpm} brpm from motion"
+        assert abs(est.breaths_per_min - brpm) <= 1.5
+
+
+def test_uniform_estimator_refuses_gross_movement():
+    """Thrashing must yield None, not a number -- the accelerometer's characteristic failure."""
+    rnd = random.Random(11)
+    fs = 52.0
+    sig = [1.0 + rnd.gauss(0, 0.3) for _ in range(int(fs * 120))]
+    assert R.estimate_uniform(sig, fs) is None
