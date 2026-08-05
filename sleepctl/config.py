@@ -217,6 +217,16 @@ class Tunables:
     # minutes_since_onset moved max p_deep 0.008 -> 0.558), while the heuristic scored deep 17.7%
     # on the same night, inside the 15-20% literature range. Set False to trust the model alone.
     deep_corroboration: bool = True
+    # HARD clamp of the commanded target to the personal comfort band (from the comfort sweep /
+    # repo.get_comfort_profile), applied only in MAINTENANCE/WAKE_RECOVERY. The guardrail only
+    # WARNS about an out-of-band target and the sole hard clamp is the device's 55-110 F range,
+    # which is meaningless when a real usable range spans ~2 F. Without sensed bed temperature
+    # (paywalled) the thermal loop is open-loop, and one measured night drifted to the too-warm
+    # edge for hours and then overshot to the too-cold edge -- awakenings at both ends. This is
+    # the backstop for that. INDUCTION (deliberate cold opener) and WAKE_WINDOW (deliberate warm
+    # ramp) are exempt by design.
+    comfort_clamp_enabled: bool = True
+    comfort_clamp_margin_f: float = 0.5   # allow this much beyond the measured band edges
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded

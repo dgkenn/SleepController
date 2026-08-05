@@ -375,6 +375,14 @@ class LiveDashboardDaemon:
             comfort = self.repo.get_comfort_profile()
             if comfort and comfort.get("neutral_f") is not None:
                 controller.thermal.profile.neutral_f = float(comfort["neutral_f"])
+            # ATTACH the whole profile, not just the neutral. Without this
+            # ``controller.comfort_profile`` stays None forever, and BOTH consumers of the
+            # personal comfort BAND silently no-op: the guardrail's out-of-band check
+            # (guardrail.py's documented reason (b)) and the hard comfort clamp in decide().
+            # set_comfort_profile existed but was called from nowhere in production -- so the
+            # cool/warm edges the comfort sweep exists to produce were being computed, stored,
+            # and then ignored.
+            controller.set_comfort_profile(comfort)
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
             from sleepctl.benchmarks import sleep_debt_min
             controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))

@@ -44,3 +44,70 @@ def test_steps_around_centers_on_neutral():
     s = steps_around(70.0, spread_f=6.0, n=4)
     assert s[0] == 64.0 and s[-1] == 76.0 and len(s) == 4
     assert steps_around(None)            # falls back to defaults
+
+
+def test_comfort_clamp_bounds_the_target_in_maintenance():
+    """REGRESSION for a real night. With sensed bed temperature paywalled the thermal loop is
+    open-loop, and nothing bounded the commanded target: the guardrail only WARNS about an
+    out-of-band value, and the only hard clamp is the device's 55-110 F range -- meaningless when
+    the usable range spans ~2 F. The bed drifted to the too-warm edge for hours (awakenings every
+    ~20 min), then overshot to the too-cold edge (three more within 7 minutes).
+    """
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    from sleepctl.controller.state_machine import SleepStateMachine
+    from sleepctl.models import ContextRecord, ControllerState, SensorFrame, SleepStage
+
+    cfg = AppConfig.default()
+    now = datetime(2026, 8, 5, 2, 0, 0)
+    ctrl = SleepController(cfg)
+    ctrl.sm = SleepStateMachine(cfg, state=ControllerState.MAINTENANCE)
+    ctrl.sm.state = ControllerState.MAINTENANCE
+    ctrl.set_comfort_profile({"neutral_f": 65.5, "cool_edge_f": 64.0, "warm_edge_f": 66.5})
+
+    recent = [SensorFrame(timestamp=now - timedelta(minutes=10 - i), stage=SleepStage.LIGHT,
+                          stage_confidence=0.7, heart_rate=60.0, hrv=40.0, movement=0.02,
+                          presence=None, data_age_seconds=5.0)
+              for i in range(10)]
+    frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, stage_confidence=0.7,
+                        heart_rate=60.0, hrv=40.0, movement=0.02, presence=None,
+                        data_age_seconds=5.0)
+
+    # drive the controller from far outside the band in BOTH directions
+    for start in (75.0, 55.0):
+        ctrl._last_target_f = start
+        d = ctrl.decide(frame, ContextRecord(date="2026-08-05"), recent, now)
+        assert 63.5 - 1e-6 <= d.target_temp_f <= 67.0 + 1e-6, (
+            f"target {d.target_temp_f} escaped the clamped comfort band from {start}")
+
+
+def test_comfort_clamp_does_not_muzzle_the_wake_ramp():
+    """The wake ramp is deliberately ABOVE the comfort band -- warmth is how the controller
+    assists waking. Clamping WAKE_WINDOW would break designed behaviour rather than protect
+    sleep, so the clamp is confined to the sleep-holding states."""
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    from sleepctl.controller.state_machine import SleepStateMachine
+    from sleepctl.models import ContextRecord, ControllerState, SensorFrame, SleepStage
+
+    cfg = AppConfig.default()
+    now = datetime(2026, 8, 5, 5, 45, 0)
+    ctrl = SleepController(cfg)
+    ctrl.sm = SleepStateMachine(cfg, state=ControllerState.WAKE_WINDOW)
+    ctrl.sm.state = ControllerState.WAKE_WINDOW
+    ctrl.set_comfort_profile({"neutral_f": 65.5, "cool_edge_f": 64.0, "warm_edge_f": 66.5})
+    ctrl._last_target_f = 68.0
+
+    recent = [SensorFrame(timestamp=now - timedelta(minutes=10 - i), stage=SleepStage.LIGHT,
+                          stage_confidence=0.7, heart_rate=62.0, hrv=35.0, movement=0.05,
+                          presence=None, data_age_seconds=5.0)
+              for i in range(10)]
+    frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, stage_confidence=0.7,
+                        heart_rate=62.0, hrv=35.0, movement=0.05, presence=None,
+                        data_age_seconds=5.0)
+    ctx = ContextRecord(date="2026-08-05")
+    ctx.required_wake_time = now + timedelta(minutes=15)
+    d = ctrl.decide(frame, ctx, recent, now)
+    assert "clamped to personal comfort band" not in (d.reason or "")

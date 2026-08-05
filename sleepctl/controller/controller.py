@@ -480,7 +480,14 @@ class SleepController:
         )
         self.last_guardrail = guardrail
         if guardrail.critical:
-            safe_f = cfg.tunables.neutral_temp_f
+            # The LEARNED neutral, not cfg.tunables.neutral_temp_f. That tunable is the
+            # population default (70.0 F) and is exactly the anchor the comfort sweep exists to
+            # replace -- reverting a critical guardrail toward it would drag the bed to the
+            # temperature the user's own calibration says is too warm, i.e. the "safe" hold would
+            # walk into the failure mode. Falls back to the tunable when no profile is loaded.
+            safe_f = getattr(getattr(self.thermal, "profile", None), "neutral_f", None)
+            if safe_f is None:
+                safe_f = cfg.tunables.neutral_temp_f
             # Revert toward neutral gently — never jump further than the normal max step.
             step = cfg.tunables.max_step_f
             if safe_f > self._last_target_f:
@@ -501,6 +508,39 @@ class SleepController:
             # latency-damping anchor) in sync with this override, so next tick's resolve()
             # doesn't fight stale un-overridden history (see ThermalController.note_override).
             self.thermal.note_override(target_f, now=now)
+
+        # --- personal comfort CLAMP: a hard bound, not just a warning ---------------------
+        # The guardrail above only FLAGS an out-of-band target ("never picks a target itself"),
+        # and the only hard clamp in the stack is the device's 55-110 F range -- useless here,
+        # because a real usable range spans ~2 F (levels -80..-37 on one measured night). So
+        # nothing physically stopped an open-loop drift, and one did happen: the bed ran to the
+        # too-warm edge for hours (awakenings every ~20 min), then overshot to the too-cold edge
+        # (three more awakenings within 7 min).
+        #
+        # With NO sensed bed temperature (paywalled) the thermal loop is open-loop by
+        # construction, so a bound on the commanded target is the only backstop available.
+        # Applied ONLY in the long sleep-holding states: INDUCTION owns a deliberately cold
+        # opener and WAKE_WINDOW a deliberately warm ramp, and clamping those would break
+        # designed behaviour rather than protect sleep.
+        clamped_from = None
+        if (getattr(cfg.tunables, "comfort_clamp_enabled", True)
+                and state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY)
+                and isinstance(self.comfort_profile, dict)):
+            lo_edge = self.comfort_profile.get("cool_edge_f")
+            hi_edge = self.comfort_profile.get("warm_edge_f")
+            margin = getattr(cfg.tunables, "comfort_clamp_margin_f", 0.5)
+            if lo_edge is not None and hi_edge is not None and hi_edge >= lo_edge:
+                lo, hi = float(lo_edge) - margin, float(hi_edge) + margin
+                bounded = max(lo, min(hi, target_f))
+                if abs(bounded - target_f) > 1e-9:
+                    clamped_from, target_f = target_f, bounded
+                    level = self.thermal.to_level(target_f)
+                    action = self._action_for(self._last_target_f, target_f)
+                    reason = (f"{reason}; clamped to personal comfort band "
+                              f"{lo:.1f}-{hi:.1f}F (was {clamped_from:.1f}F)")
+                    # Keep the thermal controller's slew/variability bookkeeping consistent with
+                    # the value actually commanded, exactly as the guardrail override does.
+                    self.thermal.note_override(target_f, now=now)
 
         self._last_target_f = target_f
         decision = self._build(
