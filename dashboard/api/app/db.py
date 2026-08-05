@@ -173,6 +173,13 @@ _MIGRATIONS = [
     ("sensor_samples", "hr_frozen", "INTEGER"),
     ("sensor_samples", "not_worn", "INTEGER"),
     ("sensor_samples", "quality_reason", "TEXT"),
+    # RSA-derived respiratory rate (see sleepctl.controller.respiration). The Pod's own
+    # respiration is paywalled on a membership-less account, but breathing modulates the
+    # beat-to-beat intervals the Verity does provide, so it is recoverable -- and it restores
+    # the two sleep-onset signals (respiration_slowed / respiration_regular) that could
+    # otherwise NEVER fire. NULL whenever it is not confidently measurable.
+    ("live_cardiac", "respiratory_rate", "REAL"),
+    ("sensor_samples", "respiratory_rate", "REAL"),
 ]
 
 

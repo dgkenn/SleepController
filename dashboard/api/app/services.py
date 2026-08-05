@@ -1451,6 +1451,33 @@ HRV_WINDOW_MINUTES = 3.0
 HRV_WINDOW_MIN_INTERVALS = 20   # below this the estimate is still noise; keep the batch value
 
 
+def _windowed_respiration(conn, source: str = "verity",
+                          minutes: float = 2.0) -> "float | None":
+    """RSA-derived breaths/min over the last ``minutes`` of persisted RR intervals, or None.
+
+    2 minutes is the measured optimum, not a guess: sweeping 2/3/5/10/15/30-min windows over a
+    real uninterrupted sleep stretch gave medians 14.0/13.0/13.0/13.0/14.0/14.0 brpm with the
+    TIGHTEST spread and the best peak concentration at 2 min (IQR 2.0, conc 0.56). Shorter than
+    that and the respiratory peak is not resolvable; longer and genuine physiological drift
+    widens it without improving the estimate.
+
+    Best-effort and quality-gated inside ``respiration.estimate`` -- any read failure or an
+    unconvincing spectrum degrades to None, never raises, on the real-time ingest path.
+    """
+    try:
+        from sleepctl.controller import respiration
+        pairs = bridge.recent_rr_intervals(conn, minutes=minutes)
+    except Exception:
+        return None
+    if not pairs:
+        return None
+    try:
+        est = respiration.estimate([rr for _ts, rr in pairs])
+    except Exception:
+        return None
+    return est.breaths_per_min if est is not None else None
+
+
 def _windowed_rmssd(conn, source: str = "verity",
                     minutes: float = HRV_WINDOW_MINUTES) -> "float | None":
     """RMSSD over the last ``minutes`` of PERSISTED RR intervals, not just the current POST batch.
@@ -1708,7 +1735,18 @@ def ingest_hr(repo, payload: dict) -> dict:
     if hrv_windowed is not None:
         hrv = hrv_windowed
 
-    bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source})
+    # RESPIRATORY RATE from respiratory sinus arrhythmia in the same RR window (see
+    # sleepctl.controller.respiration). The Pod's own respiration is paywalled here, and the
+    # Verity does not report it -- but breathing modulates the beat-to-beat intervals, so it is
+    # recoverable. This restores `respiration_slowed` and `respiration_regular`, two of the seven
+    # sleep-onset signals, which could otherwise NEVER fire (0 of 17k samples had a respiration).
+    # None is a normal outcome (movement, weak RSA, dropout) and must stay None rather than
+    # become a guess: a wrong rate would make those two signals fire on noise and manufacture
+    # false sleep onsets, which is worse than having no respiration at all.
+    resp = _windowed_respiration(repo.conn, source)
+
+    bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source,
+                                            "respiratory_rate": resp})
     # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
     # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
     # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.

@@ -34,6 +34,7 @@ class WearableSample:
     heart_rate: Optional[float] = None
     hrv: Optional[float] = None
     movement: Optional[float] = None      # 0..1 restlessness/motion index (sub-second source)
+    respiratory_rate: Optional[float] = None   # breaths/min (RSA-derived; None when unmeasurable)
     age_seconds: Optional[float] = None    # freshness of this sample
 
 
@@ -75,6 +76,10 @@ def fuse_sample(frame: SensorFrame, sample, max_age_s: float = 30.0) -> bool:
         frame.movement = sample.movement
     if sample.hrv is not None:
         frame.hrv = sample.hrv
+    # Only overlay respiration when the wearable actually measured it -- a None must never
+    # clobber a real Pod reading on an account where that channel does work.
+    if getattr(sample, "respiratory_rate", None) is not None:
+        frame.respiratory_rate = sample.respiratory_rate
     prior = frame.data_age_seconds
     frame.data_age_seconds = age if prior is None else min(prior, age)
     return True

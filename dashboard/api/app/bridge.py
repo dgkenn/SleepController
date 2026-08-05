@@ -511,11 +511,13 @@ def write_cardiac_sample(conn: sqlite3.Connection, sample: dict) -> None:
     HR/HRV and the phone's movement can be merged per-field without either clobbering the other
     (see ``read_fused_sensor``)."""
     conn.execute(
-        """INSERT INTO live_cardiac (id, updated, hr, hrv, source)
-        VALUES (1,?,?,?,?)
+        """INSERT INTO live_cardiac (id, updated, hr, hrv, source, respiratory_rate)
+        VALUES (1,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
-         updated=excluded.updated, hr=excluded.hr, hrv=excluded.hrv, source=excluded.source""",
-        (_now(), sample.get("hr"), sample.get("hrv"), sample.get("source", "verity")),
+         updated=excluded.updated, hr=excluded.hr, hrv=excluded.hrv, source=excluded.source,
+         respiratory_rate=excluded.respiratory_rate""",
+        (_now(), sample.get("hr"), sample.get("hrv"), sample.get("source", "verity"),
+         sample.get("respiratory_rate")),
     )
     conn.commit()
 
@@ -662,8 +664,11 @@ def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
 
     if hr is None and hrv is None and mv is None:
         return None
+    # RSA-derived respiration rides the cardiac channel's freshness: it is computed from the
+    # same RR window as HRV, so if the cardiac sample is stale the respiration is too.
+    resp, _resp_age = _fresh(card, "respiratory_rate", cardiac_max_age_s)
     return {
-        "hr": hr, "hrv": hrv, "movement": mv,
+        "hr": hr, "hrv": hrv, "movement": mv, "respiratory_rate": resp,
         "hr_age_seconds": hr_age, "hrv_age_seconds": hrv_age, "movement_age_seconds": mv_age,
         "hr_source": hr_source, "movement_source": mv_source,
     }
