@@ -294,7 +294,14 @@ class TestReadFrame:
         assert frame.data_age_seconds is None
         assert frame.stage is SleepStage.UNKNOWN
         assert frame.heart_rate is None
-        assert frame.presence is False
+        # NO physiology at all is UNKNOWN presence, not a confident "not in bed". Downstream,
+        # False is a positive bed-exit signal and LiveDaemon fuses the wearable only when
+        # presence `is not False` -- so reporting False here permanently disabled Verity fusion
+        # on any account whose trends pipeline is empty (no Autopilot membership), starving the
+        # controller of the very HR/movement the wearable exists to provide.
+        assert frame.presence is None
+        # ...but a real, merely-STALE reading is still a confident False (see the test above),
+        # so this must not become a blanket "never report absence".
 
 
 # --------------------------------------------------------------------------------------

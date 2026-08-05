@@ -611,10 +611,25 @@ class EightSleepDirectClient:
         self._last_update = datetime.now()
 
     # ------------------------------------------------------------------------- sensing
-    def _presence(self, now_utc: datetime) -> bool:
+    def _presence(self, now_utc: datetime) -> Optional[bool]:
+        """Bed presence, or ``None`` when we genuinely cannot tell.
+
+        NO physiology at all means we have NO INFORMATION -- it must not be reported as a
+        confident "not in bed". This distinction is load-bearing downstream: ``False`` is
+        treated as a positive bed-exit signal, and in particular
+        ``LiveDaemon._read_frame_fused`` fuses the wearable only ``if frame.presence is not
+        False`` (unknown still fuses, precisely "so we never lose data to a missing reading").
+
+        On an account without an Autopilot membership the trends physiology pipeline is empty
+        forever, so returning False here made presence permanently False -- which silently
+        disabled Verity fusion entirely and left the controller with no HR/movement at all on
+        exactly the setup the wearable exists to support. Report None instead: fusion proceeds,
+        no false bed-exit fires, and the state machine still refuses to auto-enter INDUCTION on
+        unknown presence (that requires an explicit "help me fall asleep"/nap, which forces it).
+        """
         sample_dt = _parse_iso(self._physiology.get("sample_time"))
         if sample_dt is None or self._physiology.get("heart_rate") is None:
-            return False
+            return None
         return (now_utc - sample_dt).total_seconds() < 600
 
     def read_frame(self) -> SensorFrame:
