@@ -32,8 +32,27 @@ Write-Host "    (Display may still turn off -- that's fine, it doesn't stop the 
 Write-Host "==> 2/2  Registering the always-on Scheduled Task 'SleepController'..." -ForegroundColor Cyan
 $action = New-ScheduledTaskAction -Execute "powershell.exe" `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$watchdog`""
-# Start at boot AND at logon (covers both whether or not you sign in).
-$triggers = @( (New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn) )
+# Start at boot AND at logon (covers both whether or not you sign in), and RE-CHECK every 5
+# minutes forever.
+#
+# The repetition is what makes the watchdog's own self-restart survivable, and it is not
+# optional. `-RestartCount/-RestartInterval` below only cover a task that FAILS TO RUN; when the
+# watchdog deliberately exits non-zero to be relaunched fresh from disk (Restart-Watchdog, used
+# by restart.request=watchdog|self, by verity-setup.ps1, and by the auto-update rollback path),
+# Task Scheduler records LastTaskResult=1 and considers the task COMPLETED -- so nothing ever
+# relaunches it. Demonstrated on 2026-08-05: the watchdog exited and the whole stack (api, web,
+# daemon supervision) stayed down until it was started by hand.
+#
+# With a repetition trigger the next tick brings it straight back, and `-MultipleInstances
+# IgnoreNew` (already set below) means a tick while the watchdog is HEALTHY is a no-op -- so this
+# is a pure recovery path, never a duplicate-process risk.
+# NB: omit -RepetitionDuration. It means "repeat indefinitely" and serialises as an empty
+# Duration, which is what the task schema wants; passing [TimeSpan]::MaxValue or ::Zero
+# explicitly emits P99999999DT23H59M59S / PT0S and Register/Set-ScheduledTask rejects both with
+# "The task XML contains a value which is incorrectly formatted or out of range."
+$repeat = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+    -RepetitionInterval (New-TimeSpan -Minutes 5)
+$triggers = @( (New-ScheduledTaskTrigger -AtStartup), (New-ScheduledTaskTrigger -AtLogOn), $repeat )
 # S4U = run whether the user is logged on or not, WITHOUT storing a password. Highest privileges
 # so it can manage the firewall rule.
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType S4U -RunLevel Highest

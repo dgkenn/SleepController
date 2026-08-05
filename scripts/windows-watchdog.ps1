@@ -149,7 +149,30 @@ function Stop-ComponentProcesses([string]$component) {
 # because they are independent Start-Process children that keep serving during the gap; the
 # relaunched watchdog then adopts/cycles them onto the new code via its normal startup sweep.
 function Restart-Watchdog {
-    Log "watchdog self-restart requested -- exiting (exit 1) so the Scheduled Task relaunches this script fresh from disk"
+    # Launch the replacement OURSELVES, then exit. Do NOT rely on the Scheduled Task to do it.
+    #
+    # The task is registered with -RestartCount 999 -RestartInterval 1m, which looks like it
+    # covers this -- it does not. Those settings only apply to a task that FAILS TO RUN. When this
+    # script exits non-zero on purpose, Task Scheduler records LastTaskResult=1, considers the
+    # task COMPLETED, and never relaunches it. Demonstrated on 2026-08-05: the watchdog exited on
+    # a restart.request=watchdog and the entire stack (api, web, and daemon supervision) stayed
+    # down until the task was started by hand. That made every caller of this function a
+    # permanent-outage button -- including scripts\verity-setup.ps1 and the auto-update rollback
+    # path, i.e. exactly the recovery routes you most need to work unattended.
+    #
+    # Spawning the successor here makes the restart self-contained: it survives regardless of how
+    # the task happens to be registered on a given machine. The 5-minute repetition trigger added
+    # in windows-always-on.ps1 is the belt-and-braces backstop for the case where THIS fails too.
+    $self = $PSCommandPath
+    try {
+        Start-Process -FilePath "powershell.exe" `
+            -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
+                            "-File", $self) `
+            -WindowStyle Hidden | Out-Null
+        Log "watchdog self-restart: launched replacement from $self -- exiting (exit 1)"
+    } catch {
+        Log "watchdog self-restart: FAILED to launch replacement ($($_.Exception.Message)) -- exiting anyway; the Scheduled Task's 5-minute repetition trigger is the fallback"
+    }
     exit 1
 }
 function Handle-RestartRequest {
