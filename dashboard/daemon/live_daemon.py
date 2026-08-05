@@ -837,6 +837,12 @@ class LiveDashboardDaemon:
                         frame.hr_history = hist["hr"]
                     if hist.get("activity"):
                         frame.activity_history = hist["activity"]
+                        # Which SCALE that series is on. bridge.sensor_history_series returns
+                        # "counts" for the wearable's own PIM and "phone_index" for the iPhone's
+                        # 0..1 index -- a ~17x difference measured on real data. Any absolute
+                        # motion threshold is meaningless without it, so thread it through rather
+                        # than letting the controller guess.
+                        frame.activity_units = hist.get("activity_units")
             except Exception as exc:
                 self._skip("dense sensor history", exc)
         return frame

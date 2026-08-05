@@ -130,6 +130,42 @@ def _absolute_wake(frame, cfg, resting_hr) -> bool:
     return frame.heart_rate >= float(resting_hr) + float(delta)
 
 
+def _actigraphy_wake(frame, cfg) -> bool:
+    """True when the wearable's OWN accelerometer counts say the body is moving right now.
+
+    Validated against hard labels: the timestamps of messages the user typed during the night
+    (typing proves wakefulness at a precise instant). Over the 2026-08-04 sleep period there were
+    6 such message-proven awakenings, and the HR-based stager caught 2 of them -- it labelled
+    02:33, 02:35 and 06:01 as **REM** while the user was awake and typing, which is also why the
+    night's REM total looks inflated. A single-minute PIM >= 5 test caught 6/6 while flagging
+    9.8% of the sleep period (38 min WASO), against the stager's 21.5 min.
+
+    Deliberately NOT a sustained-motion test. These awakenings are brief and low-energy -- phone
+    typing barely moves the wrist -- so requiring >= 2 consecutive minutes drops sensitivity to
+    3/6. Sustained-motion filtering is the right shape for postural shifts and the wrong shape
+    for this failure mode.
+
+    Requires ``activity_units == "counts"``: the phone's 0..1 index is a ~17x different scale and
+    a PIM threshold applied to it would be nonsense.
+    """
+    t = cfg.tunables
+    if not getattr(t, "est_stage_actigraphy_wake_enabled", False):
+        return False
+    if getattr(frame, "activity_units", None) != "counts":
+        return False
+    hist = getattr(frame, "activity_history", None)
+    if not hist:
+        return False
+    window_s = float(getattr(t, "est_stage_actigraphy_wake_window_s", 60.0))
+    thresh = float(getattr(t, "est_stage_actigraphy_wake_pim", 5.0))
+    try:
+        last_t = max(float(s[0]) for s in hist)
+        recent_counts = [float(s[1]) for s in hist if float(s[0]) >= last_t - window_s]
+    except Exception:
+        return False
+    return bool(recent_counts) and max(recent_counts) >= thresh
+
+
 def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                          minutes_since_start=None, minutes_since_onset=None,
                          resting_hr=None):
@@ -146,6 +182,10 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
     # them lean on trailing-relative features that a sustained HR elevation defeats.
     if _absolute_wake(frame, cfg, resting_hr):
         return (SleepStage.AWAKE, round(t.est_stage_max_conf, 3), "absolute_wake")
+    # Accelerometer wake evidence, for the same reason: the learned stager scored 2/6 against
+    # message-timestamp ground truth on a real night, calling three of the misses REM.
+    if _actigraphy_wake(frame, cfg):
+        return (SleepStage.AWAKE, round(t.est_stage_max_conf, 3), "actigraphy_wake")
     if getattr(t, "use_learned_stager", True):
         stager = _get_stager()
         if stager is not None:

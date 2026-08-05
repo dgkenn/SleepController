@@ -245,3 +245,56 @@ def test_absolute_wake_needs_a_measured_resting_anchor():
                     heart_rate=150.0, hrv=40.0, movement=0.01)
     est = estimate_sleep_stage(f, 60.0, [], cfg, resting_hr=None)
     assert est is not None and est[2] != "absolute_wake"
+
+
+# ----------------------------------- accelerometer wake evidence (default OFF, see config)
+def _acc_frame(counts, units="counts", hr=62.0):
+    f = SensorFrame(timestamp=datetime(2026, 6, 23, 2, 30), stage=SleepStage.UNKNOWN,
+                    heart_rate=hr, hrv=45.0, movement=0.02)
+    f.activity_history = [(1000.0 + i * 10.0, c) for i, c in enumerate(counts)]
+    f.activity_units = units
+    return f
+
+
+def test_actigraphy_wake_is_off_by_default():
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    assert cfg.tunables.est_stage_actigraphy_wake_enabled is False
+    est = estimate_sleep_stage(_acc_frame([0.1, 0.2, 40.0]), 60.0, [], cfg)
+    assert est is not None and est[2] != "actigraphy_wake"
+
+
+def test_actigraphy_wake_fires_on_a_single_minute_of_motion():
+    """The measured failure mode: brief, low-energy movement from typing on a phone. Requiring
+    sustained motion drops sensitivity from 6/6 to 3/6 against message-timestamp ground truth."""
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_actigraphy_wake_enabled = True
+    stage, _, source = estimate_sleep_stage(_acc_frame([0.1, 0.2, 0.3, 25.6]), 60.0, [], cfg)
+    assert stage is SleepStage.AWAKE and source == "actigraphy_wake"
+
+
+def test_actigraphy_wake_ignores_quiet_sleep():
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_actigraphy_wake_enabled = True
+    est = estimate_sleep_stage(_acc_frame([0.4, 0.6, 0.5, 0.42]), 60.0, [], cfg)
+    assert est is not None and est[2] != "actigraphy_wake"
+
+
+def test_actigraphy_wake_refuses_phone_index_units():
+    """The iPhone's 0..1 index is a ~17x different scale (PIM/16.7 measured on a real night), so a
+    PIM threshold applied to it would fire on essentially nothing -- or, if inverted, everything.
+    Without explicit 'counts' the test must not run at all."""
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_actigraphy_wake_enabled = True
+    est = estimate_sleep_stage(_acc_frame([0.1, 40.0], units="phone_index"), 60.0, [], cfg)
+    assert est is not None and est[2] != "actigraphy_wake"
+
+    est2 = estimate_sleep_stage(_acc_frame([0.1, 40.0], units=None), 60.0, [], cfg)
+    assert est2 is not None and est2[2] != "actigraphy_wake"
