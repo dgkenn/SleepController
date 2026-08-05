@@ -83,13 +83,22 @@ up. `scripts\verify_sensors.py` separates the three:
 | Verity accelerometer | motion **without** the phone | OK once worn |
 | iPhone accelerometer | sub-second motion when the phone's in bed | QUIET — never set up |
 | Eight Sleep Pod frame | stage/presence *if* the membership is active | likely QUIET |
-| Bed temperature | closed-loop feedback + arrival timing | blocked by the prime |
+| Bed thermal feedback | closed-loop feedback + arrival timing | OK — the prime completed 2026-08-04 and the level now tracks its target (`docs/PRIMING_HANDOFF.md`). Note it reads the Pod's **water-side level**, not a thermometer (see below) |
 | Weather / ambient | feed-forward setpoint pre-compensation | QUIET until a location is set |
 | Work calendar (ICS) | the wake deadline the night is planned around | QUIET — not connected |
 | Sleep stager (derived) | turns HR into the stage steered on | OK — weights are bundled |
 | Hue dawn light (output) | sunrise ramp + therapy lamp at wake | QUIET until a bridge is paired |
 
-QUIET is not broken. Only the Verity channels and the bed temperature actually matter for tonight.
+QUIET is not broken. Only the Verity channels and the bed's thermal feedback actually matter for
+tonight.
+
+**There is no bed thermometer on this Pod, and there never was.** The sensed cover temperature
+(`tempBedC`) arrives down the same membership-gated trends pipeline as HR/HRV/stage, so without an
+Autopilot subscription it is simply absent. What the controller actually closes the loop on is
+`currentDeviceLevel` — the Hub's own water-temp-derived *achieved* level, distinct from the level we
+command, available with no membership. That is the right signal anyway: cover temperature was
+measured live to track *ambient*, rising while the bed was commanded to max cool. Anywhere you see
+"bed temperature" in this project's output, read "water-side level".
 
 Run it any time on its own:
 

@@ -814,6 +814,12 @@ def _check_prevention_timing(repo) -> dict:
         return _check("prevention_timing", "Awakening pre-emption timing", "info",
                       f"not computable yet ({exc!r})", None)
 
+    if rep.verdict == "no_thermal_data":
+        # Being blind is not a thermal fault. Reporting it as one would send the user to the water
+        # loop over a missing Autopilot membership; `thermal_response` is the check that actually
+        # judges the actuator, and it works without one.
+        return _check("prevention_timing", "Awakening pre-emption timing", "info",
+                      rep.detail, rep.remedy)
     if rep.verdict == "no_thermal_response":
         return _check("prevention_timing", "Awakening pre-emption timing", "fail",
                       rep.detail, rep.remedy)

@@ -34,15 +34,27 @@ Detector: `sleepctl/diagnostics_thermal.py::analyze_thermal_capacity`, threshold
 
 ## The trap — read this twice
 
-**`thermal_response: ok "at setpoint"` does NOT mean the water loop is working.**
+**`thermal_response: ok "at setpoint"` does NOT mean the water loop is delivering heat to you.**
 
-`ThermalResponseMonitor` (`sleepctl/controller/thermal_health.py`) compares `target_level` against
-`device_level` — *two command-side numbers*. "At setpoint" means only that the Pod acknowledged the
-level we asked for. A completely air-bound loop moving no heat at all would still report exactly
-this. It is not evidence of heat delivery and must not be used to conclude the loop is fine.
+But be precise about *why*, because an earlier draft of this section was wrong in a way that would
+have thrown away the only working instrument on this account:
 
-The corollary matters too: you **cannot** currently distinguish these two hypotheses from the
-published telemetry alone —
+> **CORRECTION.** This section used to say `ThermalResponseMonitor`
+> (`sleepctl/controller/thermal_health.py`) compares "*two command-side numbers*". It does not.
+> It compares the commanded `target_level` against `device_level` (`{side}HeatingLevel` /
+> `currentDeviceLevel`) — the hub's own **water-temp-derived achieved** level, a different field
+> from the target. That is real feedback, and the device-level convergence section below proves it
+> empirically: an echo of the command would match instantly, whereas the observed level lags by up
+> to 36 levels and converges gradually.
+
+What "at setpoint" is actually worth, then: it says the bed is where it was asked to be. That is
+**weak** evidence rather than **no** evidence — uninformative when nothing large was ever
+commanded, because a bed at rest and a bed that cannot move look identical. Force the question with
+an excursion (the thermal self-test commands one) instead of reading a parked bed. And note the
+genuine limit that survives the correction: `device_level` is *plate/water* state, so it still says
+nothing about heat crossing the cover to the sleeper.
+
+With that framing, these are the two hypotheses —
 
 - **H1 — real hydraulic fault.** The loop is air-bound; the prime genuinely never completes.
 - **H2 — stuck status flag.** The loop is fine; `device.priming` latched `True` and never cleared.
@@ -82,17 +94,32 @@ Anyone who tells you which one it is without the measurement below is guessing.
    account it is absent permanently — see the correction above.)
 2. Never substitute pyEight's `current_bed_temp` — that is *derived from the commanded level*, so
    feeding it into this reasoning makes the loop read its own command back as "temperature".
+3. Even with a membership, cover-side temperature was measured live to be an **ambient artifact**:
+   with the cover bypassed into a bucket in a hot room it *rose* while the bed was commanded to max
+   cool (`sleepctl/controller/thermal_health.py`, top docstring). It is a weaker instrument than
+   its name suggests, which softens the loss.
 
-The instrument is already written:
+The instrument is written for **both** traces, and prefers whichever exists:
 
 ```python
-from sleepctl.learning.prevention_timing import measure_arrival_min
-# rows: [{"ts": ..., "bed_temp_f": ...}, ...] spanning a commanded cooling move
-measure_arrival_min(rows, start)   # minutes until the bed actually fell 0.5F, or None
+from sleepctl.learning.prevention_timing import (
+    measure_arrival_min,        # bed_temp_f   — needs an active membership; no input here
+    measure_level_arrival_min,  # device_level — always available, this is the one that runs
+)
+measure_level_arrival_min(rows, start)   # minutes until the level fell 2, or None
 ```
 
-`None` across several strong commanded moves, *inside a session*, is real evidence for H1.
-Movement is proof of H2. `scripts/verify_sensors.py --db <path>` reports the same thing per channel.
+`None` across several strong commanded moves is real evidence for H1; movement is proof of H2.
+`scripts/verify_sensors.py --db <path>` reports the same per channel — its "Bed thermal feedback
+(water-side level)" row reads `thermal_health`, i.e. the level, not a thermometer.
+
+**`prevention_timing.from_repo` now distinguishes "the bed did not move" from "we could not see the
+bed."** It falls back to `thermal_samples.device_level` when `bed_temp_f` is absent, and when
+neither trace has any reading it returns `no_thermal_data` (surfaced as *info*, naming the
+membership) rather than `no_thermal_response` (a FAIL whose remedy is "check priming / reservoir").
+Before that fix this box would have produced a standing, confident accusation against a healthy
+water loop — generated entirely by the missing subscription. If you make it accuse the loop while
+blind again, you have reintroduced exactly that bug.
 
 ## The discriminator that DOES work here: device-level convergence
 
