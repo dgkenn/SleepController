@@ -225,6 +225,14 @@ class Tunables:
     # edge for hours and then overshot to the too-cold edge -- awakenings at both ends. This is
     # the backstop for that. INDUCTION (deliberate cold opener) and WAKE_WINDOW (deliberate warm
     # ramp) are exempt by design.
+    # Use OUTDOOR weather as the exposed-skin ambient in the composite inversion when the
+    # bedroom sensor is unavailable. OFF: the inversion divides the ambient term by
+    # composite_bed_weight, so it AMPLIFIES -- a measured night's 62.3->84.5 F forecast swing
+    # moved commanded water ~7.4 F (~32 device levels) at a near-constant effective target, and
+    # the sleeper woke at both the warm and cold ends. With ambient None the inversion returns
+    # the effective target unchanged, which is the honest behaviour for an unknown term. Outdoor
+    # weather still drives the separate, CAPPED feed-forward bias (precomp_max_bias_f).
+    ambient_outdoor_fallback: bool = False
     comfort_clamp_enabled: bool = True
     comfort_clamp_margin_f: float = 0.5   # allow this much beyond the measured band edges
     hot_sleeper_cool_bias_f: float = -1.5

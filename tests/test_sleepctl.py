@@ -145,17 +145,39 @@ def test_controller_prefers_bedroom_temp_over_outdoor():
     assert d.log_payload["composite_temp_f"] is not None
 
 
-def test_controller_uses_outdoor_when_no_bedroom_temp():
+def _decide_without_bedroom_temp(cfg):
     from sleepctl.models import ContextRecord
 
-    cfg = AppConfig.default()
     c = SleepController(cfg)
     now = datetime(2026, 6, 23, 23, 30)
     ctx = ContextRecord(date="2026-06-23", outdoor_temp_f=95.0)  # hot night
-    # no room_temp_f on the frame -> falls back to outdoor weather for exposed-skin ambient
     frame = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, movement=0.05,
                         bed_temp_f=72.0, room_temp_f=None, data_age_seconds=30)
-    d = c.decide(frame, ctx, [], now)
+    return c.decide(frame, ctx, [], now)
+
+
+def test_outdoor_is_NOT_used_as_ambient_by_default():
+    """Outdoor weather must not stand in for bedroom air in the composite inversion.
+
+    That inversion is water = (effective - (1-a)*ambient)/a, so the ambient term is divided by
+    a=0.75 -- it AMPLIFIES. A house does not track the sky, and on a measured night the forecast
+    ran 62.3 -> 84.5 F while the effective target barely moved: that swing alone moves commanded
+    water ~7.4 F (~32 device levels). The bed drifted -37 -> -80 and the sleeper woke at BOTH
+    ends. ambient=None leaves the inversion returning the effective target unchanged, which is
+    the honest behaviour for a genuinely unknown term.
+    """
+    cfg = AppConfig.default()
+    assert cfg.tunables.ambient_outdoor_fallback is False
+    d = _decide_without_bedroom_temp(cfg)
+    assert d.log_payload["ambient_temp_f"] is None
+
+
+def test_outdoor_fallback_still_available_when_explicitly_enabled():
+    """The capability is retained, just off by default -- a room with a real ambient sensor, or
+    a user who wants it, can switch it back on."""
+    cfg = AppConfig.default()
+    cfg.tunables.ambient_outdoor_fallback = True
+    d = _decide_without_bedroom_temp(cfg)
     assert d.log_payload["ambient_temp_f"] == 95.0
 
 

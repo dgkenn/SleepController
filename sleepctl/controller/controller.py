@@ -433,10 +433,26 @@ class SleepController:
             intent = ThermalIntent.NEUTRAL
 
         # --- composite temperature inputs --------------------------------------
-        # Exposed-skin ambient = bedroom air (preferred) or outdoor weather fallback.
+        # Exposed-skin ambient = bedroom air. There is deliberately NO outdoor-weather fallback
+        # here any more.
+        #
+        # The composite model inverts as water = (effective - (1-a)*ambient)/a, so with the
+        # default a=0.75 the ambient term is DIVIDED by 0.75 -- it amplifies. Outdoor air is a
+        # poor proxy for bedroom air (a house does not track the sky), and on a measured night
+        # the forecast ran 62.3 -> 84.5 F while the effective target barely moved: that 22 F
+        # swing alone moves the commanded water ~7.4 F, i.e. ~32 device levels. The bed drifted
+        # -37 -> -80 and the sleeper woke at BOTH ends. Feeding an unmeasured, amplified,
+        # wrong-location number into an open-loop inversion is worse than not compensating at
+        # all: with ambient None the inversion returns the effective target unchanged, which is
+        # the honest behaviour when the exposed-skin term is genuinely unknown.
+        #
+        # Outdoor weather still drives the SEPARATE feed-forward bias
+        # (``ThermalController.set_ambient_bias``), which is explicitly capped by
+        # ``precomp_max_bias_f`` -- bounded pre-compensation is fine; an unbounded amplified
+        # divisor is not.
         ambient_temp_f = frame.room_temp_f
-        if ambient_temp_f is None and context is not None:
-            ambient_temp_f = context.outdoor_temp_f
+        if ambient_temp_f is None and getattr(cfg.tunables, "ambient_outdoor_fallback", False):
+            ambient_temp_f = context.outdoor_temp_f if context is not None else None
         # Covered-body signal = the Pod's measured bed-surface temperature.
         bed_temp_f = frame.bed_temp_f
 
