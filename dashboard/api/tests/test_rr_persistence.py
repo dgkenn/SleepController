@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 
 def test_hr_ingest_persists_raw_rr(auth_client):
     from app import bridge
@@ -91,3 +93,60 @@ def test_rr_history_endpoint_returns_series(client, monkeypatch):
     body = r.json()
     assert body["n"] == 3 and len(body["rr"]) == 3
     os.environ.pop("DIAG_TOKEN", None)
+
+
+def test_published_hrv_uses_a_window_not_the_2s_batch(client):
+    """ROOT-CAUSE REGRESSION. The forwarder POSTs every --batch-seconds (default 2.0) = ~6 beats,
+    and RMSSD over 6 beats is noise, not HRV. Measured live: per-batch RMSSD had sd 3.3 ms across
+    a 10-23 ms range while the same intervals over a proper window sat steady at 24.7 ms -- both
+    jittery and ~34% biased low, because a 2 s window misses the slow respiratory variation that
+    dominates real RMSSD.
+
+    That noise made SleepOnsetDetector's `hrv_rise` signal flicker (18 of 55 frames on a real
+    night). With respiration paywalled, only `asleep_stage` and `stillness` were dependable, so a
+    flickering third signal meant onset could never persist for its required 10 unbroken minutes
+    and sleep was NEVER detected. Publishing a windowed RMSSD is the fix.
+    """
+    from app.db import get_repo
+    from app import bridge, services
+
+    repo = get_repo()
+    repo.conn.execute("DELETE FROM rr_intervals")
+    repo.conn.commit()
+
+    # A history whose TRUE variability is large (alternating 900/1000 ms -> RMSSD ~100 ms)...
+    history = [900.0, 1000.0] * 30
+    bridge.append_rr_intervals(repo.conn, history, "verity")
+
+    # ...then a 2-second batch that happens to land on near-identical beats, whose own RMSSD is
+    # ~1 ms. The published HRV must reflect the window, not this misleadingly flat batch.
+    flat_batch = [950.0, 951.0, 950.0, 951.0, 950.0, 951.0]
+    out = services.ingest_hr(repo, {"hr": 60, "rr": flat_batch, "source": "verity"})
+
+    assert out["ok"] is True
+    batch_only = services._rmssd(flat_batch)
+    assert batch_only is not None and batch_only < 5.0      # the batch alone looks ~flat
+    assert out["hrv"] is not None
+    assert out["hrv"] > 20.0, (
+        f"published HRV {out['hrv']} tracked the 2s batch ({batch_only:.1f} ms) instead of the "
+        "window -- the noise that prevented sleep onset from ever confirming")
+    repo.close()
+
+
+def test_windowed_hrv_falls_back_to_the_batch_when_history_is_too_sparse(client):
+    """Must not publish a worse number than the batch value: too few intervals in the window
+    (fresh start, gap, armband just put on) keeps the per-batch estimate rather than a windowed
+    estimate computed from almost nothing."""
+    from app.db import get_repo
+    from app import bridge, services
+
+    repo = get_repo()
+    repo.conn.execute("DELETE FROM rr_intervals")
+    repo.conn.commit()
+
+    batch = [900.0, 1000.0, 900.0, 1000.0]          # only 4 intervals total, under the floor
+    out = services.ingest_hr(repo, {"hr": 60, "rr": batch, "source": "verity"})
+
+    assert out["ok"] is True
+    assert out["hrv"] == pytest.approx(services._rmssd(batch), rel=1e-6)
+    repo.close()

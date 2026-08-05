@@ -1444,6 +1444,41 @@ def _rmssd(rr_ms: list) -> "float | None":
     return val if math.isfinite(val) else None
 
 
+# HRV window. Short-term RMSSD is conventionally read over minutes, not seconds; the standard
+# short recording is 5 min, and ~2 min is the usual floor for a stable ultra-short estimate.
+# 3 min balances stability against tracking a real physiological change during the night.
+HRV_WINDOW_MINUTES = 3.0
+HRV_WINDOW_MIN_INTERVALS = 20   # below this the estimate is still noise; keep the batch value
+
+
+def _windowed_rmssd(conn, source: str = "verity",
+                    minutes: float = HRV_WINDOW_MINUTES) -> "float | None":
+    """RMSSD over the last ``minutes`` of PERSISTED RR intervals, not just the current POST batch.
+
+    Returns None when the window is too sparse to beat the batch estimate (a fresh connection, a
+    gap, or the armband just went on), so the caller keeps the per-batch value rather than
+    publishing something worse. Best-effort: any read failure degrades to None, never raises --
+    this sits on the real-time ingest path.
+
+    Successive differences are taken only WITHIN the window's ordered series; a gap in the middle
+    (dropped BLE frames) inflates one difference, which the plausibility filter in ``_rmssd``
+    does not catch, so keep the window short enough that a long dropout ages out quickly.
+    """
+    try:
+        pairs = bridge.recent_rr_intervals(conn, minutes=minutes)
+    except Exception:
+        return None
+    if not pairs:
+        return None
+    try:
+        series = [rr for _ts, rr in pairs]
+    except Exception:
+        return None
+    if len(series) < HRV_WINDOW_MIN_INTERVALS:
+        return None
+    return _finite_or_none(_rmssd(series))
+
+
 # ---------------------------------------------------- Verity Sense data-quality guards
 # Two behaviours documented in Polar's official Verity Sense documentation will silently corrupt
 # both the live controller and the personal-model training data we accumulate from this sensor:
@@ -1631,7 +1666,11 @@ def ingest_hr(repo, payload: dict) -> dict:
                 "ingested": 0}
 
     hr = _finite_or_none(payload.get("hr"))
-    hrv = _finite_or_none(_rmssd(rr))
+    # BATCH RMSSD -- kept for the data-quality guards below, which are deliberately about THIS
+    # batch (an implausibly low per-batch RMSSD is the not-worn signature). NOT what gets
+    # published as the HRV the controller consumes; see the windowed value after the insert.
+    hrv_batch = _finite_or_none(_rmssd(rr))
+    hrv = hrv_batch
     # RR present but no explicit HR → derive HR from the mean interval (60000 ms / mean_rr_ms).
     if hr is None and rr:
         clean = [float(x) for x in rr
@@ -1645,12 +1684,31 @@ def ingest_hr(repo, payload: dict) -> dict:
     if hr is None and hrv is None:
         return {"ok": False, "error": "no usable hr/rr in batch", "ingested": 0}
 
-    bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source})
     # Persist the RAW beat-to-beat intervals, not just the derived RMSSD scalar. Every other HRV
     # metric (SDNN, pNN50, Poincare SD1/SD2, LF/HF) is computable only from these, and they cannot
     # be reconstructed after the fact -- so for a model personalized to this user each night's raw
-    # series is irreplaceable training data.
+    # series is irreplaceable training data. Done BEFORE computing the windowed HRV below so this
+    # batch's own beats are included in the window.
     bridge.append_rr_intervals(repo.conn, rr, source)
+
+    # WINDOWED HRV. The forwarder POSTs every --batch-seconds (default 2.0), which is only ~6
+    # beats -- and RMSSD over 6 beats is not an HRV measurement, it is noise. Measured live:
+    # per-batch RMSSD had sd 3.3 ms over a 10-23 ms range while the same intervals over a proper
+    # window gave a steady 24.7 ms, i.e. the batch value was both jittery AND ~34% biased LOW
+    # (a 2 s window captures beat-to-beat jitter but misses the slower respiratory variation that
+    # makes up most of real RMSSD).
+    #
+    # That noise had a concrete cost: SleepOnsetDetector's `hrv_rise` signal compares the current
+    # HRV against a baseline built from the same series, so pure noise made it flicker -- it fired
+    # in only 18 of 55 frames on a real night. Onset needs >= min_signals sustained for 10 unbroken
+    # minutes, and with respiration paywalled (0 of 17k samples) only `asleep_stage` and
+    # `stillness` were dependable, so a flickering third signal meant sleep onset could never
+    # confirm at all. Publishing a windowed RMSSD is the root-cause fix for that.
+    hrv_windowed = _windowed_rmssd(repo.conn, source)
+    if hrv_windowed is not None:
+        hrv = hrv_windowed
+
+    bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source})
     # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
     # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
     # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.
