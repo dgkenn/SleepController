@@ -133,6 +133,35 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                 if est is not None:
                     stage = _LABEL_TO_STAGE.get(est.stage_label, SleepStage.LIGHT)
                     conf = min(float(est.confidence), getattr(t, "est_model_conf_cap", 0.7))
+                    # DEEP-SLEEP CORROBORATION. The learned stager leans heavily on its clock
+                    # features, and deep sleep is front-loaded in its training data, so its deep
+                    # emission decays to ~0 after the first ~100 min and it then reports deep for
+                    # the REST OF THE NIGHT essentially never. Measured on a real night: deep
+                    # 0-2% against a documented CV recall of 0.60, and a controlled replay of the
+                    # SAME physiology with only `minutes_since_onset` reset moved max p_deep from
+                    # 0.008 to 0.558 -- i.e. the suppression is the clock, not the body.
+                    #
+                    # The interpretable heuristic has no clock at all: it calls deep only on
+                    # SUSTAINED stillness plus HR below the trailing settled-sleep baseline. On
+                    # the same night it produced deep 17.7%, squarely in the 15-20% literature
+                    # range. So where the model says LIGHT but the heuristic has that positive
+                    # physiological evidence for DEEP, take DEEP.
+                    #
+                    # Deliberately narrow: only LIGHT is upgraded (never wake or REM, which the
+                    # heuristic cannot judge -- it has no REM class), and the heuristic's own
+                    # lower confidence is carried so downstream consumers can see this is the
+                    # weaker path. The model still owns REM, which the heuristic cannot supply.
+                    if stage is SleepStage.LIGHT and getattr(t, "deep_corroboration", True):
+                        h = estimate_stage_from_vitals(
+                            frame, sleep_hr_base, recent,
+                            awake_movement=t.est_stage_awake_movement,
+                            awake_hr_delta=t.est_stage_awake_hr_delta,
+                            deep_hr_delta=t.est_stage_deep_hr_delta,
+                            deep_movement=t.est_stage_deep_movement,
+                            deep_sustain=t.est_stage_deep_sustain,
+                            max_conf=t.est_stage_max_conf)
+                        if h is not None and h[0] is SleepStage.DEEP:
+                            return (SleepStage.DEEP, round(min(conf, h[1]), 3), "model+deep")
                     return (stage, round(conf, 3), "model")
 
     heur = estimate_stage_from_vitals(

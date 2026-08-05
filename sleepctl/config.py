@@ -210,6 +210,13 @@ class Tunables:
     # normalizing within the night evidently generalizes better across people.
     # Revisit per-user once enough of the user's own nights exist to evaluate on them directly.
     stager_use_motion: bool = False
+    # Let the interpretable (clock-free) heuristic upgrade a model "light" to DEEP when it has
+    # positive physiological evidence -- sustained stillness plus HR below the trailing sleep
+    # baseline. The learned stager's deep emission is suppressed by its own clock features after
+    # the first ~100 min (measured: deep 0-2% live vs 0.60 CV recall; resetting only
+    # minutes_since_onset moved max p_deep 0.008 -> 0.558), while the heuristic scored deep 17.7%
+    # on the same night, inside the 15-20% literature range. Set False to trust the model alone.
+    deep_corroboration: bool = True
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded

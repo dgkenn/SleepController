@@ -55,7 +55,7 @@ def test_verity_only_night_drives_staging_onset_awakening_and_trajectory():
 
     # 1. STAGING — every tick produced a usable, DERIVED stage (never a Pod label)
     sources = {d.log_payload["stage_source"] for d in decisions}
-    assert sources <= {"model", "heuristic"}, f"unexpected stage sources: {sources}"
+    assert sources <= {"model", "heuristic", "model+deep"}, f"unexpected stage sources: {sources}"
     stages = {d.log_payload["stage"] for d in decisions} - {None}
     assert stages, "no stage was ever derived from the wearable"
     assert len(stages) > 1, f"stage never varied across the night: {stages}"

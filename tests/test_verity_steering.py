@@ -86,7 +86,7 @@ def test_verity_only_feed_reaches_maintenance_and_runs_steering():
         recent.append(frame)
         # the stage the whole pipeline saw was DERIVED from vitals (learned model or heuristic),
         # not a Pod label
-        assert d.log_payload["stage_source"] in ("model", "heuristic")
+        assert d.log_payload["stage_source"] in ("model", "heuristic", "model+deep")
         assert d.log_payload["stage"] in ("awake", "light", "deep", "rem")
         if c.sm.state is ControllerState.MAINTENANCE:
             reached = True

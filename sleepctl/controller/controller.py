@@ -112,7 +112,10 @@ class SleepController:
         self.last_onset_event = None
         self.last_arousal = None          # last ArousalAssessment
         self._stage_estimated = False     # was frame.stage derived from vitals this tick (no Pod stage)
-        self._stage_source = "sensor"     # "sensor" | "model" | "heuristic" (which supplied the stage)
+        # "sensor" | "model" | "model+deep" | "heuristic" (which supplied the stage).
+        # "model+deep" = the learned stager said light, but the clock-free heuristic had
+        # positive physiological evidence for DEEP and upgraded it (see state_estimator).
+        self._stage_source = "sensor"
         self.last_cycle_state = {}        # ultradian trajectory estimate (see wake_orch.cycle_state)
         self.last_wake_risk = None        # last WakeRisk
         self.last_precursor = None        # last PrecursorAssessment (leading-edge drift)
