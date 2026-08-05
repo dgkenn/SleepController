@@ -402,11 +402,21 @@ def test_from_repo_never_raises_on_a_broken_repo():
 # ------------------------------------------------------------------ timestamp hygiene
 def test_aware_and_naive_timestamps_can_be_mixed():
     """The daemon writes naive-local; other paths write aware UTC. Subtracting one from the other
-    raises TypeError, which would take out every duration this module computes."""
-    from datetime import timezone
+    raises TypeError, which would take out every duration this module computes.
 
+    The aware rows must denote the SAME INSTANTS as the naive ``start``, which is naive-LOCAL --
+    that is the convention every engine table actually uses (raw_samples, state_history,
+    thermal_samples and precool_events all write ``datetime.now()``; only the ingest tables use
+    aware UTC). ``.astimezone()`` on a naive value attaches the local offset, preserving the
+    wall clock.
+
+    An earlier version of this test tagged ``start`` as UTC instead. That silently moved every
+    row by the machine's UTC offset, so the rows described instants hours away from ``start``,
+    and the test then demanded a match across that gap -- asserting the OPPOSITE of the module's
+    documented naive-is-local rule. ``_as_dt`` was right and the test was wrong.
+    """
     start = datetime(2026, 7, 28, 2, 0, 0)
-    aware = [{"ts": (start + timedelta(minutes=i)).replace(tzinfo=timezone.utc).astimezone(),
+    aware = [{"ts": (start + timedelta(minutes=i)).astimezone(),
               "bed_temp_f": 72.0 if i < 6 else 70.0, "wake_event": 1 if i == 3 else 0}
              for i in range(-5, 20)]
     # Must not raise, and must find the same offsets as the naive equivalent.

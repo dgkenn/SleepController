@@ -4,6 +4,31 @@ Layers: (1) ``raw_samples`` windowed time-series, (2) ``nightly_summaries``,
 (3) ``context`` antecedents. Plus an ``interventions`` ledger, a per-tick
 ``decisions`` log, and ``baselines`` snapshots. The shape is deliberately flat and
 ML-friendly (one row per sample / per night / per intervention).
+
+TIMESTAMP CONVENTION -- read this before comparing timestamps across tables.
+
+This database mixes two conventions, and the mismatch has produced real, silent bugs: a
+capacity detector that read every row as 240 minutes stale and so never fired; a stuck-prime
+duration inflated by the machine's whole UTC offset (297 min reported for a ~60 min episode);
+and two analyses that compared local-time windows against UTC rows and drew the wrong
+conclusion before the error was caught.
+
+  * NAIVE LOCAL -- written with ``datetime.now()``:
+        raw_samples, decisions, state_history, thermal_samples, precool_events,
+        steer_events, events, interventions   (the engine/daemon tables)
+
+  * AWARE UTC -- written with ``datetime.now(timezone.utc)``:
+        sensor_samples, rr_intervals, actigraphy, live_cardiac, live_sensor,
+        runtime_state, commands               (the dashboard ingest/bridge tables)
+
+Rules:
+  1. NEVER compare a timestamp from one group against the other without normalizing.
+  2. When normalizing, a NAIVE value means LOCAL time -- never stamp it UTC. See
+     ``sleepctl.diagnostics_thermal._to_dt`` and
+     ``sleepctl.learning.prevention_timing._as_dt``, which both do this correctly.
+  3. SQLite's ``datetime('now')`` is UTC, so a bare
+     ``WHERE ts > datetime('now','-N minutes')`` silently matches NOTHING on the
+     naive-local tables.
 """
 
 from __future__ import annotations
