@@ -389,6 +389,11 @@ class Repository:
             "rem_warm_offset_f": profile.rem_warm_offset_f,
             "wake_ramp_f": profile.wake_ramp_f,
             "composite_bed_weight": profile.composite_bed_weight,
+            # BUG FIXED: this was omitted, so the learnable induction opener could never
+            # actually be learned -- every save silently dropped it and every load fell back
+            # to the SetpointProfile default (60.0 F), discarding any tuned value. It is
+            # documented as learnable on the dataclass and the onset tuner writes it.
+            "onset_cold_settle_f": profile.onset_cold_settle_f,
         }
         self.conn.execute(
             """INSERT INTO setpoints (version, ts, source, profile) VALUES (?,?,?,?)
@@ -812,6 +817,9 @@ class Repository:
             rem_warm_offset_f=p["rem_warm_offset_f"],
             wake_ramp_f=p["wake_ramp_f"],
             composite_bed_weight=p["composite_bed_weight"],
+            # .get with the dataclass default: rows written before this field was persisted
+            # legitimately lack it, and must not raise.
+            onset_cold_settle_f=p.get("onset_cold_settle_f", 60.0),
             version=row["version"],
             source=row["source"],
             updated=_dt(row["ts"]),

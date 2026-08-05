@@ -303,7 +303,18 @@ class SleepController:
             self._arousal_started = None
 
         # --- accurate sleep-onset detection (asleep vs lying in bed awake) -------
-        if self._bed_entry_time is None and frame.presence:
+        # `presence is not False` (NOT truthiness): UNKNOWN presence must still register bed
+        # entry, matching the convention used for wearable fusion. presence is None whenever the
+        # Pod's presence can't be read -- permanently so on an account without an Autopilot
+        # membership -- and `if frame.presence:` treated that None as "not in bed", so
+        # _bed_entry_time was never set. That silently starved the stager of its
+        # `minutes_since_start` feature (and left onset latency unanchored).
+        #
+        # Measured cost: with no time context the model cannot tell hour 5 from hour 1, and REM
+        # is back-loaded, so it predicted REM in 0% of epochs -- against a documented CV recall
+        # of 0.545. Replaying one real night with the time features restored: light 96%->64%,
+        # rem 0%->27%, deep 0%->3%. The whole hypnogram had collapsed onto "light".
+        if self._bed_entry_time is None and frame.presence is not False:
             self._bed_entry_time = now
             self.onset_detector.reset()
             self._sleep_onset_time = None
