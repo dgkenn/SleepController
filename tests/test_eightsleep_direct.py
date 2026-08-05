@@ -370,6 +370,42 @@ class TestRequestBackoff:
         # attempted max_retries + 1 times, no more
         assert client._session.calls == client.max_retries + 1
 
+    def test_permanent_4xx_fails_fast_without_retrying(self, monkeypatch):
+        """A non-429 4xx is a definitive answer -- retrying cannot change it. Retrying also ends
+        in a 'giving up on ...' WARNING in daemon.err, which diagnostics reports as a recent
+        daemon error and degrades the whole system for a permanent, expected condition (Eight
+        Sleep's 403 'Subscription required' on schedule/alarm writes)."""
+        from sleepctl.adapters.eightsleep_direct import EightSleepPermanentError
+
+        sleeps = []
+
+        async def fake_sleep(d):
+            sleeps.append(d)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        client = self._authed_client([_FakeResponse(403, {"message": "Subscription required."})]
+                                     * 10)
+        with pytest.raises(EightSleepPermanentError):
+            _run(client._request("PUT", "https://example.test/x"))
+
+        assert client._session.calls == 1   # exactly one attempt, not max_retries + 1
+        assert sleeps == []                 # and no backoff sleeping
+        # still catchable as the broader type every existing caller uses
+        assert issubclass(EightSleepPermanentError, EightSleepRequestError)
+
+    def test_retryable_5xx_still_retries(self, monkeypatch):
+        """Guard the fail-fast path from over-reaching: 5xx/429 must keep their retry behaviour."""
+        async def fake_sleep(d):
+            return None
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        client = self._authed_client([_FakeResponse(500)] * 10)
+        with pytest.raises(EightSleepRequestError):
+            _run(client._request("GET", "https://example.test/x"))
+        assert client._session.calls == client.max_retries + 1
+
     def test_update_device_swallows_failure_and_keeps_stale_data(self, monkeypatch):
         async def fake_sleep(d):
             return None

@@ -136,6 +136,19 @@ class EightSleepRequestError(Exception):
     """A request failed after exhausting retries (429/5xx/timeout/connection error)."""
 
 
+class EightSleepPermanentError(EightSleepRequestError):
+    """A request was DEFINITIVELY refused and must not be retried -- a non-429 4xx.
+
+    Subclasses ``EightSleepRequestError`` so every existing ``except EightSleepRequestError``
+    still catches it; this only lets the retry loop tell "the server said no" apart from "the
+    request didn't get through". Retrying a 403/404 cannot change the answer: it burns four API
+    calls plus backoff and, worse, ends in a ``giving up on ...`` WARNING that lands in
+    ``daemon.err`` -- which ``diagnostics._check_recent_errors`` then reports, pushing the whole
+    system to DEGRADED for something that is a permanent, expected, correctly-handled condition
+    (e.g. Eight Sleep's ``403 Subscription required`` on schedule/alarm writes).
+    """
+
+
 # --------------------------------------------------------------------------------------
 # Small pure helpers (stage map / temp conversion / iso parsing) -- deliberately NOT
 # imported from eightsleep_cloud.py to keep the two adapters decoupled.
@@ -463,10 +476,16 @@ class EightSleepDirectClient:
                 if status == 429 or (status is not None and status >= 500):
                     raise EightSleepRequestError(f"{method} {url} -> HTTP {status}")
                 if status is not None and status >= 400:
-                    raise EightSleepRequestError(f"{method} {url} -> HTTP {status}: {data!r}")
+                    # Non-429 4xx: the server gave a definitive answer. Retrying cannot change
+                    # it, so fail fast and quietly rather than after 4 attempts + a "giving up"
+                    # WARNING that pollutes daemon.err (401 never reaches here -- it is handled
+                    # above by dropping the cached token and re-authing).
+                    raise EightSleepPermanentError(f"{method} {url} -> HTTP {status}: {data!r}")
 
                 return data if data is not None else {}
 
+            except EightSleepPermanentError:
+                raise
             except EightSleepRequestError as exc:
                 last_exc = exc
             except (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError) as exc:
