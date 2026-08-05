@@ -256,11 +256,23 @@ def _acc_frame(counts, units="counts", hr=62.0):
     return f
 
 
-def test_actigraphy_wake_is_off_by_default():
+def test_actigraphy_wake_is_on_by_default():
+    """Enabled deliberately: the stager credited REM for time the user was awake and typing, and
+    the in-night steerer consumes that accrual, so leaving it off preserves a known-wrong
+    baseline rather than being neutral."""
     from sleepctl.controller.state_estimator import estimate_sleep_stage
 
     cfg = AppConfig.default()
-    assert cfg.tunables.est_stage_actigraphy_wake_enabled is False
+    assert cfg.tunables.est_stage_actigraphy_wake_enabled is True
+    stage, _, source = estimate_sleep_stage(_acc_frame([0.1, 0.2, 40.0]), 60.0, [], cfg)
+    assert stage is SleepStage.AWAKE and source == "actigraphy_wake"
+
+
+def test_actigraphy_wake_can_be_disabled():
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_actigraphy_wake_enabled = False
     est = estimate_sleep_stage(_acc_frame([0.1, 0.2, 40.0]), 60.0, [], cfg)
     assert est is not None and est[2] != "actigraphy_wake"
 

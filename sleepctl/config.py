@@ -235,9 +235,15 @@ class Tunables:
     # flagging 9.8% of the period (38 min WASO vs the stager's 21.5). Requires wearable "counts"
     # units; the phone's 0..1 index is a ~17x different scale.
     #
-    # OFF pending a night with the flag on: the 6 labels are positives only, so the
-    # false-positive rate is inferred from plausibility rather than measured.
-    est_stage_actigraphy_wake_enabled: bool = False
+    # ON. The 6 labels are positives only, so the 9.8%-of-night flagged rate is
+    # plausible-WASO reasoning rather than a measured false-positive rate -- but leaving it off
+    # is not the neutral choice it looks like. The in-night steerer consumes REM/deep ACCRUAL,
+    # and the stager was crediting REM for time the user was demonstrably awake and typing; with
+    # steering in its 'act' arm that mislabelled accrual actively drives thermal maneuvers. A
+    # 6/6-vs-2/6 effect with a clear mechanism beats preserving a known-wrong baseline.
+    # Re-evaluate against the first night's flagged rate: if WASO comes back implausibly high,
+    # raise est_stage_actigraphy_wake_pim rather than disabling outright.
+    est_stage_actigraphy_wake_enabled: bool = True
     est_stage_actigraphy_wake_pim: float = 5.0
     est_stage_actigraphy_wake_window_s: float = 60.0
     # HARD clamp of the commanded target to the personal comfort band (from the comfort sweep /
