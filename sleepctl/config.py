@@ -217,6 +217,16 @@ class Tunables:
     # minutes_since_onset moved max p_deep 0.008 -> 0.558), while the heuristic scored deep 17.7%
     # on the same night, inside the 15-20% literature range. Set False to trust the model alone.
     deep_corroboration: bool = True
+
+    # Absolute-anchor wake test (see state_estimator._absolute_wake). Every other wake test is
+    # relative to a TRAILING baseline, which a sustained HR elevation defeats -- the baseline just
+    # rises with it. Against a labelled weightlifting session (band worn, HR to 168) the estimator
+    # called it sleep 70.6% of the time, 17.6% of that DEEP, versus 17.7% deep during real sleep.
+    # `resting + 25` separated them (67.1% of lifting caught, 2.3% of real sleep mislabelled).
+    # OFF until the resting baseline is actually learned (it is None today) and the delta is
+    # validated over several nights -- this drives the state machine and all thermal steering.
+    est_stage_absolute_wake_enabled: bool = False
+    est_stage_absolute_wake_delta_bpm: float = 25.0
     # HARD clamp of the commanded target to the personal comfort band (from the comfort sweep /
     # repo.get_comfort_profile), applied only in MAINTENANCE/WAKE_RECOVERY. The guardrail only
     # WARNS about an out-of-band target and the sole hard clamp is the device's 55-110 F range,

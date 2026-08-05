@@ -189,3 +189,59 @@ def test_stage_estimate_still_runs_on_the_bed_entry_tick():
     d = c.decide(frame, ctx, [], now)
     assert d.log_payload["stage"] != "unknown"
     assert d.log_payload["stage_source"] in ("model", "heuristic", "model+deep")
+
+
+# ------------------------------------- absolute-anchor wake test (default OFF, see config)
+def test_absolute_wake_is_off_by_default():
+    """It changes wake sensitivity -- which drives the state machine, arousal detection and all
+    thermal steering -- and is calibrated on a single session. It must stay opt-in."""
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    assert cfg.tunables.est_stage_absolute_wake_enabled is False
+
+    f = SensorFrame(timestamp=datetime(2026, 6, 23, 1, 0), stage=SleepStage.UNKNOWN,
+                    heart_rate=110.0, hrv=40.0, movement=0.01)
+    est = estimate_sleep_stage(f, 60.0, [], cfg, resting_hr=60.0)
+    assert est is not None and est[2] != "absolute_wake"
+
+
+def test_absolute_wake_catches_sustained_elevation_the_trailing_baseline_misses():
+    """The weightlifting failure: HR far above MEASURED resting, but the trailing baseline has
+    risen with it so every relative test reads 'at baseline' and the frame scores as sleep."""
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_absolute_wake_enabled = True
+
+    # trailing baseline == current HR (what a sustained elevation produces), resting is far below
+    f = SensorFrame(timestamp=datetime(2026, 6, 23, 1, 0), stage=SleepStage.UNKNOWN,
+                    heart_rate=89.0, hrv=40.0, movement=0.01)
+    stage, conf, source = estimate_sleep_stage(f, 89.0, [], cfg, resting_hr=61.0)
+    assert stage is SleepStage.AWAKE and source == "absolute_wake"
+
+
+def test_absolute_wake_leaves_real_sleep_alone():
+    """A normal sleeping HR near the resting anchor must not be dragged awake."""
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_absolute_wake_enabled = True
+
+    f = SensorFrame(timestamp=datetime(2026, 6, 23, 1, 0), stage=SleepStage.UNKNOWN,
+                    heart_rate=73.0, hrv=40.0, movement=0.01)   # night median
+    est = estimate_sleep_stage(f, 73.0, [], cfg, resting_hr=61.0)
+    assert est is not None and est[2] != "absolute_wake"
+
+
+def test_absolute_wake_needs_a_measured_resting_anchor():
+    """resting_baseline is None on this deployment, so the test must simply not fire."""
+    from sleepctl.controller.state_estimator import estimate_sleep_stage
+
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_absolute_wake_enabled = True
+
+    f = SensorFrame(timestamp=datetime(2026, 6, 23, 1, 0), stage=SleepStage.UNKNOWN,
+                    heart_rate=150.0, hrv=40.0, movement=0.01)
+    est = estimate_sleep_stage(f, 60.0, [], cfg, resting_hr=None)
+    assert est is not None and est[2] != "absolute_wake"

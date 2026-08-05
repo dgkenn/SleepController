@@ -101,8 +101,38 @@ def _activity_series(recent, frame) -> "Optional[list]":
     return out or None
 
 
+def _absolute_wake(frame, cfg, resting_hr) -> bool:
+    """True when HR sits so far above the MEASURED resting anchor that sleep is implausible.
+
+    Every other wake test here is RELATIVE to a trailing baseline pooled from recent samples,
+    which silently fails whenever HR is elevated for a sustained stretch: the baseline simply
+    rises with it and the current sample reads as "at baseline". Measured against a labelled
+    positive control (a weightlifting session, band worn, HR to 168 bpm) the estimator called it
+    sleep 70.6% of the time -- 17.6% of it DEEP, statistically indistinguishable from the 17.7%
+    deep it found during real sleep that night. The trailing baseline had risen to ~89.
+
+    An ABSOLUTE anchor is what makes those separable. On that data (resting anchor 61 bpm, the
+    5th percentile of the night) ``resting + 25`` caught 67.1% of the lifting session while
+    mislabelling only 2.3% of real sleep as awake (Youden J = 0.65).
+
+    DEFAULT OFF. It is calibrated on a single session and a single night, it changes wake
+    sensitivity -- which drives the state machine, arousal detection and all thermal steering --
+    and ``resting_baseline`` is not even learned yet on this deployment, so it currently has no
+    input to read. Enable only once the resting baseline exists and the delta has been validated
+    across several nights.
+    """
+    t = cfg.tunables
+    if not getattr(t, "est_stage_absolute_wake_enabled", False):
+        return False
+    if resting_hr is None or frame.heart_rate is None:
+        return False
+    delta = getattr(t, "est_stage_absolute_wake_delta_bpm", 25.0)
+    return frame.heart_rate >= float(resting_hr) + float(delta)
+
+
 def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
-                         minutes_since_start=None, minutes_since_onset=None):
+                         minutes_since_start=None, minutes_since_onset=None,
+                         resting_hr=None):
     """Best available coarse sleep-stage estimate for a stage-less (wearable) feed.
 
     Returns ``(SleepStage, confidence, source)`` or ``None``. Prefers the LEARNED wearable stager
@@ -112,6 +142,10 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
     capped below a real Pod stage in both paths.
     """
     t = cfg.tunables
+    # Absolute-anchor wake test runs BEFORE either estimator: it exists precisely because both of
+    # them lean on trailing-relative features that a sustained HR elevation defeats.
+    if _absolute_wake(frame, cfg, resting_hr):
+        return (SleepStage.AWAKE, round(t.est_stage_max_conf, 3), "absolute_wake")
     if getattr(t, "use_learned_stager", True):
         stager = _get_stager()
         if stager is not None:

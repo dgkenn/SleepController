@@ -273,7 +273,10 @@ class SleepController:
                    if self._sleep_onset_time is not None else None)
             est = estimate_sleep_stage(
                 frame, sleep_hr_base, recent, cfg,
-                minutes_since_start=mss, minutes_since_onset=mso)
+                minutes_since_start=mss, minutes_since_onset=mso,
+                # MEASURED resting HR (not the trailing pool) -- the absolute wake anchor. None
+                # until the resting baseline is learned, which disables that test on its own.
+                resting_hr=(self.resting_baseline or {}).get("hr"))
             if est is not None:
                 frame.stage, frame.stage_confidence, self._stage_source = est
                 self._stage_estimated = True
