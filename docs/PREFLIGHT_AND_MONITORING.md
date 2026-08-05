@@ -115,10 +115,23 @@ happened anyway; this splits *why it failed*, because the two causes need opposi
 Conflated, the settle learner sees one low prevention rate and tunes magnitude forever against a
 problem magnitude cannot fix.
 
-Arrival is **measured** off the bed's own temperature trace (`raw_samples.bed_temp_f`), not
-modelled — so it needs no calibration and reflects whatever the water loop is actually doing. That
-also means "cooling commanded, bed never moved" comes back as `no_thermal_response`: a broken
-actuator, reported as such, rather than a lead-time recommendation.
+Arrival is **measured**, not modelled — so it needs no calibration and reflects whatever the water
+loop is actually doing. It reads the sensed temperature trace (`raw_samples.bed_temp_f`) when that
+exists, and otherwise falls back to the Hub's water-side `thermal_samples.device_level`. The
+fallback is not a nicety: `bed_temp_f` arrives down the membership-gated trends pipeline, so on a
+Pod without an Autopilot subscription it is NULL on every row and the level trace is the only
+measurement there is.
+
+Because of that, the check distinguishes three outcomes, and the third is the one that matters:
+
+- `timing_limited` / `dose_limited` — the split above, on failures we could actually measure.
+- `no_thermal_response` — cooling commanded, a trace was present, and the bed **never moved**. A
+  broken actuator, reported as such rather than as a lead-time recommendation.
+- `no_thermal_data` — **neither trace had any reading**, so we could not see the bed at all. This is
+  a sensing gap, and it is reported as `info` with the membership named. Collapsing it into
+  `no_thermal_response` would tell the user to go drain a water loop that may be perfectly healthy,
+  on the strength of a missing subscription. Judge the actuator from the `thermal_response` check or
+  the thermal self-test instead — both work without a membership.
 
 ## Operational hardening worth knowing about
 

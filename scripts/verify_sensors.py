@@ -158,8 +158,15 @@ def check_pod_frame_decode(r):
 
 
 def check_thermal_feedback(r):
-    """The bed's own temperature trace — the closed-loop feedback and the arrival measurement."""
-    from sleepctl.learning.prevention_timing import measure_arrival_min
+    """The bed's arrival measurement — closed-loop feedback.
+
+    NOT a thermometer on this Pod. Sensed cover temperature (``bed_temp_f`` / ``tempBedC``) comes
+    down the membership-gated trends pipeline and is absent without an Autopilot subscription, so
+    the signal that actually runs here is the Hub's water-side ``device_level``. Both decoders are
+    exercised: the temperature path in case a membership ever appears, and the level path because
+    it is the one carrying tonight."""
+    from sleepctl.learning.prevention_timing import (
+        measure_arrival_min, measure_level_arrival_min)
 
     start = datetime(2026, 7, 30, 2, 0)
     trace = []
@@ -174,7 +181,19 @@ def check_thermal_feedback(r):
             for i in range(-5, 30)]
     if measure_arrival_min(flat, start) is not None:
         return r.path_dead("a FLAT trace was reported as arriving — false thermal response")
-    r.path_ok(f"cooling ramp detected at {arrival} min; a flat trace correctly reports none")
+
+    # The membership-free path, which is what this box actually uses.
+    levels = [{"ts": start + timedelta(minutes=i),
+               "device_level": -10 if i < 8 else -10 - 1.5 * (i - 8)} for i in range(-5, 30)]
+    lvl_arrival = measure_level_arrival_min(levels, start)
+    if lvl_arrival is None:
+        return r.path_dead("a clear device-level cooling ramp was not detected as arrival")
+    flat_levels = [{"ts": start + timedelta(minutes=i), "device_level": -10} for i in range(-5, 30)]
+    if measure_level_arrival_min(flat_levels, start) is not None:
+        return r.path_dead("a FLAT device-level trace was reported as arriving")
+
+    r.path_ok(f"cooling ramp detected at {arrival} min (temp) / {lvl_arrival} min (level); "
+              f"flat traces correctly report none")
 
 
 def check_weather(r):
@@ -294,7 +313,7 @@ def live_state(results, db_path):
              f"runtime_state {'fresh' if not rt.get('stale') else 'STALE'}; "
              f"device online={extra.get('device', {}).get('online')}")
         th = extra.get("thermal_health") or {}
-        _set(results, "Bed temperature (thermal feedback)",
+        _set(results, "Bed thermal feedback (water-side level)",
              OK if th.get("responding") else QUIET,
              f"state={th.get('state')} responding={th.get('responding')} "
              f"({th.get('reason')})")
@@ -385,7 +404,9 @@ CHANNELS = [
     ("Verity accelerometer", "motion WITHOUT the phone; onset + arousal", check_verity_accelerometer),
     ("iPhone accelerometer", "sub-second motion when the phone is in bed", check_phone_bcg),
     ("Eight Sleep Pod frame", "stage/presence when the membership is active", check_pod_frame_decode),
-    ("Bed temperature (thermal feedback)", "closed-loop control + arrival timing", check_thermal_feedback),
+    ("Bed thermal feedback (water-side level)",
+     "closed-loop control + arrival timing (NOT a thermometer -- see check_thermal_feedback)",
+     check_thermal_feedback),
     ("Weather / ambient", "feed-forward setpoint pre-compensation", check_weather),
     ("Work calendar (ICS)", "the wake deadline the night is planned around", check_calendar),
     ("Sleep stager (derived)", "turns HR into the stage the controller steers on", check_stager),
