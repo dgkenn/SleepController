@@ -111,3 +111,37 @@ def test_comfort_clamp_does_not_muzzle_the_wake_ramp():
     ctx.required_wake_time = now + timedelta(minutes=15)
     d = ctrl.decide(frame, ctx, recent, now)
     assert "clamped to personal comfort band" not in (d.reason or "")
+
+
+def test_measured_neutral_suppresses_the_population_hot_sleeper_bias():
+    """REGRESSION. hot_sleeper_cool_bias_f is a POPULATION prior for "runs warm". Once the
+    neutral is measured FROM this user it already encodes that, so stacking the prior on top
+    double-counts and drives the bed below anything they were observed to tolerate.
+
+    Measured on a real night: calibrated neutral 65.5 F + the -1.5 prior + a -1.48 weather bias
+    resolved to 62.5 F -- colder than the water temperature that woke this user three times in
+    seven minutes. With the neutral marked as measured it resolves to 65.4 F, inside the band.
+    """
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.thermal import ThermalController
+    from sleepctl.models import NightObjective, ThermalIntent
+
+    cfg = AppConfig.default()
+
+    population = ThermalController(cfg)
+    population.set_ambient_bias(-1.48)
+    stacked = population.target_for(ThermalIntent.NEUTRAL, NightObjective.OPTIMIZE,
+                                    hot_sleeper=True)
+
+    personal = ThermalController(cfg)
+    personal.set_ambient_bias(-1.48)
+    personal.set_measured_neutral(population.profile.neutral_f)   # same neutral, now MEASURED
+    unstacked = personal.target_for(ThermalIntent.NEUTRAL, NightObjective.OPTIMIZE,
+                                    hot_sleeper=True)
+
+    assert personal.neutral_is_measured is True
+    assert unstacked > stacked, "measured neutral must not also absorb the population prior"
+    assert abs((unstacked - stacked) - abs(cfg.tunables.hot_sleeper_cool_bias_f)) < 1e-6
+
+    # a NON-measured neutral must still get the prior -- this is not a blanket removal
+    assert population.neutral_is_measured is False

@@ -53,6 +53,9 @@ class ThermalController:
         self._last_cmd_water = None
         # Feed-forward environmental pre-compensation bias (°F), set from the overnight forecast.
         self.ambient_bias_f: float = 0.0
+        # True once a MEASURED personal neutral is adopted (see set_measured_neutral): the
+        # population hot-sleeper prior must not then be stacked on top of it.
+        self.neutral_is_measured: bool = False
         # Signed maintenance "settle" nudge (°F vs neutral) used by SETTLE_COOL; <0 cools, >0
         # warms. Learnable per phenotype (Raymann warming vs Fronczek cooling — see config).
         self.settle_nudge_f: float = cfg.tunables.maintenance_settle_nudge_f
@@ -82,6 +85,13 @@ class ThermalController:
         """Update the learned actuation latency the control loop anticipates."""
         if minutes and minutes > 0:
             self.response_lag_min = float(minutes)
+
+    def set_measured_neutral(self, neutral_f: float) -> None:
+        """Adopt a neutral MEASURED from this user (comfort sweep / observed night) and mark it
+        as personal, which suppresses the population hot-sleeper cool bias (see ``target_for``).
+        Keeps the profile and the flag in one place so they cannot drift apart."""
+        self.profile.neutral_f = float(neutral_f)
+        self.neutral_is_measured = True
 
     def set_ambient_bias(self, bias_f: float) -> None:
         """Set the forecast-driven feed-forward bias, clamped to the configured cap."""
@@ -132,7 +142,17 @@ class ThermalController:
         """
         t = self.cfg.tunables
         p = self.profile
-        bias = (t.hot_sleeper_cool_bias_f if hot_sleeper else 0.0) + self.ambient_bias_f
+        # The hot-sleeper cool bias is a POPULATION prior for "this user runs warm". Once the
+        # neutral has been measured FROM this user it is already baked in -- their comfortable
+        # temperature is their comfortable temperature -- so adding the prior on top
+        # double-counts and pushes the bed colder than anything they were ever observed to
+        # tolerate. Measured: a calibrated neutral of 65.5 F plus the -1.5 prior plus a -1.48
+        # weather bias resolved to 62.5 F, which is COLDER than the level that woke this user
+        # three times in seven minutes.
+        personal_neutral = bool(getattr(self, "neutral_is_measured", False))
+        hot_bias = (t.hot_sleeper_cool_bias_f
+                    if (hot_sleeper and not personal_neutral) else 0.0)
+        bias = hot_bias + self.ambient_bias_f
         neutral = p.neutral_f + bias
 
         if intent is ThermalIntent.WIND_DOWN:

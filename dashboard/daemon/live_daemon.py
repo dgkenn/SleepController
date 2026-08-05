@@ -374,7 +374,12 @@ class LiveDashboardDaemon:
             # device's water-scale default.
             comfort = self.repo.get_comfort_profile()
             if comfort and comfort.get("neutral_f") is not None:
-                controller.thermal.profile.neutral_f = float(comfort["neutral_f"])
+                # set_measured_neutral (not a bare assignment) so the controller KNOWS this
+                # neutral came from the user rather than the population default. Without that
+                # flag the hot-sleeper cool bias is stacked on top of a neutral already measured
+                # from a hot sleeper -- double-counting that resolved to 62.5 F on a night whose
+                # own data showed 63-64 F waking them.
+                controller.thermal.set_measured_neutral(float(comfort["neutral_f"]))
             # ATTACH the whole profile, not just the neutral. Without this
             # ``controller.comfort_profile`` stays None forever, and BOTH consumers of the
             # personal comfort BAND silently no-op: the guardrail's out-of-band check
