@@ -144,3 +144,48 @@ def test_real_pod_stage_is_never_overridden():
     d = c.decide(frame, ctx, [], now)
     assert d.log_payload["stage"] == "deep"           # real Pod stage preserved
     assert d.log_payload["stage_source"] == "sensor"  # not estimated
+
+
+# ------------------------------------------------- out-of-bed guard: no staging while IDLE
+def test_no_stage_estimate_while_idle_and_presence_unknown():
+    """A still band with the user OUT of bed must not be staged as sleep.
+
+    ``presence`` reads None for long stretches on this Pod, and the overlay's only gate used to
+    be ``presence is not False``. So after the user got up, a band left sitting still with a flat
+    HR kept scoring as "sustained quiescence below baseline" -- i.e. DEEP. On 2026-08-04 that put
+    281 of 296 DEEP samples between 07:00 and 11:58 the morning AFTER the night, versus 15 during
+    the night itself, corrupting every night_date-keyed rollup and learner downstream.
+    """
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    ctx = ContextRecord(date="2026-06-23")
+    recent: list = []
+    start = datetime(2026, 6, 23, 9, 0)  # mid-MORNING, user is up and about
+
+    for i in range(20):
+        now = start + timedelta(minutes=i)
+        frame = SensorFrame(timestamp=now, stage=SleepStage.UNKNOWN, presence=None,
+                            heart_rate=52.0, hrv=62.0, movement=0.0,
+                            bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+        d = c.decide(frame, ctx, recent, now)
+        recent.append(frame)
+        assert c.sm.state is ControllerState.IDLE
+        assert d.log_payload["stage"] == "unknown", (
+            f"tick {i}: staged {d.log_payload['stage']} with the user out of bed")
+        assert d.log_payload["stage_source"] == "sensor"
+
+
+def test_stage_estimate_still_runs_on_the_bed_entry_tick():
+    """The guard must not cost the first in-bed tick: the overlay runs BEFORE the state machine
+    steps, so the machine is still IDLE when the user has just got into bed. Positive presence
+    is what distinguishes that from the out-of-bed case above."""
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    ctx = ContextRecord(date="2026-06-23")
+    now = datetime(2026, 6, 23, 23, 0)
+    frame = SensorFrame(timestamp=now, stage=SleepStage.UNKNOWN, presence=True,
+                        heart_rate=58.0, hrv=62.0, movement=0.03,
+                        bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+    d = c.decide(frame, ctx, [], now)
+    assert d.log_payload["stage"] != "unknown"
+    assert d.log_payload["stage_source"] in ("model", "heuristic", "model+deep")

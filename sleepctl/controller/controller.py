@@ -249,9 +249,24 @@ class SleepController:
         # always wins; the estimate carries a capped, sub-Pod confidence.
         self._stage_estimated = False
         self._stage_source = "sensor"
+        # Require EITHER an open session (not IDLE) OR positive presence. ``presence`` is unknown
+        # (None) for long stretches on this Pod, so `presence is not False` alone let the
+        # estimator keep scoring all day with the user out of bed and the band sitting still on a
+        # charger: a flat HR with no motion reads as "sustained quiescence below baseline", i.e.
+        # DEEP. Measured on 2026-08-04: 281 of the 296 DEEP samples filed under that night_date
+        # fell between 07:00 and 11:58 the MORNING AFTER, versus 15 during the actual night --
+        # fake deep sleep that pollutes every night_date-keyed rollup, learner and report.
+        #
+        # Both arms are needed. `presence is True` alone would drop the Verity-only case, where
+        # presence goes None for long mid-night stretches and staging must continue. `not IDLE`
+        # alone would drop the bed-entry tick: this overlay runs BEFORE the state machine steps,
+        # so on the first in-bed tick the machine is still IDLE. Together they block only the
+        # daytime case -- IDLE with no positive presence -- and the machine leaves IDLE purely on
+        # `presence is True`, never on stage, so onset detection is untouched either way.
         if (cfg.tunables.estimate_stage_from_vitals
                 and frame.stage is SleepStage.UNKNOWN
-                and frame.presence is not False):
+                and frame.presence is not False
+                and (self.sm.state is not ControllerState.IDLE or frame.presence is True)):
             mss = ((now - self._bed_entry_time).total_seconds() / 60.0
                    if self._bed_entry_time is not None else None)
             mso = ((now - self._sleep_onset_time).total_seconds() / 60.0

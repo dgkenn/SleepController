@@ -1361,7 +1361,20 @@ class LiveDashboardDaemon:
             self.context.date = night_date
             self.repo.save_context(self.context)
             try:
-                night = await self.client.fetch_night_summary(night_date)
+                # Reconstruct the night from OUR OWN persisted frames, then let any richer
+                # upstream field win. The adapters' fetch_night_summary is a stub returning an
+                # all-None NightSummary (the Eight Sleep nightly metrics are membership-gated),
+                # which made nightly.run() throw here every single night -- silently, via the
+                # except below -- leaving `nightly_summaries` permanently EMPTY and starving
+                # every learner, efficacy trial and report downstream of it.
+                from sleepctl.loop.night_rollup import (merge_night_summary,
+                                                        reconstruct_night_summary)
+                night = reconstruct_night_summary(self.repo, night_date)
+                try:
+                    night = merge_night_summary(
+                        night, await self.client.fetch_night_summary(night_date))
+                except Exception as exc:
+                    self._skip("upstream night summary", exc)
                 self.nightly.run(night)
                 # Record tonight's outcome against whichever arm the standing efficacy trial
                 # assigned (no-op if the trial is off / this night was never assigned an arm).
@@ -1402,6 +1415,13 @@ class LiveDashboardDaemon:
                     dashboard_services.refresh_ml_recommendation_cache(self.repo)
                 except Exception:
                     pass
+            except Exception as exc:
+                self._skip("nightly close-out", exc)
+            # Housekeeping runs on its OWN try: it is the only retention and backup path in the
+            # system, and it used to share the block above -- so the learning step failing (which
+            # it did every night on the stub summary) silently took pruning and the rotating DB
+            # backup down with it.
+            try:
                 self.repo.prune_events()  # housekeeping: cap event-log growth, once/night
                 # High-write tables with no prior retention (raw_samples/decisions/interventions/
                 # thermal_samples) -- prune here (once/night), never on the per-tick hot path.
@@ -1411,7 +1431,7 @@ class LiveDashboardDaemon:
                 bridge.prune_thermal_samples(self.repo.conn)
                 self._maybe_backup()      # rotating DB backup: once/day, gated on-disk
             except Exception as exc:
-                self._skip("nightly close-out", exc)
+                self._skip("nightly housekeeping", exc)
             self._attach_profiles(self.cycle.controller)  # learn from the night just ended
             self._saw_sleep = False
 
