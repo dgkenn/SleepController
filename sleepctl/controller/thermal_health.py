@@ -104,15 +104,47 @@ class ThermalResponseMonitor:
             expected = min(abs(gap), rate * elapsed_min)
             threshold = max(self.min_progress, 0.3 * expected)
 
+        verb = "warming" if gap > 0 else "cooling"
         if progress >= threshold:
-            verb = "warming" if gap > 0 else "cooling"
             return ThermalHealth("ramping", True,
                                  f"{verb}: device level {first_dev} -> {device} toward {target}",
                                  device, target, gap)
-        verb = "warm" if gap > 0 else "cool"
+
+        # SLOW IS NOT STALLED. Any movement in the commanded direction proves the loop works --
+        # the pump runs, the water moves, the cover is connected -- so reporting it as a stall and
+        # advising a Hub power-cycle and a hose inspection sends the user to fix hardware that is
+        # demonstrably fine. Observed 2026-08-05 23:18: the device was cooling -49 -> -52 while
+        # actively commanded to -82, and the battery still failed with "not responding".
+        #
+        # ``min_progress`` is a static 5-levels floor that only becomes rate-aware once the on-bed
+        # self-test has measured THIS bed (``expected`` above). Until that calibration exists, a
+        # bed that simply ramps slower than the guess is indistinguishable from a broken one --
+        # so the honest report is "slower than expected", not a hardware fault.
         expect_txt = f"; expected ~{expected:.0f}" if expected is not None else ""
+        if progress > 0:
+            return ThermalHealth("ramping", True,
+                                 f"{verb} slower than expected: device level {first_dev} -> "
+                                 f"{device} toward {target} over {self.window_min} min"
+                                 f"{expect_txt} — run the on-bed self-test to calibrate this "
+                                 f"bed's real rate",
+                                 device, target, gap)
+
+        # Moving AWAY from the commanded level is a different failure with a different cause: a
+        # working loop being driven by someone else. On this account the Eight Sleep bedtime
+        # schedule cannot be disabled without a subscription, and it walked the device -56 -> -48
+        # against a held target of -72. Hoses and water level explain a bed that sits still; they
+        # do not explain one that moves the wrong way.
+        if progress < 0:
+            return ThermalHealth("stalled", False,
+                                 f"commanded to {'warm' if gap > 0 else 'cool'} but device level "
+                                 f"moved the WRONG WAY ({first_dev} -> {device}, target {target}) "
+                                 f"— something else is driving the bed; check for an active "
+                                 f"Eight Sleep schedule/Autopilot on the account",
+                                 device, target, gap)
+
         return ThermalHealth("stalled", False,
-                             f"commanded to {verb} but device level not responding "
-                             f"({first_dev} -> {device} over {self.window_min} min{expect_txt}) — "
-                             f"check water level, cover connection, or hardware",
+                             f"commanded to {'warm' if gap > 0 else 'cool'} but device level did "
+                             f"not move at all ({first_dev} -> {device} over "
+                             f"{self.window_min} min{expect_txt}) — check water level, cover "
+                             f"connection, or hardware",
                              device, target, gap)

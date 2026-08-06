@@ -66,7 +66,42 @@ def test_stalled_when_commanded_but_flat():
         m.record(_t(base, i), target_level=-100, device_level=9)  # pinned, no response
     h = m.status(_t(base, 8))
     assert h.state == "stalled" and h.responding is False
-    assert "not responding" in h.reason
+    assert "did not move at all" in h.reason
+    assert "water level" in h.reason        # a motionless loop IS the hardware diagnosis
+
+
+def test_slow_progress_is_ramping_not_stalled():
+    """Movement in the commanded direction proves the loop works -- pump, water, cover -- so it
+    must not be reported as a stall telling the user to power-cycle the Hub and check hoses.
+
+    Observed 2026-08-05 23:18: the bed was cooling -49 -> -52 while commanded to -82 and the
+    battery still failed with "not responding". ``thermal_min_progress_levels`` is a static
+    5-level guess that only becomes rate-aware once the on-bed self-test has measured THIS bed.
+    """
+    m = _mon()
+    base = datetime(2026, 6, 27, 2, 0)
+    for i in range(9):
+        m.record(_t(base, i), target_level=-82, device_level=-49 - i // 3)  # -49 -> -52, slow
+    h = m.status(_t(base, 8))
+    assert h.state == "ramping" and h.responding is True
+    assert "slower than expected" in h.reason
+    assert "self-test" in h.reason          # points at calibration, not at hardware
+
+
+def test_moving_away_from_target_names_an_external_driver():
+    """A loop moving the WRONG way is a working loop being driven by someone else. Hoses and
+    water level explain a bed that sits still; they do not explain one that reverses. On this
+    account the Eight Sleep bedtime schedule cannot be disabled without a subscription and walked
+    the device -56 -> -48 against a held target of -72."""
+    m = _mon()
+    base = datetime(2026, 6, 27, 2, 0)
+    for i in range(9):
+        m.record(_t(base, i), target_level=-72, device_level=-56 + i)  # drifting warm
+    h = m.status(_t(base, 8))
+    assert h.state == "stalled" and h.responding is False
+    assert "WRONG WAY" in h.reason
+    assert "schedule" in h.reason
+    assert "hose" not in h.reason.lower()
 
 
 def test_unknown_until_enough_window_history():
