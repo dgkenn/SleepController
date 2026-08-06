@@ -353,3 +353,72 @@ def test_accelerometer_wake_reaches_the_wake_ledger():
     assert d.log_payload["stage"] == "awake"
     assert d.log_payload["stage_source"] == "actigraphy_wake"
     assert c.last_wake_event is not None, "accelerometer wake left the learner's ledger empty"
+
+
+# --------------------------------------------- re-assert the commanded level on device drift
+def _drift_cycle():
+    import os, shutil, tempfile
+    from sleepctl.loop.cycle import ControlCycle
+    from sleepctl.storage.repository import Repository
+    tmp = tempfile.mkdtemp()
+    repo = Repository(os.path.join(tmp, "sleepctl.db"))
+    return ControlCycle(AppConfig.default(), repo), repo, tmp
+
+
+def _dec(level, now):
+    from sleepctl.models import CorrectionAction, Decision, NightObjective, ThermalIntent
+    return Decision(timestamp=now, state=ControllerState.MAINTENANCE,
+                    objective=NightObjective.OPTIMIZE, thermal_intent=ThermalIntent.DEEP_BIAS_COOL,
+                    target_temp_f=65.0, target_level=level, action=CorrectionAction.COOLER,
+                    reason="test", confidence=0.8)
+
+
+def test_unchanged_level_is_not_resent_while_the_device_complies():
+    import shutil
+    cycle, repo, tmp = _drift_cycle()
+    try:
+        now = datetime(2026, 6, 23, 23, 0)
+        f = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, heart_rate=58.0)
+        f.device_level = -72
+        assert cycle.pending_level(_dec(-72, now), f, now) == -72   # first command goes out
+        assert cycle.pending_level(_dec(-72, now), f, now) is None  # compliant -> stay quiet
+    finally:
+        repo.close(); shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_level_is_reasserted_when_the_device_drifts_off_target():
+    """An Eight Sleep bedtime schedule that cannot be disabled without a subscription walked the
+    device -56 -> -48 while the controller held target -72 and, having already sent it once, said
+    nothing. Commanding once and going silent loses to anything that simply outlasts us."""
+    import shutil
+    cycle, repo, tmp = _drift_cycle()
+    try:
+        now = datetime(2026, 6, 23, 23, 0)
+        f = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, heart_rate=58.0)
+        f.device_level = -72
+        assert cycle.pending_level(_dec(-72, now), f, now) == -72
+        assert cycle.pending_level(_dec(-72, now), f, now) is None
+
+        f.device_level = -48                      # something else is driving the bed warm
+        assert cycle.pending_level(_dec(-72, now), f, now) == -72, "never re-asserted"
+
+        # re-assertion must not spam the intervention ledger the learners read
+        n = repo.conn.execute("SELECT COUNT(*) FROM interventions").fetchone()[0]
+        assert n == 1, f"re-assert logged a duplicate intervention (n={n})"
+    finally:
+        repo.close(); shutil.rmtree(tmp, ignore_errors=True)
+
+
+def test_unknown_device_level_never_triggers_a_resend():
+    """device_level is None whenever the Pod's telemetry is gated or stale; absence of evidence
+    must not be read as drift, or the controller would hammer the device every tick."""
+    import shutil
+    cycle, repo, tmp = _drift_cycle()
+    try:
+        now = datetime(2026, 6, 23, 23, 0)
+        f = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, presence=True, heart_rate=58.0)
+        f.device_level = None
+        assert cycle.pending_level(_dec(-72, now), f, now) == -72
+        assert cycle.pending_level(_dec(-72, now), f, now) is None
+    finally:
+        repo.close(); shutil.rmtree(tmp, ignore_errors=True)

@@ -243,6 +243,13 @@ class Tunables:
     # 6/6-vs-2/6 effect with a clear mechanism beats preserving a known-wrong baseline.
     # Re-evaluate against the first night's flagged rate: if WASO comes back implausibly high,
     # raise est_stage_actigraphy_wake_pim rather than disabling outright.
+    # How far the device's actual heating level may drift from the commanded one before the
+    # controller RE-SENDS it (see loop.cycle.pending_level). The controller used to command only
+    # on a change of target, so any external driver -- here, an Eight Sleep bedtime schedule that
+    # cannot be disabled without a subscription -- won permanently by simply outlasting us.
+    # ~5 levels is about 1 degF, comfortably above normal tracking jitter.
+    level_reassert_tolerance: int = 5
+
     est_stage_actigraphy_wake_enabled: bool = True
     est_stage_actigraphy_wake_pim: float = 5.0
     est_stage_actigraphy_wake_window_s: float = 60.0

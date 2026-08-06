@@ -72,8 +72,27 @@ class ControlCycle:
         device write (sync or async); in dry-run they skip the write but the intent is
         still recorded.
         """
+        # RE-ASSERT on drift. Returning None whenever the commanded level is unchanged means the
+        # controller speaks to the device exactly ONCE per target change and then goes silent --
+        # so anything else driving the Pod wins permanently, because we only ever fight once.
+        #
+        # That is not hypothetical here: this account's Eight Sleep bedtime schedule cannot be
+        # disabled through the API (the server refuses the write with "Subscription required"),
+        # and it walks the device away from us at ~1 level/min. Measured 2026-08-05 with the user
+        # in bed: target -72 held constant while the device drifted -56 -> -48 over ~8 minutes,
+        # with NO command sent in between. The thermal-response check then reported it as stalled
+        # hardware and advised power-cycling the Hub, which would have found nothing wrong.
+        #
+        # So when the device has drifted materially off target we re-send, even though our own
+        # decision has not changed. Re-assertion does NOT log a fresh Intervention -- the intent
+        # to act has not changed, only the device's compliance with it, and logging every refresh
+        # would swamp the ledger the learners read.
+        dev = getattr(frame, "device_level", None)
+        tol = getattr(getattr(self.cfg, "tunables", None), "level_reassert_tolerance", 5)
         if self._last_action_level == decision.target_level:
-            return None
+            if dev is None or abs(int(dev) - int(decision.target_level)) <= int(tol):
+                return None
+            return decision.target_level
         magnitude_f = abs(
             decision.target_temp_f
             - (frame.bed_temp_f if frame.bed_temp_f is not None else decision.target_temp_f)
