@@ -56,6 +56,7 @@ import argparse
 from collections import deque
 import asyncio
 import json
+import re
 import os
 import sys
 import time
@@ -133,6 +134,16 @@ def _parse_hr_measurement(data: bytearray) -> tuple[int | None, list[float]]:
     return hr, rr_ms
 
 
+def _redact(url: str) -> str:
+    """URL with any ``token=`` query value masked.
+
+    The ingest URL carries BCG_INGEST_TOKEN as a query parameter, and logging it verbatim wrote
+    the live token in plaintext into .run\verity.log -- a file nothing rotates, that the
+    diagnostics bundle copies, and that is readable by anything running as this user.
+    """
+    return re.sub(r"(token=)[^&\s]+", r"<redacted>", url or "")
+
+
 def _post(url: str, payload: dict, timeout: float = 5.0):
     """POST a batch and RETURN the parsed response.
 
@@ -160,6 +171,11 @@ _NOT_WORN_RELEASE_BATCHES = 300
 #: How long to stay disconnected after releasing. A Verity on its charger must be left ALONE to
 #: charge; reconnecting straight away would resume the drain that caused the outage.
 _NOT_WORN_BACKOFF_S = 900.0
+
+#: Ceiling on the escalating retry backoff after repeated failed sessions (see ``_main_async``).
+#: Five minutes still reconnects promptly once the band is worn again, without hammering one
+#: that is charging or stuck in SDK mode.
+_MAX_SESSION_BACKOFF_S = 300.0
 
 #: Shared release state. Module-level because BOTH session paths (PMD and the generic HR
 #: fallback) must be able to let go, and ``_run_once`` -- which owns the reconnect -- has to see
@@ -332,7 +348,7 @@ async def _hr_session(client, args) -> None:
                 _log_repeating(f"post:{type(exc).__name__}",
                                f"POST failed ({exc}); dropping batch")
 
-    _log(f"subscribing to HR notifications; forwarding to {args.url}")
+    _log(f"subscribing to HR notifications; forwarding to {_redact(args.url)}")
     await client.start_notify(HR_MEASUREMENT_UUID, _on_hr)
     try:
         await _flusher(client)
@@ -524,7 +540,7 @@ async def _pmd_session(client, args) -> bool:
                 sources.append("HR/RR (generic 0x180D)")
             except Exception as exc:
                 _log(f"PMD: generic HR service unavailable too ({exc}); ACC only, no heart rate")
-        _log(f"PMD: streaming {' + '.join(sources)}; forwarding to {args.url}")
+        _log(f"PMD: streaming {' + '.join(sources)}; forwarding to {_redact(args.url)}")
         if ppi_running:
             _log(f"PMD: PPI warm-up -- Polar documents ~{pmd.PPI_FIRST_SAMPLE_S:.0f}s to the first "
                  f"batch and HR updates only every ~{pmd.PPI_HR_UPDATE_S:.0f}s; silence until then "
@@ -653,12 +669,24 @@ async def _run_once(args, env) -> None:
 
 
 async def _main_async(args, env) -> None:
+    # ESCALATING BACKOFF on repeated failed sessions. The not-worn release only fires on POSTed
+    # batches, so it cannot help when the band yields NO data at all -- which is exactly what a
+    # Verity sitting on its charger does: it accepts the connection, refuses the PMD ACC stream,
+    # and does not even expose the 0x180D HR characteristic. Retrying that every 10 s is a
+    # connect storm against a device we are specifically trying to leave alone to charge, and it
+    # keeps waking the radio. Observed 2026-08-06 while the band was charging after the battery
+    # death this same loop caused.
+    fails = 0
     while True:
         try:
             await _run_once(args, env)
+            fails = 0
         except Exception as exc:
-            _log(f"session error ({exc}); reconnecting in {args.retry_seconds}s")
-            await asyncio.sleep(args.retry_seconds)
+            fails += 1
+            delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
+            _log(f"session error ({exc}); reconnecting in {delay:.0f}s "
+                 f"(consecutive failures: {fails})")
+            await asyncio.sleep(delay)
 
 
 def main(argv=None) -> int:
