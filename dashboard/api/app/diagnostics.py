@@ -846,7 +846,28 @@ def _check_cardiac_sensor(repo) -> dict:
     if age is not None and age < 120:
         return _check("cardiac_sensor", "Cardiac sensor (Verity)", "ok",
                       f"streaming (last HR sample {int(age)}s ago)", None)
+
+    # Severity depends on WHETHER A NIGHT IS RUNNING. Idle during the day, a silent band is
+    # unremarkable; mid-session it means the controller is steering blind, because on this
+    # deployment the wearable is the ONLY source of stage, HR and movement (the Pod's own
+    # biometrics are subscription-gated). This used to report "info" unconditionally, so on
+    # 2026-08-06 the band disconnected at 00:01 and the battery stayed green through SIX HOURS
+    # of a live MAINTENANCE session with no cardiac data at all. Nothing surfaced it; the
+    # forwarder logged "no Polar/HR sensor found" ~2,200 times into a file nobody was reading.
     ago = f"{int(age)}s ago" if age is not None else "at an unknown time"
+    state = ""
+    try:
+        from app import bridge as _b
+        state = str((_b.read_runtime_state(repo.conn) or {}).get("state") or "").lower()
+    except Exception:
+        pass
+    in_session = state in ("induction", "maintenance", "wake_recovery", "wake_window")
+    if in_session:
+        return _check("cardiac_sensor", "Cardiac sensor (Verity)", "fail",
+                      f"NOT STREAMING during an active {state} session (last sample {ago}) — "
+                      "the controller is steering blind: no stage, HR or movement",
+                      "power-cycle the Verity (hold the button until it re-advertises); it can "
+                      "stop advertising after a dropped connection even with charge remaining")
     return _check("cardiac_sensor", "Cardiac sensor (Verity)", "info",
                   f"not currently streaming (last sample {ago})", None)
 

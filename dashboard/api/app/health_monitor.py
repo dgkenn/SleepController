@@ -30,6 +30,11 @@ SEVERITY_ORDER = ("info", "warning", "critical")
 # retries through silently).
 _REPEATED_ERROR_THRESHOLD = 3
 
+#: How long the wearable cardiac feed may be silent DURING a session before it is treated as
+#: lost. Generous enough to ride out a normal BLE reconnect (the forwarder rescans every 10 s)
+#: without paging, short enough that a real dropout is caught in minutes rather than hours.
+_CARDIAC_LOST_S = 600.0
+
 
 def _age_seconds(updated: str | None) -> float | None:
     if not updated:
@@ -124,6 +129,29 @@ def evaluate_health(
             "code": "telemetry_stale",
             "severity": "warning",
             "message": f"Sensor telemetry is stale (last update {age_txt} ago).",
+        })
+
+    # ---- wearable cardiac feed lost MID-SESSION -------------------------------------
+    # CRITICAL, and only mid-session. On this deployment the Polar Verity is the ONLY source of
+    # sleep stage, heart rate and movement -- the Pod's own biometrics are subscription-gated --
+    # so losing it during a night leaves the controller steering blind, with no stage to drive
+    # onset, arousal detection or any thermal maneuver.
+    #
+    # It went unnoticed for six hours on 2026-08-06: the band dropped at 00:01 mid-MAINTENANCE
+    # and the only trace was the forwarder writing "no Polar/HR sensor found this scan" into a
+    # log file ~2,200 times. Nothing raised an alert, so nothing could ever reach the phone.
+    cardiac_age = extra.get("cardiac_age_s")
+    state = str(runtime_state.get("state") or "").lower()
+    in_session = state in ("induction", "maintenance", "wake_recovery", "wake_window")
+    if in_session and isinstance(cardiac_age, (int, float)) and cardiac_age >= _CARDIAC_LOST_S:
+        mins = int(cardiac_age // 60)
+        issues.append({
+            "code": "cardiac_sensor_lost",
+            "severity": "critical",
+            "message": (f"The heart-rate band stopped streaming {mins} min ago, mid-sleep. "
+                        "The controller has no stage, HR or movement and is steering blind. "
+                        "Power-cycle the Verity — it can stop advertising after a dropped "
+                        "connection even with charge left."),
         })
 
     # ---- repeated cloud/device errors ----------------------------------------------

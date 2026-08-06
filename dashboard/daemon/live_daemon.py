@@ -178,6 +178,7 @@ class LiveDashboardDaemon:
         self._induce_note = None
         self._apply_induce_deadline_awareness()
         self.cycle.controller.set_session("induce", keep_light=False)
+        self._persist_session()
 
     def _apply_induce_deadline_awareness(self) -> None:
         """'Help me fall asleep' must know how much sleep opportunity is actually left. If a wake
@@ -245,6 +246,7 @@ class LiveDashboardDaemon:
         self._induce_note = None
         self.context.required_wake_time = deadline
         self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+        self._persist_session()
 
     def _maybe_replan_nap(self) -> None:
         """Once sleep onset is CONFIRMED (see ``SleepController.sleep_onset_time``), re-plan the
@@ -291,6 +293,7 @@ class LiveDashboardDaemon:
         self._induce_note = None
         self.context.required_wake_time = None
         self.cycle.controller.set_session("night", keep_light=False)
+        self._persist_session_clear()
 
     # ------------------------------------------------------------------ helpers
     def _log(self, msg: str) -> None:
@@ -986,6 +989,12 @@ class LiveDashboardDaemon:
                       "telemetry_stale": bool(
                           frame is not None and frame.data_age_seconds is not None
                           and frame.data_age_seconds > self.cfg.tunables.telemetry_stale_seconds),
+                      # Age of the WEARABLE cardiac feed specifically. `data_age_s` above tracks
+                      # the Pod's telemetry, which keeps flowing happily while the band is dead
+                      # -- so it cannot detect the failure that actually matters here, where the
+                      # Verity is the only source of stage/HR/movement. Feeds health_monitor's
+                      # `cardiac_sensor_lost` alert.
+                      "cardiac_age_s": self._cardiac_age_s(),
                       # Bed presence drives the phone supplement: in_bed -> the phone feed is
                       # fused; out of bed -> it's ignored automatically.
                       "bed_presence": frame.presence if frame is not None else None,
@@ -1024,6 +1033,115 @@ class LiveDashboardDaemon:
             self.repo.conn.commit()
         except Exception as exc:
             self._skip("wake persistence", exc)
+
+    _SESSION_KV_KEY = "daemon_session_state"
+
+    #: A restored session older than this is treated as stale and dropped, so a session left
+    #: open days ago cannot resurrect itself. Comfortably longer than any real night or nap.
+    _SESSION_MAX_AGE_H = 16.0
+
+    def _cardiac_age_s(self):
+        """Seconds since the last wearable HR sample, or None when there has never been one.
+
+        Read-only and best-effort: this feeds an alert, and an alert must never be able to break
+        the control loop it is watching.
+        """
+        try:
+            s = bridge.read_cardiac_sample(self.repo.conn)
+            age = (s or {}).get("age_seconds")
+            return round(float(age), 1) if age is not None else None
+        except Exception:
+            return None
+
+    def _persist_session(self) -> None:
+        """Persist the ACTIVE session (induce / nap) across a daemon restart.
+
+        The wake time was already persisted; the session was not -- so any restart dropped the
+        controller straight back to IDLE. That is unrecoverable on this deployment, because the
+        state machine only leaves IDLE on ``presence is True`` and this Pod has NEVER once
+        reported presence True (checked over every sample ever recorded). The session is started
+        by an explicit "Help me fall asleep" command, so once it is lost nothing re-arms it and
+        the rest of the night silently goes uncontrolled -- including the morning wake, which can
+        only fire from inside a session.
+
+        Observed 2026-08-05: a restart at 23:30:17 took a live MAINTENANCE session to IDLE two
+        seconds later while the user was asleep, and it stayed there until the command was
+        re-issued by hand.
+        """
+        try:
+            payload = None
+            # "night" is the RESTING default (_end_session sets it), not an active session --
+            # only "induce" and "nap" are things a restart could lose.
+            if self.session_mode in ("induce", "nap"):
+                payload = {
+                    "session_mode": self.session_mode,
+                    "started": datetime.now().isoformat(),
+                    "nap_plan": self.nap_plan,
+                    "nap_deadline": (self.nap_deadline.isoformat()
+                                     if self.nap_deadline else None),
+                    "nap_hard_deadline": (self.nap_hard_deadline.isoformat()
+                                          if self.nap_hard_deadline else None),
+                    "nap_start": self.nap_start.isoformat() if self.nap_start else None,
+                }
+            self.repo.conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._SESSION_KV_KEY, json.dumps(payload) if payload else ""))
+            self.repo.conn.commit()
+        except Exception as exc:
+            self._skip("session persistence", exc)
+
+    def _restore_session(self) -> None:
+        """Re-arm a persisted session on startup so a restart no longer ends the night."""
+        try:
+            row = self.repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key=?", (self._SESSION_KV_KEY,)).fetchone()
+            if not row or not row[0]:
+                return
+            data = json.loads(row[0])
+            mode = data.get("session_mode")
+            if not mode:
+                return
+            started = data.get("started")
+            if started:
+                age_h = (datetime.now() - datetime.fromisoformat(started)).total_seconds() / 3600.0
+                if age_h > self._SESSION_MAX_AGE_H:
+                    self._log(f"persisted {mode} session is {age_h:.1f}h old; not restoring")
+                    self._persist_session_clear()
+                    return
+            if mode == "nap":
+                # A nap is anchored to a deadline; without one there is nothing to restore to.
+                dl = data.get("nap_deadline")
+                if not dl or datetime.fromisoformat(dl) <= datetime.now():
+                    self._log("persisted nap deadline has passed; not restoring")
+                    self._persist_session_clear()
+                    return
+                self.session_mode = "nap"
+                self.nap_plan = data.get("nap_plan")
+                self.nap_deadline = datetime.fromisoformat(dl)
+                hd = data.get("nap_hard_deadline")
+                self.nap_hard_deadline = datetime.fromisoformat(hd) if hd else None
+                ns = data.get("nap_start")
+                self.nap_start = datetime.fromisoformat(ns) if ns else None
+                self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
+                self.context.required_wake_time = self.nap_deadline
+                keep_light = bool((self.nap_plan or {}).get("keep_light"))
+                ctrl_mode = "nap_power" if keep_light else "nap_cycle"
+                self.cycle.controller.set_session(ctrl_mode, keep_light=keep_light)
+            else:
+                self._start_induce()
+            self._log(f"restored {mode} session after daemon restart")
+        except Exception as exc:
+            self._skip("session restore", exc)
+
+    def _persist_session_clear(self) -> None:
+        try:
+            self.repo.conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,'') "
+                "ON CONFLICT(key) DO UPDATE SET value=''", (self._SESSION_KV_KEY,))
+            self.repo.conn.commit()
+        except Exception:
+            pass
 
     def _restore_wake(self) -> None:
         """Reload a persisted wake on startup. Ignores one already in the past -- a stale
@@ -1531,6 +1649,11 @@ class LiveDashboardDaemon:
         # the watchdog restarts this process on its own, and losing the alarm silently is the
         # worst possible failure for the one thing the night is planned around.
         self._restore_wake()
+        # ...and the SESSION itself. Without this a restart dropped a live night to IDLE, which
+        # this Pod can never leave on its own (presence has never once read True), so the rest of
+        # the night ran uncontrolled and the morning wake -- which only fires from inside a
+        # session -- never came.
+        self._restore_session()
         # Away mode idles the pod to target 0 (bed does nothing) and poisons side
         # resolution. Something outside our control (Eight Sleep's own app/Autopilot)
         # can enable it -- so the daemon owns this flag: unless the *user* commanded
