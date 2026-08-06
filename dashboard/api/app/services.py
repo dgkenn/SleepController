@@ -1794,6 +1794,10 @@ def ingest_hr(repo, payload: dict) -> dict:
         "fs": None, "n_samples": len(rr),
         "hr_frozen": quality["hr_frozen"], "not_worn": quality["not_worn"],
         "quality_reason": quality["reason"],
+        # RSA-derived respiration, so the per-sample history carries it too. It was already
+        # computed and written to live_cardiac, but never into this table -- which is the one
+        # the accelerometer-vs-RSA respiration comparison reads from.
+        "respiratory_rate": resp,
     })
     return {"ok": True, "hr": hr, "hrv": hrv, "rr_count": len(rr), "source": source,
             "hr_frozen": quality["hr_frozen"], "not_worn": quality["not_worn"],

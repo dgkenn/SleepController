@@ -133,13 +133,16 @@ def append_sensor_sample(conn: sqlite3.Connection, sample: dict) -> None:
         not_worn = sample.get("not_worn")
         conn.execute(
             """INSERT INTO sensor_samples
-                (ts, hr, hrv, movement, source, fs, n_samples, hr_frozen, not_worn, quality_reason)
-                VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (ts, hr, hrv, movement, source, fs, n_samples, hr_frozen, not_worn,
+                 quality_reason, respiratory_rate)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (_now(), sample.get("hr"), sample.get("hrv"), sample.get("movement"),
              sample.get("source", "phone"), sample.get("fs"), sample.get("n_samples"),
              None if hr_frozen is None else int(bool(hr_frozen)),
              None if not_worn is None else int(bool(not_worn)),
-             sample.get("quality_reason")),
+             sample.get("quality_reason"),
+             # the column existed (migrated) but nothing ever wrote it: 0 of 22,662 rows
+             sample.get("respiratory_rate")),
         )
         now_mono = time.monotonic()
         if now_mono - _last_sensor_prune_monotonic >= _SENSOR_PRUNE_INTERVAL_S:

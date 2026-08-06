@@ -88,11 +88,12 @@ def test_slow_progress_is_ramping_not_stalled():
     assert "self-test" in h.reason          # points at calibration, not at hardware
 
 
-def test_moving_away_from_target_names_an_external_driver():
-    """A loop moving the WRONG way is a working loop being driven by someone else. Hoses and
-    water level explain a bed that sits still; they do not explain one that reverses. On this
-    account the Eight Sleep bedtime schedule cannot be disabled without a subscription and walked
-    the device -56 -> -48 against a held target of -72."""
+def test_moving_away_from_target_reports_observation_not_a_verdict():
+    """A loop moving the WRONG way is a working loop that is not following us -- hoses and water
+    level explain a bed that sits still, not one that reverses. But the CAUSE must stay a list of
+    candidates: the obvious suspect (this account's un-disableable Eight Sleep schedule) turned
+    out to be mirroring our target exactly all night, so naming it would have sent the user to
+    change a setting that was not the problem."""
     m = _mon()
     base = datetime(2026, 6, 27, 2, 0)
     for i in range(9):
@@ -100,8 +101,11 @@ def test_moving_away_from_target_names_an_external_driver():
     h = m.status(_t(base, 8))
     assert h.state == "stalled" and h.responding is False
     assert "WRONG WAY" in h.reason
-    assert "schedule" in h.reason
+    assert "not following us" in h.reason
     assert "hose" not in h.reason.lower()
+    # candidates, not a verdict: blaming the schedule outright was wrong -- on the night that
+    # motivated this, the schedule was mirroring our target exactly
+    assert "powered on" in h.reason and "schedule" in h.reason
 
 
 def test_unknown_until_enough_window_history():

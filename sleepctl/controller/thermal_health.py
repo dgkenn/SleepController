@@ -129,17 +129,22 @@ class ThermalResponseMonitor:
                                  f"bed's real rate",
                                  device, target, gap)
 
-        # Moving AWAY from the commanded level is a different failure with a different cause: a
-        # working loop being driven by someone else. On this account the Eight Sleep bedtime
-        # schedule cannot be disabled without a subscription, and it walked the device -56 -> -48
-        # against a held target of -72. Hoses and water level explain a bed that sits still; they
-        # do not explain one that moves the wrong way.
+        # Moving AWAY from the commanded level is a different failure from sitting still, and it
+        # deserves a different message -- but NOT a confident cause. It was tempting to blame the
+        # account's un-disableable Eight Sleep schedule; checking the telemetry showed that
+        # schedule mirroring our target exactly all night (-72/-72, -81/-81), i.e. honoring the
+        # override rather than fighting it. Naming it here would have sent the user to change a
+        # setting that was not the problem.
+        #
+        # Report the OBSERVATION precisely and list the candidates in likelihood order. Hoses and
+        # water level explain a bed that sits still; they do not explain one that reverses.
         if progress < 0:
             return ThermalHealth("stalled", False,
                                  f"commanded to {'warm' if gap > 0 else 'cool'} but device level "
                                  f"moved the WRONG WAY ({first_dev} -> {device}, target {target}) "
-                                 f"— something else is driving the bed; check for an active "
-                                 f"Eight Sleep schedule/Autopilot on the account",
+                                 f"— the loop runs but is not following us: check whether the "
+                                 f"side is powered on, whether commands are reaching the device, "
+                                 f"and whether a schedule/Autopilot holds a different setpoint",
                                  device, target, gap)
 
         return ThermalHealth("stalled", False,

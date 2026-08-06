@@ -133,12 +133,55 @@ def _parse_hr_measurement(data: bytearray) -> tuple[int | None, list[float]]:
     return hr, rr_ms
 
 
-def _post(url: str, payload: dict, timeout: float = 5.0) -> None:
+def _post(url: str, payload: dict, timeout: float = 5.0):
+    """POST a batch and RETURN the parsed response.
+
+    The response was previously read and thrown away, which cost a whole night: it carries the
+    server's ``not_worn`` verdict, and without it this process happily held a BLE connection to a
+    band sitting on its charger. See ``_NOT_WORN_RELEASE_BATCHES``.
+    """
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=body, method="POST",
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (local URL)
-        resp.read()
+        raw = resp.read()
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except Exception:
+        return None
+
+
+#: Consecutive not-worn batches before we RELEASE the band. At the default ~2 s batch cadence
+#: this is about 10 minutes -- long enough that real motionless deep sleep never trips it (the
+#: server's not-worn test additionally requires a physiologically implausible RMSSD, measured at
+#: 0/5685 on real sleeping samples and 4851/4851 on a charger), short enough to let go promptly.
+_NOT_WORN_RELEASE_BATCHES = 300
+
+#: How long to stay disconnected after releasing. A Verity on its charger must be left ALONE to
+#: charge; reconnecting straight away would resume the drain that caused the outage.
+_NOT_WORN_BACKOFF_S = 900.0
+
+#: Shared release state. Module-level because BOTH session paths (PMD and the generic HR
+#: fallback) must be able to let go, and ``_run_once`` -- which owns the reconnect -- has to see
+#: the backoff. The PMD path is the one actually used in production.
+_RELEASE = {"run": 0, "until": 0.0}
+
+
+def _note_worn_state(resp) -> bool:
+    """Track consecutive not-worn verdicts; True means RELEASE the band now."""
+    if resp is None:
+        return False
+    if not resp.get("not_worn"):
+        _RELEASE["run"] = 0
+        return False
+    _RELEASE["run"] += 1
+    if _RELEASE["run"] < _NOT_WORN_RELEASE_BATCHES:
+        return False
+    _log(f"not worn for {_RELEASE['run']} consecutive batches -- releasing the band so it can "
+         f"idle/charge; reconnecting in {_NOT_WORN_BACKOFF_S / 60:.0f} min")
+    _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
+    _RELEASE["run"] = 0
+    return True
 
 
 def _log(msg: str) -> None:
@@ -280,9 +323,11 @@ async def _hr_session(client, args) -> None:
             if rr:
                 payload["rr"] = rr
             try:
-                _post(args.url, payload)
+                resp = _post(args.url, payload)
                 last_flush["t"] = time.monotonic()
                 _reset_repeat_log()
+                if _note_worn_state(resp):
+                    return          # ends the flusher -> disconnect -> backoff before rescan
             except Exception as exc:  # network blip -> drop this batch, keep streaming
                 _log_repeating(f"post:{type(exc).__name__}",
                                f"POST failed ({exc}); dropping batch")
@@ -519,8 +564,12 @@ async def _pmd_session(client, args) -> bool:
                 payload["acc"] = counts
             if len(payload) > 1:  # more than the source tag -> something worth sending
                 try:
-                    _post(args.url, payload)
+                    resp = _post(args.url, payload)
                     _reset_repeat_log()
+                    # Let go of a band that is not on a body -- see _note_worn_state. Holding the
+                    # link keeps the Verity streaming, so one left on its charger never charges.
+                    if _note_worn_state(resp):
+                        return True
                 except Exception as exc:  # network blip -> drop this batch, keep streaming
                     _log_repeating(f"post:{type(exc).__name__}",
                                    f"POST failed ({exc}); dropping batch")
@@ -568,6 +617,13 @@ async def _pmd_session(client, args) -> bool:
 
 async def _run_once(args, env) -> None:
     from bleak import BleakClient, BleakScanner  # lazy: only needed at runtime
+
+    # Honour a release backoff BEFORE scanning. Reconnecting immediately would put the band
+    # straight back into streaming and undo the whole point of letting go.
+    remaining = _RELEASE["until"] - time.monotonic()
+    if remaining > 0:
+        await asyncio.sleep(min(remaining, 60.0))
+        return
 
     address = await _discover(BleakScanner, args.address)
     if not address:
