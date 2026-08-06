@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 from sleepctl.config import AppConfig
 from sleepctl.controller.controller import SleepController
 from sleepctl.controller.state_estimator import estimate_stage_from_vitals
-from sleepctl.models import ContextRecord, ControllerState, SensorFrame, SleepStage
+from sleepctl.models import (ContextRecord, ControllerState, CorrectionAction, SensorFrame,
+                             SleepStage)
 
 
 # --------------------------------------------------------------------- estimator unit tests
@@ -422,3 +423,50 @@ def test_unknown_device_level_never_triggers_a_resend():
         assert cycle.pending_level(_dec(-72, now), f, now) is None
     finally:
         repo.close(); shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ------------------------------------- the wake deadline outranks every data-quality hold
+def test_wake_window_opens_even_with_no_cardiac_data():
+    """A dead sensor must never silently disable the alarm.
+
+    Both the stale-data guard and the data-quality gate return EARLY, before the state machine
+    steps -- so while either held, MAINTENANCE could never become WAKE_WINDOW. Observed
+    2026-08-06: the wearable dropped at 00:01, every subsequent tick held with
+    "missing_vitals:heart_rate,hrv,respiratory_rate", and the armed 08:30 wake never fired.
+    A deadline is a clock, not a physiological inference; oversleeping IS the harm.
+    """
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    ctx = ContextRecord(date="2026-06-23")
+    start = datetime(2026, 6, 23, 23, 0)
+    recent: list = []
+
+    i = 0
+    while c.sm.state is not ControllerState.MAINTENANCE and i < 90:
+        now = start + timedelta(minutes=i)
+        f = SensorFrame(timestamp=now, stage=SleepStage.UNKNOWN, presence=True,
+                        heart_rate=_onset_hr(i), hrv=62.0, respiratory_rate=14.0,
+                        movement=0.03, bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+        c.decide(f, ctx, recent, now)
+        recent.append(f)
+        i += 1
+    assert c.sm.state is ControllerState.MAINTENANCE
+
+    # the band dies: no HR, no HRV, no respiration -- exactly the observed hold reason
+    wake_at = start + timedelta(hours=7)
+    ctx.required_wake_time = wake_at
+
+    dead = SensorFrame(timestamp=start + timedelta(hours=5), stage=SleepStage.UNKNOWN,
+                       presence=True, heart_rate=None, hrv=None, respiratory_rate=None,
+                       movement=None, bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+    c.decide(dead, ctx, recent, dead.timestamp)
+    assert c.sm.state is ControllerState.MAINTENANCE, "held too early -- this is mid-night"
+
+    # ...now inside the smart-wake window, still with no cardiac data at all
+    inside = wake_at - timedelta(minutes=5)
+    dead2 = SensorFrame(timestamp=inside, stage=SleepStage.UNKNOWN, presence=True,
+                        heart_rate=None, hrv=None, respiratory_rate=None, movement=None,
+                        bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+    c.decide(dead2, ctx, recent, inside)
+    assert c.sm.state is ControllerState.WAKE_WINDOW, (
+        f"dead sensor suppressed the wake window (stuck in {c.sm.state}) -- missed alarm")

@@ -8,7 +8,7 @@ I/O or persistence — the runtime loop acts on the returned Decision.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from sleepctl.config import AppConfig
@@ -175,7 +175,29 @@ class SleepController:
         current_f = frame.bed_temp_f if frame.bed_temp_f is not None else self._last_target_f
 
         # --- stale-data guard: never act on stale/low-confidence data -----------
-        if frame.is_stale(cfg.tunables.stale_data_seconds):
+        # THE WAKE DEADLINE OUTRANKS EVERY DATA-QUALITY HOLD.
+        #
+        # Both holds below return EARLY, before ``self.sm.transition`` runs -- so while either is
+        # active the state machine is frozen and MAINTENANCE can never become WAKE_WINDOW. That
+        # silently disables the alarm. Observed 2026-08-06: the wearable dropped at 00:01, every
+        # tick from then on held with "data quality low (missing_vitals:heart_rate,hrv,
+        # respiratory_rate)", and the armed 08:30 wake never fired at all -- the user woke on
+        # their own at 08:58. It cost nothing on a day off; on a workday it is a missed alarm
+        # with no warning.
+        #
+        # A deadline is a CLOCK, not a physiological inference. It needs no sensor to be correct,
+        # and refusing to honour it is not "do no harm" -- oversleeping is the harm. So once the
+        # smart-wake window has opened we let the tick fall through to the normal path, which
+        # runs the state machine and the wake orchestrator. Data quality still governs the
+        # THERMAL decisions inside that path (the orchestrator falls back to a stage-less,
+        # deadline-guaranteed wake when the feed is stale); it just no longer suppresses the
+        # transition itself.
+        wake_window_open = False
+        if required_wake is not None:
+            lead_min = float(getattr(self.wake_orch.cfg, "window_min", 30) or 30)
+            wake_window_open = now >= required_wake - timedelta(minutes=lead_min)
+
+        if frame.is_stale(cfg.tunables.stale_data_seconds) and not wake_window_open:
             level = self.thermal.to_level(self._last_target_f)
             decision = self._build(
                 now, self.sm.state, objective, ThermalIntent.STABILIZE,
@@ -200,7 +222,8 @@ class SleepController:
         # here on presence would instead FREEZE the state machine mid-WAKE/MAINTENANCE, which is
         # the opposite of do-no-harm. So the hard early-hold only applies while still in bed
         # (or presence is unknown); the score/reasons are still computed + surfaced either way.
-        if data_quality.score < cfg.tunables.data_quality_hold_score and frame.presence is not False:
+        if (data_quality.score < cfg.tunables.data_quality_hold_score
+                and frame.presence is not False and not wake_window_open):
             # OBSERVE before holding. Holding the thermal COMMAND on low-trust data is correct
             # (do no harm); refusing to even look for an awakening is not -- and this early
             # return used to skip arousal detection entirely.
