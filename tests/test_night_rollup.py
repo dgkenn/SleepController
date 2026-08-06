@@ -152,3 +152,44 @@ def test_merge_with_the_stub_adapter_changes_nothing():
     """Today's adapters return ``NightSummary(date=...)`` with every field None."""
     base = NightSummary(date="2026-06-23", total_sleep_min=123.0)
     assert merge_night_summary(base, NightSummary(date="2026-06-23")).total_sleep_min == 123.0
+
+
+def test_a_sensor_blackout_is_unmeasured_not_a_terrible_night():
+    """A blackout and a catastrophic night look identical in the totals, and the difference
+    matters enormously now that the learners consume this.
+
+    On 2026-08-06 the wearable dropped at 00:01 and only 55 ticks of physiology existed across a
+    ~10 h in-bed span. Reconstructing it yielded "38.8 min of sleep, 6.5% efficiency" for a night
+    the user actually slept about nine hours -- which, persisted, would have driven the baselines,
+    the reward and every policy off a night that was never measured.
+    """
+    with _repo() as repo:
+        start = datetime(2026, 6, 23, 23, 0)
+        # 20 min of real staging, then 9 hours of unlabelled ticks (the band is dead)
+        t = start
+        for _ in range(20):
+            _write(repo, t, stage="light", state="maintenance")
+            t += timedelta(minutes=1)
+        for _ in range(540):
+            _write(repo, t, stage="unknown", state="maintenance", hr=None, hrv=None)
+            t += timedelta(minutes=1)
+        repo.conn.commit()
+
+        ns = reconstruct_night_summary(repo, "2026-06-23")
+        assert ns.temp_profile_summary.get("unmeasured") is True
+        assert ns.total_sleep_min is None, "scored a night that was never measured"
+        assert ns.deep_min is None and ns.sleep_efficiency is None
+        assert ns.bedtime is not None and ns.wake_time is not None   # these ARE known
+        assert ns.temp_profile_summary["coverage"] < 0.5
+
+
+def test_good_coverage_still_scores_normally():
+    """The guard must not suppress a real night with an ordinary gap or two."""
+    with _repo() as repo:
+        # 300 min staged, 60 min unlabelled -> ~83% coverage, comfortably scoreable
+        _night(repo, stages=["light"] * 200 + ["deep"] * 60 + ["rem"] * 40 + ["unknown"] * 60,
+               latency_min=0.0)
+        ns = reconstruct_night_summary(repo, "2026-06-23")
+        assert ns.temp_profile_summary.get("unmeasured") is not True
+        assert ns.total_sleep_min == 300.0
+        assert ns.temp_profile_summary["coverage"] >= 0.8

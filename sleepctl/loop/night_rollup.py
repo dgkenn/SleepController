@@ -44,6 +44,18 @@ _MAX_SAMPLE_MIN = 5.0
 #: micro-arousals, not WASO awakenings).
 _MIN_AWAKENING_MIN = 1.0
 
+#: Minimum fraction of the in-bed span that must carry a real sleep/wake label before the sleep
+#: metrics mean anything. Below this the night is reported as UNMEASURED (bedtime, wake_time and
+#: the thermal profile survive; every sleep metric stays None) rather than as a terrible night.
+#:
+#: A sensor blackout and a catastrophic night look identical in the totals, and the difference
+#: matters enormously to the learners now consuming this. On 2026-08-06 the wearable dropped at
+#: 00:01 and only 55 ticks of physiology existed across a ~10 h in-bed span: reconstructing it
+#: yielded "38.8 min of sleep, 6.5% efficiency" for a night the user actually slept ~9 hours.
+#: Persisting that would have driven the baselines, the reward and every policy off a night that
+#: was never measured at all.
+_MIN_COVERAGE_FRAC = 0.5
+
 
 def _parse(ts) -> Optional[datetime]:
     if isinstance(ts, datetime):
@@ -139,6 +151,19 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
         light = mins.get("light", 0.0)
         awake = mins.get("awake", 0.0)
         staged = deep + rem + light + awake
+        in_bed_span = ((ns.wake_time - ns.bedtime).total_seconds() / 60.0
+                       if (ns.wake_time and ns.bedtime) else 0.0)
+        coverage = (staged / in_bed_span) if in_bed_span > 0 else 0.0
+        ns.temp_profile_summary = dict(ns.temp_profile_summary or {})
+        ns.temp_profile_summary["coverage"] = round(coverage, 3)
+        if in_bed_span > 0 and coverage < _MIN_COVERAGE_FRAC:
+            # UNMEASURED, not bad. Leave every sleep metric None so nothing downstream can
+            # mistake a sensor outage for a night worth learning from.
+            ns.temp_profile_summary["unmeasured"] = True
+            ns.temp_profile_summary["reason"] = (
+                f"only {coverage * 100:.0f}% of the {in_bed_span:.0f} min in bed carried a "
+                f"sleep/wake label — sensor coverage too low to score this night")
+            return ns
         if staged > 0:
             ns.deep_min = round(deep, 1)
             ns.rem_min = round(rem, 1)
@@ -175,12 +200,14 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
 
         levels = [r["commanded_level"] for _, r in period if r["commanded_level"] is not None]
         if levels:
-            ns.temp_profile_summary = {
+            # update, don't replace -- `coverage` was already recorded above and a plain
+            # assignment here silently dropped it
+            ns.temp_profile_summary.update({
                 "mean_level": round(statistics.fmean(levels), 1),
                 "min_level": min(levels),
                 "max_level": max(levels),
                 "n": len(levels),
-            }
+            })
 
     ns.temp_profile_summary = dict(ns.temp_profile_summary or {})
     ns.temp_profile_summary.setdefault("source", "reconstructed")
