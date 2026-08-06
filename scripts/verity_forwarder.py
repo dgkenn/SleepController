@@ -408,6 +408,14 @@ async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str
         return None
     if not resp["ok"]:
         _log(f"PMD {what}: device refused ({resp['error']}, code {resp['error_code']})")
+        # The band tells us outright when it is CHARGING (PMD error code 13). That is the most
+        # precise "leave me alone" signal available -- better than inferring not-worn from the
+        # data -- and it is exactly the state we must not hold a connection through, because
+        # doing so is what kept the Verity awake on its charger until the battery died mid-night.
+        if resp.get("error_code") == pmd.ERROR_DEVICE_IN_CHARGER:
+            _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
+            _log(f"device reports it is IN THE CHARGER -- releasing it for "
+                 f"{_NOT_WORN_BACKOFF_S / 60:.0f} min so it can actually charge")
         return None
     return resp
 

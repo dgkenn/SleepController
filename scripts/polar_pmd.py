@@ -148,7 +148,7 @@ ERROR_NAMES = {
     10: "invalid MTU",
     11: "invalid number of channels",
     12: "invalid state",
-    13: "device in charger",
+    13: "device in charger",  # see ERROR_DEVICE_IN_CHARGER below
 }
 
 # Frame types on the DATA characteristic. Confirmed against Polar's official PMD PDF
@@ -223,6 +223,12 @@ def _setting_id(key) -> int:
         return _SETTING_IDS[str(key).strip().lower()]
     except KeyError:
         raise PmdParseError(f"unknown PMD setting name: {key!r}") from None
+
+
+#: PMD control-point error meaning the band is sitting on its charger. Named because the
+#: forwarder acts on it: holding a BLE connection through charging is what killed the
+#: battery mid-night on 2026-08-06.
+ERROR_DEVICE_IN_CHARGER = 13
 
 
 def build_start_command(meas_type: int, settings: dict | None = None) -> bytes:
