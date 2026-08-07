@@ -78,6 +78,8 @@ class SleepOnsetDetector:
         self.hrv_rise_frac = getattr(t, "onset_hrv_rise_frac", 0.08)
         self.min_stage_conf = getattr(t, "onset_min_stage_conf", 0.4)
         self.resp_regular_cv = getattr(t, "onset_resp_regular_cv", 0.06)
+        self.resp_irregular_cv = getattr(t, "onset_resp_irregular_cv", 0.10)
+        self.resp_cv_window = int(getattr(t, "onset_resp_cv_window", 20))
         # internal state
         self._run_start: Optional[datetime] = None
         self._run_len = 0
@@ -166,6 +168,19 @@ class SleepOnsetDetector:
         # Reliability gate: the BCG HR/HRV/RR are only valid when still. A high-movement
         # sample can't be sleep onset and breaks the run, regardless of the stage label.
         if frame.movement is not None and frame.movement > self.move_unreliable:
+            self._run_start, self._run_len = None, 0
+            return None
+
+        # RESPIRATORY-IRREGULARITY VETO. Breathing variability is the one signal that actually
+        # separates quiet wakefulness from light sleep here (4.5x, vs 4% for HR and 17% for
+        # actigraphy), and irregular breathing is positive evidence AGAINST sleep -- so it blocks
+        # onset instead of being outvoted by "still" plus a LIGHT stage label, which is exactly
+        # the pair a person lying awake in bed satisfies.
+        resp_window = [f.respiratory_rate for f in (recent or [])
+                       if f.respiratory_rate is not None][-(self.resp_cv_window - 1):]
+        resp_cv = (_cv(resp_window + [frame.respiratory_rate])
+                   if len(resp_window) >= self.resp_cv_window - 1 else None)
+        if resp_cv is not None and resp_cv >= self.resp_irregular_cv:
             self._run_start, self._run_len = None, 0
             return None
 

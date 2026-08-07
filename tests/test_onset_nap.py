@@ -176,3 +176,70 @@ def test_a_real_onset_still_confirms():
             break
     assert confirmed is not None, "a genuine onset with a clear HR decline failed to confirm"
     assert any(s in SleepOnsetDetector.TRANSITION_SIGNALS for s in confirmed.signals)
+
+
+def test_irregular_breathing_vetoes_onset():
+    """Respiratory variability is the only signal that separated quiet wakefulness from light
+    sleep in this user's data. Crucially it only does so over a LONG window: swept on real data,
+    a 6-sample window gives overlapping distributions (awake CV 0.145 vs asleep 0.031 looks like
+    a 4.7x win but individual windows are unreliable), while 20 samples vetoes 100% of awake
+    windows and 0% of asleep ones.
+
+    The detector is primed with restless (high-movement) ticks first: those cannot qualify as
+    onset, but they accumulate the respiration history the veto needs -- which is exactly how it
+    works in practice, since the veto is powerless until ~20 samples exist.
+    """
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.sleep_onset import SleepOnsetDetector
+    from sleepctl.models import SensorFrame, SleepStage
+
+    cfg = AppConfig.default()
+    det = SleepOnsetDetector(cfg)
+    now = datetime(2026, 8, 6, 21, 20)
+    recent = []
+
+    def frame(hr, rr, move):
+        return SensorFrame(timestamp=now, stage=SleepStage.LIGHT, stage_confidence=0.7,
+                           presence=True, heart_rate=hr, hrv=20.0, movement=move,
+                           respiratory_rate=rr)
+
+    # 25 restless ticks: build up an IRREGULAR respiration history (CV ~0.17, the awake value)
+    for i in range(25):
+        f = frame(76.0, 15.6 + (2.6 if i % 2 else -2.6), 0.5)
+        det.evaluate(f, recent, now, bed_entry_time=datetime(2026, 8, 6, 21, 20))
+        recent.append(f)
+        now += timedelta(minutes=1)
+
+    # now go still with a declining HR -- textbook onset evidence on every OTHER signal
+    confirmed = None
+    for i in range(30):
+        f = frame(max(66.0, 76.0 - i * 0.5), 15.6 + (2.6 if i % 2 else -2.6), 0.02)
+        confirmed = det.evaluate(f, recent, now, bed_entry_time=datetime(2026, 8, 6, 21, 20))
+        recent.append(f)
+        now += timedelta(minutes=1)
+    assert confirmed is None, "confirmed onset despite clearly irregular (awake) breathing"
+
+
+def test_regular_breathing_allows_onset():
+    """The veto must not block real sleep: steady breathing is the asleep signature."""
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.sleep_onset import SleepOnsetDetector
+    from sleepctl.models import SensorFrame, SleepStage
+
+    cfg = AppConfig.default()
+    det = SleepOnsetDetector(cfg)
+    now = datetime(2026, 8, 6, 23, 0)
+    recent, confirmed = [], None
+    for i in range(45):
+        rr = 13.2 + (0.15 if i % 2 else -0.15)    # CV ~0.011, comfortably regular
+        f = SensorFrame(timestamp=now, stage=SleepStage.LIGHT, stage_confidence=0.7,
+                        presence=True, heart_rate=max(64.0, 78.0 - i * 0.8),
+                        hrv=20.0 + i * 0.6, movement=0.02, respiratory_rate=rr)
+        confirmed = det.evaluate(f, recent, now, bed_entry_time=datetime(2026, 8, 6, 23, 0))
+        recent.append(f)
+        now += timedelta(minutes=1)
+        if confirmed:
+            break
+    assert confirmed is not None, "the veto blocked a genuine onset with steady breathing"

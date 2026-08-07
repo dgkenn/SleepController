@@ -173,6 +173,37 @@ class Tunables:
     onset_hrv_rise_frac: float = 0.08   # HRV this fraction above awake baseline
     onset_min_stage_conf: float = 0.4   # ignore low-confidence stage labels
     onset_resp_regular_cv: float = 0.06  # breathing-rate CV at/under this = regular (asleep)
+    # ...and a VETO at/above this. Respiratory rate variability is the strongest wake/sleep
+    # discriminator available without EEG -- RRV is greatest in wake and falls progressively with
+    # sleep depth -- and it is the only signal that actually separated these states in this
+    # user's own data. Measured 2026-08-06, awake-in-bed (self-reported) vs asleep:
+    #
+    #     heart rate            76.0  vs  73.0 bpm   (4% apart -- useless)
+    #     actigraphy PIM        0.49  vs  0.42       (17% apart -- useless)
+    #     respiration CV        0.236 vs  0.053      (4.5x apart)
+    #
+    # Wrist actigraphy's documented wake specificity is <=36%, so "still + the stager says light"
+    # will always be satisfiable while awake. Irregular breathing is positive evidence AGAINST
+    # sleep, so it vetoes onset outright rather than being outvoted. 0.15 sits in the empty gap
+    # between the two measured populations.
+    onset_resp_irregular_cv: float = 0.10
+    # ...measured over this many respiration samples, NOT the 6-sample window used for the
+    # positive `respiration_regular` vote. The timescale is the whole point: at 6 samples the
+    # awake and asleep CV distributions OVERLAP (awake median 0.145 vs asleep 0.031 looks like a
+    # 4.7x win, but individual windows are unreliable), because breathing looks locally smooth
+    # even when awake. Separation only appears once the window is long enough to see the slow
+    # drift. Swept on real data from 2026-08-06:
+    #
+    #     window   awake CV   asleep CV   separates?
+    #        6       0.145      0.031     no (overlap)
+    #       10       0.186      0.042     no (overlap)
+    #       15       0.183      0.046     yes -- vetoes 83% of awake windows, 0% of asleep
+    #       20       0.200      0.050     yes -- vetoes 100% of awake, 0% of asleep
+    #
+    # At ~63% respiration coverage 20 samples is roughly 30 min in bed, so the veto engages
+    # after that -- which is precisely when the false onsets occurred (21 and 50 min in), while
+    # leaving a genuinely fast onset free to confirm before it has data.
+    onset_resp_cv_window: int = 20
     # --- vitals-based sleep-stage estimate (external HR sensor, e.g. Polar Verity Sense) --------
     # When the Pod provides no sleep stage (staging unavailable/paywalled) but a fresh HR feed is
     # present, derive a COARSE stage (AWAKE/LIGHT/DEEP; never REM) from HR/HRV/movement so onset
