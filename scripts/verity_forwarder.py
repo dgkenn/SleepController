@@ -697,7 +697,15 @@ async def _run_once(args, env) -> None:
         return
 
     _log(f"connecting to {address} ...")
-    async with BleakClient(address) as client:
+    # Do NOT trust Windows' cached GATT services. The Verity exposes different services per
+    # mode, and WinRT caches the service list per device -- so after a power-cycle into a
+    # different mode the cache can still describe the OLD one. Observed 2026-08-06: a band that
+    # had been streaming full PMD (ACC + PPI) minutes earlier came back as "PMD service not
+    # present on this device", silently costing the accelerometer -- which is what the
+    # actigraphy wake signal runs on (6/6 against labelled awakenings, vs 2/6 for HR-only).
+    # Forcing rediscovery costs one connection round-trip and makes the mode we actually get
+    # match the mode the band is actually in.
+    async with BleakClient(address, winrt={"use_cached_services": False}) as client:
         _log("connected")
         await _report_battery(client, args)
         if args.mode in ("pmd", "auto"):

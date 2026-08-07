@@ -78,8 +78,12 @@ class Tunables:
     # On-demand onset induction: a small WARM nudge speeds sleep onset (cutaneous warming,
     # Raymann/Van Someren). Kept small + comfort-capped for a hot sleeper, then cooled once
     # asleep. ``onset_warm_nudge_f`` is °F above neutral; the cap bounds it.
-    onset_warm_nudge_f: float = 1.0
-    onset_warm_comfort_cap_f: float = 2.0
+    # Raised from 1.0 on user report that the cascade's warm peak was too mild. With the
+    # learned neutral at 66.9 F the peak moves ~67.9 -> ~68.9 F. The comfort cap is lifted to 3.0
+    # so the nudge is no longer pinned exactly AT its own ceiling, leaving the onset learner
+    # headroom to explore further if a warmer peak keeps shortening latency.
+    onset_warm_nudge_f: float = 2.0
+    onset_warm_comfort_cap_f: float = 3.0
     # 3-phase onset induction (cold settle -> brief warm pulse -> consolidate cool). The opener
     # drives the bed genuinely cold to shed a hot sleeper's heat and prime peripheral
     # vasoconstriction, so the brief warm pulse yields a stronger vasodilation contrast (core-temp

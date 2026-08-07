@@ -218,9 +218,19 @@ def test_critical_guardrail_forces_safe_step_toward_neutral_through_the_controll
     active cool), not an unconditional HOLD, so ``_recent_decisions`` stays truthful for the
     guardrail's own streak logic (regression test for the mislabeled-action bug)."""
     cfg = AppConfig.default()
+    # This guardrail only has anything to guard when the controller is ACTIVELY COOLING -- it
+    # exists to stop a cool that is driving arousal. The entry target into MAINTENANCE is
+    # inherited from the induction warm pulse, so the ambient default of ``onset_warm_nudge_f``
+    # silently decides whether the scenario cools at all: raising it 1.0 -> 2.0 moved entry from
+    # 68.87 to 69.52 F, the controller HELD instead of cooling, and this test stopped exercising
+    # the guardrail while still passing for the wrong reason (it failed on the assertion, but a
+    # smaller change could have left it green and vacuous). Pin the precondition here so the test
+    # tracks the guardrail rather than an unrelated comfort default.
+    cfg.tunables.onset_warm_nudge_f = 1.0
     controller = SleepController(cfg)
     now = datetime(2026, 6, 24, 0, 0)
     now, recent, ctx = _advance_to_maintenance(controller, now)
+    assert controller._last_target_f is not None
 
     forced_override = False
     prev_target = controller._last_target_f
