@@ -1693,6 +1693,29 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
     }
 
 
+#: settings_kv key holding the wearable's last reported battery percent.
+_WEARABLE_BATTERY_KEY = "wearable_battery"
+
+#: At/below this percent the band is unlikely to survive a full night (~20 h streaming full).
+WEARABLE_BATTERY_LOW_PCT = 40
+
+
+def wearable_battery(repo) -> dict:
+    """Last reported wearable battery, as ``{"pct", "ts", "age_h", "low"}`` (empty if unknown)."""
+    d = _kv_get_json(repo, _WEARABLE_BATTERY_KEY) or {}
+    pct = d.get("pct")
+    if pct is None:
+        return {}
+    age_h = None
+    try:
+        age_h = (datetime.now(timezone.utc)
+                 - datetime.fromisoformat(d["ts"])).total_seconds() / 3600.0
+    except Exception:
+        pass
+    return {"pct": pct, "ts": d.get("ts"), "age_h": age_h,
+            "low": pct <= WEARABLE_BATTERY_LOW_PCT}
+
+
 def ingest_hr(repo, payload: dict) -> dict:
     """Ingest a cardiac batch from a DEDICATED BLE HR sensor — e.g. a Polar Verity Sense armband
     forwarded by ``scripts/verity_forwarder.py``: an instantaneous ``hr`` (bpm) plus optional
@@ -1713,6 +1736,17 @@ def ingest_hr(repo, payload: dict) -> dict:
                 "ingested": 0}
 
     hr = _finite_or_none(payload.get("hr"))
+    # WEARABLE BATTERY. A battery-only POST carries no hr/rr, so it must be handled before the
+    # "no usable hr/rr in batch" rejection below. Recorded because NOT knowing the charge level
+    # cost a full night: the band ran 25.5 h unattended and died flat at 00:01 mid-sleep.
+    batt = payload.get("battery_pct")
+    if isinstance(batt, (int, float)) and 0 <= batt <= 100:
+        _kv_set_json(repo, _WEARABLE_BATTERY_KEY,
+                     {"pct": int(batt), "ts": datetime.now(timezone.utc).isoformat(),
+                      "source": payload.get("source", "verity")})
+        if not payload.get("hr") and not payload.get("rr"):
+            return {"ok": True, "battery_pct": int(batt), "ingested": 0}
+
     # BATCH RMSSD -- kept for the data-quality guards below, which are deliberately about THIS
     # batch (an implausibly low per-batch RMSSD is the not-worn signature). NOT what gets
     # published as the HRV the controller consumes; see the windowed value after the insert.

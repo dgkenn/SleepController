@@ -76,6 +76,13 @@ from sleepctl.controller import respiration  # noqa: E402
 
 # Standard BLE Heart Rate Measurement characteristic (GATT 0x2A37).
 HR_MEASUREMENT_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
+# Standard BLE Battery Level characteristic (GATT 0x2A19), uint8 percent. The Verity exposes it,
+# and NOT reading it cost a whole night: the band ran 25.5 h unattended and died flat at 00:01
+# mid-sleep with nothing anywhere reporting how much charge was left.
+BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
+
+#: Warn at/below this percent -- roughly a night's margin on a band that streams ~20 h full.
+_BATTERY_WARN_PCT = 40
 # Names we'll auto-match when scanning (case-insensitive substring).
 _NAME_HINTS = ("polar", "verity", "sense", "h10", "oh1")
 
@@ -420,6 +427,40 @@ async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str
     return resp
 
 
+async def _read_battery(client) -> "int | None":
+    """Battery percent from the standard BLE Battery Service, or None if unreadable.
+
+    Best-effort by design: a band that will not report battery must still be allowed to stream.
+    """
+    try:
+        raw = await client.read_gatt_char(BATTERY_LEVEL_UUID)
+        if raw:
+            pct = int(raw[0])
+            if 0 <= pct <= 100:
+                return pct
+    except Exception:
+        pass
+    return None
+
+
+async def _report_battery(client, args) -> "int | None":
+    """Read, log and forward the band's battery level once per session."""
+    pct = await _read_battery(client)
+    if pct is None:
+        _log("battery: not reported by this device")
+        return None
+    if pct <= _BATTERY_WARN_PCT:
+        _log(f"battery: {pct}% -- LOW. A full night needs roughly a full charge; the band died "
+             f"mid-sleep on 2026-08-06 after 25.5 h of continuous streaming.")
+    else:
+        _log(f"battery: {pct}%")
+    try:
+        _post(args.url, {"source": args.source, "battery_pct": pct})
+    except Exception:
+        pass        # telemetry only; never let it stop the stream starting
+    return pct
+
+
 async def _pmd_session(client, args) -> bool:
     """Stream ACC + PPI over Polar's PMD service, degrading per stream.
 
@@ -658,6 +699,7 @@ async def _run_once(args, env) -> None:
     _log(f"connecting to {address} ...")
     async with BleakClient(address) as client:
         _log("connected")
+        await _report_battery(client, args)
         if args.mode in ("pmd", "auto"):
             ok = False
             try:

@@ -872,6 +872,28 @@ def _check_cardiac_sensor(repo) -> dict:
                   f"not currently streaming (last sample {ago})", None)
 
 
+def _check_wearable_battery(repo) -> dict:
+    """Wearable battery level. Its absence is what turned a flat battery into a lost night."""
+    from app import services as _svc
+    try:
+        b = _svc.wearable_battery(repo)
+    except Exception as exc:
+        return _check("wearable_battery", "Wearable battery", "info",
+                      f"check could not run: {exc!r}", None)
+    if not b:
+        return _check("wearable_battery", "Wearable battery", "info",
+                      "no battery reading yet (reported once per sensor connection)", None)
+    pct, age_h = b["pct"], b.get("age_h")
+    stamp = f" (read {age_h:.1f}h ago)" if isinstance(age_h, (int, float)) else ""
+    if b["low"]:
+        return _check("wearable_battery", "Wearable battery", "warn",
+                      f"{pct}%{stamp} -- unlikely to last the night",
+                      "Charge the band BEFORE bed, powered OFF (on the charger while running it "
+                      "may not gain net charge). It died mid-sleep at 00:01 on 2026-08-06 after "
+                      "25.5h of continuous streaming.")
+    return _check("wearable_battery", "Wearable battery", "ok", f"{pct}%{stamp}", None)
+
+
 # ------------------------------------------------------------------ entry point
 def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     """Run the full diagnostic battery. Never raises.
@@ -942,6 +964,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_recent_errors(run_dir, now, daemon_hb_age))
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
+    add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))
     add("degraded", "Silently skipped subsystems", lambda: _check_degraded(repo))
