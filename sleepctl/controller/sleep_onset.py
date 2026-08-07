@@ -70,6 +70,7 @@ class SleepOnsetDetector:
     def __init__(self, cfg=None) -> None:
         t = getattr(cfg, "tunables", None)
         self.min_signals = getattr(t, "onset_min_signals", 3)
+        self.require_transition = getattr(t, "onset_require_transition", True)
         self.persistence_min = getattr(t, "onset_persistence_min", 10)
         self.hr_drop = getattr(t, "onset_hr_drop_bpm", 3.0)
         self.still_move = getattr(t, "onset_still_movement", 0.15)
@@ -101,6 +102,19 @@ class SleepOnsetDetector:
             "hrv": _mean([f.hrv for f in pool]),
             "rr_cv": _cv([f.respiratory_rate for f in pool]),
         }
+
+    #: Signals that evidence an actual TRANSITION into sleep, rather than merely a state
+    #: compatible with it. ``asleep_stage`` and ``stillness`` are the two deliberately excluded:
+    #: the stager's LIGHT label is close to circular here (it is itself largely derived from a
+    #: quiet HR), and lying still is what someone awake in bed does. Measured 2026-08-06 with the
+    #: user awake in bed for a full hour and reporting it: HR median 76.0 / HRV 20.0 / PIM 0.49,
+    #: against 73.0 / 27.1 / 0.42 for genuinely asleep two nights earlier -- indistinguishable on
+    #: state, but the awake hour showed NO decline at all (77,76,75,76,76,75) where a real onset
+    #: shows a sustained drop. Onset was nonetheless "confirmed" at 21:41 on asleep_stage +
+    #: stillness, which is exactly the pair quiet wakefulness satisfies.
+    TRANSITION_SIGNALS = frozenset({
+        "hr_drop", "hr_trend_down", "respiration_slowed", "respiration_regular", "hrv_rise",
+    })
 
     def _signals(self, frame: SensorFrame, base: dict, recent: List[SensorFrame]) -> List[str]:
         sig: List[str] = []
@@ -160,6 +174,11 @@ class SleepOnsetDetector:
         qualifies = (
             frame.stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
             and len(sig) >= self.min_signals
+            # ...and at least one signal must evidence a TRANSITION, not just a compatible
+            # state. Without this, `asleep_stage` + `stillness` alone confirmed onset on someone
+            # lying awake and still -- see TRANSITION_SIGNALS.
+            and (not self.require_transition
+                 or any(x in self.TRANSITION_SIGNALS for x in sig))
         )
 
         if qualifies:

@@ -123,3 +123,56 @@ def test_late_day_nap_flagged():
     late = nap_strategy(20, now_hour=18)
     assert early.late_day is False and late.late_day is True
     assert "tonight" in late.advice.lower()
+
+
+# ------------------------------------- onset needs a TRANSITION, not just a compatible state
+def _awake_in_bed_frame(now, hr=76.0, hrv=20.0):
+    """Someone lying awake and still: the exact physiology measured 2026-08-06."""
+    from sleepctl.models import SensorFrame, SleepStage
+    return SensorFrame(timestamp=now, stage=SleepStage.LIGHT, stage_confidence=0.7,
+                       presence=True, heart_rate=hr, hrv=hrv, movement=0.02)
+
+
+def test_lying_awake_and_still_does_not_confirm_onset():
+    """The failure this guards: the two most easily satisfied signals -- ``asleep_stage`` (the
+    stager's LIGHT label, itself largely derived from a quiet HR) and ``stillness`` -- are
+    precisely the pair quiet wakefulness produces. The user lay awake in bed for an hour with a
+    DEAD FLAT heart rate (77,76,75,76,76,75) and onset was 'confirmed' at 21:41.
+    """
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.sleep_onset import SleepOnsetDetector
+
+    cfg = AppConfig.default()
+    det = SleepOnsetDetector(cfg)
+    now = datetime(2026, 8, 6, 21, 20)
+    recent = []
+    confirmed = None
+    for i in range(45):                      # 45 min of awake-in-bed, no trend in any signal
+        f = _awake_in_bed_frame(now)
+        confirmed = det.evaluate(f, recent, now, bed_entry_time=datetime(2026, 8, 6, 21, 20))
+        recent.append(f)
+        now += timedelta(minutes=1)
+    assert confirmed is None, "confirmed onset on someone lying awake and still"
+
+
+def test_a_real_onset_still_confirms():
+    """The guard must not block genuine onset: a sustained HR decline is a transition signal."""
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.sleep_onset import SleepOnsetDetector
+
+    cfg = AppConfig.default()
+    det = SleepOnsetDetector(cfg)
+    now = datetime(2026, 8, 6, 23, 0)
+    recent, confirmed = [], None
+    for i in range(45):
+        hr = max(64.0, 78.0 - i * 0.8)       # a real, progressive onset decline
+        f = _awake_in_bed_frame(now, hr=hr, hrv=20.0 + i * 0.6)
+        confirmed = det.evaluate(f, recent, now, bed_entry_time=datetime(2026, 8, 6, 23, 0))
+        recent.append(f)
+        now += timedelta(minutes=1)
+        if confirmed:
+            break
+    assert confirmed is not None, "a genuine onset with a clear HR decline failed to confirm"
+    assert any(s in SleepOnsetDetector.TRANSITION_SIGNALS for s in confirmed.signals)

@@ -161,6 +161,11 @@ class Tunables:
     # UNBROKEN minutes and onset could never confirm (observed: a full night stuck in INDUCTION).
     # Compensated by the tighter stillness bar below. Revisit if RSA-derived respiration lands.
     onset_min_signals: int = 2          # of: asleep stage, HR drop, stillness, slowed resp, HRV rise
+    # Onset must show EVIDENCE OF A TRANSITION, not merely a state compatible with sleep.
+    # `asleep_stage` + `stillness` alone confirmed onset on a user lying awake and still for an
+    # hour (2026-08-06, self-reported): quiet wakefulness and light sleep are near-identical on
+    # HR/HRV/actigraphy medians, so only the CHANGE distinguishes them.
+    onset_require_transition: bool = True
     onset_hr_drop_bpm: float = 3.0      # HR below awake-in-bed baseline
     onset_still_movement: float = 0.10  # movement at/under this = stillness (tightened from 0.15
                                         # to offset the lower onset_min_signals above)
