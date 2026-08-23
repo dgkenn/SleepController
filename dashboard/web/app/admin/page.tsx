@@ -4,7 +4,6 @@ import { useState } from 'react';
 import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
 import DataHealthList from '@/components/DataHealthList';
-import VerityBluetoothCard from '@/components/VerityBluetoothCard';
 import useSWR from 'swr';
 import {
   AdminHealth,
@@ -593,7 +592,6 @@ function AdminContent() {
                 </div>
               </div>
             )}
-            <VerityBluetoothCard />
           </div>
 
           {/* Verity accelerometer — the wearable's OWN motion sensor (actigraphy, no phone) */}

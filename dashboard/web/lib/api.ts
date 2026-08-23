@@ -1015,16 +1015,6 @@ export const api = {
     apiFetch<{ queued: string }>('/api/control/comfort-cal/cancel', { method: 'POST' }),
   comfortCalStatus: () => apiFetch<ComfortStatus>('/api/control/comfort-cal'),
 
-  // Verity Sense forwarded directly from THIS browser over Web Bluetooth (the phone-forwarder
-  // path -- verity_forwarder.py -- normally does this from the controller PC; this lets a
-  // Web-Bluetooth-capable browser, e.g. Bluefy on iOS, do it straight from the phone instead).
-  // Same endpoint, same session cookie, distinguished only by `source` in the health card.
-  ingestHr: (body: { hr?: number; rr?: number[] }) =>
-    apiFetch<{ ok?: boolean }>('/api/hr/ingest', {
-      method: 'POST',
-      body: JSON.stringify({ ...body, source: 'verity_web_ble' }),
-    }),
-
   // Gym advisor
   gymAdvice: () => apiFetch<GymAdvice>('/api/gym/advice'),
   wakePlan: () => apiFetch<WakePlan>('/api/wake/plan'),
