@@ -14,6 +14,8 @@
 #      however well the armband is paired.
 #   3. Runs the Verity setup (BLE library, scan, ingest token, enable, wait for real samples).
 #   4. Runs the preflight and prints the GO / NO-GO verdict for tonight.
+#   5. Prints exactly how to reach it: the dashboard login and every LAN URL your phone could
+#      open right now -- so this one command is also the answer to "what's the URL and password".
 #
 # Safe to re-run at any time: every step is idempotent, and nothing here touches the Pod.
 [CmdletBinding()]
@@ -229,6 +231,51 @@ if ($verdictCode -eq 0) {
     Write-Host "  NOT READY -- see the BLOCKING list above." -ForegroundColor Red
     Write-Host "  Most useful next step:  powershell -ExecutionPolicy Bypass -File scripts\doctor.ps1"
 }
+Write-Host ("=" * 74) -ForegroundColor DarkGray
+
+# ---------------------------------------------------------------- 5. how to reach it
+# Printed EVERY run, GO or NO-GO -- "where's the URL, what's the password" is the single most
+# common thing to lose track of between nights, and until now the only answer was "reread
+# deploy\.env" or "scroll back to whenever windows-setup.ps1 first printed it". Both credentials
+# and every LAN address the phone could actually reach live here, every time.
+Step 5 "How to reach it"
+$dashUser = $null; $dashPass = $null
+if (Test-Path $envPath) {
+    Get-Content $envPath | ForEach-Object {
+        if ($_ -match '^\s*DASHBOARD_USER\s*=\s*(.+)$')     { $dashUser = $matches[1].Trim() }
+        if ($_ -match '^\s*DASHBOARD_PASSWORD\s*=\s*(.+)$') { $dashPass = $matches[1].Trim() }
+    }
+}
+if ($dashUser -and $dashPass) {
+    Write-Host "  Login:  $dashUser  /  $dashPass" -ForegroundColor Green
+} else {
+    Bad "no DASHBOARD_USER/DASHBOARD_PASSWORD in deploy\.env -- run scripts\windows-setup.ps1 first"
+}
+
+$addrs = @()
+try {
+    $addrs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+        Where-Object {
+            $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and
+            $_.PrefixOrigin -ne 'WellKnown'
+        }
+} catch { }
+if ($addrs) {
+    Write-Host "  URL (same WiFi as this PC):"
+    foreach ($a in $addrs) {
+        Write-Host "    https://$($a.IPAddress)/   ($($a.InterfaceAlias))" -ForegroundColor Green
+    }
+    Write-Host "  First visit: the browser will warn about the certificate -- accept it, that's"
+    Write-Host "  expected (it's self-signed, not a real threat on your own LAN)."
+} else {
+    Warn "couldn't detect a LAN IPv4 address -- check Windows network settings"
+}
+Write-Host "  Check 'remember me' at login -- the session is persistent, so you only do this once."
+Write-Host "  Off-WiFi access (phone on cellular): deploy\tunnel.sh gives a public HTTPS URL, but"
+Write-Host "  it needs bash (WSL or Git Bash) -- see deploy\REMOTE_ACCESS.md for that and for a"
+Write-Host "  STABLE address (Tailscale / a named Cloudflare tunnel) instead of one that rotates."
+
+Write-Host ""
 Write-Host ("=" * 74) -ForegroundColor DarkGray
 Write-Host ""
 Write-Host "  Once the water loop is confirmed healthy, the two in-bed calibrations are what"
