@@ -813,6 +813,16 @@ $script:smokeTestDone = $false
 $script:healthPublishEveryMin = 10
 $script:healthPublishAt = (Get-Date).AddMinutes(2)
 
+# --- remote-visibility: how often to publish FULL night data (biometrics, unencrypted) ---------
+# Same GitHub-relay mechanism as health above, but this one is intentionally NOT scrubbed: the
+# user decided their physiology data being public is fine, and that minimizing how often they
+# have to touch the laptop matters more than keeping it private. Publishes raw sensor samples +
+# reconstructed sleep architecture + onset/staging/steering detail to a public `night-data`
+# branch so a Claude session can answer "did X work last night" from a plain `git fetch`, no
+# script run by hand. Staggered a minute off the health publish so they don't collide.
+$script:nightDataPublishEveryMin = 10
+$script:nightDataPublishAt = (Get-Date).AddMinutes(3)
+
 # --- daily maintenance: local + offsite DB backup --------------------------------------------
 # Runs once per ~24h from the supervise loop. A consistent LOCAL snapshot (SQLite online-backup
 # API, safe under WAL) protects months of physiology against DB corruption; the OFFSITE encrypted
@@ -948,6 +958,20 @@ while ($true) {
             }
         } catch {
             Log "WARN: could not launch publish-health: $_"
+        }
+    }
+
+    # --- remote-visibility: publish FULL night data (biometrics, unencrypted, by request) -------
+    if ((Get-Date) -ge $script:nightDataPublishAt) {
+        $script:nightDataPublishAt = (Get-Date).AddMinutes($script:nightDataPublishEveryMin)
+        try {
+            $ndp = Join-Path $Root "scripts\publish-night-data.ps1"
+            if (Test-Path $ndp) {
+                Start-Process -FilePath "powershell" -WindowStyle Hidden `
+                    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ndp) | Out-Null
+            }
+        } catch {
+            Log "WARN: could not launch publish-night-data: $_"
         }
     }
 
