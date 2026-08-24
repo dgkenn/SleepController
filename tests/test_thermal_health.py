@@ -108,6 +108,51 @@ def test_moving_away_from_target_reports_observation_not_a_verdict():
     assert "powered on" in h.reason and "schedule" in h.reason
 
 
+def test_a_fresh_colder_target_does_not_score_against_the_old_ones_data():
+    """THE regression, reproduced live 2026-08-24 five times in one night. The bed was
+    overshooting a moderate cool target, rebounding a few levels as it settled -- ordinary,
+    working behaviour -- when a fresh, much colder settle/precool command replaced the old
+    target. The window must not compare the NEW target against device movement recorded under
+    the OLD one: doing so reads a normal settle-rebound as "moved the WRONG WAY" and tells the
+    user to power-cycle the Hub over a bed that was never broken."""
+    m = _mon()
+    base = datetime(2026, 6, 27, 2, 0)
+    m.record(_t(base, 0), target_level=-50, device_level=-55)   # overshot the old target
+    m.record(_t(base, 6), target_level=-50, device_level=-50)   # rebounded/settled -- still fine
+    m.record(_t(base, 7), target_level=-73, device_level=-50)   # fresh, much colder command
+    h = m.status(_t(base, 7))
+    assert h.state == "unknown" and h.responding is True
+    assert "WRONG WAY" not in h.reason
+
+
+def test_after_a_target_change_real_progress_is_still_recognized():
+    """The fix must not blind the monitor going forward -- once enough samples accumulate
+    under the NEW target, ordinary ramping is judged normally again."""
+    m = _mon()
+    base = datetime(2026, 6, 27, 2, 0)
+    m.record(_t(base, 0), target_level=-50, device_level=-50)
+    m.record(_t(base, 1), target_level=-73, device_level=-50)   # target changes here
+    for i, lvl in enumerate([-52, -56, -61, -66, -71, -73, -73], start=2):
+        m.record(_t(base, i), target_level=-73, device_level=lvl)
+    h = m.status(_t(base, 8))
+    assert h.state in ("ramping", "ok") and h.responding is True
+
+
+def test_after_a_target_change_a_genuine_wrong_way_fault_is_still_caught():
+    """The fix defers judgement until there's clean history under the new target -- it must not
+    permanently hide a REAL fault that persists after the change, only the stale-reference false
+    positive at the moment of the change itself."""
+    m = _mon()
+    base = datetime(2026, 6, 27, 2, 0)
+    m.record(_t(base, 0), target_level=-50, device_level=-50)
+    m.record(_t(base, 1), target_level=-73, device_level=-50)   # target changes here
+    for i, lvl in enumerate([-48, -46, -44, -42, -40, -38, -36], start=2):
+        m.record(_t(base, i), target_level=-73, device_level=lvl)  # genuinely drifting warmer
+    h = m.status(_t(base, 8))
+    assert h.state == "stalled" and h.responding is False
+    assert "WRONG WAY" in h.reason
+
+
 def test_unknown_until_enough_window_history():
     m = _mon()
     base = datetime(2026, 6, 27, 2, 0)

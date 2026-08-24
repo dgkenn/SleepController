@@ -82,8 +82,26 @@ class ThermalResponseMonitor:
 
         # Actively commanded away from the current level: did the device level make real
         # progress toward the target over the response window?
+        #
+        # The window must be trimmed to samples recorded under THIS target, not just this time
+        # range. A settle/precool/induction command replacing an older, easier target is a
+        # RESET of what "progress" means -- comparing the new target against device movement
+        # that happened while chasing the old one is comparing against the wrong reference
+        # point entirely. Observed live 2026-08-24: five separate false "moved the WRONG WAY"
+        # verdicts overnight, each one immediately after a fresh, colder target replaced an
+        # older one the bed had been correctly (if slowly) approaching -- the bed had drifted a
+        # few levels toward the OLD setpoint between commands, which reads as "away" from the
+        # NEW one purely because the reference sample predates the command that set it. Each
+        # false alarm cleared within one window once enough post-change samples accumulated,
+        # which is the signature of a stale reference, not a real fault.
+        same_target = []
+        for s in reversed(self._samples):
+            if s[1] != target:
+                break
+            same_target.append(s)
+        same_target.reverse()
         cutoff = now - timedelta(minutes=self.window_min)
-        window = [s for s in self._samples if s[0] >= cutoff]
+        window = [s for s in same_target if s[0] >= cutoff]
         if len(window) < 2 or (window[-1][0] - window[0][0]).total_seconds() < self.window_min * 30:
             return ThermalHealth("unknown", True, "not enough history in window",
                                  device, target, gap)
