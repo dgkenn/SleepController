@@ -164,3 +164,26 @@ def test_settings_manipulations_persist(auth_client):
     # Settings (benchmarks/profile)
     cur = auth_client.get("/settings").json()
     assert isinstance(cur, dict)
+
+
+def test_settings_survives_the_daemons_own_non_json_sentinel(auth_client):
+    """THE regression. LiveDashboardDaemon reuses settings_kv for its own internal bookkeeping --
+    ``_persist_session_clear`` writes a bare '' for "daemon_session_state" to mean "no active
+    session", which its own reader (_restore_session) correctly guards on before parsing. /settings
+    did a blind json.loads over every row instead, so it 500'd every time this endpoint was hit
+    after ANY session ended -- i.e. every morning. /settings must skip what it can't parse instead
+    of crashing the whole page over a key it was never meant to interpret."""
+    from app.db import get_repo
+    repo = get_repo()
+    try:
+        repo.conn.execute(
+            "INSERT INTO settings_kv (key, value) VALUES ('daemon_session_state', '') "
+            "ON CONFLICT(key) DO UPDATE SET value=''")
+        repo.conn.commit()
+    finally:
+        repo.close()
+
+    resp = auth_client.get("/settings")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "daemon_session_state" not in body["stored"]  # skipped, not crashed on

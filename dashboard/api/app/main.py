@@ -774,8 +774,20 @@ def analytics_eff(repo=Depends(repo_dep), user: str = AuthDep):
 # ------------------------------------------------------------------ settings
 @app.get("/settings")
 def get_settings(repo=Depends(repo_dep), user: str = AuthDep):
+    # Not every settings_kv row is dashboard-settings JSON: the daemon reuses this same table
+    # for its own internal sentinels (e.g. LiveDashboardDaemon._persist_session_clear writes ''
+    # for "daemon_session_state" to mean "no active session" -- valid for its own reader, which
+    # guards on falsiness before parsing, but not valid JSON on its own). A blind json.loads over
+    # every row 500'd this endpoint every single time a night/induce/nap session ended normally,
+    # which is every morning. Skip whatever doesn't parse as real settings rather than crash the
+    # whole page over an internal bookkeeping key that was never meant to be read from here.
     rows = repo.conn.execute("SELECT key, value FROM settings_kv").fetchall()
-    stored = {r["key"]: json.loads(r["value"]) for r in rows}
+    stored = {}
+    for r in rows:
+        try:
+            stored[r["key"]] = json.loads(r["value"])
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
     return {"stored": stored, "defaults": _config_defaults()}
 
 

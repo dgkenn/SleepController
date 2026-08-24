@@ -131,6 +131,10 @@ class LiveDashboardDaemon:
         # "Help me fall asleep" surfaced constraint when a wake deadline leaves little sleep
         # opportunity remaining (see ``_apply_induce_deadline_awareness``); None otherwise.
         self._induce_note = None
+        # Which onset timestamp (if any) has already been logged to `events` this bed session --
+        # see _maybe_log_onset. Keyed by the onset event's own timestamp rather than a bare bool
+        # so a fresh onset after a reset (out of bed and back in) logs again.
+        self._onset_logged_ts = None
         self._prev_state = ControllerState.IDLE
         self._saw_sleep = False
         self._consec_errors = 0
@@ -176,6 +180,7 @@ class LiveDashboardDaemon:
         self._nap_plan_obj, self.nap_start = None, None
         self.nap_hard_deadline, self._nap_replanned = None, False
         self._induce_note = None
+        self._onset_logged_ts = None
         self._apply_induce_deadline_awareness()
         self.cycle.controller.set_session("induce", keep_light=False)
         self._persist_session()
@@ -285,12 +290,40 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._skip("nap replan", exc)
 
+    def _maybe_log_onset(self) -> None:
+        """Persist the confirmed SleepOnsetEvent -- WHICH signals actually fired, not just that
+        onset happened -- the first time it appears each bed session.
+
+        Before this, ``SleepOnsetDetector.evaluate()``'s result was kept on the controller as
+        ``last_onset_event`` and then never read by anything: no log line, no DB row, nothing a
+        later audit (or a person asking "did fall-asleep detection use the accelerometer last
+        night") could query. The timestamp survived (into ``sleep_onset_latency_min`` via
+        ``_bed_entry_time``), but the EVIDENCE -- which of stillness/hr_drop/hrv_rise/
+        respiration_regular actually voted -- was computed live and discarded every single
+        night. Runs alongside ``_maybe_replan_nap`` at both tick call sites."""
+        try:
+            event = self.cycle.controller.last_onset_event
+            if event is None or event.timestamp == self._onset_logged_ts:
+                return
+            self._onset_logged_ts = event.timestamp
+            self._log(f"sleep onset confirmed at {event.timestamp.isoformat()} "
+                      f"(confidence={event.confidence:.2f}, signals={event.signals})")
+            self._emit_event("sleep", "info", "onset_confirmed",
+                             f"onset confirmed on {len(event.signals)} signal(s): "
+                             f"{', '.join(event.signals)}",
+                             {"timestamp": event.timestamp.isoformat(),
+                              "confidence": event.confidence, "signals": event.signals,
+                              "latency_min": event.latency_min})
+        except Exception as exc:
+            self._skip("onset event log", exc)
+
     def _end_session(self) -> None:
         self.session_mode = "night"
         self.nap_plan, self.nap_deadline = None, None
         self._nap_plan_obj, self.nap_start = None, None
         self.nap_hard_deadline, self._nap_replanned = None, False
         self._induce_note = None
+        self._onset_logged_ts = None
         self.context.required_wake_time = None
         self.cycle.controller.set_session("night", keep_light=False)
         self._persist_session_clear()
@@ -1392,6 +1425,7 @@ class LiveDashboardDaemon:
         if self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
             self._maybe_replan_nap()
+            self._maybe_log_onset()
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
             elif self.mode == "auto":
@@ -1475,6 +1509,7 @@ class LiveDashboardDaemon:
         elif self.power_on and not self.paused and not self.away:
             decision = self.cycle.decide(frame, self.context, now)
             self._maybe_replan_nap()
+            self._maybe_log_onset()
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
         self._last_decision = decision

@@ -353,3 +353,83 @@ def test_log_never_raises_on_unencodable_char():
     finally:
         sys.stdout = old
     repo.close()
+
+
+# ------------------------------------------------------------------ onset-event logging
+# Before _maybe_log_onset existed, SleepOnsetDetector's confirmed result (WHICH signals fired --
+# stillness, hr_drop, hrv_rise, respiration_regular...) was kept on the controller as
+# last_onset_event and never read by anything else: no log line, no DB row. A later question like
+# "did fall-asleep detection use the accelerometer last night" had no evidence to answer it from,
+# for any night, past or future -- the timestamp survived into sleep_onset_latency_min, but the
+# reasoning behind it was computed live and thrown away every night.
+def _onset_event(signals=("stillness", "hr_drop", "hr_trend_down"), confidence=0.6):
+    from datetime import datetime
+    from sleepctl.controller.sleep_onset import SleepOnsetEvent
+    return SleepOnsetEvent(timestamp=datetime(2026, 8, 23, 22, 45), confidence=confidence,
+                           signals=list(signals), latency_min=12.0)
+
+
+def _clear_sleep_events(repo):
+    repo.conn.execute("DELETE FROM events WHERE category='sleep'")
+    repo.conn.commit()
+
+
+def test_confirmed_onset_is_logged_with_its_signals():
+    d, client, repo = _daemon()
+    _clear_sleep_events(repo)
+    d.cycle.controller.last_onset_event = _onset_event()
+    d._maybe_log_onset()
+
+    events = repo.recent_events(category="sleep")
+    assert len(events) == 1
+    e = events[0]
+    assert e["code"] == "onset_confirmed"
+    assert e["data"]["signals"] == ["stillness", "hr_drop", "hr_trend_down"]
+    assert e["data"]["confidence"] == 0.6
+    assert e["data"]["latency_min"] == 12.0
+    repo.close()
+
+
+def test_the_same_onset_is_not_logged_twice():
+    d, client, repo = _daemon()
+    _clear_sleep_events(repo)
+    event = _onset_event()
+    d.cycle.controller.last_onset_event = event
+    d._maybe_log_onset()
+    d._maybe_log_onset()   # same event object, e.g. the very next tick
+    d._maybe_log_onset()
+
+    assert len(repo.recent_events(category="sleep")) == 1
+    repo.close()
+
+
+def test_a_fresh_onset_after_a_session_reset_logs_again():
+    """_end_session / _start_induce clear _onset_logged_ts -- a new bed session (out of bed and
+    back in, or a fresh "help me fall asleep") must be able to log its own onset, not be
+    permanently silenced by an earlier night's timestamp."""
+    d, client, repo = _daemon()
+    _clear_sleep_events(repo)
+    d.cycle.controller.last_onset_event = _onset_event()
+    d._maybe_log_onset()
+    assert len(repo.recent_events(category="sleep")) == 1
+
+    d._end_session()
+    from datetime import datetime
+    from sleepctl.controller.sleep_onset import SleepOnsetEvent
+    d.cycle.controller.last_onset_event = SleepOnsetEvent(
+        timestamp=datetime(2026, 8, 24, 3, 10), confidence=0.8,
+        signals=["stillness", "respiration_regular", "hrv_rise"], latency_min=8.0)
+    d._maybe_log_onset()
+
+    events = repo.recent_events(category="sleep")
+    assert len(events) == 2
+    repo.close()
+
+
+def test_no_onset_yet_logs_nothing():
+    d, client, repo = _daemon()
+    _clear_sleep_events(repo)
+    assert d.cycle.controller.last_onset_event is None
+    d._maybe_log_onset()
+    assert repo.recent_events(category="sleep") == []
+    repo.close()
