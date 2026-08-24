@@ -261,19 +261,27 @@ try {
         }
 } catch { }
 if ($addrs) {
+    # PLAIN http, port 3000 -- windows-watchdog.ps1's Start-Web runs `next start -p 3000` with no
+    # TLS termination in front of it (that's the Docker/Caddy deploy's job, on a machine this
+    # native-Windows watchdog path never touches). Must match its own "iPhone URL" log line
+    # exactly, or a phone gets sent to https://<ip>/ -- a port nothing is listening on.
     Write-Host "  URL (same WiFi as this PC):"
     foreach ($a in $addrs) {
-        Write-Host "    https://$($a.IPAddress)/   ($($a.InterfaceAlias))" -ForegroundColor Green
+        Write-Host "    http://$($a.IPAddress):3000   ($($a.InterfaceAlias))" -ForegroundColor Green
     }
-    Write-Host "  First visit: the browser will warn about the certificate -- accept it, that's"
-    Write-Host "  expected (it's self-signed, not a real threat on your own LAN)."
 } else {
     Warn "couldn't detect a LAN IPv4 address -- check Windows network settings"
 }
 Write-Host "  Check 'remember me' at login -- the session is persistent, so you only do this once."
-Write-Host "  Off-WiFi access (phone on cellular): deploy\tunnel.sh gives a public HTTPS URL, but"
-Write-Host "  it needs bash (WSL or Git Bash) -- see deploy\REMOTE_ACCESS.md for that and for a"
-Write-Host "  STABLE address (Tailscale / a named Cloudflare tunnel) instead of one that rotates."
+$ts = $addrs | Where-Object { $_.InterfaceAlias -like '*Tailscale*' }
+if ($ts) {
+    Write-Host "  Off-WiFi (phone on cellular): http://$($ts[0].IPAddress):3000 -- works anywhere" -ForegroundColor Green
+    Write-Host "  the phone also has Tailscale signed into this same tailnet, no extra setup needed."
+} else {
+    Write-Host "  Off-WiFi access (phone on cellular) needs a tunnel -- see deploy\REMOTE_ACCESS.md."
+    Write-Host "  deploy\tunnel.sh needs bash (WSL/Git Bash) and defaults to port 80; use"
+    Write-Host "  './tunnel.sh 3000' to point it at the port this deployment actually serves."
+}
 
 Write-Host ""
 Write-Host ("=" * 74) -ForegroundColor DarkGray
