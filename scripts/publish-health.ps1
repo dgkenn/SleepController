@@ -17,7 +17,10 @@
 #   1. builds the snapshot JSON via the venv python (health_snapshot.py),
 #   2. pushes it to the `health` branch of origin, using a DEDICATED clone under .run\health-repo
 #      so the live working tree is never touched (mirrors backup-encrypted.ps1 exactly),
-#   3. keeps both latest.json (always current) + a dated health-<ts>.json history, pruned to 200.
+#   3. keeps both latest.json (always current) + a dated health-<ts>.json history, pruned to 1000
+#      (~7 days at the ~10-min publish cadence -- each snapshot is a few KB, so even 1000 of them
+#      is a trivial single commit; see the re-rooting note by the commit step below for why the
+#      BRANCH stays bounded regardless of how large this number is).
 #
 # Meant to run unattended on a short interval from a Scheduled Task. Every step is defensive:
 # nothing is allowed to throw uncaught -- a failure is logged to .run\health-publish.log and
@@ -204,8 +207,11 @@ try {
     Copy-Item -Path $outPath -Destination (Join-Path $healthRepo "latest.json") -Force
     Log "staged $destName (+ refreshed latest.json) in $healthRepo"
 
-    # --- prune to the newest 200 dated snapshots (latest.json is not counted) -------------------
-    $keepCount = 200
+    # --- prune to the newest 1000 dated snapshots (latest.json is not counted) -------------------
+    # ~7 days of rolling audit history at the ~10-min cadence. Generous on purpose: each snapshot
+    # is a few KB (~7KB observed), so even 1000 of them in one commit tree is a few MB -- trivial
+    # -- while still being a real bound, unlike the unpruned commit HISTORY this replaces.
+    $keepCount = 1000
     $allBlobs = Get-ChildItem -Path $healthRepo -Filter "health-*.json" -ErrorAction SilentlyContinue |
         Sort-Object Name
     if ($allBlobs.Count -gt $keepCount) {
@@ -216,20 +222,44 @@ try {
         }
     }
 
-    # --- commit + push ---------------------------------------------------------------------------
-    # (line-ending + commit identity already configured on the clone right after checkout, above)
+    # --- commit as a SINGLE ROOT COMMIT ----------------------------------------------------------
+    # This used to be a normal parented commit on top of whatever was already on `health`. Pruning
+    # above deletes old snapshots from the WORKING TREE, which is all a normal commit changes --
+    # every snapshot ever pushed stays reachable from earlier commits forever. At a ~10-minute
+    # cadence that is ~144 new commits/day added to the branch's history, unboundedly, even though
+    # the file TREE at any one commit was already capped (previously 200) -- the same shape of bug
+    # already found and fixed on db-backups (see backup-encrypted.ps1), just with small JSON
+    # instead of a multi-MB blob, so it took longer to notice: by 2026-08-24 this branch alone had
+    # accumulated 3600+ commits since 2026-07-14, making every fetch of it (including an off-site
+    # Claude session's own `git fetch origin health` to read tonight's data) slower than needed.
+    #
+    # These are ARTIFACTS, not source: history has no value here, only the current snapshot set
+    # does. Re-root the branch on each run so it holds exactly one commit containing exactly the
+    # snapshots we want to keep (latest.json + the newest $keepCount dated ones), then force-push.
+    # Old objects fall out of reach and are collected remotely. Nothing is lost that the pruned
+    # worktree wasn't already discarding.
+    # A run that died between the orphan checkout and the rename would leave _health_tmp behind
+    # and wedge every subsequent run at "branch already exists". Clear it first; it never holds
+    # anything we need, since the snapshots live in the working tree at this point.
+    & git -C $healthRepo branch -D _health_tmp *> $null
+    & git -C $healthRepo checkout --quiet --orphan _health_tmp 2>> $logFile
+    Assert-Success "git checkout --orphan _health_tmp"
     & git -C $healthRepo add -A 2>> $logFile
     Assert-Success "git add -A"
 
     $statusOut = & git -C $healthRepo status --porcelain
     if (-not $statusOut) {
-        Log "nothing changed to commit (snapshot identical to last push); treating as success"
+        Log "nothing staged (unexpected -- the dated snapshot should always be present); treating as success"
         Write-Result "OK $ts nochange"
         exit 0
     }
 
-    & git -C $healthRepo commit --quiet -m "health $ts" 2>> $logFile
+    & git -C $healthRepo commit --quiet -m "health $ts (single-commit artifact branch)" 2>> $logFile
     Assert-Success "git commit"
+    # Move the branch label onto the new root commit, discarding the old chain locally too, so the
+    # dedicated clone doesn't keep growing on this box either.
+    & git -C $healthRepo branch --quiet -M _health_tmp health 2>> $logFile
+    Assert-Success "git branch -M health"
 
     Log "pushing health to origin"
     # Push using a token from deploy\.env (GIT_PUSH_TOKEN) when set, so it works regardless of WHICH
@@ -246,8 +276,11 @@ try {
             }
         } catch {}
     }
-    & git -C $healthRepo push --quiet $pushTarget health 2>> $logFile
-    Assert-Success "git push origin health"
+    # --force is REQUIRED, not a shortcut: the branch was just re-rooted, so this push is
+    # deliberately not a fast-forward. Safe here for the same reason the re-rooting is -- health
+    # holds artifacts only, and every snapshot we intend to keep is in the commit being pushed.
+    & git -C $healthRepo push --quiet --force $pushTarget health 2>> $logFile
+    Assert-Success "git push --force origin health"
 
     Log "OK: pushed $destName"
     Write-Result "OK $ts $destName"
