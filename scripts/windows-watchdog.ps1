@@ -840,7 +840,23 @@ $script:dailyMaintAt = (Get-Date).AddMinutes(5)
 # then performs the actual deploy, so a bad commit still rolls itself back. Opt out by setting
 # SLEEPCTL_AUTO_UPDATE=0 in deploy\.env. First check a few minutes after boot so a fresh start
 # settles before it can trigger a redeploy (staggered from the health-publish tick).
-$script:deployBranch = if ($env:DEPLOY_BRANCH) { $env:DEPLOY_BRANCH } else { "main" }
+# Default to the branch this checkout is ACTUALLY ON, not a hardcoded "main". The old default
+# was the single worst failure mode in this whole mechanism: a box checked out on a feature
+# branch with DEPLOY_BRANCH unset polled origin/main forever, so every commit pushed to the
+# branch it was really running was invisible to it -- it just sat stale, silently, and the
+# divergence guard below then refused to deploy main over it, wedging it permanently. Deploying
+# from the branch you're on is both what an unset value obviously MEANS and the only default
+# that can't silently ignore the code being shipped to it. An explicit DEPLOY_BRANCH still wins.
+$script:deployBranch = $env:DEPLOY_BRANCH
+if (-not $script:deployBranch) {
+    try {
+        $cur = (& git -C $Root rev-parse --abbrev-ref HEAD 2>$null | Select-Object -First 1)
+        if ($cur) { $cur = $cur.Trim() }
+        if ($cur -and $cur -ne "HEAD") { $script:deployBranch = $cur }
+    } catch {}
+}
+if (-not $script:deployBranch) { $script:deployBranch = "main" }
+Log "auto-update: deploy branch = $($script:deployBranch)$(if ($env:DEPLOY_BRANCH) { ' (from DEPLOY_BRANCH)' } else { ' (from current checkout)' })"
 $script:autoUpdateEnabled = ($env:SLEEPCTL_AUTO_UPDATE -ne "0")
 $script:autoUpdateEveryMin = 10
 $script:autoUpdateAt = (Get-Date).AddMinutes(3)

@@ -425,6 +425,47 @@ def test_self_update_reports_a_failed_smoke_test_as_fail(run_dir):
     assert "SMOKE FAIL" in c["detail"]
 
 
+def test_publishers_flags_a_failing_night_data_publisher(run_dir):
+    """night-data is the ONLY channel carrying sensor/staging/steering detail off-box. A publisher
+    that starts failing used to look identical to a quiet night -- no data, no explanation."""
+    with open(os.path.join(run_dir, "night-data-publish.result"), "w", encoding="utf-8") as fh:
+        fh.write("FAIL git push --force origin night-data failed (exit code 128)")
+    c = diagnostics._check_publishers(run_dir)
+    assert c["status"] == "fail"
+    assert "night-data" in c["detail"]
+    assert c["remedy"] is not None
+
+
+def test_publishers_ok_when_both_succeeded(run_dir):
+    with open(os.path.join(run_dir, "health-publish.result"), "w", encoding="utf-8") as fh:
+        fh.write("OK 20260825-223701 health-20260825-223701.json")
+    with open(os.path.join(run_dir, "night-data-publish.result"), "w", encoding="utf-8") as fh:
+        fh.write("OK 20260825-223701 2")
+    c = diagnostics._check_publishers(run_dir)
+    assert c["status"] == "ok"
+
+
+def test_publishers_never_run_is_benign_not_a_fault(run_dir):
+    """A fresh box (or one that just deployed the publisher) hasn't had a cycle yet -- that must
+    not drag the whole verdict to DEGRADED. Absence isn't the signal; staleness is."""
+    c = diagnostics._check_publishers(run_dir)
+    assert c["status"] == "info"
+    assert "never run" in c["detail"]
+
+
+def test_publishers_warns_when_a_publisher_silently_stopped(run_dir):
+    """THE case this check exists for: the last verdict still says OK, but nothing has run in
+    hours -- the publisher (or the watchdog tick that launches it) has stopped."""
+    path = os.path.join(run_dir, "night-data-publish.result")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("OK 20260825-223701 2")
+    old = time.time() - (6 * 3600)
+    os.utime(path, (old, old))
+    c = diagnostics._check_publishers(run_dir)
+    assert c["status"] == "warn"
+    assert "STALE" in c["detail"]
+
+
 def test_self_update_surfaces_an_outstanding_alert(run_dir):
     with open(os.path.join(run_dir, "watchdog.alert"), "w", encoding="utf-8") as fh:
         fh.write("auto-rolled-back self-update after smoke test failure -- reverted to abc1234")
@@ -538,8 +579,8 @@ def test_all_expected_checks_present(repo, run_dir, tmp_path, monkeypatch):
     _seed_runtime_state(repo)
     report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
     expected = {
-        "version", "auto_update", "self_update", "daemon_heartbeat", "watchdog_heartbeat",
-        "api", "web",
+        "version", "auto_update", "self_update", "publishers", "daemon_heartbeat",
+        "watchdog_heartbeat", "api", "web",
         "runtime_state_fresh", "device_water", "device_online", "priming",
         "thermal_response", "thermal_capacity", "external_conflict", "frozen_telemetry",
         "live_mode", "cloud_errors", "recent_errors",

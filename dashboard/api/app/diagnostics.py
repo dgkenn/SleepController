@@ -57,8 +57,8 @@ _CHECK_ORDER = [
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
     "wake_alarm", "degraded", "calibration", "prevention_timing",
-    "eight_sleep_creds", "version", "auto_update", "self_update", "log_sizes", "calendar",
-    "shift",
+    "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "log_sizes",
+    "calendar", "shift",
 ]
 
 # History window handed to the thermal-capacity/conflict/frozen-telemetry detectors — plenty
@@ -383,6 +383,70 @@ def _check_self_update(run_dir: str) -> dict:
         remedy = ("check .run\\update.result / .run\\watchdog.log on the box; clear "
                   ".run\\watchdog.alert once the cause is understood")
     return _check("self_update", "Self-update / deploy history", status, " | ".join(parts), remedy)
+
+
+def _check_publishers(run_dir: str) -> dict:
+    """Are the two GitHub relay publishers actually succeeding?
+
+    These branches are the ONLY channel an off-box operator has to this machine (the sandbox
+    can't reach its funnel -- see windows-watchdog.ps1). `health` carries operational status;
+    `night-data` carries the per-night sensor/staging/steering detail. Each publisher records a
+    one-line verdict to ``.run/<name>-publish.result`` ("OK <ts> ..." / "FAIL <reason>"), but
+    nothing published those verdicts -- so a publisher that started failing looked exactly like a
+    quiet night: no new data, no explanation, and no way to tell the difference from off-box.
+    A broken night-data publisher in particular is a total blackout of the data channel, so it
+    must be loud on the channel that still works.
+    """
+    parts: list[str] = []
+    status = "ok"
+    now = time.time()
+    for label, fname in (("health", "health-publish.result"),
+                         ("night-data", "night-data-publish.result")):
+        path = os.path.join(run_dir, fname)
+        if not os.path.exists(path):
+            # Benign, not a fault: a freshly-set-up box (or one that just deployed the publisher
+            # for the first time) hasn't had a cycle yet. Absence is NOT the signal -- staleness
+            # below is, because that's what "it was working and silently stopped" looks like.
+            parts.append(f"{label}: never run")
+            status = _worse(status, "info")
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                verdict = fh.read().strip()[:200]
+        except Exception as exc:
+            parts.append(f"{label}: result unreadable ({exc!r})")
+            status = _worse(status, "warn")
+            continue
+        age_min = (now - os.path.getmtime(path)) / 60.0
+        parts.append(f"{label}: {verdict} ({age_min:.0f} min ago)")
+        if verdict.upper().startswith("FAIL"):
+            status = _worse(status, "fail")
+        elif age_min > _PUBLISH_STALE_MIN:
+            # Both publishers run on a ~10 min cadence; several missed cycles means the publisher
+            # (or the watchdog tick that launches it) has stopped, even though the last verdict
+            # it managed to write still says OK.
+            parts[-1] += " -- STALE, publisher appears to have stopped"
+            status = _worse(status, "warn")
+    remedy = None
+    if status not in ("ok", "info"):
+        remedy = ("run scripts\\publish-night-data.ps1 (or publish-health.ps1) by hand to see the "
+                  "error; check .run\\night-data-publish.log")
+    return _check("publishers", "GitHub relay publishers", status, " | ".join(parts), remedy)
+
+
+# Both relay publishers fire on a ~10 min watchdog cadence; allow several missed cycles before
+# calling it stopped, so a slow git push or one skipped tick isn't reported as a fault.
+_PUBLISH_STALE_MIN = 45.0
+
+# "info" outranks "ok" so a check that is partly "nothing to report yet" surfaces as info rather
+# than claiming everything is fine -- but it stays below warn/fail, and (like every other info
+# check, e.g. version) it does NOT drag the overall verdict off HEALTHY.
+_SEVERITY_RANK = {"ok": 0, "info": 1, "warn": 2, "fail": 3}
+
+
+def _worse(a: str, b: str) -> str:
+    """The more severe of two check statuses (ok < info < warn < fail)."""
+    return a if _SEVERITY_RANK.get(a, 0) >= _SEVERITY_RANK.get(b, 0) else b
 
 
 # ------------------------------------------------------------------ process / port liveness
@@ -1066,6 +1130,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("version", "Deployed version", lambda: _check_version(repo_root))
     add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
     add("self_update", "Self-update / deploy history", lambda: _check_self_update(run_dir))
+    add("publishers", "GitHub relay publishers", lambda: _check_publishers(run_dir))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
     add("watchdog_heartbeat", "Watchdog heartbeat", lambda: _check_watchdog_heartbeat(run_dir, now))
     add("api", "API process", _check_api)
