@@ -57,7 +57,8 @@ _CHECK_ORDER = [
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
     "wake_alarm", "degraded", "calibration", "prevention_timing",
-    "eight_sleep_creds", "version", "auto_update", "log_sizes", "calendar", "shift",
+    "eight_sleep_creds", "version", "auto_update", "self_update", "log_sizes", "calendar",
+    "shift",
 ]
 
 # History window handed to the thermal-capacity/conflict/frozen-telemetry detectors — plenty
@@ -156,7 +157,17 @@ def _git_head_info(repo_root: str) -> dict:
             content = fh.read().strip()
         if content.startswith("ref:"):
             ref = content.split(" ", 1)[1].strip()
-            info["branch"] = ref.rsplit("/", 1)[-1]
+            # Strip only the "refs/heads/" PREFIX -- never rsplit on "/", which silently truncates
+            # any branch with a slash in it ("claude/confident-gates-rg7af0" -> "confident-gates-
+            # rg7af0"). That was merely cosmetic for the version display, but _check_auto_update
+            # builds "origin/<branch>" from this value, so a truncated name looks up a ref that
+            # doesn't exist and the check reports "no origin ref yet" forever instead of the
+            # deploy lag it was written to catch -- on exactly the slash-containing branch this
+            # box actually deploys from.
+            if ref.startswith("refs/heads/"):
+                info["branch"] = ref[len("refs/heads/"):]
+            else:
+                info["branch"] = ref.rsplit("/", 1)[-1]
             ref_path = os.path.join(git_dir, ref)
             if os.path.exists(ref_path):
                 with open(ref_path, "r", encoding="utf-8") as fh:
@@ -307,6 +318,71 @@ def _check_auto_update(repo_root: str) -> dict:
                       None)
     return _check("auto_update", "Auto-update currency", "ok",
                   f"up to date with origin/{branch}", None)
+
+
+def _check_self_update(run_dir: str) -> dict:
+    """What happened on the LAST self-update attempt, and is an alert outstanding?
+
+    The watchdog already records every deploy outcome to ``.run/update.result``, every smoke-test
+    verdict to ``.run/smoke.result``, and raises ``.run/watchdog.alert`` on any CRITICAL (a failed
+    update, a failed smoke test, an auto-rollback). None of that was ever published, so from
+    off-box a wedged or self-rolled-back deploy was indistinguishable from a deploy that simply
+    hadn't been requested -- the box just silently sat on an old commit and the only way to find
+    out why was to ask someone to read the logs by hand (2026-08-25: cost most of a night).
+
+    Publishing these makes the failure MODE visible, not just the symptom. Content is short,
+    operational, and passes the health snapshot's scrub like every other check's detail.
+    """
+    import json as _json
+
+    parts: list[str] = []
+    status = "ok"
+
+    result_path = os.path.join(run_dir, "update.result")
+    if os.path.exists(result_path):
+        try:
+            with open(result_path, "r", encoding="utf-8") as fh:
+                rec = _json.load(fh)
+            summary = str(rec.get("summary") or "").strip()
+            when = str(rec.get("timestamp") or "").strip()
+            parts.append(f"last self-update: {summary or 'no summary'} (at {when or 'unknown'})")
+            if not rec.get("git_ok", True) or "FAIL" in summary.upper():
+                status = "warn"
+        except Exception as exc:
+            parts.append(f"update.result unreadable ({exc!r})")
+            status = "warn"
+    else:
+        parts.append("no self-update has been attempted on this box yet")
+
+    smoke_path = os.path.join(run_dir, "smoke.result")
+    if os.path.exists(smoke_path):
+        try:
+            with open(smoke_path, "r", encoding="utf-8") as fh:
+                smoke = fh.read().strip()[:300]
+            parts.append(f"last smoke test: {smoke}")
+            if smoke.upper().startswith("SMOKE FAIL"):
+                status = "fail"
+        except Exception:
+            pass
+
+    # An outstanding alert is the strongest signal something needed a human and never got one.
+    alert_path = os.path.join(run_dir, "watchdog.alert")
+    if os.path.exists(alert_path):
+        try:
+            with open(alert_path, "r", encoding="utf-8") as fh:
+                alert = fh.read().strip()
+            alert = alert[-400:] if len(alert) > 400 else alert
+            parts.append(f"OUTSTANDING watchdog alert: {alert}")
+            status = "fail"
+        except Exception:
+            parts.append("watchdog.alert exists but could not be read")
+            status = "fail"
+
+    remedy = None
+    if status != "ok":
+        remedy = ("check .run\\update.result / .run\\watchdog.log on the box; clear "
+                  ".run\\watchdog.alert once the cause is understood")
+    return _check("self_update", "Self-update / deploy history", status, " | ".join(parts), remedy)
 
 
 # ------------------------------------------------------------------ process / port liveness
@@ -989,6 +1065,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
 
     add("version", "Deployed version", lambda: _check_version(repo_root))
     add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
+    add("self_update", "Self-update / deploy history", lambda: _check_self_update(run_dir))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
     add("watchdog_heartbeat", "Watchdog heartbeat", lambda: _check_watchdog_heartbeat(run_dir, now))
     add("api", "API process", _check_api)

@@ -387,6 +387,53 @@ def test_auto_update_info_when_no_origin_ref(tmp_path):
     assert c["status"] == "info"
 
 
+def test_branch_with_a_slash_is_not_truncated(tmp_path):
+    """THE regression. _git_head_info used to rsplit the ref on "/", turning
+    "refs/heads/claude/confident-gates-rg7af0" into "confident-gates-rg7af0". Cosmetic for the
+    version display, but _check_auto_update builds "origin/<branch>" from it -- so on a
+    slash-containing branch (the one this box actually deploys from) it looked up a ref that
+    doesn't exist and reported "no origin ref" forever instead of the real deploy lag."""
+    root, run, head_sha = _real_git_repo(tmp_path, branch="claude/some-feature")
+    assert diagnostics._git_head_info(str(root))["branch"] == "claude/some-feature"
+    # and the check must now actually resolve origin/<full branch name>
+    run("update-ref", "refs/remotes/origin/claude/some-feature", head_sha())
+    assert diagnostics._check_auto_update(str(root))["status"] == "ok"
+
+
+# ------------------------------------------------------------------ self_update (new)
+def test_self_update_ok_when_nothing_has_happened(run_dir):
+    c = diagnostics._check_self_update(run_dir)
+    assert c["status"] == "ok"
+    assert "no self-update" in c["detail"]
+
+
+def test_self_update_surfaces_a_failed_update_result(run_dir):
+    import json as _json
+    with open(os.path.join(run_dir, "update.result"), "w", encoding="utf-8") as fh:
+        _json.dump({"timestamp": "2026-08-25T22:00:00", "git_ok": False,
+                    "summary": "update to 'x' FAILED (git fetch/reset failed)"}, fh)
+    c = diagnostics._check_self_update(run_dir)
+    assert c["status"] == "warn"
+    assert "FAILED" in c["detail"]
+
+
+def test_self_update_reports_a_failed_smoke_test_as_fail(run_dir):
+    with open(os.path.join(run_dir, "smoke.result"), "w", encoding="utf-8") as fh:
+        fh.write("SMOKE FAIL: web not listening on port 3000")
+    c = diagnostics._check_self_update(run_dir)
+    assert c["status"] == "fail"
+    assert "SMOKE FAIL" in c["detail"]
+
+
+def test_self_update_surfaces_an_outstanding_alert(run_dir):
+    with open(os.path.join(run_dir, "watchdog.alert"), "w", encoding="utf-8") as fh:
+        fh.write("auto-rolled-back self-update after smoke test failure -- reverted to abc1234")
+    c = diagnostics._check_self_update(run_dir)
+    assert c["status"] == "fail"
+    assert "OUTSTANDING watchdog alert" in c["detail"]
+    assert "auto-rolled-back" in c["detail"]
+
+
 def test_cloud_errors_detected_in_daemon_log(repo, run_dir, tmp_path, monkeypatch):
     _seed_runtime_state(repo)
     with open(os.path.join(run_dir, "daemon.log"), "w", encoding="utf-8") as fh:
@@ -491,7 +538,8 @@ def test_all_expected_checks_present(repo, run_dir, tmp_path, monkeypatch):
     _seed_runtime_state(repo)
     report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
     expected = {
-        "version", "auto_update", "daemon_heartbeat", "watchdog_heartbeat", "api", "web",
+        "version", "auto_update", "self_update", "daemon_heartbeat", "watchdog_heartbeat",
+        "api", "web",
         "runtime_state_fresh", "device_water", "device_online", "priming",
         "thermal_response", "thermal_capacity", "external_conflict", "frozen_telemetry",
         "live_mode", "cloud_errors", "recent_errors",
