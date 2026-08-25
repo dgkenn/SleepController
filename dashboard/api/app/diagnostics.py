@@ -57,7 +57,7 @@ _CHECK_ORDER = [
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
     "wake_alarm", "degraded", "calibration", "prevention_timing",
-    "eight_sleep_creds", "version", "log_sizes", "calendar", "shift",
+    "eight_sleep_creds", "version", "auto_update", "log_sizes", "calendar", "shift",
 ]
 
 # History window handed to the thermal-capacity/conflict/frozen-telemetry detectors — plenty
@@ -252,6 +252,61 @@ def _check_version(repo_root: str) -> dict:
         detail += "; web build is up to date"
 
     return _check("version", "Deployed version", status, detail, remedy)
+
+
+def _check_auto_update(repo_root: str) -> dict:
+    """Is the deployed checkout keeping up with its own branch on origin?
+
+    windows-watchdog.ps1's Check-AutoUpdate fetches origin/<branch> every ~10 min and, when
+    strictly behind, self-deploys. If local HEAD ever DIVERGES from origin (extra local commits),
+    the auto-poll refuses to blindly discard them and used to just sit there silently, wedged,
+    until a human happened to notice -- exactly what let this box run six commits stale for
+    hours undetected (found 2026-08-25). Check-AutoUpdate now self-heals a divergence (tags the
+    diverged commit(s) under a local rescue/* ref, then deploys anyway), but THIS check exists so
+    a still-behind or still-diverged box is visible on the next health snapshot instead of only
+    being discoverable by someone happening to compare shas by hand.
+
+    Uses only ALREADY-FETCHED local refs (no network call here) -- origin/<branch> is kept fresh
+    by the watchdog's own periodic fetch, so this stays fast and safe to run on every /diag call.
+    """
+    branch = (_git_head_info(repo_root).get("branch") or "").strip()
+    if not branch or branch == "(detached)":
+        return _check("auto_update", "Auto-update currency", "info",
+                      "not on a named branch -- skipping", None)
+    try:
+        import subprocess
+
+        def _count(rng: str) -> int | None:
+            out = subprocess.run(["git", "-C", repo_root, "rev-list", "--count", rng],
+                                 capture_output=True, text=True, timeout=5)
+            if out.returncode != 0:
+                return None
+            return int(out.stdout.strip())
+
+        behind = _count(f"HEAD..origin/{branch}")
+        ahead = _count(f"origin/{branch}..HEAD")
+    except Exception as exc:
+        return _check("auto_update", "Auto-update currency", "info",
+                      f"could not compare against origin/{branch}: {exc!r}", None)
+
+    if behind is None or ahead is None:
+        return _check("auto_update", "Auto-update currency", "info",
+                      f"no origin/{branch} ref found locally yet (first boot?)", None)
+    if ahead > 0:
+        return _check(
+            "auto_update", "Auto-update currency", "fail",
+            f"local HEAD is {ahead} commit(s) ahead of origin/{branch} (diverged) and "
+            f"{behind} behind -- self-update tags the diverged commit(s) as a local rescue/* "
+            "ref and deploys anyway, but this shouldn't persist across ticks",
+            "check .run\\watchdog.log for the most recent 'auto-update:' / rescue/* line",
+        )
+    if behind > 0:
+        return _check("auto_update", "Auto-update currency", "warn",
+                      f"{behind} commit(s) behind origin/{branch} -- should self-deploy within "
+                      "one auto-update cycle (~10 min) unless SLEEPCTL_AUTO_UPDATE=0",
+                      None)
+    return _check("auto_update", "Auto-update currency", "ok",
+                  f"up to date with origin/{branch}", None)
 
 
 # ------------------------------------------------------------------ process / port liveness
@@ -933,6 +988,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
             checks.append(_check(id_, title, "info", f"check crashed: {exc!r}", None))
 
     add("version", "Deployed version", lambda: _check_version(repo_root))
+    add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
     add("watchdog_heartbeat", "Watchdog heartbeat", lambda: _check_watchdog_heartbeat(run_dir, now))
     add("api", "API process", _check_api)

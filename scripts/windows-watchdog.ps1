@@ -859,13 +859,24 @@ function Check-AutoUpdate {
         if (-not $head -or -not $remote) { return }
         $head = $head.Trim(); $remote = $remote.Trim()
         if ($head -eq $remote) { return }   # already current
-        # Only auto-deploy when strictly BEHIND: HEAD must be an ANCESTOR of origin/<branch>. A
-        # divergent local tree (someone committed locally) needs a human, not an automatic hard
-        # reset that would silently discard those commits.
+        # Prefer a clean fast-forward: HEAD must be an ANCESTOR of origin/<branch>. A divergent
+        # local tree (someone committed locally) used to just stop here forever, silently, until a
+        # human noticed and intervened by hand -- observed in practice: this checkout is a pure
+        # deploy target (per the design in docs/CLAUDE_REMOTE_OPS.md and BACKUP_SETUP.md, it's
+        # never meant to hold unique unpushed work), so a wedged-forever state here is worse than
+        # the tiny risk of discarding something that shouldn't have been there in the first place.
+        # So: still refuse to blindly discard anything -- but PRESERVE the diverged commits under a
+        # local-only rescue tag (never pushed, so it can't leak anything) before proceeding, and
+        # deploy anyway. That turns "stuck forever, needs a human to notice and fix it" into
+        # "self-heals automatically, with a recovery point left behind just in case."
         & git -C $Root merge-base --is-ancestor HEAD "origin/$script:deployBranch" 2>$null
         if ($LASTEXITCODE -ne 0) {
-            Log "auto-update: local HEAD diverged from origin/$($script:deployBranch) -- NOT auto-deploying (needs a human)"
-            return
+            $rescueTag = "rescue/{0}-{1}" -f $script:deployBranch, (Get-Date -Format "yyyyMMdd-HHmmss")
+            & git -C $Root tag $rescueTag HEAD 2>$null
+            $msg = "auto-update: local HEAD ($head) diverged from origin/$($script:deployBranch) ($remote) -- " +
+                   "tagged the diverged commit(s) as '$rescueTag' (local only, never pushed) and deploying anyway"
+            Log "CRITICAL: $msg"
+            Write-Alert $msg
         }
         Log "auto-update: origin/$($script:deployBranch) is ahead ($head -> $remote); requesting guarded self-update"
         Set-Content -Path $script:updateRequestFile -Value $script:deployBranch -Encoding ASCII

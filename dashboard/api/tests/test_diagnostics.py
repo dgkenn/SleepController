@@ -318,6 +318,75 @@ def test_missing_web_build_is_warn(repo, run_dir, tmp_path, monkeypatch):
     assert ".next" in c["detail"]
 
 
+# ------------------------------------------------------------------ auto_update (new)
+def _real_git_repo(tmp_path, *, branch="main"):
+    """A REAL tiny git repo (unlike _fake_git_repo_root's hand-crafted files) so
+    ``_check_auto_update`` -- which shells out to the git binary for rev-list -- has something
+    real to compare against. ``origin/<branch>`` is faked as a plain ref pointing at a commit
+    already in this repo's own object db (no actual remote/clone needed)."""
+    import subprocess
+
+    root = tmp_path / "realrepo"
+    root.mkdir()
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t.com",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t.com"}
+
+    def run(*args):
+        subprocess.run(["git", "-C", str(root)] + list(args), check=True,
+                       capture_output=True, env={**os.environ, **env})
+
+    def head_sha():
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                             capture_output=True, text=True, check=True)
+        return out.stdout.strip()
+
+    run("init", "--quiet", "-b", branch)
+    (root / "f.txt").write_text("1", encoding="utf-8")
+    run("add", "f.txt")
+    run("commit", "--quiet", "-m", "1")
+    return root, run, head_sha
+
+
+def test_auto_update_ok_when_head_matches_origin(tmp_path):
+    root, run, head_sha = _real_git_repo(tmp_path)
+    run("update-ref", "refs/remotes/origin/main", head_sha())
+    c = diagnostics._check_auto_update(str(root))
+    assert c["status"] == "ok"
+    assert c["id"] == "auto_update"
+
+
+def test_auto_update_warn_when_behind(tmp_path):
+    root, run, head_sha = _real_git_repo(tmp_path)
+    base_sha = head_sha()  # commit 1
+    (root / "f2.txt").write_text("2", encoding="utf-8")
+    run("add", "f2.txt")
+    run("commit", "--quiet", "-m", "2")
+    run("update-ref", "refs/remotes/origin/main", head_sha())  # origin points at commit 2
+    run("reset", "--quiet", "--hard", base_sha)                 # local HEAD back to commit 1
+    c = diagnostics._check_auto_update(str(root))
+    assert c["status"] == "warn"
+    assert "behind" in c["detail"]
+
+
+def test_auto_update_fail_when_diverged(tmp_path):
+    root, run, head_sha = _real_git_repo(tmp_path)
+    base_sha = head_sha()
+    run("update-ref", "refs/remotes/origin/main", base_sha)
+    # a LOCAL-only commit that origin doesn't have -> diverged, not a clean fast-forward
+    (root / "local.txt").write_text("local", encoding="utf-8")
+    run("add", "local.txt")
+    run("commit", "--quiet", "-m", "local-only")
+    c = diagnostics._check_auto_update(str(root))
+    assert c["status"] == "fail"
+    assert "diverged" in c["detail"]
+
+
+def test_auto_update_info_when_no_origin_ref(tmp_path):
+    root, run, head_sha = _real_git_repo(tmp_path)
+    c = diagnostics._check_auto_update(str(root))
+    assert c["status"] == "info"
+
+
 def test_cloud_errors_detected_in_daemon_log(repo, run_dir, tmp_path, monkeypatch):
     _seed_runtime_state(repo)
     with open(os.path.join(run_dir, "daemon.log"), "w", encoding="utf-8") as fh:
@@ -422,7 +491,7 @@ def test_all_expected_checks_present(repo, run_dir, tmp_path, monkeypatch):
     _seed_runtime_state(repo)
     report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
     expected = {
-        "version", "daemon_heartbeat", "watchdog_heartbeat", "api", "web",
+        "version", "auto_update", "daemon_heartbeat", "watchdog_heartbeat", "api", "web",
         "runtime_state_fresh", "device_water", "device_online", "priming",
         "thermal_response", "thermal_capacity", "external_conflict", "frozen_telemetry",
         "live_mode", "cloud_errors", "recent_errors",
