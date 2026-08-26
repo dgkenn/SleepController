@@ -241,7 +241,19 @@ try {
     # A run that died between the orphan checkout and the rename would leave _health_tmp behind
     # and wedge every subsequent run at "branch already exists". Clear it first; it never holds
     # anything we need, since the snapshots live in the working tree at this point.
-    & git -C $healthRepo branch -D _health_tmp *> $null
+    # ONLY delete it if it actually exists. `git branch -D <missing>` writes "error: branch
+    # '_health_tmp' not found" to STDERR, and under $ErrorActionPreference='Stop' PowerShell turns
+    # a native command's stderr write into a TERMINATING error -- the exact hazard this script
+    # already documents for `git add` above. `*> $null` does NOT save you: the redirection is what
+    # wraps stderr lines as ErrorRecords in the first place. On the normal path (no leftover temp
+    # branch) that made EVERY publish die right here, so health went silent from the moment this
+    # re-rooting logic deployed (2026-08-25 18:38) -- and because health is the channel that would
+    # have reported the fault, the failure was invisible off-box for hours. Probe with
+    # `rev-parse --verify --quiet`, which exits non-zero SILENTLY, and only then delete.
+    & git -C $healthRepo rev-parse --verify --quiet "refs/heads/_health_tmp" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $healthRepo branch -D _health_tmp *> $null
+    }
     & git -C $healthRepo checkout --quiet --orphan _health_tmp 2>> $logFile
     Assert-Success "git checkout --orphan _health_tmp"
     & git -C $healthRepo add -A 2>> $logFile

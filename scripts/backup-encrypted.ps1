@@ -302,7 +302,16 @@ try {
     # A run that died between the orphan checkout and the rename would leave _backup_tmp behind and
     # wedge every subsequent run at "branch already exists". Clear it first; it never holds
     # anything we need, since the blobs live in the working tree at this point.
-    & git -C $backupRepo branch -D _backup_tmp *> $null
+    # Probe before deleting: `git branch -D <missing>` writes to stderr, and under
+    # $ErrorActionPreference='Stop' PowerShell turns a native stderr write into a TERMINATING
+    # error -- so on the NORMAL path (no leftover temp branch) this line killed the whole run.
+    # The identical line silently broke every health publish for hours on 2026-08-25 before it
+    # was found; fixing it here too so this latent copy can't do the same to offsite backups the
+    # first time someone configures BACKUP_AGE_RECIPIENT. `rev-parse --verify --quiet` is silent.
+    & git -C $backupRepo rev-parse --verify --quiet "refs/heads/_backup_tmp" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $backupRepo branch -D _backup_tmp *> $null
+    }
     & git -C $backupRepo checkout --quiet --orphan _backup_tmp 2>> $logFile
     Assert-Success "git checkout --orphan _backup_tmp"
     & git -C $backupRepo add -A 2>> $logFile

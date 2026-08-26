@@ -193,7 +193,14 @@ try {
     # Same fix already applied to publish-health.ps1 (see that script's comment for the full
     # incident writeup: a normal parented commit every ~10 min grew that branch to 3600+ commits
     # in six weeks). Re-root here from the start so night-data never has that problem to begin with.
-    & git -C $ndRepo branch -D _night_data_tmp *> $null
+    # Probe before deleting -- `git branch -D <missing>` writes to stderr, which under
+    # $ErrorActionPreference='Stop' becomes a TERMINATING error and kills the publish on the
+    # NORMAL path (no leftover temp branch). See the same guard in publish-health.ps1, where this
+    # silently killed every health publish for hours. `rev-parse --verify --quiet` fails silently.
+    & git -C $ndRepo rev-parse --verify --quiet "refs/heads/_night_data_tmp" *> $null
+    if ($LASTEXITCODE -eq 0) {
+        & git -C $ndRepo branch -D _night_data_tmp *> $null
+    }
     & git -C $ndRepo checkout --quiet --orphan _night_data_tmp 2>> $logFile
     Assert-Success "git checkout --orphan _night_data_tmp"
     & git -C $ndRepo add -A 2>> $logFile
