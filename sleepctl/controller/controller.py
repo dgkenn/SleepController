@@ -161,6 +161,46 @@ class SleepController:
             return NightObjective.DAMAGE_CONTROL
         return NightObjective.OPTIMIZE
 
+    def _wearable_bed_entry(self, frame, recent, cfg) -> bool:
+        """Can sustained LIVE wearable physiology stand in for an unavailable Pod presence?
+
+        Only ever consulted for the IDLE -> INDUCTION edge, and only when the Pod has NOT
+        positively reported presence either way. See ``AppConfig.wearable_bed_entry``: on an
+        account with no Autopilot membership presence is None forever, so the normal
+        ``presence is True`` gate can never open and the controller can never start a night on
+        its own -- two of four measured nights were spent entirely in IDLE with the wearable
+        streaming a full, normal night of physiology.
+
+        Strict on purpose. A band left on a charger reporting a flat line previously produced a
+        whole morning of fake DEEP (2026-08-04), so a frozen or implausible reading must not
+        qualify: the HR has to be in a plausible worn range AND actually MOVING across the
+        window. A stale/flat feed has zero range and is rejected.
+        """
+        try:
+            t = cfg.tunables
+            if not getattr(t, "wearable_bed_entry", True):
+                return False
+            # Never contradict the Pod: this fills in for UNKNOWN presence only.
+            if frame.presence is not None:
+                return False
+            need = int(getattr(t, "wearable_bed_entry_min_ticks", 5))
+            lo = float(getattr(t, "wearable_bed_entry_hr_lo", 30.0))
+            hi = float(getattr(t, "wearable_bed_entry_hr_hi", 120.0))
+            min_range = float(getattr(t, "wearable_bed_entry_min_hr_range", 2.0))
+
+            window = [f for f in (list(recent or []) + [frame])][-need:]
+            if len(window) < need:
+                return False
+            hrs = [f.heart_rate for f in window if getattr(f, "heart_rate", None) is not None]
+            if len(hrs) < need:
+                return False
+            if not all(lo <= h <= hi for h in hrs):
+                return False
+            # A live worn sensor varies beat to beat; a frozen/stale reading does not.
+            return (max(hrs) - min(hrs)) >= min_range
+        except Exception:
+            return False
+
     def decide(
         self,
         frame: SensorFrame,
@@ -399,7 +439,8 @@ class SleepController:
 
         # --- advance state machine ---------------------------------------------
         state = self.sm.transition(frame, now, wake_detected, required_wake,
-                                   onset_confirmed=onset_confirmed)
+                                   onset_confirmed=onset_confirmed,
+                                   wearable_bed_entry=self._wearable_bed_entry(frame, recent, cfg))
 
         minutes_in_bed = (
             (now - self._bed_entry_time).total_seconds() / 60.0

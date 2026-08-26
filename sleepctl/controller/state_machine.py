@@ -36,6 +36,7 @@ class SleepStateMachine:
         wake_detected: bool,
         required_wake_time: Optional[datetime],
         onset_confirmed: Optional[bool] = None,
+        wearable_bed_entry: bool = False,
     ) -> ControllerState:
         prev = self.state
         s = self.state
@@ -54,6 +55,16 @@ class SleepStateMachine:
         if s in (ControllerState.IDLE, ControllerState.CALIBRATION):
             if frame.presence is True:
                 self.state, self.reason = ControllerState.INDUCTION, "got into bed"
+            elif wearable_bed_entry:
+                # Pod presence is unavailable (None forever on an account with no Autopilot
+                # membership), so `presence is True` can never fire and the controller could
+                # never start a night by itself -- see AppConfig.wearable_bed_entry for the
+                # measurement. The caller has confirmed sustained, live, plausible wearable
+                # physiology; treat that as bed entry. Note `presence is False` (a POSITIVE
+                # bed-exit report) is handled above and still wins, so this only ever fills in
+                # for UNKNOWN presence, never contradicts the Pod.
+                self.state, self.reason = (ControllerState.INDUCTION,
+                                           "wearable bed entry (Pod presence unavailable)")
 
         elif s is ControllerState.INDUCTION:
             if self._is_asleep(frame):

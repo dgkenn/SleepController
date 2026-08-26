@@ -201,3 +201,39 @@ def test_a_held_state_says_so_rather_than_still_reporting_init():
     sm = _sm(ControllerState.MAINTENANCE)
     _step(sm, stage=SleepStage.DEEP)
     assert sm.reason == "hold state"
+
+
+# ------------------------------------------------------- wearable bed entry (2026-08-25 audit)
+def test_wearable_bed_entry_lets_a_night_start_when_the_pod_never_reports_presence():
+    """THE 2026-08-25 regression. IDLE -> INDUCTION required ``presence is True``, but on an
+    account without an Autopilot membership the Pod reports presence None FOREVER -- measured
+    None on 8831/8831 samples across four nights. The gate could never open, so the controller
+    could never start a night by itself: two of those four nights were spent entirely in IDLE
+    while the wearable streamed a complete, normal night of physiology. With confirmed live
+    wearable evidence the machine must be able to start."""
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.state_machine import SleepStateMachine
+    from sleepctl.models import ControllerState, SensorFrame, SleepStage
+
+    sm = SleepStateMachine(AppConfig())
+    frame = SensorFrame.__new__(SensorFrame)
+    frame.presence = None
+    frame.stage = SleepStage.UNKNOWN
+    out = sm.transition(frame, datetime(2026, 8, 25, 23, 30), False, None,
+                        wearable_bed_entry=True)
+    assert out is ControllerState.INDUCTION
+    assert "wearable" in sm.reason
+
+
+def test_wearable_bed_entry_never_starts_a_night_without_confirmed_evidence():
+    """The guard: absent the caller's confirmation, IDLE must stay IDLE exactly as before."""
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.state_machine import SleepStateMachine
+    from sleepctl.models import ControllerState, SensorFrame, SleepStage
+
+    sm = SleepStateMachine(AppConfig())
+    frame = SensorFrame.__new__(SensorFrame)
+    frame.presence = None
+    frame.stage = SleepStage.UNKNOWN
+    assert sm.transition(frame, datetime(2026, 8, 25, 23, 30), False, None,
+                         wearable_bed_entry=False) is ControllerState.IDLE

@@ -217,6 +217,21 @@ class Tunables:
     est_stage_deep_movement: float = 0.06    # movement at/under this (sustained) => DEEP-eligible
     est_stage_deep_sustain: int = 4          # consecutive quiescent frames required to call DEEP
     est_stage_max_conf: float = 0.5          # cap heuristic-estimate confidence below a real Pod stage
+    # --- wearable-inferred bed entry (Pod presence unavailable) --------------------------------
+    # IDLE -> INDUCTION normally requires ``frame.presence is True``. On an account without an
+    # Autopilot membership the Pod NEVER reports presence -- it is None forever -- so that gate can
+    # never open and the controller can never start a night on its own. Measured 2026-08-22..25:
+    # presence was None on 8831/8831 samples across four nights, and the only two nights that ran
+    # at all were the two the user pressed "Help me fall asleep" by hand. The other two were spent
+    # entirely in IDLE with the wearable streaming a completely normal night of physiology.
+    # When enabled, sustained LIVE wearable physiology may stand in for Pod presence. Deliberately
+    # strict, because a band left on a charger reporting a flat line previously produced a night's
+    # worth of fake DEEP: HR must be plausible AND actually varying, for several consecutive ticks.
+    wearable_bed_entry: bool = True
+    wearable_bed_entry_min_ticks: int = 5      # consecutive qualifying ticks before bed entry
+    wearable_bed_entry_hr_lo: float = 30.0     # implausible below this => not a worn sensor
+    wearable_bed_entry_hr_hi: float = 120.0    # implausible above this for lying down
+    wearable_bed_entry_min_hr_range: float = 2.0  # HR must MOVE this much across the window
     # Learned wearable stager (sleepctl/ml/sleep_staging, trained on PhysioNet sleep-accel). Preferred
     # over the heuristic above when its weights are bundled and enough HR history exists; falls back
     # to the heuristic otherwise. Confidence capped below a real Pod stage (staging from a wrist HR
