@@ -412,6 +412,26 @@ def _cmd_checkin(args: argparse.Namespace) -> int:
         repo.save_context(ctx)
         print(f"Logged check-in for {date}: quality={ctx.subjective_quality} "
               f"grogginess={ctx.grogginess} performance={ctx.daytime_performance}")
+
+        # Lock the trial outcome for the night this check-in rates, THEN reveal the arm. The
+        # order is the whole blinding contract: rating a night while knowing which controller
+        # ran would bias the only endpoint the trial has. A morning check-in usually carries the
+        # MORNING's date while a night is keyed to the evening it began, so accept either --
+        # today's assignment if one exists, otherwise last night's.
+        try:
+            from datetime import date as _date, timedelta as _td
+            from sleepctl.eval import trial as _trial
+
+            night = date
+            if _trial.get_assignment(repo.conn, night) is None:
+                prev = (_date.fromisoformat(date) - _td(days=1)).isoformat()
+                if _trial.get_assignment(repo.conn, prev) is not None:
+                    night = prev
+            if _trial.lock_outcome(repo.conn, night):
+                shown = _trial.get_assignment_for_display(repo.conn, night)
+                print(f"Trial arm for {night}: {shown.get('policy')} (now unblinded)")
+        except Exception as exc:      # a trial hiccup must never lose a logged check-in
+            print(f"(trial bookkeeping skipped: {exc!r})")
     finally:
         repo.close()
     return 0

@@ -357,6 +357,36 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 
+-- Randomized controller-policy trial (n-of-1, blinded). One row per night.
+--
+-- The endpoint of this system is whether tomorrow is better, NOT whether a sleep-stage label was
+-- correct -- an estimator can be a poor stager and still a useful control signal, and a good
+-- stager can make a terrible controller if small errors make the bed hunt all night. So efficacy
+-- is judged by randomizing the CONTROLLER and reading morning outcomes, with stage accuracy kept
+-- as a diagnostic (see sleepctl/eval/controller_sanity.py) rather than an endpoint.
+--
+-- BLINDING CONTRACT, enforced in sleepctl/eval/trial.py: ``policy`` must not be shown to the user
+-- until ``outcome_locked`` is set by the morning check-in. ``revealed`` records that it has since
+-- been surfaced. Assignment is block-randomized WITHIN night_type, because rotating shifts would
+-- otherwise confound arms at n-of-1 sample sizes, and runs in multi-night blocks because sleep
+-- debt carries over (a bad night deepens the next one regardless of policy).
+CREATE TABLE IF NOT EXISTS trial_assignments (
+    night_date TEXT PRIMARY KEY,
+    policy TEXT NOT NULL,             -- arm label, e.g. "A_static" / "B_reactive" / "C_stabilized"
+    block_id TEXT,                    -- which randomization block this night belongs to
+    block_index INTEGER,              -- position within the block
+    night_type TEXT,                  -- stratum ("work" / "off" / ...) -- arms balance within this
+    controller_version TEXT,          -- git sha / version of the code that actually ran
+    seed TEXT,                        -- randomization seed, so assignment is reproducible/auditable
+    assigned_ts TEXT,
+    outcome_locked INTEGER DEFAULT 0, -- morning check-in recorded -> outcome can no longer change
+    outcome_locked_ts TEXT,
+    revealed INTEGER DEFAULT 0,       -- policy has been shown to the user (only legal once locked)
+    revealed_ts TEXT,
+    notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trial_assignments_policy ON trial_assignments(policy);
+
 -- Append-only trend history of runtime_state snapshots (a full row per throttled write, unlike
 -- the singleton runtime_state table which only ever holds the latest one). Powers a 48h+
 -- "what was the bed actually doing" trend view without re-deriving it from raw_samples/decisions.
