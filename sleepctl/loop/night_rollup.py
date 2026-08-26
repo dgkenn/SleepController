@@ -56,6 +56,11 @@ _MIN_AWAKENING_MIN = 1.0
 #: was never measured at all.
 _MIN_COVERAGE_FRAC = 0.5
 
+#: A run of real sleep staging must last at least this long to count as SLEEP ONSET (a couple of
+#: drowsy samples while still settling is not onset). Used by the staging-based onset detection
+#: below, which replaced a controller-state-based one that could not measure onset at all.
+_MIN_SUSTAINED_SLEEP_MIN = 10.0
+
 
 def _parse(ts) -> Optional[datetime]:
     if isinstance(ts, datetime):
@@ -123,8 +128,63 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
     in_bed = [(t, r) for t, r in samples if (r["controller_state"] or "idle") != "idle"]
     asleep = [(t, r) for t, r in samples if (r["controller_state"] or "") in _ASLEEP_STATES]
     ns.bedtime = in_bed[0][0] if in_bed else times[0]
-    onset = asleep[0][0] if asleep else None
     ns.wake_time = in_bed[-1][0] if in_bed else times[-1]
+
+    ov = stage_by_ts or {}
+
+    def _stage(t, r) -> str:
+        return ov.get(t.isoformat()) or r["stage"] or "unknown"
+
+    # --- end the night at the last REAL EVIDENCE, not the last non-idle tick ------------------
+    # The controller does not reliably return to IDLE when the user gets up: on 2026-08-24 it sat
+    # in wake_recovery for 5.3 h after the wearable came off, emitting "unknown"-staged samples
+    # until noon. Those ticks are not time in bed, but they landed in the efficiency denominator
+    # anyway (in_bed_min = wake_time - bedtime), reporting 46% efficiency for a night that was
+    # actually 72% -- the difference between "severe insomnia" and "a rough night", fed straight
+    # into perfect_sleep_index and every learner downstream. Physiology is the ground truth for
+    # "still in bed": once the wearable stops producing heart rate, we are no longer measuring a
+    # sleeping person. Clamp (never extend) the end of the night to the last such sample.
+    #
+    # The unclamped span is KEPT for the coverage/unmeasured gate below. Clamping is only ever
+    # right when the night genuinely ended; a wearable that dies EARLY and leaves the user asleep
+    # for hours produces the same shape (physiology stops, unknown ticks continue) but must stay
+    # UNMEASURED, not become a flawless little 20-minute night. Judging coverage against the full
+    # non-idle span keeps those two apart: a real night has already banked most of its staging
+    # before the tail starts, a blackout has not.
+    unclamped_wake = ns.wake_time
+    last_evidence = None
+    for t, r in reversed(samples):
+        if r["heart_rate"] is not None:
+            last_evidence = t
+            break
+    if last_evidence is not None and ns.wake_time is not None and ns.wake_time > last_evidence:
+        ns.wake_time = last_evidence
+
+    # --- onset: the first SUSTAINED run of real sleep staging --------------------------------
+    # Was `asleep[0]` -- the first tick in a controller state from _ASLEEP_STATES. That cannot
+    # measure onset: those states describe what the CONTROLLER is doing, not whether the user is
+    # asleep, and the controller is routinely already in one at the first sample of the night
+    # (a session that began before recording, or wake_recovery carried over). Then onset ==
+    # bedtime and latency is 0.0 by construction -- reported as a flawless instant sleep onset on
+    # 2026-08-24, a night whose own staging shows 32 minutes of awake before the first sustained
+    # sleep. perfect_sleep_index scored that fabricated 0.0 as a perfect 1.0 SOL component.
+    # Staging is what actually knows when sleep began; fall back to the old signal only when no
+    # usable staging exists at all.
+    onset = None
+    _durs_all = _durations(times)
+    _run_start, _run_min = None, 0.0
+    for (t, r), dmin in zip(samples, _durs_all):
+        if _stage(t, r) in ("light", "deep", "rem"):
+            if _run_start is None:
+                _run_start = t
+            _run_min += dmin
+            if _run_min >= _MIN_SUSTAINED_SLEEP_MIN:
+                onset = _run_start
+                break
+        else:
+            _run_start, _run_min = None, 0.0
+    if onset is None:
+        onset = asleep[0][0] if asleep else None
     if onset is not None and ns.bedtime is not None:
         ns.sleep_onset_latency_min = round(
             max(0.0, (onset - ns.bedtime).total_seconds() / 60.0), 1)
@@ -135,10 +195,6 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
     # on a night the user reported ~8 awakenings.
     period = [(t, r) for t, r in samples
               if (onset is None or t >= onset) and (ns.wake_time is None or t <= ns.wake_time)]
-    ov = stage_by_ts or {}
-
-    def _stage(t, r) -> str:
-        return ov.get(t.isoformat()) or r["stage"] or "unknown"
 
     if period:
         durs = _durations([t for t, _ in period])
@@ -151,8 +207,11 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
         light = mins.get("light", 0.0)
         awake = mins.get("awake", 0.0)
         staged = deep + rem + light + awake
-        in_bed_span = ((ns.wake_time - ns.bedtime).total_seconds() / 60.0
-                       if (ns.wake_time and ns.bedtime) else 0.0)
+        # Coverage is judged against the UNCLAMPED span on purpose -- see the clamp above. Using
+        # the clamped span here would make every sensor blackout self-certify as fully covered
+        # (staged/staged == 1.0) and sail through the gate this check exists to enforce.
+        in_bed_span = ((unclamped_wake - ns.bedtime).total_seconds() / 60.0
+                       if (unclamped_wake and ns.bedtime) else 0.0)
         coverage = (staged / in_bed_span) if in_bed_span > 0 else 0.0
         ns.temp_profile_summary = dict(ns.temp_profile_summary or {})
         ns.temp_profile_summary["coverage"] = round(coverage, 3)

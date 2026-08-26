@@ -193,3 +193,70 @@ def test_good_coverage_still_scores_normally():
         assert ns.temp_profile_summary.get("unmeasured") is not True
         assert ns.total_sleep_min == 300.0
         assert ns.temp_profile_summary["coverage"] >= 0.8
+
+
+# --------------------------------------------------------------------------- 2026-08-24 audit
+def test_the_controller_idling_on_after_the_user_gets_up_does_not_wreck_efficiency():
+    """THE 2026-08-24 regression. The controller does not reliably return to IDLE when the user
+    gets up -- that night it sat in wake_recovery for 5.3 h after the wearable came off. Those
+    ticks are not time in bed, but wake_time was 'last non-idle tick', so they landed in the
+    efficiency denominator: 46% reported for a night that was really 72%, fed straight into
+    perfect_sleep_index and every learner. The night must end at the last real physiology."""
+    with _repo() as repo:
+        t = datetime(2026, 6, 23, 23, 0)
+        for _ in range(300):                       # 5 h of measured sleep
+            _write(repo, t, stage="light", state="maintenance")
+            t += timedelta(minutes=1)
+        wake = t
+        for _ in range(300):                       # 5 h of post-get-up idling, no physiology
+            _write(repo, t, stage="unknown", state="wake_recovery", hr=None, hrv=None)
+            t += timedelta(minutes=1)
+        repo.conn.commit()
+
+        ns = reconstruct_night_summary(repo, "2026-06-23")
+        assert ns.wake_time is not None and ns.wake_time <= wake
+        # ~5 h in bed, ~5 h asleep -> high efficiency, not ~50%
+        assert ns.sleep_efficiency is not None and ns.sleep_efficiency > 0.9
+
+
+def test_a_blackout_is_still_unmeasured_even_though_the_night_now_ends_at_last_physiology():
+    """The guard on the fix above. A wearable that dies EARLY leaves the same shape (physiology
+    stops, unknown ticks continue) as a night that genuinely ended -- but here the user slept on
+    unmeasured. Clamping the night to the last physiology must NOT let a blackout self-certify as
+    fully covered (staged/staged == 1.0) and slip past the coverage gate."""
+    with _repo() as repo:
+        t = datetime(2026, 6, 23, 23, 0)
+        for _ in range(20):                        # 20 min measured, then the band dies
+            _write(repo, t, stage="light", state="maintenance")
+            t += timedelta(minutes=1)
+        for _ in range(540):                       # 9 h asleep but unmeasured
+            _write(repo, t, stage="unknown", state="maintenance", hr=None, hrv=None)
+            t += timedelta(minutes=1)
+        repo.conn.commit()
+
+        ns = reconstruct_night_summary(repo, "2026-06-23")
+        assert ns.temp_profile_summary.get("unmeasured") is True
+        assert ns.sleep_efficiency is None
+
+
+def test_sleep_onset_latency_comes_from_staging_not_the_controllers_own_state():
+    """THE other 2026-08-24 regression. Onset was 'first tick in an _ASLEEP_STATES controller
+    state', which describes what the CONTROLLER is doing, not whether the user is asleep -- and
+    the controller is routinely already in one at the first sample. Then onset == bedtime and
+    latency is 0.0 by construction: reported as a flawless instant onset on a night whose own
+    staging shows the user awake for the first 20+ minutes. perfect_sleep_index scored that
+    fabricated 0.0 as a perfect SOL."""
+    with _repo() as repo:
+        t = datetime(2026, 6, 23, 23, 0)
+        # controller already "asleep" from the very first tick, user demonstrably awake
+        for _ in range(30):
+            _write(repo, t, stage="awake", state="wake_recovery")
+            t += timedelta(minutes=1)
+        for _ in range(240):
+            _write(repo, t, stage="light", state="maintenance")
+            t += timedelta(minutes=1)
+        repo.conn.commit()
+
+        ns = reconstruct_night_summary(repo, "2026-06-23")
+        assert ns.sleep_onset_latency_min is not None
+        assert 25.0 <= ns.sleep_onset_latency_min <= 35.0, ns.sleep_onset_latency_min
