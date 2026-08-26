@@ -260,8 +260,16 @@ try {
             & git -C $backupRepo checkout --quiet --orphan db-backups 2>> $logFile
             Assert-Success "git checkout --orphan db-backups"
             # `checkout --orphan` starts with the previous branch's files still staged/present --
-            # clear them all out so db-backups contains ONLY backup blobs, never source code.
+            # clear them all out so db-backups contains ONLY backup blobs, never source code. A
+            # tree that's ALREADY empty (e.g. a crashed prior run left this clone stuck mid-orphan-
+            # checkout -- exactly what happened to night-data's cold start, 2026-08-26) makes
+            # `git rm -rf .` fail with "pathspec '.' did not match any files", a real error whose
+            # stderr write becomes TERMINATING under $ErrorActionPreference='Stop'. Nothing-to-
+            # remove already satisfies the goal, so relax EAP around just this call.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             & git -C $backupRepo rm -rf --quiet . *> $null
+            $ErrorActionPreference = $prevEAP
             Get-ChildItem -Path $backupRepo -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -ne ".git" } |
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

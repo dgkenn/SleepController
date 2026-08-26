@@ -192,8 +192,20 @@ try {
             & git -C $healthRepo checkout --quiet --orphan health 2>> $logFile
             Assert-Success "git checkout --orphan health"
             # `checkout --orphan` starts with the previous branch's files still staged/present --
-            # clear them all out so health contains ONLY snapshots, never source code.
+            # clear them all out so health contains ONLY snapshots, never source code. If the
+            # tree is ALREADY empty (e.g. a prior crashed run left this clone mid-orphan-checkout
+            # with nothing staged -- exactly what happened to night-data's first run, 2026-08-26),
+            # `git rm -rf .` fails with "pathspec '.' did not match any files" -- a real git
+            # error, not merely a --quiet-suppressible message, and under
+            # $ErrorActionPreference='Stop' that stderr write becomes a TERMINATING error (the
+            # same class of hazard as the `_health_tmp` fix above). Nothing-to-remove is a
+            # perfectly fine outcome here -- the goal (an empty tree) is already met -- so
+            # temporarily relax $ErrorActionPreference around just this one call rather than
+            # trying to out-guess which redirect operators PowerShell treats as terminating.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             & git -C $healthRepo rm -rf --quiet . *> $null
+            $ErrorActionPreference = $prevEAP
             Get-ChildItem -Path $healthRepo -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -ne ".git" } |
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

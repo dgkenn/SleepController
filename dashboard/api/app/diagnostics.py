@@ -341,7 +341,11 @@ def _check_self_update(run_dir: str) -> dict:
     result_path = os.path.join(run_dir, "update.result")
     if os.path.exists(result_path):
         try:
-            with open(result_path, "r", encoding="utf-8") as fh:
+            # windows-watchdog.ps1 writes this via `ConvertTo-Json | Set-Content -Encoding UTF8`
+            # -- Windows PowerShell 5.1's "UTF8" encoding always prepends a BOM (unlike PS7+ or
+            # most other writers), which plain "utf-8" rejects. utf-8-sig strips a BOM if present
+            # and is a no-op otherwise, so this reads either way.
+            with open(result_path, "r", encoding="utf-8-sig") as fh:
                 rec = _json.load(fh)
             summary = str(rec.get("summary") or "").strip()
             when = str(rec.get("timestamp") or "").strip()

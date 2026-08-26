@@ -168,7 +168,21 @@ try {
             Log "no night-data branch anywhere yet -- creating an ORPHAN branch (kept out of main's history)"
             & git -C $ndRepo checkout --quiet --orphan night-data 2>> $logFile
             Assert-Success "git checkout --orphan night-data"
+            # THE actual bug that broke this branch's very first publish (2026-08-26): a prior run
+            # (before the _night_data_tmp delete fix existed) got exactly this far -- orphan
+            # checkout + an already-cleared tree -- then crashed on the later `branch -D` step,
+            # leaving this dedicated clone parked here permanently (an orphan branch with ZERO
+            # commits doesn't resolve via `rev-parse --verify`, so every subsequent run re-entered
+            # this SAME "no branch anywhere yet" cold-start path instead of the normal continuation
+            # path). On the retry, the tree is ALREADY empty, so `git rm -rf .` fails with "pathspec
+            # '.' did not match any files" -- a real error, not merely --quiet-suppressible, and
+            # under $ErrorActionPreference='Stop' that stderr write becomes a TERMINATING error
+            # (same hazard class as the `_night_data_tmp` fix below). Nothing-to-remove already
+            # satisfies the goal, so relax EAP around just this call instead of treating it as fatal.
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
             & git -C $ndRepo rm -rf --quiet . *> $null
+            $ErrorActionPreference = $prevEAP
             Get-ChildItem -Path $ndRepo -Force -ErrorAction SilentlyContinue |
                 Where-Object { $_.Name -ne ".git" } |
                 Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

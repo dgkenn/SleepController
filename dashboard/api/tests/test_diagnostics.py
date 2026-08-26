@@ -417,6 +417,21 @@ def test_self_update_surfaces_a_failed_update_result(run_dir):
     assert "FAILED" in c["detail"]
 
 
+def test_self_update_reads_windows_powershells_utf8_bom(run_dir):
+    """THE regression. windows-watchdog.ps1 writes update.result via PowerShell 5.1's
+    `ConvertTo-Json | Set-Content -Encoding UTF8`, which (unlike PS7+) always prepends a UTF-8
+    BOM. Plain utf-8 decoding rejects that BOM, so this check reported EVERY real update.result
+    on Windows as "unreadable" rather than showing the actual deploy outcome."""
+    import json as _json
+    payload = _json.dumps({"timestamp": "2026-08-25T22:00:00", "git_ok": True,
+                           "summary": "update to 'x' succeeded (validate=PASS)"})
+    with open(os.path.join(run_dir, "update.result"), "w", encoding="utf-8-sig") as fh:
+        fh.write(payload)
+    c = diagnostics._check_self_update(run_dir)
+    assert "unreadable" not in c["detail"]
+    assert "succeeded" in c["detail"]
+
+
 def test_self_update_reports_a_failed_smoke_test_as_fail(run_dir):
     with open(os.path.join(run_dir, "smoke.result"), "w", encoding="utf-8") as fh:
         fh.write("SMOKE FAIL: web not listening on port 3000")
