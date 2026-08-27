@@ -194,3 +194,81 @@ def test_relief_is_inert_without_a_measured_comfort_profile():
     c.comfort_profile = None
     c._cold_since = None
     assert c._cold_dwell_relief(58.0, datetime(2026, 8, 24, 23, 0), AppConfig())[0] is None
+
+
+# ------------------------------------------- abandoned-session timeout (2026-08-26 audit)
+def _sess_frame(ts, hr=None, presence=None):
+    from sleepctl.models import SensorFrame, SleepStage
+    return SensorFrame(timestamp=ts, stage=SleepStage.UNKNOWN, heart_rate=hr,
+                       presence=presence, data_age_seconds=5.0)
+
+
+def _sess_controller(abandon=60.0):
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    cfg = AppConfig()
+    cfg.tunables.session_abandon_min = abandon
+    return SleepController(cfg), cfg
+
+
+def _drive(c, start, minutes, hr=None, presence=None, step=5, recent=None):
+    """Drive real ticks, carrying the trailing `recent` window the way the daemon does --
+    wearable bed entry needs several consecutive HR frames, so an empty window never enters."""
+    from datetime import timedelta
+    recent = recent if recent is not None else []
+    for m in range(0, minutes + 1, step):
+        ts = start + timedelta(minutes=m)
+        # Vary HR a little: a live worn sensor varies beat to beat, and _wearable_bed_entry
+        # deliberately REJECTS a flat line (that is what a band on a charger looks like).
+        beat = None if hr is None else hr + (m % 4)
+        f = _sess_frame(ts, hr=beat, presence=presence)
+        c.decide(f, None, recent, ts)
+        recent.append(f)
+        if len(recent) > 60:
+            recent.pop(0)
+    return recent
+
+
+def test_a_session_whose_physiology_dies_is_ended_not_held_forever():
+    """THE 2026-08-26 regression. The stale-data guard returns EARLY, freezing the state machine,
+    so a session entered on brief wearable evidence outlived its feed by ~10 hours -- commanding
+    the bed all night on no data and reporting a nonsense 634-minute onset latency."""
+    from datetime import datetime, timedelta
+    from sleepctl.models import ControllerState
+    c, _ = _sess_controller(abandon=60.0)
+    t0 = datetime(2026, 8, 26, 19, 0)
+    rec = _drive(c, t0, 20, hr=62.0)                 # live feed -> leaves IDLE
+    assert c.sm.state is not ControllerState.IDLE
+    _drive(c, t0 + timedelta(minutes=25), 120, hr=None, recent=rec)   # feed dies
+    assert c.sm.state is ControllerState.IDLE
+    assert "abandoned" in c.sm.reason
+
+
+def test_a_live_feed_never_triggers_the_timeout():
+    from datetime import datetime
+    from sleepctl.models import ControllerState
+    c, _ = _sess_controller(abandon=60.0)
+    t0 = datetime(2026, 8, 26, 23, 0)
+    _drive(c, t0, 300, hr=60.0)
+    assert c.sm.state is not ControllerState.IDLE
+
+
+def test_the_timeout_never_fires_when_the_pod_says_you_are_in_bed():
+    """Positive presence outranks a missing wearable -- the Pod knows something we do not."""
+    from datetime import datetime, timedelta
+    from sleepctl.models import ControllerState
+    c, _ = _sess_controller(abandon=60.0)
+    t0 = datetime(2026, 8, 26, 23, 0)
+    rec = _drive(c, t0, 20, hr=62.0)
+    _drive(c, t0 + timedelta(minutes=25), 180, hr=None, presence=True, recent=rec)
+    assert c.sm.state is not ControllerState.IDLE
+
+
+def test_the_timeout_can_be_disabled():
+    from datetime import datetime, timedelta
+    from sleepctl.models import ControllerState
+    c, _ = _sess_controller(abandon=0.0)
+    t0 = datetime(2026, 8, 26, 19, 0)
+    rec = _drive(c, t0, 20, hr=62.0)
+    _drive(c, t0 + timedelta(minutes=25), 240, hr=None, recent=rec)
+    assert c.sm.state is not ControllerState.IDLE

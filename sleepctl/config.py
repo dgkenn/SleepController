@@ -242,6 +242,15 @@ class Tunables:
     # When enabled, sustained LIVE wearable physiology may stand in for Pod presence. Deliberately
     # strict, because a band left on a charger reporting a flat line previously produced a night's
     # worth of fake DEEP: HR must be plausible AND actually varying, for several consecutive ticks.
+    # --- abandoned-session timeout -------------------------------------------------------------
+    # The stale-data guard returns EARLY, before the state machine steps, so while it is active
+    # the machine is FROZEN in whatever state it was in. A session whose physiology then never
+    # comes back therefore persists indefinitely. Measured 2026-08-26: the wearable produced 25
+    # HR samples at 19:00, the controller entered INDUCTION on them, the feed died, and it held
+    # INDUCTION for ~10 hours -- commanding the bed all night on no evidence and reporting a
+    # nonsense 634-minute sleep-onset latency. Entering a session got easier with wearable bed
+    # entry, so leaving one cleanly matters more, not less. 0 disables.
+    session_abandon_min: float = 60.0
     wearable_bed_entry: bool = True
     wearable_bed_entry_min_ticks: int = 5      # consecutive qualifying ticks before bed entry
     wearable_bed_entry_hr_lo: float = 30.0     # implausible below this => not a worn sensor

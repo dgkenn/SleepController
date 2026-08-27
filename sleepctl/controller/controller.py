@@ -339,6 +339,34 @@ class SleepController:
             lead_min = float(getattr(self.wake_orch.cfg, "window_min", 30) or 30)
             wake_window_open = now >= required_wake - timedelta(minutes=lead_min)
 
+        # --- abandoned-session timeout --------------------------------------------------------
+        # Must run BEFORE the stale guard below, which returns early and freezes the state
+        # machine -- that freeze is exactly what let a session outlive its physiology for ~10
+        # hours on 2026-08-26 (see AppConfig.session_abandon_min). A session that cannot progress
+        # (onset needs staging, staging needs a feed) and has no evidence anyone is in bed should
+        # end, not persist. Never fires inside the wake window (the deadline outranks every
+        # data-quality rule) and never contradicts a Pod that positively reports presence.
+        if frame.heart_rate is not None or getattr(self, "_last_physio_at", None) is None:
+            self._last_physio_at = now
+        abandon_min = float(getattr(cfg.tunables, "session_abandon_min", 60.0) or 0.0)
+        if (abandon_min > 0
+                and self.sm.state is not ControllerState.IDLE
+                and not wake_window_open
+                and frame.presence is not True
+                and frame.heart_rate is None):
+            gap_min = (now - self._last_physio_at).total_seconds() / 60.0
+            if gap_min >= abandon_min:
+                self.sm.state = ControllerState.IDLE
+                self.sm.reason = f"session abandoned: no physiology for {gap_min:.0f} min"
+                self._bed_entry_time = None
+                self._sleep_onset_time = None
+                self._cold_since = None
+                self._cold_relief_f = 0.0
+                try:
+                    self.onset_detector.reset()
+                except Exception:
+                    pass
+
         if frame.is_stale(cfg.tunables.stale_data_seconds) and not wake_window_open:
             level = self.thermal.to_level(self._last_target_f)
             decision = self._build(
