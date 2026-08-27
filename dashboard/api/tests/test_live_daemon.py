@@ -433,3 +433,78 @@ def test_no_onset_yet_logs_nothing():
     d._maybe_log_onset()
     assert repo.recent_events(category="sleep") == []
     repo.close()
+
+
+# ------------------------------------------- wake-therapy smart plug (2026-08-27 request)
+def test_the_plug_is_driven_from_the_same_wake_decision_as_the_hue_lamp():
+    """Both transports ride the ORCHESTRATOR's decision, so a Hue lamp and a generic Wi-Fi plug
+    can never disagree about whether it is time to get up -- and neither can fire mid-sleep,
+    which is the one behaviour that would harm the sleep this system exists to protect."""
+    from live_daemon import LiveDashboardDaemon
+
+    class _Plug:
+        def __init__(self):
+            self.calls = []
+
+        def set_therapy(self, on):
+            self.calls.append(bool(on))
+
+    class _Daemon:
+        hue_driver = None
+
+        def __init__(self):
+            self.plug_driver = _Plug()
+
+        def _log(self, *a):
+            pass
+
+    class _Dec:
+        def __init__(self, la):
+            self.log_payload = {"wake_action": la} if la is not None else {}
+
+    d = _Daemon()
+    drive = LiveDashboardDaemon._drive_dawn
+    drive(d, _Dec(None))                        # outside the wake window
+    drive(d, _Dec({"should_wake": False}))      # in-window, not time yet
+    drive(d, _Dec({"should_wake": True}))       # the wake moment
+    assert d.plug_driver.calls == [False, False, True]
+
+
+def test_no_configured_plug_is_a_clean_no_op():
+    from live_daemon import LiveDashboardDaemon
+
+    class _Daemon:
+        hue_driver = None
+        plug_driver = None
+
+        def _log(self, *a):
+            pass
+
+    LiveDashboardDaemon._drive_dawn(_Daemon(), None)     # must not raise
+
+
+def test_a_plug_failure_never_breaks_the_dawn_drive():
+    """The lamp is a nice-to-have; the control loop is not. A plug that throws must not take
+    the tick down."""
+    from live_daemon import LiveDashboardDaemon
+
+    class _Boom:
+        def set_therapy(self, on):
+            raise RuntimeError("plug exploded")
+
+    class _Daemon:
+        hue_driver = None
+
+        def __init__(self):
+            self.plug_driver = _Boom()
+            self.logged = []
+
+        def _log(self, m):
+            self.logged.append(m)
+
+    class _Dec:
+        log_payload = {"wake_action": {"should_wake": True}}
+
+    d = _Daemon()
+    LiveDashboardDaemon._drive_dawn(d, _Dec())
+    assert any("plug" in m for m in d.logged)

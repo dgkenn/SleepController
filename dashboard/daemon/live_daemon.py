@@ -151,6 +151,7 @@ class LiveDashboardDaemon:
         self.thermal_trial_arm = None   # tonight's n-of-1 thermal DOSE-RESPONSE arm, if any
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
+        self.plug_driver = None    # non-Hue Wi-Fi wake-therapy plug driver (best-effort)
         # True once the Pod has refused an alarm WRITE with 402/403 (subscription-gated).
         # Latched so we stop retrying a refusal no client can talk its way past, and so
         # the snapshot can say plainly that vibration is unavailable this night.
@@ -1290,20 +1291,64 @@ class LiveDashboardDaemon:
             self.cycle.controller.set_dawn_light(bool(ready and c["target_ids"]))
         except Exception as exc:
             self._log(f"hue refresh skipped: {exc}")
+        self._refresh_wake_plug()
+
+    def _refresh_wake_plug(self) -> None:
+        """(Re)build the NON-Hue wake-therapy plug driver from its stored config.
+
+        Separate from the Hue driver because it is a different transport, but it is driven from
+        the SAME wake decision in _drive_dawn -- the orchestrator stays the only thing that
+        decides WHEN the lamp fires. Rebuilt only when the config changes."""
+        try:
+            from app import services
+            c = services._get_plug_config(self.repo)
+            sig = (c["enabled"], c["backend"], c["max_on_min"],
+                   tuple(sorted((c["config"] or {}).items())))
+            if sig == getattr(self, "_plug_sig", None):
+                return
+            self._plug_sig = sig
+            if c["enabled"] and c["config"]:
+                from sleepctl.adapters.smart_plug import SmartPlugTherapyDriver
+                self.plug_driver = SmartPlugTherapyDriver(
+                    c["backend"], c["config"], max_on_min=c["max_on_min"])
+                self._log(f"wake therapy plug enabled (backend={c['backend']}, "
+                          f"max_on={c['max_on_min']:.0f} min)")
+            else:
+                # Turn it OFF on the way out -- disabling the feature must not strand an
+                # energised lamp.
+                old = getattr(self, "plug_driver", None)
+                if old is not None:
+                    try:
+                        old.off()
+                    except Exception:
+                        pass
+                self.plug_driver = None
+        except Exception as exc:
+            self._log(f"wake plug refresh skipped: {exc}")
 
     def _drive_dawn(self, decision) -> None:
-        if not self.hue_driver:
+        plug = getattr(self, "plug_driver", None)
+        if not self.hue_driver and not plug:
             return
         la = (decision.log_payload or {}).get("wake_action") if decision else None
+        # The SAME wake decision drives both transports, so a Hue lamp and a generic Wi-Fi plug
+        # can never disagree about whether it is time to get up.
+        should = bool(la.get("should_wake")) if la else False
         try:
-            if la is None:                       # outside the wake window -> everything off
-                self.hue_driver.set_level(0.0)
-                self.hue_driver.set_therapy(False)
-            else:
-                self.hue_driver.set_level(float(la.get("light_level", 0.0)))   # sunrise ramp
-                self.hue_driver.set_therapy(bool(la.get("should_wake")))       # therapy at wake
+            if self.hue_driver:
+                if la is None:                   # outside the wake window -> everything off
+                    self.hue_driver.set_level(0.0)
+                    self.hue_driver.set_therapy(False)
+                else:
+                    self.hue_driver.set_level(float(la.get("light_level", 0.0)))  # sunrise ramp
+                    self.hue_driver.set_therapy(should)                           # therapy at wake
         except Exception as exc:
             self._log(f"hue drive skipped: {exc}")
+        try:
+            if plug:
+                plug.set_therapy(should)
+        except Exception as exc:
+            self._log(f"wake plug drive skipped: {exc}")
 
     def _capture_wake(self, decision, frame, now) -> None:
         """Record how the user was woken (stage, how early, forced) for the grogginess learner."""

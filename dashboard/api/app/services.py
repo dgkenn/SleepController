@@ -1096,6 +1096,55 @@ def _get_hue_config(repo) -> dict:
             "kind": d.get("kind", "lights")}
 
 
+# --------------------------------------------------------------------- wake therapy smart plug
+# A NON-Hue Wi-Fi plug driving the bright wake lamp. The Hue path above can only reach plugs
+# paired to a Hue bridge; this is the same "therapy plug" role for an ordinary Wi-Fi plug, fired
+# from the identical wake-orchestrator decision. See sleepctl/adapters/smart_plug.py.
+def _get_plug_config(repo) -> dict:
+    import json as _json
+    row = repo.conn.execute(
+        "SELECT value FROM settings_kv WHERE key='wake_plug_config'").fetchone()
+    d = _json.loads(row["value"]) if row else {}
+    return {
+        "enabled": bool(d.get("enabled", False)),
+        "backend": d.get("backend") or "tuya",      # "tuya" (local LAN) | "http" (on/off URLs)
+        "max_on_min": float(d.get("max_on_min") or 45.0),
+        "config": d.get("config") or {},            # backend-specific; holds the local key
+    }
+
+
+def plug_config_view(repo) -> dict:
+    c = _get_plug_config(repo)
+    cfg = dict(c["config"] or {})
+    # Never hand the local key back to a client -- it is the credential that controls the plug.
+    if "local_key" in cfg:
+        cfg["local_key"] = "***" if cfg["local_key"] else ""
+    return {"enabled": c["enabled"], "backend": c["backend"],
+            "max_on_min": c["max_on_min"], "config": cfg,
+            "configured": bool(c["config"])}
+
+
+def plug_config_update(repo, values: dict) -> dict:
+    import json as _json
+    cur = _get_plug_config(repo)
+    for k in ("enabled", "backend", "max_on_min", "config"):
+        if k in values and values[k] is not None:
+            cur[k] = values[k]
+    repo.conn.execute(
+        "INSERT INTO settings_kv (key, value) VALUES ('wake_plug_config', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_json.dumps(cur),))
+    repo.conn.commit()
+    return plug_config_view(repo)
+
+
+def plug_test(repo, on: bool) -> dict:
+    """Fire the plug once, right now, so setup can be verified without waiting for an alarm."""
+    from sleepctl.adapters.smart_plug import switch
+    c = _get_plug_config(repo)
+    ok = switch(c["backend"], c["config"], bool(on))
+    return {"ok": bool(ok), "backend": c["backend"], "commanded": bool(on)}
+
+
 def hue_config_view(repo) -> dict:
     c = _get_hue_config(repo)
     return {"enabled": c["enabled"], "bridge_ip": c["bridge_ip"], "target_ids": c["target_ids"],

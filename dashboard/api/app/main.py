@@ -343,6 +343,30 @@ def hue_config_update(body: HueConfigBody, repo=Depends(repo_dep), user: str = A
     return services.hue_config_update(repo, body.model_dump(exclude_none=True))
 
 
+class PlugConfigBody(BaseModel):
+    enabled: bool | None = None
+    backend: str | None = None          # "tuya" (local LAN) | "http" (on/off URLs)
+    max_on_min: float | None = None     # hard ceiling on lamp on-time (safety)
+    config: dict | None = None          # backend-specific; holds the plug's local key
+
+
+@app.get("/wake/plug/config")
+def plug_config(repo=Depends(repo_dep), user: str = AuthDep):
+    """Wake-therapy smart plug (a non-Hue Wi-Fi plug driving the bright wake lamp)."""
+    return services.plug_config_view(repo)
+
+
+@app.put("/wake/plug/config")
+def plug_config_update(body: PlugConfigBody, repo=Depends(repo_dep), user: str = AuthDep):
+    return services.plug_config_update(repo, body.model_dump(exclude_none=True))
+
+
+@app.post("/wake/plug/test")
+def plug_test(on: bool = True, repo=Depends(repo_dep), user: str = AuthDep):
+    """Fire the plug once so setup can be verified without waiting for an alarm."""
+    return services.plug_test(repo, on)
+
+
 @app.get("/wake/light/discover")
 def hue_discover(user: str = AuthDep):
     return services.hue_discover()
