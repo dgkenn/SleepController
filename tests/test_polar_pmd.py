@@ -935,3 +935,77 @@ def test_the_heartbeat_never_raises_on_an_unwritable_root():
     from pathlib import Path
     fwd = importlib.import_module("verity_forwarder")
     fwd._beat(Path("/nonexistent/read-only/path"))   # must not raise
+
+
+# ------------------------------------- escalating recovery ladder (2026-08-27 request)
+def _fwd():
+    import importlib
+    return importlib.import_module("verity_forwarder")
+
+
+def test_the_preferred_transport_is_kept_while_sessions_are_productive():
+    fwd = _fwd()
+    for mode in ("pmd", "hr", "auto"):
+        assert fwd._effective_mode(mode, 0) == mode
+        assert fwd._effective_mode(mode, 1) == mode
+
+
+def test_repeated_barren_sessions_try_the_OTHER_bluetooth_stream():
+    """The Verity exposes two independent streams (Polar PMD, and generic 0x180D HR) and they
+    fail independently -- a band left in SDK mode refuses PMD while plain HR still works, and a
+    wedged PMD handshake hangs a session that HR would have sailed through. Waiting longer
+    retries the SAME broken stream; alternating actually tries the other one."""
+    fwd = _fwd()
+    assert fwd._effective_mode("pmd", fwd._ALT_TRANSPORT_AFTER) == "hr"
+    assert fwd._effective_mode("hr", fwd._ALT_TRANSPORT_AFTER) == "pmd"
+    # "auto" degrades PMD->HR within one connection, so if the PMD handshake is what wedges,
+    # every auto attempt wedges identically -- lead with an explicit service instead.
+    assert fwd._effective_mode("auto", fwd._ALT_TRANSPORT_AFTER) in ("hr", "pmd")
+
+
+def test_alternation_keeps_flipping_so_it_never_sticks_on_the_broken_stream():
+    fwd = _fwd()
+    seen = {fwd._effective_mode("pmd", n)
+            for n in range(fwd._ALT_TRANSPORT_AFTER, fwd._ALT_TRANSPORT_AFTER + 8)}
+    assert seen == {"pmd", "hr"}, seen
+
+
+def test_an_adapter_reset_is_requested_only_after_the_cheaper_rungs(tmp_path):
+    """Restarting the Bluetooth stack drops every BT device on the machine, so it must sit at the
+    BOTTOM of the ladder -- after retry, after alternating transport, after forgetting the
+    cached address."""
+    fwd = _fwd()
+    flag = tmp_path / ".run" / "bt-reset.request"
+    fwd._request_adapter_reset(tmp_path, fwd._ADAPTER_RESET_AFTER)
+    assert flag.exists()
+    assert fwd._ADAPTER_RESET_AFTER > fwd._REDISCOVER_AFTER > fwd._ALT_TRANSPORT_AFTER
+
+
+def test_a_pending_adapter_reset_is_not_re_requested(tmp_path):
+    """One pending request is enough -- re-writing it every barren session would queue resets."""
+    fwd = _fwd()
+    logs: list = []
+    orig, fwd._log = fwd._log, logs.append
+    try:
+        fwd._request_adapter_reset(tmp_path, 5)
+        fwd._request_adapter_reset(tmp_path, 6)
+    finally:
+        fwd._log = orig
+    assert len([m for m in logs if "requesting a Bluetooth adapter reset" in m]) == 1
+
+
+def test_requesting_a_reset_never_raises_on_an_unwritable_root():
+    from pathlib import Path
+    _fwd()._request_adapter_reset(Path("/nonexistent/read-only"), 9)   # must not raise
+
+
+def test_a_successful_post_is_what_counts_as_a_productive_session():
+    """The old loop counted EXCEPTIONS, so a band that connects, yields nothing and disconnects
+    cleanly reset the counter and never escalated -- the single most common real failure."""
+    fwd = _fwd()
+    before = fwd._STATS["posts"]
+    try:
+        fwd._post("http://127.0.0.1:9/nope", {"hr": 60})
+    except Exception:
+        pass
+    assert fwd._STATS["posts"] == before, "a failed POST must not count as produced data"

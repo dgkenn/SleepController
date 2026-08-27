@@ -163,6 +163,10 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (local URL)
         raw = resp.read()
+    # Counted AFTER the round-trip succeeds: this is the "did this session actually produce
+    # physiology" signal the recovery ladder escalates on, so an attempt that threw must not
+    # look like a productive one.
+    _STATS["posts"] += 1
     try:
         return json.loads(raw.decode("utf-8"))
     except Exception:
@@ -188,6 +192,21 @@ _MAX_SESSION_BACKOFF_S = 300.0
 #: fallback) must be able to let go, and ``_run_once`` -- which owns the reconnect -- has to see
 #: the backoff. The PMD path is the one actually used in production.
 _RELEASE = {"run": 0, "until": 0.0}
+
+#: --- redundancy layer 3: escalating RECOVERY across repeated barren sessions ----------------
+#: ``fails`` in the reconnect loop only ever counted EXCEPTIONS, and a session that connects,
+#: yields nothing and disconnects cleanly is not an exception -- it resets the counter. So the
+#: single most common real failure (a band that accepts the link but streams nothing) looped at
+#: the base retry interval forever with no escalation whatsoever. Count sessions that produced no
+#: DATA instead, and escalate through qualitatively different recoveries rather than just waiting
+#: longer: try the other transport, then stop trusting the cached address, then ask for the
+#: Bluetooth stack itself to be reset.
+_STATS = {"posts": 0}
+
+#: Consecutive barren sessions before each rung of the ladder.
+_ALT_TRANSPORT_AFTER = 2     # the Verity exposes two independent streams -- try the other one
+_REDISCOVER_AFTER = 3        # stop trusting a pinned/cached address; full rescan
+_ADAPTER_RESET_AFTER = 5     # ask the watchdog to restart the Bluetooth stack
 
 #: --- redundancy layer 1: a live LINK is not a live FEED --------------------------------------
 #: BLE can hold a connection open long after notifications stop. Both session loops ran
@@ -239,6 +258,48 @@ class _Freshness:
 
     def age(self) -> float:
         return time.monotonic() - self.t
+
+
+def _effective_mode(preferred: str, barren: int) -> str:
+    """Which transport to try, given how many barren sessions we have had in a row.
+
+    The Verity exposes TWO independent streams -- Polar's vendor PMD service (ACC + PPI) and the
+    generic 0x180D Heart Rate service -- and they fail independently: PMD can be refused outright
+    (a band left in SDK mode), while 0x180D keeps working, and a wedged PMD handshake can hang a
+    session that plain HR would have sailed through. ``auto`` already degrades PMD->HR WITHIN one
+    connection, but if the PMD handshake itself is what is wedging, every attempt wedges the same
+    way. So after repeated barren sessions, alternate which stream we lead with.
+    """
+    if barren < _ALT_TRANSPORT_AFTER:
+        return preferred
+    # Alternate on each subsequent barren session so we never get stuck favouring the broken one.
+    flip = ((barren - _ALT_TRANSPORT_AFTER) // _ALT_TRANSPORT_AFTER) % 2 == 0
+    if preferred == "pmd":
+        return "hr" if flip else "pmd"
+    if preferred == "hr":
+        return "pmd" if flip else "hr"
+    return "hr" if flip else "pmd"      # "auto": lead with one service explicitly
+
+
+def _request_adapter_reset(root: Path, barren: int) -> None:
+    """Ask the watchdog to restart the Bluetooth stack (flag file, same protocol as
+    update.request / restart.request).
+
+    The forwarder cannot do this itself: restarting a system service needs rights this process
+    does not have, and the watchdog already runs elevated from its Scheduled Task. Writing one
+    flag file keeps the privileged action on the privileged side, and matches how every other
+    escalated action in this system is requested.
+    """
+    try:
+        run_dir = root / ".run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        flag = run_dir / "bt-reset.request"
+        if flag.exists():
+            return          # one pending request is enough; the watchdog rate-limits the rest
+        flag.write_text(f"barren_sessions={barren}", encoding="ascii")
+        _log(f"{barren} barren sessions -- requesting a Bluetooth adapter reset")
+    except Exception:
+        pass
 
 
 def _note_worn_state(resp) -> bool:
@@ -821,13 +882,40 @@ async def _main_async(args, env) -> None:
     # keeps waking the radio. Observed 2026-08-06 while the band was charging after the battery
     # death this same loop caused.
     fails = 0
+    barren = 0                 # consecutive sessions that produced NO data (see _STATS)
+    preferred_mode = args.mode
+    pinned_address = args.address
     while True:
         try:
             _beat(_repo_root())
+            # Escalate through qualitatively different recoveries, not just a longer wait.
+            args.mode = _effective_mode(preferred_mode, barren)
+            if barren >= _REDISCOVER_AFTER:
+                # Stop trusting a pinned/cached address. A stale address (band re-paired, or the
+                # OS handing back a cached entry for a device now in a different mode) makes
+                # every attempt fail identically no matter how long we wait between them.
+                if args.address:
+                    _log(f"{barren} barren sessions -- ignoring the pinned address and rescanning")
+                args.address = None
+            else:
+                args.address = pinned_address
+            if barren >= _ADAPTER_RESET_AFTER:
+                _request_adapter_reset(_repo_root(), barren)
+
+            before = _STATS["posts"]
             await _run_once(args, env)
+            if _STATS["posts"] > before:
+                if barren:
+                    _log(f"recovered after {barren} barren session(s)")
+                barren = 0
+            else:
+                barren += 1
+                _log(f"session produced no data (barren streak: {barren}, "
+                     f"next transport: {_effective_mode(preferred_mode, barren)})")
             fails = 0
         except Exception as exc:
             fails += 1
+            barren += 1
             delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
             _log(f"session error ({exc}); reconnecting in {delay:.0f}s "
                  f"(consecutive failures: {fails})")

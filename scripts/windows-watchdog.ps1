@@ -556,6 +556,46 @@ function Verity-Running {
         return [bool]$p
     } catch { return $true }  # on a CIM hiccup, assume alive (don't spawn duplicates)
 }
+# --- Bluetooth adapter reset (last rung of the forwarder's recovery ladder) --------------------
+# The forwarder escalates through: retry -> alternate transport -> forget the cached address ->
+# THIS. It cannot restart a system service itself (no rights), so it drops .run\bt-reset.request
+# and this side -- which runs elevated from the Scheduled Task -- performs the privileged action.
+# Same flag-file protocol as update.request / restart.request: the unprivileged side asks, the
+# privileged side decides and acts.
+#
+# Rate-limited hard. Restarting bthserv drops EVERY Bluetooth device on the machine, so it is a
+# genuine last resort: at most once an hour, and only while the Verity is actually enabled.
+$script:btResetRequestFile = Join-Path $run "bt-reset.request"
+$script:btResetLastAt = [datetime]::MinValue
+function Handle-BluetoothResetRequest {
+    if (-not (Test-Path $script:btResetRequestFile)) { return }
+    $reason = ""
+    try { $reason = (Get-Content -Path $script:btResetRequestFile -Raw -EA Stop).Trim() } catch {}
+    # Consume the flag immediately -- a stuck request must never loop the reset forever.
+    Remove-Item -Path $script:btResetRequestFile -Force -ErrorAction SilentlyContinue
+    if (-not (Verity-Enabled)) { return }
+    $sinceMin = ((Get-Date) - $script:btResetLastAt).TotalMinutes
+    if ($sinceMin -lt 60) {
+        Log "bluetooth reset requested ($reason) but one ran $([int]$sinceMin) min ago -- skipping"
+        return
+    }
+    $script:btResetLastAt = Get-Date
+    Log "CRITICAL: restarting the Bluetooth stack at the forwarder's request ($reason)"
+    try {
+        Restart-Service -Name bthserv -Force -ErrorAction Stop
+        Log "bluetooth: bthserv restarted"
+        # The forwarder's live BLE handles are now invalid; kill it so the relaunch below brings
+        # up a process that rediscovers against the fresh stack.
+        Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+            Where-Object { $_.CommandLine -and $_.CommandLine -match 'verity_forwarder\.py' } |
+            ForEach-Object {
+                try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop } catch {}
+            }
+    } catch {
+        Log "WARN: could not restart bthserv: $_"
+    }
+}
+
 function Ensure-Verity {
     if (-not (Verity-Enabled)) { return }
     $script = Join-Path $Root "scripts\verity_forwarder.py"
@@ -948,6 +988,9 @@ while ($true) {
 
     # Optional Verity cardiac forwarder (opt-in; non-critical). Launched/relaunched here so it
     # self-heals, but deliberately NOT part of the api/daemon/web health gate below.
+    # The reset request is handled FIRST: it may kill a wedged forwarder, and Ensure-Verity on the
+    # same tick then relaunches it against the freshly-restarted Bluetooth stack.
+    Handle-BluetoothResetRequest
     Ensure-Verity
 
     if (-not (Port-Alive 8000)) {
