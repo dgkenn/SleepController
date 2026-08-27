@@ -230,3 +230,31 @@ def record_blind_guess(conn, night_date: str, guess: str,
                  (json.dumps(notes), night_date))
     conn.commit()
     return True
+
+
+#: Substrings in a decision ``reason`` that identify which arm ran. Arm C's stabilizer annotates
+#: its holds, which would otherwise let the arm be read straight off the decision log.
+_ARM_HINT_TOKENS = ("stabilizer",)
+
+
+def scrub_arm_hints(text: Optional[str]) -> Optional[str]:
+    """Remove arm-identifying phrases from a user-facing ``reason`` string.
+
+    Defense in depth for the blinding contract, NOT a guarantee. A single-user trial cannot be
+    blinded against someone with full access to their own logs and their own bed: the
+    intervention is perceptible (a bed that changes temperature feels different from one that
+    holds still), and any behavioural difference is in principle detectable in the raw data. What
+    this does buy is that the arm is not sitting in plain text on a screen the user reads at the
+    exact moment they are rating the night -- which is the one moment blinding has to survive.
+    Real protection comes from locking the outcome before revealing (``lock_outcome``) and from
+    measuring how much blinding held (``record_blind_guess``).
+    """
+    if not text:
+        return text
+    out = str(text)
+    for tok in _ARM_HINT_TOKENS:
+        if tok in out.lower():
+            parts = [p for p in out.split(";")
+                     if tok not in p.lower()]
+            out = ";".join(parts).strip().strip(";").strip() or "held"
+    return out

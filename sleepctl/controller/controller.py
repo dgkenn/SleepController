@@ -161,6 +161,51 @@ class SleepController:
             return NightObjective.DAMAGE_CONTROL
         return NightObjective.OPTIMIZE
 
+    def _stabilize_target(self, proposed_f: float, now, cfg):
+        """Should this proposed target be HELD instead of commanded? (arm C)
+
+        Returns ``(held_value, reason)`` when the move is suppressed, else ``(None, None)``.
+        Two rules, in order:
+
+          1. **Deadband** -- a proposed move smaller than ``stabilizer_deadband_f`` is noise, not
+             a decision. Suppressing it costs nothing thermally (the bed cannot resolve it) and
+             removes most of the churn.
+          2. **Minimum dwell on reversals** -- a move that flips the last direction must wait
+             ``stabilizer_min_dwell_min`` since the last committed move. Same-direction moves are
+             never delayed, so a genuine ramp still runs at full speed; only oscillation is
+             damped. This is the rule that targets the measured failure (31 of 36 interventions
+             reversing, several within one minute).
+        """
+        try:
+            deadband = float(getattr(cfg.tunables, "stabilizer_deadband_f", 0.4))
+            dwell = float(getattr(cfg.tunables, "stabilizer_min_dwell_min", 12.0))
+            last = self._last_target_f
+            delta = proposed_f - last
+            if abs(delta) < deadband:
+                return last, f"stabilizer: held (move {delta:+.2f}F under {deadband}F deadband)"
+            direction = 1 if delta > 0 else -1
+            last_dir = getattr(self, "_stab_last_dir", 0)
+            last_move_at = getattr(self, "_stab_last_move_at", None)
+            if last_dir and direction != last_dir and last_move_at is not None:
+                since_min = (now - last_move_at).total_seconds() / 60.0
+                if since_min < dwell:
+                    return last, (f"stabilizer: held (reversal {since_min:.1f} min into a "
+                                  f"{dwell:.0f} min dwell)")
+            return None, None
+        except Exception:
+            return None, None
+
+    def _note_target_move(self, target_f: float, now) -> None:
+        """Record a COMMITTED move so the stabilizer's dwell clock reflects real changes only."""
+        try:
+            delta = target_f - self._last_target_f
+            if abs(delta) <= 1e-9:
+                return
+            self._stab_last_dir = 1 if delta > 0 else -1
+            self._stab_last_move_at = now
+        except Exception:
+            pass
+
     def _wearable_bed_entry(self, frame, recent, cfg) -> bool:
         """Can sustained LIVE wearable physiology stand in for an unavailable Pod presence?
 
@@ -639,6 +684,31 @@ class SleepController:
                     # Keep the thermal controller's slew/variability bookkeeping consistent with
                     # the value actually commanded, exactly as the guardrail override does.
                     self.thermal.note_override(target_f, now=now)
+
+        # --- target stabilizer (trial arm C) --------------------------------------------------
+        # Damps thermal hunting: a move must clear a deadband, and a move that REVERSES the last
+        # direction must also wait out a minimum dwell. See AppConfig.target_stabilizer.
+        #
+        # Runs LAST but deliberately yields to both safety layers above -- it is skipped entirely
+        # when a critical guardrail forced a safe hold or the comfort clamp bounded the target.
+        # Holding a stale value over either of those would convert a damping policy into a way of
+        # ignoring the guardrail, which is the opposite of what it is for. Confined to the long
+        # holding states for the same reason the comfort clamp is: INDUCTION owns a deliberately
+        # cold opener and WAKE_WINDOW a warm ramp, and damping those would break designed
+        # behaviour rather than protect sleep.
+        if (getattr(cfg.tunables, "target_stabilizer", False)
+                and state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY)
+                and not (guardrail is not None and guardrail.critical)
+                and clamped_from is None):
+            held, why = self._stabilize_target(target_f, now, cfg)
+            if held is not None:
+                target_f = held
+                level = self.thermal.to_level(target_f)
+                action = self._action_for(self._last_target_f, target_f)
+                reason = f"{reason}; {why}"
+                self.thermal.note_override(target_f, now=now)
+            else:
+                self._note_target_move(target_f, now)
 
         self._last_target_f = target_f
         decision = self._build(

@@ -837,7 +837,19 @@ def admin_logs(limit: int = 50, repo=Depends(repo_dep), user: str = AuthDep):
     rows = repo.conn.execute(
         "SELECT ts, state, thermal_intent, target_temp_f, action, reason, confidence "
         "FROM decisions ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    # Blinding: arm C annotates its own holds, which would otherwise let the running arm be read
+    # straight off this log at the exact moment the user is about to rate the night. Defense in
+    # depth only -- a single-user trial cannot be blinded against someone with their own logs and
+    # their own bed (see sleepctl.eval.trial.scrub_arm_hints); the real protections are locking
+    # the outcome before revealing and measuring how much blinding actually held.
+    try:
+        from sleepctl.eval.trial import scrub_arm_hints
+        for r in out:
+            r["reason"] = scrub_arm_hints(r.get("reason"))
+    except Exception:
+        pass
+    return out
 
 
 @app.get("/alerts")

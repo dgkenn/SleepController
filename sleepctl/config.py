@@ -217,6 +217,21 @@ class Tunables:
     est_stage_deep_movement: float = 0.06    # movement at/under this (sustained) => DEEP-eligible
     est_stage_deep_sustain: int = 4          # consecutive quiescent frames required to call DEEP
     est_stage_max_conf: float = 0.5          # cap heuristic-estimate confidence below a real Pod stage
+    # --- target stabilizer (trial arm C: hysteresis + minimum dwell) ---------------------------
+    # Measured 2026-08-23/24: 46/53 and 31/36 consecutive thermal interventions were DIRECTION
+    # REVERSALS, several inside the same minute. Cause is upstream -- the inferred stage flips
+    # every 1-2 min (15-25 flips/h against a CV-validated ~1.1/h), each flip re-targets the bed,
+    # and the bed hunts all night. The existing oscillation guardrail cannot see it: it ignores
+    # reversals below guardrail_oscillation_min_delta_f (0.75F) and these were all sub-threshold,
+    # so it flagged one of thirty-one.
+    #
+    # This damps the OUTPUT rather than the estimator, so it is testable as a controller policy
+    # without touching staging (the two are validated separately -- physiological validity vs
+    # control utility). A move must clear a deadband to happen at all, and a move that REVERSES
+    # the last direction must additionally wait out a minimum dwell.
+    target_stabilizer: bool = False          # arm C enables it; default off so B is unchanged
+    stabilizer_deadband_f: float = 0.4       # ignore proposed moves smaller than this
+    stabilizer_min_dwell_min: float = 12.0   # min minutes before REVERSING direction again
     # --- wearable-inferred bed entry (Pod presence unavailable) --------------------------------
     # IDLE -> INDUCTION normally requires ``frame.presence is True``. On an account without an
     # Autopilot membership the Pod NEVER reports presence -- it is None forever -- so that gate can
