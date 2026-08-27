@@ -161,6 +161,63 @@ class SleepController:
             return NightObjective.DAMAGE_CONTROL
         return NightObjective.OPTIMIZE
 
+    def _cold_dwell_relief(self, target_f: float, now, cfg):
+        """Ease the bed up if it has been camped at the cold edge of the comfort band.
+
+        Returns ``(eased_value, reason)`` when relief applies, else ``(None, None)``.
+
+        The comfort clamp answers "how cold may the bed be right now"; this answers "for how
+        long". Four straight hours at 65-67F preceded the awakenings measured on 2026-08-24, and
+        no existing check could see it because every individual reading was inside the band.
+
+        Needs a measured cool edge to have something to be "at the edge of" -- with no comfort
+        profile loaded there is no principled floor to reason about, so this stays inert rather
+        than inventing one from a population default.
+        """
+        try:
+            if not isinstance(self.comfort_profile, dict):
+                return None, None
+            cool_edge = self.comfort_profile.get("cool_edge_f")
+            if cool_edge is None:
+                return None, None
+            margin = float(getattr(cfg.tunables, "cold_dwell_margin_f", 1.0))
+            limit = float(getattr(cfg.tunables, "cold_dwell_limit_min", 75.0))
+            step = float(getattr(cfg.tunables, "cold_dwell_step_f", 0.75))
+            cap = float(getattr(cfg.tunables, "cold_dwell_max_relief_f", 2.5))
+
+            at_edge = target_f <= (float(cool_edge) + margin)
+            if not at_edge:
+                # left the cold edge -- the clock and the accumulated relief both reset, so a
+                # later cold stretch starts from scratch rather than inheriting old credit.
+                self._cold_since = None
+                self._cold_relief_f = 0.0
+                return None, None
+
+            if getattr(self, "_cold_since", None) is None:
+                self._cold_since = now
+                return None, None
+
+            held_min = (now - self._cold_since).total_seconds() / 60.0
+            if held_min < limit:
+                return None, None
+
+            # Relief is a SUSTAINED offset, not a one-tick nudge. ``resolve`` recomputes the raw
+            # target from scratch every tick and knows nothing about this, so granting once and
+            # resetting would produce a single warm tick surrounded by cold ones -- the bed would
+            # spend the night right back at the edge. Deriving the offset from total dwell time
+            # instead makes it monotonic and stable: it holds as long as the cold stretch does,
+            # steps up once per dwell period, and is capped.
+            earned = int(held_min // limit) * step
+            relief = min(earned, cap)
+            if relief <= 0:
+                return None, None
+            self._cold_relief_f = relief
+            return (target_f + relief,
+                    f"cold-dwell relief +{relief:.2f}F after {held_min:.0f} min at the cold edge "
+                    f"(cool_edge {float(cool_edge):.1f}F, cap {cap:.2f}F)")
+        except Exception:
+            return None, None
+
     def _stabilize_target(self, proposed_f: float, now, cfg):
         """Should this proposed target be HELD instead of commanded? (arm C)
 
@@ -709,6 +766,22 @@ class SleepController:
                 self.thermal.note_override(target_f, now=now)
             else:
                 self._note_target_move(target_f, now)
+
+        # --- sustained-cold relief (safety property, applies to EVERY arm) ---------------------
+        # Runs last, after the stabilizer, and deliberately outranks it: a damping policy must not
+        # be able to hold the bed parked at the cold edge, which is the exact harm this prevents.
+        # One-directional (warmer only) and capped, so the worst case is slight under-cooling.
+        if (getattr(cfg.tunables, "cold_dwell_relief_enabled", True)
+                and state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY)):
+            eased, why = self._cold_dwell_relief(target_f, now, cfg)
+            if eased is not None and eased > target_f:
+                target_f = eased
+                level = self.thermal.to_level(target_f)
+                action = self._action_for(self._last_target_f, target_f)
+                reason = f"{reason}; {why}"
+                self.thermal.note_override(target_f, now=now)
+        else:
+            self._cold_since = None
 
         self._last_target_f = target_f
         decision = self._build(

@@ -156,6 +156,44 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception as exc:
         out["staging_error"] = repr(exc)
 
+    # ---- 3b. thermal exposure -----------------------------------------------------------------
+    # A night can be entirely inside the comfort band at every instant and still be far too cold,
+    # because nothing about a single reading captures how LONG the bed sat there. 2026-08-24 held
+    # 65-67F for four straight hours and the user reported waking from cold. Publish the measured
+    # comfort edges alongside the actual exposure so that is visible off-box instead of inferred.
+    try:
+        prof = None
+        for getter in ("get_comfort_profile",):
+            fn = getattr(repo, getter, None)
+            if callable(fn):
+                try:
+                    prof = fn()
+                except Exception:
+                    prof = None
+                break
+        out["comfort_profile"] = prof
+        from sleepctl.controller.calibration import level_to_fahrenheit
+
+        levels = [(r["ts"], r["commanded_level"], r["controller_state"])
+                  for r in rows if r["commanded_level"] is not None]
+        maint = [lv for _, lv, st in levels if st in ("maintenance", "wake_recovery")]
+        exposure = {"n_commanded": len(levels)}
+        if maint:
+            temps = [level_to_fahrenheit(int(lv)) for lv in maint]
+            exposure.update({
+                "maintenance_min_f": round(min(temps), 1),
+                "maintenance_mean_f": round(sum(temps) / len(temps), 1),
+                "maintenance_max_f": round(max(temps), 1),
+            })
+            cool_edge = (prof or {}).get("cool_edge_f") if isinstance(prof, dict) else None
+            if cool_edge is not None:
+                near = sum(1 for t in temps if t <= float(cool_edge) + 1.0)
+                exposure["minutes_within_1F_of_cool_edge"] = near
+                exposure["frac_at_cool_edge"] = round(near / len(temps), 3)
+        out["thermal_exposure"] = exposure
+    except Exception as exc:
+        out["thermal_exposure_error"] = repr(exc)
+
     # ---- 4. thermal steering ----------------------------------------------------------------
     try:
         iv = conn.execute(

@@ -106,3 +106,91 @@ def test_stabilizer_allows_a_reversal_once_the_dwell_has_passed():
 def test_stabilizer_is_off_by_default_so_arm_b_is_unchanged():
     from sleepctl.config import AppConfig
     assert AppConfig().tunables.target_stabilizer is False
+
+
+# ------------------------------------------- sustained-cold relief (2026-08-26 user report)
+def _cold_controller(cool_edge=65.0):
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    cfg = AppConfig()
+    c = SleepController.__new__(SleepController)
+    c.comfort_profile = {"cool_edge_f": cool_edge, "warm_edge_f": 73.0}
+    c._cold_since = None
+    c._cold_relief_f = 0.0
+    return c, cfg
+
+
+def test_camping_at_the_cold_edge_eases_up_after_the_dwell_limit():
+    """THE user-reported harm: MAINTENANCE held 65-67F for four straight hours on 2026-08-24 and
+    the mean target before an awakening was 3F colder than the night's average. Every individual
+    reading was inside the comfort band, so no existing check could see it -- the missing bound
+    was on DURATION, not value."""
+    from datetime import datetime, timedelta
+    c, cfg = _cold_controller()
+    t0 = datetime(2026, 8, 24, 23, 0)
+    assert c._cold_dwell_relief(65.5, t0, cfg)[0] is None            # clock starts
+    assert c._cold_dwell_relief(65.5, t0 + timedelta(minutes=60), cfg)[0] is None
+    eased, why = c._cold_dwell_relief(65.5, t0 + timedelta(minutes=80), cfg)
+    assert eased is not None and eased > 65.5
+    assert "cold-dwell relief" in why
+
+
+def test_relief_is_sustained_not_a_single_warm_tick():
+    """resolve() recomputes the raw target every tick and knows nothing about the relief, so a
+    one-shot grant would leave the bed back at the edge on the very next tick."""
+    from datetime import datetime, timedelta
+    c, cfg = _cold_controller()
+    t0 = datetime(2026, 8, 24, 23, 0)
+    c._cold_dwell_relief(65.5, t0, cfg)
+    a = c._cold_dwell_relief(65.5, t0 + timedelta(minutes=80), cfg)[0]
+    b = c._cold_dwell_relief(65.5, t0 + timedelta(minutes=85), cfg)[0]
+    assert a is not None and b is not None and abs(a - b) < 1e-9
+
+
+def test_relief_is_monotonic_and_capped():
+    from datetime import datetime, timedelta
+    c, cfg = _cold_controller()
+    t0 = datetime(2026, 8, 24, 23, 0)
+    c._cold_dwell_relief(65.5, t0, cfg)
+    seen = []
+    for m in (80, 160, 240, 400, 600):
+        v = c._cold_dwell_relief(65.5, t0 + timedelta(minutes=m), cfg)[0]
+        seen.append(v)
+    assert seen == sorted(seen)                                  # never goes back down
+    assert max(seen) <= 65.5 + cfg.tunables.cold_dwell_max_relief_f + 1e-9
+
+
+def test_relief_never_makes_the_bed_colder():
+    """One-directional by construction: the worst case is slight under-cooling, never a NEW way
+    to be too cold."""
+    from datetime import datetime, timedelta
+    c, cfg = _cold_controller()
+    t0 = datetime(2026, 8, 24, 23, 0)
+    c._cold_dwell_relief(65.5, t0, cfg)
+    for m in (80, 200, 400):
+        v = c._cold_dwell_relief(65.5, t0 + timedelta(minutes=m), cfg)[0]
+        assert v is None or v >= 65.5
+
+
+def test_leaving_the_cold_edge_resets_the_clock_and_the_credit():
+    from datetime import datetime, timedelta
+    c, cfg = _cold_controller()
+    t0 = datetime(2026, 8, 24, 23, 0)
+    c._cold_dwell_relief(65.5, t0, cfg)
+    assert c._cold_dwell_relief(71.0, t0 + timedelta(minutes=90), cfg)[0] is None
+    assert c._cold_since is None and c._cold_relief_f == 0.0
+    # a later cold stretch must earn its relief from scratch
+    c._cold_dwell_relief(65.5, t0 + timedelta(minutes=100), cfg)
+    assert c._cold_dwell_relief(65.5, t0 + timedelta(minutes=120), cfg)[0] is None
+
+
+def test_relief_is_inert_without_a_measured_comfort_profile():
+    """With no measured cool edge there is no principled floor to reason about, so it stays out
+    of the way rather than inventing one from a population default."""
+    from datetime import datetime
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.controller import SleepController
+    c = SleepController.__new__(SleepController)
+    c.comfort_profile = None
+    c._cold_since = None
+    assert c._cold_dwell_relief(58.0, datetime(2026, 8, 24, 23, 0), AppConfig())[0] is None

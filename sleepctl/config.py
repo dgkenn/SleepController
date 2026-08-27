@@ -341,6 +341,26 @@ class Tunables:
     ambient_outdoor_fallback: bool = False
     comfort_clamp_enabled: bool = True
     comfort_clamp_margin_f: float = 0.5   # allow this much beyond the measured band edges
+    # --- sustained-cold relief -----------------------------------------------------------------
+    # The comfort clamp bounds how cold the bed may go at any INSTANT, but nothing bounded how
+    # LONG it may sit there. Measured 2026-08-24: MAINTENANCE held 65-67F for four consecutive
+    # hours (23:00-02:00), and the mean commanded target in the 20 min before an awakening was
+    # 72.0F against 75.0F for the night overall -- i.e. awakenings were preceded by a colder bed.
+    # The user independently reported waking in the middle of the night feeling far too cold.
+    # There is prior form for this exact failure: live_daemon.py records a night that resolved to
+    # 62.5F "on a night whose own data showed 63-64 F waking them".
+    #
+    # So: entering the coldest part of the band is fine and often therapeutic, but CAMPING there
+    # is not. After ``cold_dwell_limit_min`` continuous minutes within ``cold_dwell_margin_f`` of
+    # the band's cool edge, ease up one step, and keep easing at that cadence up to
+    # ``cold_dwell_max_relief_f``. Relief is strictly one-directional -- it can only ever make a
+    # too-cold bed warmer, never colder -- so the worst case is that it slightly under-cools a
+    # night, not that it introduces a new way to be too cold.
+    cold_dwell_relief_enabled: bool = True
+    cold_dwell_limit_min: float = 75.0     # continuous minutes at the cold edge before easing
+    cold_dwell_margin_f: float = 1.0       # "at the cold edge" = within this of cool_edge_f
+    cold_dwell_step_f: float = 0.75        # how much to ease per trigger
+    cold_dwell_max_relief_f: float = 2.5   # total ceiling on accumulated relief
     hot_sleeper_cool_bias_f: float = -1.5
     # In-night architecture steering ("nudge me deeper"). A bounded, awakening-risk-VETOED
     # fast loop inside MAINTENANCE: when the realized deep curve is behind its front-loaded
