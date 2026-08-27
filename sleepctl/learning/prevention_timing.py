@@ -363,18 +363,45 @@ def analyze(events: Sequence[PreventionEvent]) -> PreventionTimingReport:
 
     # A lead only needs raising if timing is actually the binding constraint; recommend enough to
     # cover the measured arrival with a margin, never less than the leads already in use.
+    max_used = None
+    lead_is_binding = True
     if rep.median_arrival_min is not None:
         used = [e.lead_used_min for e in failures if e.lead_used_min is not None]
-        floor = max(used) if used else 0.0
-        rep.recommended_lead_min = round(max(rep.median_arrival_min + LEAD_MARGIN_MIN, floor), 1)
+        max_used = max(used) if used else None
+        want = rep.median_arrival_min + LEAD_MARGIN_MIN
+        rep.recommended_lead_min = round(max(want, max_used or 0.0), 1)
+        # Is the recommendation actually an INCREASE, or just a restatement of the lead already
+        # in use? When the floor dominates, "increase the lead to ~X" names a value the loop is
+        # already at -- advice that cannot be acted on and that hides the real constraint.
+        lead_is_binding = max_used is None or want > max_used
+
+    # "timing" covers two situations with OPPOSITE remedies: the awakening beat a bed that was
+    # genuinely on its way, and the bed never measurably moved at all inside the search window.
+    # Adding lead only helps the first; the second is an actuation problem (a fought setpoint, a
+    # stalled loop) where more lead changes nothing. Split them rather than averaging them.
+    n_never_moved = sum(1 for e in failures
+                        if e.cause == "timing" and e.arrival_min is None)
+    n_beat_bed = n_timing - n_never_moved
 
     if frac_timing >= TIMING_LIMITED_FRACTION:
         rep.verdict = "timing_limited"
         rep.detail = (f"{n_timing}/{len(failures)} prevention failures happened BEFORE the bed had "
                       f"moved (median arrival {rep.median_arrival_min} min, median wake "
                       f"{rep.median_wake_min} min)")
-        rep.remedy = (f"increase the pre-cool lead to ~{rep.recommended_lead_min} min — a larger "
-                      f"nudge cannot fix an arrival that comes after the awakening")
+        if n_never_moved:
+            rep.detail += (f" — of those, {n_never_moved} had NO measurable bed movement at all "
+                           f"and {n_beat_bed} were beaten by the awakening")
+        if lead_is_binding:
+            rep.remedy = (f"increase the pre-cool lead to ~{rep.recommended_lead_min} min — a "
+                          f"larger nudge cannot fix an arrival that comes after the awakening")
+        else:
+            rep.remedy = (
+                f"lead is NOT the constraint: it is already {max_used:.1f} min and the bed "
+                f"arrives in {rep.median_arrival_min} min, so there was ample slack. Adding lead "
+                f"cannot help. Look instead at whether the pre-cool FIRES late (awakening "
+                f"prediction) or the bed is being fought/stalled (external schedule conflict, "
+                f"thermal response) — and note this check assumes cooling PREVENTS awakenings, "
+                f"which is worth re-checking if cold is itself waking you")
     elif n_dose > n_timing:
         rep.verdict = "dose_limited"
         rep.detail = (f"{n_dose}/{len(failures)} failures happened AFTER the bed had arrived "

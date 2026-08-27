@@ -434,3 +434,33 @@ def test_aware_timestamps_are_converted_not_merely_stripped():
                                                                  if k != "ts"}}
              for s in naive]
     assert measure_arrival_min(aware, start) == measure_arrival_min(naive, start)
+
+
+# ------------------------------------------------- lead already sufficient (2026-08-26 audit)
+def test_it_does_not_tell_you_to_increase_a_lead_you_are_already_using():
+    """THE misleading advice. recommended_lead is max(median_arrival + margin, max lead already
+    used). When the floor dominates, the remedy named a number the loop was ALREADY at -- observed
+    live as "increase the pre-cool lead to ~27.6 min" while 27.6 was the maximum lead in use and
+    the bed arrived in 7.8 min. That is unactionable and hides the real constraint."""
+    rep = analyze([_fail(7.8, 5.0, lead=27.6) for _ in range(5)])
+    assert rep.verdict == "timing_limited"
+    assert rep.recommended_lead_min == 27.6
+    assert "NOT the constraint" in rep.remedy
+    assert "increase the pre-cool lead" not in rep.remedy
+
+
+def test_it_still_recommends_more_lead_when_that_genuinely_is_the_constraint():
+    """The guard on the fix above: a short lead against a slow bed must still say 'add lead'."""
+    rep = analyze([_fail(20.0, 5.0, lead=6.0) for _ in range(5)])
+    assert rep.verdict == "timing_limited"
+    assert rep.recommended_lead_min > 6.0
+    assert "increase the pre-cool lead" in rep.remedy
+
+
+def test_never_moved_and_beaten_by_the_wake_are_reported_separately():
+    """Both score as 'timing' but have OPPOSITE remedies -- adding lead cannot help a bed that
+    never actuated. Averaging them into one number hides an actuation failure."""
+    evs = [_fail(None, 6.0) for _ in range(3)] + [_fail(14.0, 5.0) for _ in range(3)]
+    rep = analyze(evs)
+    assert rep.verdict == "timing_limited"
+    assert "NO measurable bed movement" in rep.detail
