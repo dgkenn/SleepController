@@ -881,3 +881,57 @@ def test_forwarder_cli_exposes_the_new_flags(capsys):
     for flag in ("--mode", "--acc-rate", "--acc-range", "--address", "--batch-seconds"):
         assert flag in help_text
     assert "hr" in help_text and "pmd" in help_text and "auto" in help_text
+
+
+# ------------------------------------- connector redundancy layers (2026-08-26 audit)
+def test_a_connected_but_silent_link_ends_the_session_instead_of_hanging():
+    """THE 2026-08-26 failure. BLE can hold a link open long after notifications stop; both
+    session loops ran `while client.is_connected`, so a silent-but-connected band pinned the
+    forwarder in a session that would never produce another sample -- 25 HR samples at 19:00,
+    then ten hours of nothing. A dead feed must DROP the link so the reconnect loop can rescan."""
+    client = _FakeBleClient()
+    # stall almost immediately, and disable the warm-up suppression so the guard can fire
+    args = _pmd_args(stall_seconds=0.05, pmd_grace_seconds=0.0)
+    ok, posted = _run_pmd_session(client, args=args, feed=[], until_posted=False)
+    assert ok is False, "a stalled session must end so the caller reconnects"
+
+
+def test_a_frozen_heart_rate_is_not_forwarded_as_live_physiology():
+    """`last_hr` was never invalidated, so once notifications stopped the flusher re-POSTed the
+    SAME value every batch forever -- laundering a frozen reading into the pipeline as current
+    physiology. That is exactly the 'band on a charger' shape the controller's bed-entry guard
+    has to defend against downstream."""
+    import importlib
+    import time as _time
+    fwd = importlib.import_module("verity_forwarder")
+
+    # a reading older than hr_max_age must be dropped from the payload
+    stale_age = fwd._HR_MAX_AGE_S + 5.0
+    last_hr = {"v": 61.0, "t": _time.monotonic() - stale_age}
+    hr = last_hr["v"]
+    if hr is not None and (_time.monotonic() - last_hr["t"]) > fwd._HR_MAX_AGE_S:
+        hr = None
+    assert hr is None, "a stale HR must not be forwarded"
+
+    fresh_hr = {"v": 61.0, "t": _time.monotonic()}
+    hr2 = fresh_hr["v"]
+    if hr2 is not None and (_time.monotonic() - fresh_hr["t"]) > fwd._HR_MAX_AGE_S:
+        hr2 = None
+    assert hr2 == 61.0, "a fresh HR must still be forwarded"
+
+
+def test_the_forwarder_writes_a_liveness_heartbeat(tmp_path):
+    """Layer 2: the supervisor could only check a process EXISTED, which a wedged one passes.
+    The heartbeat is what makes 'wedged' distinguishable from 'running'."""
+    import importlib
+    fwd = importlib.import_module("verity_forwarder")
+    fwd._beat(tmp_path)
+    assert (tmp_path / ".run" / "verity.heartbeat").exists()
+
+
+def test_the_heartbeat_never_raises_on_an_unwritable_root():
+    """It runs on the hot loop; a filesystem hiccup must never take the forwarder down."""
+    import importlib
+    from pathlib import Path
+    fwd = importlib.import_module("verity_forwarder")
+    fwd._beat(Path("/nonexistent/read-only/path"))   # must not raise

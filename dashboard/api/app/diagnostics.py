@@ -56,7 +56,7 @@ _CHECK_ORDER = [
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
-    "wake_alarm", "degraded", "calibration", "prevention_timing",
+    "wake_alarm", "degraded", "calibration", "prevention_timing", "verity_forwarder",
     "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "log_sizes",
     "calendar", "shift",
 ]
@@ -387,6 +387,39 @@ def _check_self_update(run_dir: str) -> dict:
         remedy = ("check .run\\update.result / .run\\watchdog.log on the box; clear "
                   ".run\\watchdog.alert once the cause is understood")
     return _check("self_update", "Self-update / deploy history", status, " | ".join(parts), remedy)
+
+
+def _check_verity_forwarder(run_dir: str, now: float) -> dict:
+    """Is the BLE bridge PROCESS alive, as distinct from data arriving?
+
+    ``cardiac_sensor`` answers "is physiology reaching the controller". This answers the
+    different question underneath it: is the forwarder still looping at all. The two separate
+    because a BLE link can stay open long after notifications stop -- the forwarder then sits in
+    a session that will never produce another sample, and the supervisor's process check passes
+    because a wedged process is still a process (2026-08-26: 25 samples at 19:00, then ten hours
+    of nothing).
+
+    The forwarder touches ``verity.heartbeat`` every loop, INCLUDING while it is deliberately
+    idle during its not-worn release backoff, so a stale file means wedged rather than resting.
+    """
+    hb = os.path.join(run_dir, "verity.heartbeat")
+    age = _file_age_s(hb, now)
+    if age is None:
+        return _check("verity_forwarder", "Verity forwarder process", "info",
+                      "no forwarder heartbeat yet (not started, or an older build that "
+                      "predates the heartbeat)", None)
+    if age <= 300:
+        return _check("verity_forwarder", "Verity forwarder process", "ok",
+                      f"looping (heartbeat {int(age)}s ago)", None)
+    if age <= 1500:
+        return _check("verity_forwarder", "Verity forwarder process", "warn",
+                      f"heartbeat {int(age / 60)} min stale — the bridge may be wedged",
+                      "the watchdog kills a forwarder whose heartbeat passes 25 min; "
+                      "check .run\\verity.log")
+    return _check("verity_forwarder", "Verity forwarder process", "fail",
+                  f"heartbeat {int(age / 60)} min stale — the bridge is not looping",
+                  "check .run\\verity.log and that SLEEPCTL_VERITY=1; the watchdog should be "
+                  "killing and relaunching it")
 
 
 def _check_publishers(run_dir: str) -> dict:
@@ -1135,6 +1168,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
     add("self_update", "Self-update / deploy history", lambda: _check_self_update(run_dir))
     add("publishers", "GitHub relay publishers", lambda: _check_publishers(run_dir))
+    add("verity_forwarder", "Verity forwarder process",
+        lambda: _check_verity_forwarder(run_dir, now))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
     add("watchdog_heartbeat", "Watchdog heartbeat", lambda: _check_watchdog_heartbeat(run_dir, now))
     add("api", "API process", _check_api)

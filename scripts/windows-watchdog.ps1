@@ -583,6 +583,38 @@ function Ensure-Verity {
     $hashMarker = Join-Path $run "verity-code.hash"
     $currentHash = (Get-FileHash -Path $script -Algorithm SHA256).Hash
     $running = Verity-Running
+
+    # --- redundancy layer 2: a RUNNING forwarder is not a WORKING forwarder --------------------
+    # Verity-Running only proves a process exists, which a wedged one passes. The forwarder now
+    # touches .run\verity.heartbeat every loop (the same unambiguous-mtime pattern this watchdog
+    # already trusts for the daemon), so a stale heartbeat means it is wedged rather than merely
+    # quiet. Kill it and let the normal relaunch below bring up a fresh one.
+    #
+    # The threshold is comfortably longer than the forwarder's own 15-minute not-worn release
+    # backoff: during that window it beats but does not stream, deliberately, so a band on its
+    # charger can actually charge. Killing it then would restart a process that rescans at once
+    # and reconnects to the charging band -- the backoff lives in process memory and does not
+    # survive a restart.
+    if ($running) {
+        $vhb = Join-Path $run "verity.heartbeat"
+        if (Test-Path $vhb) {
+            $ageMin = (New-TimeSpan -Start (Get-Item $vhb).LastWriteTime -End (Get-Date)).TotalMinutes
+            if ($ageMin -gt 25) {
+                Log "verity forwarder heartbeat is $([int]$ageMin) min stale -- process is wedged; killing it"
+                try {
+                    Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                        Where-Object { $_.CommandLine -and $_.CommandLine -match 'verity_forwarder\.py' } |
+                        ForEach-Object {
+                            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop }
+                            catch { Log "  WARN: could not kill wedged verity pid $($_.ProcessId): $_" }
+                        }
+                } catch { Log "WARN: wedged-verity kill sweep failed: $_" }
+                Start-Sleep -Milliseconds 300
+                Remove-Item -Path $vhb -Force -ErrorAction SilentlyContinue
+                $running = Verity-Running
+            }
+        }
+    }
     if ($running) {
         $lastHash = if (Test-Path $hashMarker) {
             (Get-Content -Path $hashMarker -Raw -ErrorAction SilentlyContinue).Trim()

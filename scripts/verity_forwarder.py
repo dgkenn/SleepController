@@ -189,6 +189,57 @@ _MAX_SESSION_BACKOFF_S = 300.0
 #: the backoff. The PMD path is the one actually used in production.
 _RELEASE = {"run": 0, "until": 0.0}
 
+#: --- redundancy layer 1: a live LINK is not a live FEED --------------------------------------
+#: BLE can hold a connection open long after notifications stop. Both session loops ran
+#: ``while client.is_connected``, so a silent-but-connected band pinned the forwarder in a
+#: session that would never produce another sample -- and because ``last_hr`` was never
+#: invalidated, the flusher kept re-POSTing the SAME frozen heart rate every batch, indefinitely,
+#: as though it were live. Measured 2026-08-26: 25 HR samples at 19:00 and nothing for the next
+#: ten hours while the controller sat in a session it could never advance.
+#:
+#: Two independent guards, because they fail differently:
+#:   * FRESHNESS -- a reading older than this is not sent at all. Stops a frozen value from
+#:     being laundered into the pipeline as current physiology.
+#:   * STALL -- no new notification for this long ends the session, which drops the link and
+#:     forces a full rescan/reconnect. Recovers a wedged link instead of waiting for the OS.
+#: Both are generous relative to real quiet periods: the Verity's own PPI warm-up is ~25 s and
+#: it slows HR updates to ~5 s when PPI is enabled, so neither fires on normal behaviour.
+_HR_MAX_AGE_S = 30.0
+_STALL_TIMEOUT_S = 120.0
+
+
+#: --- redundancy layer 2: process liveness, separate from data flow ---------------------------
+#: The supervisor could only check that a verity_forwarder process EXISTED, which a wedged one
+#: passes. This mirrors the daemon.heartbeat pattern the watchdog already trusts ("a file's mtime
+#: is unambiguous"): the forwarder touches this every loop, so a stale file means WEDGED.
+#:
+#: Deliberately beats even while deliberately idle -- during the not-worn release backoff the
+#: forwarder is doing exactly the right thing by holding off, and killing it then would restart a
+#: fresh process that rescans immediately and reconnects to a band that is trying to charge
+#: (the backoff lives in process memory and does not survive a restart). Liveness and data flow
+#: are different questions: data freshness is already measured at the ingest side.
+def _beat(root: Path) -> None:
+    try:
+        run_dir = root / ".run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "verity.heartbeat").write_text(
+            time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="ascii")
+    except Exception:
+        pass
+
+
+class _Freshness:
+    """Monotonic 'when did real data last arrive' tracker shared by both session paths."""
+
+    def __init__(self) -> None:
+        self.t = time.monotonic()
+
+    def note(self) -> None:
+        self.t = time.monotonic()
+
+    def age(self) -> float:
+        return time.monotonic() - self.t
+
 
 def _note_worn_state(resp) -> bool:
     """Track consecutive not-worn verdicts; True means RELEASE the band now."""
@@ -322,22 +373,38 @@ async def _hr_session(client, args) -> None:
     """Generic 0x180D Heart Rate Service path (the long-standing production behaviour)."""
     # Coalesce notifications into small batches so we POST a few times a second, not per-beat.
     batch_rr: list[float] = []
-    last_hr: dict = {"v": None}
+    last_hr: dict = {"v": None, "t": 0.0}
     last_flush = {"t": time.monotonic()}
+    fresh = _Freshness()
 
     def _on_hr(_handle, data: bytearray) -> None:
         hr, rr = _parse_hr_measurement(data)
         if hr is not None:
             last_hr["v"] = hr
+            last_hr["t"] = time.monotonic()
+            fresh.note()
         if rr:
             batch_rr.extend(rr)
+            fresh.note()
 
     async def _flusher(client) -> None:
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
+            _beat(_repo_root())
+            # Layer 1a: never forward a stale reading. Without this the last value seen was
+            # re-sent every batch forever once notifications stopped.
             hr = last_hr["v"]
+            hr_age = time.monotonic() - (last_hr.get("t") or 0.0)
+            if hr is not None and hr_age > getattr(args, "hr_max_age", _HR_MAX_AGE_S):
+                hr = None
             rr = batch_rr[:]
             batch_rr.clear()
+            # Layer 1b: a live link with a dead feed must END the session so the reconnect loop
+            # can rescan, rather than sitting here until something else notices.
+            if fresh.age() > getattr(args, "stall_seconds", _STALL_TIMEOUT_S):
+                _log(f"no sensor data for {fresh.age():.0f}s while connected -- "
+                     f"dropping the link to force a reconnect")
+                return
             if hr is None and not rr:
                 continue
             payload = {"source": args.source}
@@ -479,7 +546,8 @@ async def _pmd_session(client, args) -> bool:
 
     batch_rr: list[float] = []
     acc_mags: list[float] = []
-    last_hr: dict = {"v": None}
+    last_hr: dict = {"v": None, "t": 0.0}
+    fresh = _Freshness()
     stats = {"blocked": 0, "bad_frames": 0}
     frames = {"acc": 0, "ppi": 0}
     acc_cap = max(int(args.acc_rate * 300), 1000)  # ~5 min of samples; bounds memory if POSTs fail
@@ -516,6 +584,8 @@ async def _pmd_session(client, args) -> bool:
                 for s in samples:
                     if s["hr"]:
                         last_hr["v"] = s["hr"]
+                        last_hr["t"] = time.monotonic()
+                        fresh.note()
                     if s["ok"]:
                         batch_rr.append(float(s["ppi_ms"]))
                     else:
@@ -530,6 +600,8 @@ async def _pmd_session(client, args) -> bool:
             hr, rr = _parse_hr_measurement(data)
             if hr is not None:
                 last_hr["v"] = hr
+                last_hr["t"] = time.monotonic()
+                fresh.note()
             if rr:
                 batch_rr.extend(rr)
         except Exception as exc:
@@ -599,11 +671,25 @@ async def _pmd_session(client, args) -> bool:
         warned: set = set()
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
+            _beat(_repo_root())
             hr = last_hr["v"]
+            # Layer 1a: a reading older than hr_max_age is not current physiology -- do not
+            # forward it. Otherwise a frozen value is re-POSTed every batch as though live.
+            if hr is not None and (time.monotonic() - (last_hr.get("t") or 0.0)) > getattr(args, "hr_max_age", _HR_MAX_AGE_S):
+                hr = None
             rr = batch_rr[:]
             batch_rr.clear()
             mags = acc_mags[:]
             acc_mags.clear()
+            if mags:
+                fresh.note()
+            # Layer 1b: end a connected-but-silent session so the reconnect loop can rescan.
+            # Suppressed during the documented PPI warm-up, which is legitimately quiet.
+            if (fresh.age() > getattr(args, "stall_seconds", _STALL_TIMEOUT_S)
+                    and (time.monotonic() - t0) > args.pmd_grace_seconds):
+                _log(f"PMD: no sensor data for {fresh.age():.0f}s while connected -- "
+                     f"dropping the link to force a reconnect")
+                return False
 
             payload: dict = {"source": args.source}
             if hr is not None:
@@ -737,6 +823,7 @@ async def _main_async(args, env) -> None:
     fails = 0
     while True:
         try:
+            _beat(_repo_root())
             await _run_once(args, env)
             fails = 0
         except Exception as exc:
@@ -763,6 +850,12 @@ def main(argv=None) -> int:
     p.add_argument("--source", default="verity", help="source tag stored with the samples")
     p.add_argument("--batch-seconds", type=float, default=2.0, help="POST cadence")
     p.add_argument("--retry-seconds", type=float, default=10.0, help="reconnect backoff")
+    p.add_argument("--hr-max-age", type=float, default=_HR_MAX_AGE_S,
+                   help="do not forward a heart rate older than this many seconds (a frozen "
+                        "reading must never be laundered into the pipeline as live physiology)")
+    p.add_argument("--stall-seconds", type=float, default=_STALL_TIMEOUT_S,
+                   help="end the session if no sensor data arrives for this long while the BLE "
+                        "link is still up, forcing a full rescan/reconnect")
     p.add_argument("--mode", choices=("hr", "pmd", "auto"), default="auto",
                    help="hr: generic 0x180D only; pmd: Polar PMD (ACC+PPI) only; "
                         "auto: try PMD, fall back to the HR service (default)")

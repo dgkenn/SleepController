@@ -776,3 +776,33 @@ def test_diagnostics_events_returns_list(auth_client):
     resp = auth_client.get("/diagnostics/events?limit=10")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
+
+
+# --------------------------------------------- verity forwarder liveness (2026-08-26 audit)
+def test_verity_forwarder_heartbeat_fresh_is_ok(run_dir):
+    _touch(os.path.join(run_dir, "verity.heartbeat"))
+    c = diagnostics._check_verity_forwarder(run_dir, time.time())
+    assert c["status"] == "ok"
+
+
+def test_a_wedged_forwarder_is_reported_even_though_the_process_exists(run_dir):
+    """THE 2026-08-26 gap. A BLE link can stay open long after notifications stop, so the
+    forwarder sits in a session that will never produce another sample -- and the supervisor's
+    process check passes, because a wedged process is still a process."""
+    _touch(os.path.join(run_dir, "verity.heartbeat"), age_s=45 * 60)
+    c = diagnostics._check_verity_forwarder(run_dir, time.time())
+    assert c["status"] == "fail"
+    assert "not looping" in c["detail"]
+
+
+def test_a_moderately_stale_forwarder_heartbeat_warns_before_it_fails(run_dir):
+    _touch(os.path.join(run_dir, "verity.heartbeat"), age_s=10 * 60)
+    c = diagnostics._check_verity_forwarder(run_dir, time.time())
+    assert c["status"] == "warn"
+
+
+def test_no_forwarder_heartbeat_is_info_not_a_failure(run_dir):
+    """An older build predating the heartbeat, or a box with the Verity disabled, must not read
+    as a fault."""
+    c = diagnostics._check_verity_forwarder(run_dir, time.time())
+    assert c["status"] == "info"
