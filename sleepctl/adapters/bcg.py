@@ -135,7 +135,10 @@ class BridgeWearableSource(RealtimeWearableSource):
             from app import bridge
             return bridge.sensor_history_series(self.repo.conn, minutes=minutes)
         except Exception:
-            return {"hr": [], "activity": []}
+            # Same SHAPE as bridge.sensor_history_series' own failure path -- callers read
+            # ``activity_units`` to decide whether an absolute motion threshold is meaningful,
+            # and a missing key vs an explicit None is an easy place for that to go wrong.
+            return {"hr": [], "activity": [], "activity_units": None, "excluded": 0}
 
 
 def synthesize_bcg(fs: float = 100.0, secs: float = 20.0, bpm: float = 60.0,

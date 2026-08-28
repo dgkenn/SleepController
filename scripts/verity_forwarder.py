@@ -771,7 +771,7 @@ async def _pmd_session(client, args) -> bool:
             # This is recoverable and worth recovering: STOP the stale stream, then start it
             # again. Only ever attempted once, and only for this specific code, so a genuinely
             # refused stream still degrades instead of looping.
-            if resp is None and _PMD_LAST_ERROR.get("code") == 6:
+            if resp is None and _PMD_LAST_ERROR.get("code") == pmd.ERROR_ALREADY_IN_STATE:
                 _log(f"PMD: {what} refused as already-running (stale state from an unclean "
                      f"disconnect) -- stopping it and retrying once")
                 await _pmd_command(client, responses, pmd.build_stop_command(meas_type),
@@ -786,7 +786,8 @@ async def _pmd_session(client, args) -> bool:
                 # unclean disconnect, which the retry above already handles. A remedy aimed at the
                 # wrong cause is worse than none -- it sends someone to do the one thing that
                 # cannot help.
-                if meas_type == pmd.MEAS_PPI and _PMD_LAST_ERROR.get("code") != 6:
+                if (meas_type == pmd.MEAS_PPI
+                        and _PMD_LAST_ERROR.get("code") != pmd.ERROR_ALREADY_IN_STATE):
                     # A refused PPI start is one of the two SDK-mode symptoms; say so up front.
                     _log("PMD: " + pmd.SDK_MODE_REMEDY)
                 continue

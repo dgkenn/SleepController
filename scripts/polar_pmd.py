@@ -47,6 +47,7 @@ __all__ = [
     "SETTING_SAMPLE_RATE", "SETTING_RESOLUTION", "SETTING_RANGE", "SETTING_CHANNELS",
     "SETTING_FACTOR",
     "CONTROL_RESPONSE_HEADER", "ERROR_NAMES", "PmdParseError",
+    "ERROR_DEVICE_IN_CHARGER", "ERROR_ALREADY_IN_STATE",
     "build_start_command", "build_stop_command", "parse_control_response",
     "frame_measurement_type", "parse_acc_frame", "parse_ppi_frame",
     "acc_magnitudes_g", "actigraphy_counts", "warmup_state",
@@ -229,6 +230,12 @@ def _setting_id(key) -> int:
 #: forwarder acts on it: holding a BLE connection through charging is what killed the
 #: battery mid-night on 2026-08-06.
 ERROR_DEVICE_IN_CHARGER = 13
+
+#: PMD control-point error meaning the band still believes this stream is RUNNING -- what an
+#: unclean disconnect leaves behind. Named because the forwarder RECOVERS from it (stop, then
+#: start again) rather than degrading: on 2026-08-27 a mid-stream restart cost the accelerometer,
+#: and therefore the best wake signal we have, for an entire night.
+ERROR_ALREADY_IN_STATE = 6
 
 
 def build_start_command(meas_type: int, settings: dict | None = None) -> bytes:
