@@ -335,8 +335,37 @@ def build_night_export(repo, night_date: str) -> dict:
     # drive anything. That gate is the whole reason it ships disabled.
     try:
         from sleepctl.ml.sleep_wake import AUTONOMIC_FEATURE_NAMES, windows_from_ibis
-        rr = bridge.recent_rr_intervals(conn, minutes=24 * 60, max_rows=200000)
-        rr = [(t, v) for t, v in rr] if rr else []
+        # Bounded by THIS night's window, not by "the last 24 hours". The export covers a rolling
+        # 14-night history, so a now-relative query would silently return nothing for every night
+        # but the most recent -- and would have looked like "this night had no IBIs" rather than
+        # like a bug.
+        #
+        # Crossing a convention boundary here, deliberately: `raw_samples.ts` is NAIVE LOCAL and
+        # `rr_intervals.ts` is AWARE UTC (see the timestamp convention at the top of
+        # storage/schema.py). Comparing them directly is the exact mistake that docstring warns
+        # about, so the local bounds are converted before they are used.
+        rr = []
+        if first_ts and last_ts:
+            try:
+                lo_local = datetime.fromisoformat(str(first_ts))
+                hi_local = datetime.fromisoformat(str(last_ts))
+                lo = lo_local.astimezone(timezone.utc).isoformat()
+                hi = hi_local.astimezone(timezone.utc).isoformat()
+            except Exception:
+                lo = hi = None
+            if lo and hi:
+                for r in conn.execute(
+                        "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? AND ts <= ? "
+                        "ORDER BY ts ASC", (lo, hi)).fetchall():
+                    try:
+                        t0 = datetime.fromisoformat(str(r["ts"])).timestamp()
+                        vals = json.loads(r["rr_ms"])
+                    except Exception:
+                        continue
+                    t = t0
+                    for v in vals:
+                        rr.append((t, float(v)))
+                        t += float(v) / 1000.0
         if rr:
             feats, starts = windows_from_ibis(rr)
             keep = set(AUTONOMIC_FEATURE_NAMES)
@@ -354,6 +383,61 @@ def build_night_export(repo, night_date: str) -> dict:
             out["hrv_windows_summary"] = {"n_intervals": 0, "n_windows": 0}
     except Exception as exc:
         out["hrv_windows_error"] = repr(exc)
+
+    # ---- 5c. SLEEP/WAKE DETECTOR in SHADOW MODE ------------------------------------------
+    # The dedicated detector runs here and its verdicts are published, but nothing acts on them.
+    # Building a detector and wiring it to nothing is precisely how `hrv_features` came to exist
+    # unused for months, and turning one loose on the control path before it has been measured
+    # against real nights is the other failure. Shadow mode is the step between: it makes the
+    # comparison against our live staging computable, per night, from the published record.
+    try:
+        from sleepctl.ml.sleep_wake import SleepWakeDetector
+        wins = out.get("hrv_windows") or []
+        if wins:
+            starts = [w["t"] for w in wins]
+            feats = [{k: v for k, v in w.items() if k != "t"} for w in wins]
+            # Align the night's own actigraphy and HR onto those epochs.
+            by_min: dict = {}
+            for smp in out.get("raw_samples") or []:
+                if str(smp.get("controller_state")) in ("idle", "None"):
+                    continue
+                try:
+                    key = int(datetime.fromisoformat(str(smp["ts"])).timestamp() // 60)
+                except Exception:
+                    continue
+                slot = by_min.setdefault(key, {"mv": 0.0, "hr": None, "ours": None})
+                if smp.get("movement") is not None:
+                    slot["mv"] = max(slot["mv"], float(smp["movement"]) * 1000.0)
+                if smp.get("heart_rate") is not None:
+                    slot["hr"] = float(smp["heart_rate"])
+                st = str(smp.get("stage"))
+                if st == "awake":
+                    slot["ours"] = True
+                elif st in ("light", "deep", "rem") and slot["ours"] is None:
+                    slot["ours"] = False
+            counts, hrs, ours = [], [], []
+            for t in starts:
+                slot = by_min.get(int(t // 60)) or {}
+                counts.append(slot.get("mv") or 0.0)
+                hrs.append(slot.get("hr"))
+                ours.append(slot.get("ours"))
+            res = SleepWakeDetector().score_night(feats, counts=counts, hr=hrs)
+            judged = [(r, o) for r, o in zip(res, ours) if o is not None]
+            agree = sum(1 for r, o in judged if r.awake == o)
+            out["sleep_wake_shadow"] = {
+                "n_epochs": len(res),
+                "n_comparable": len(judged),
+                "agreement_with_live_staging": (round(agree / len(judged), 3) if judged else None),
+                "detector_awake": sum(1 for r in res if r.awake),
+                "live_awake": sum(1 for _r, o in judged if o),
+                # Where the detector sees wake and the live path does not. That direction is the
+                # one that matters: it is the under-called WASO the reference algorithms found.
+                "detector_wake_live_sleep": sum(1 for r, o in judged if r.awake and not o),
+                "live_wake_detector_sleep": sum(1 for r, o in judged if o and not r.awake),
+                "autonomic_enabled": SleepWakeDetector.AUTONOMIC_DEFAULT,
+            }
+    except Exception as exc:
+        out["sleep_wake_shadow_error"] = repr(exc)
 
     # ---- 6. in-night STEERING ------------------------------------------------------------
     # Same reasoning as pre-emption above: the steerer's per-tick verdict was already in the

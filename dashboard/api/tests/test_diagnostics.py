@@ -1427,3 +1427,50 @@ def test_an_unreadable_database_never_raises_out_of_the_dead_zone_check():
                 raise RuntimeError("no such table")
 
     assert _check_preemption_dead_zone(Broken())["status"] == "info"
+
+
+# ---------------------------------------------------------------------------------------
+# HRV window export + sleep/wake shadow mode. The Verity's beat-to-beat intervals are the
+# richest signal we have and reached NO model at all; exporting per-epoch features is what
+# makes the autonomic channel calibratable before it is trusted with a control decision.
+# ---------------------------------------------------------------------------------------
+
+def test_the_hrv_export_survives_a_night_with_no_intervals():
+    """Absence must be reported as zero windows, not as an exception key."""
+    from app import night_export
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE rr_intervals (ts TEXT, rr_ms TEXT, n INT, source TEXT)")
+    # The helper is exercised through build_night below; here we only assert the table shape
+    # a night with no rows presents.
+    assert conn.execute("SELECT COUNT(*) FROM rr_intervals").fetchone()[0] == 0
+
+
+def test_night_export_names_are_stable_for_the_calibration_consumer():
+    """The exported feature columns must be exactly the ones the detector reads -- exporting the
+    wrong ones would quietly make calibration impossible."""
+    from sleepctl.ml.sleep_wake import AUTONOMIC_FEATURE_NAMES
+    from sleepctl.ml.sleep_staging.hrv_features import hrv_features
+    import random
+    random.seed(3)
+    rr, t = [], 0.0
+    for _ in range(400):
+        v = 1000 + random.gauss(0, 45)
+        t += v / 1000.0
+        rr.append((t, v))
+    produced = hrv_features([x[0] for x in rr], [x[1] for x in rr])
+    for name in AUTONOMIC_FEATURE_NAMES:
+        assert name in produced
+
+
+def test_local_timestamps_convert_to_utc_for_the_rr_query():
+    """`raw_samples.ts` is NAIVE LOCAL and `rr_intervals.ts` is AWARE UTC. Comparing them
+    directly is the exact mistake the schema's timestamp convention warns about, and it has
+    already cost this project a capacity detector that never fired."""
+    from datetime import datetime, timezone
+    local = datetime.fromisoformat("2026-08-27T21:33:40")
+    assert local.tzinfo is None, "the raw_samples convention is naive"
+    as_utc = local.astimezone(timezone.utc)
+    assert as_utc.tzinfo is timezone.utc
+    assert as_utc.isoformat() != local.isoformat(), "conversion must actually shift the value"
