@@ -254,6 +254,51 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception as exc:
         out["preemption_error"] = repr(exc)
 
+    # ---- 6. in-night STEERING ------------------------------------------------------------
+    # Same reasoning as pre-emption above: the steerer's per-tick verdict was already in the
+    # decision payload but never exported, so "how did steering do?" could only be answered by
+    # REPLAYING the night offline -- and the replay recomputes staging from scratch, which on
+    # 2026-08-27 produced 312 min of REM against the live 69.8 min. Steering decisions are
+    # driven by the deep/REM deficits, so a replay disagreeing that badly about the hypnogram
+    # cannot say anything reliable about the steerer. Read the real verdicts instead.
+    try:
+        srows = conn.execute(
+            "SELECT ts, state, action, log_payload FROM decisions WHERE night_date = ? "
+            "ORDER BY id ASC", (night_date,)).fetchall()
+        maneuvers: Counter = Counter()
+        active = defending = judged = 0
+        first_deep = last = None
+        for r in srows:
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            st = pl.get("steering") or {}
+            if not st:
+                continue
+            if st.get("reason") is not None:
+                judged += 1
+            m = st.get("maneuver")
+            if m:
+                maneuvers[m] += 1
+            if st.get("active"):
+                active += 1
+            if st.get("defending"):
+                defending += 1
+            if first_deep is None and st.get("deep_min_so_far") is not None:
+                first_deep = st.get("deep_min_so_far")
+            last = st
+        out["steering_summary"] = {
+            "n_decisions": len(srows),
+            "n_judged": judged,
+            "maneuvers": dict(maneuvers),
+            "n_acquiring": active,
+            "n_defending": defending,
+            "final": last,
+        }
+    except Exception as exc:
+        out["steering_error"] = repr(exc)
+
     return out
 
 
