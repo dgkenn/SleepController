@@ -21,7 +21,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sleepctl.eval.reference_stagers import compare  # noqa: E402
+from sleepctl.eval.performance import evaluate, format_report  # noqa: E402
+from sleepctl.eval.reference_stagers import (calibrate_scale, cole_kripke,  # noqa: E402
+                                             oakley, sadeh, webster_rescore)
 
 _SLEEP = {"light", "deep", "rem"}
 
@@ -63,6 +65,29 @@ def main() -> int:
         if not any(c > 0 for c in counts):
             print(f"{night.get('night_date')}: no actigraphy -- cannot compare")
             continue
+        # Standardized evaluation (Menghini et al., SLEEP 2021) against each reference. This
+        # replaces the ad-hoc "strong/weak disagreement" counting that used to live here, which
+        # was an informal re-derivation of sensitivity and specificity with the summary-measure
+        # and agreement analyses missing entirely.
+        refs = {
+            "cole_kripke": cole_kripke(counts, scale=calibrate_scale(counts, algorithm=cole_kripke)),
+            "cole_kripke_webster": webster_rescore(
+                cole_kripke(counts, scale=calibrate_scale(counts, algorithm=cole_kripke))),
+            "sadeh": sadeh(counts, scale=calibrate_scale(counts, algorithm=sadeh)),
+            "oakley": oakley(counts, scale=calibrate_scale(counts, algorithm=oakley)),
+        }
+        print(f"\n=== {night.get('night_date')} ===")
+        for name, ref_sleep in refs.items():
+            res = evaluate(ours, ref_sleep)
+            print(format_report(res, label=str(night.get("night_date")), reference=name))
+            ebe = res["epoch_by_epoch"]
+            if ebe.get("n_epochs"):
+                totals[f"{name}_acc"] += ebe["accuracy"]
+                totals[f"{name}_spec"] += (ebe["specificity"] or 0.0)
+                totals[f"{name}_sens"] += (ebe["sensitivity"] or 0.0)
+                totals[f"{name}_kappa"] += (ebe["kappa"] or 0.0)
+                totals[f"{name}_n"] += 1
+        continue
         res = compare(ours, counts)
         if not res.get("n"):
             print(f"{night.get('night_date')}: no overlapping labelled minutes")
@@ -86,6 +111,19 @@ def main() -> int:
         totals["n"] += res["n"]
         totals["ref_disagree"] += res["references_disagree"]
 
+    names = ("cole_kripke", "cole_kripke_webster", "sadeh", "oakley")
+    if any(totals[f"{n}_n"] for n in names):
+        print("\n=== MEAN ACROSS NIGHTS (Menghini framework) ===")
+        print(f"  {'reference':22} {'acc':>6} {'sens':>6} {'spec':>6} {'kappa':>6}")
+        for name in names:
+            k = totals[f"{name}_n"]
+            if not k:
+                continue
+            print(f"  {name:22} {totals[f'{name}_acc']/k:6.3f} {totals[f'{name}_sens']/k:6.3f} "
+                  f"{totals[f'{name}_spec']/k:6.3f} {totals[f'{name}_kappa']/k:6.3f}")
+        print("  sensitivity = detecting SLEEP; specificity = detecting WAKE.")
+        print("  On a mostly-asleep night accuracy is dominated by sensitivity, which is why the")
+        print("  framework reports both -- and why kappa, being chance-corrected, is the honest one.")
     if totals["n"]:
         print(f"\n=== ACROSS ALL NIGHTS ({totals['n']} minutes) ===")
         for name in ("cole_kripke", "cole_kripke_webster", "sadeh", "oakley"):
