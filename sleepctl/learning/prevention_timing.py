@@ -121,6 +121,12 @@ class PreventionTimingReport:
     median_arrival_min: Optional[float] = None
     median_wake_min: Optional[float] = None
     recommended_lead_min: Optional[float] = None
+    #: Timestamp of the MOST RECENT failure in the window. The analysis window is 30 days on
+    #: purpose -- that is the right span for a stable timing/dose split -- but it means a problem
+    #: that was fixed weeks ago keeps producing the same verdict until it ages out. Callers that
+    #: report CURRENT health (the diagnostics battery) need to know whether this is still
+    #: happening; the same hazard the daemon-crash check already guards against.
+    last_failure_ts: Optional[datetime] = None
     by_window: dict = field(default_factory=dict)
 
     @property
@@ -156,6 +162,8 @@ class PreventionTimingReport:
             "median_arrival_min": self.median_arrival_min,
             "median_wake_min": self.median_wake_min,
             "recommended_lead_min": self.recommended_lead_min,
+            "last_failure_ts": (self.last_failure_ts.isoformat()
+                                if self.last_failure_ts else None),
             "by_window": self.by_window,
         }
 
@@ -360,6 +368,11 @@ def analyze(events: Sequence[PreventionEvent]) -> PreventionTimingReport:
 
     n_timing, n_dose = rep.n_timing, rep.n_dose
     frac_timing = n_timing / len(failures) if failures else 0.0
+    try:
+        stamps = [e.ts for e in failures if getattr(e, "ts", None) is not None]
+        rep.last_failure_ts = max(stamps) if stamps else None
+    except Exception:
+        rep.last_failure_ts = None
 
     # A lead only needs raising if timing is actually the binding constraint; recommend enough to
     # cover the measured arrival with a margin, never less than the leads already in use.

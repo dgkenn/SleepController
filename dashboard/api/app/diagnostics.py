@@ -41,6 +41,11 @@ CLOUD_ERROR_WARN_COUNT = 10   # >= this many hits in the tail -> treat as a real
 # modified within this window (or the daemon heartbeat is currently stale) -- otherwise a long-
 # fixed crash would pin the whole diagnosis to DEGRADED forever.
 RECENT_CRASH_WINDOW_S = 15 * 60   # 15 min
+# Pre-emption failures older than this are HISTORY, not a live fault. The learner deliberately
+# analyses 30 days (a stable timing/dose split needs that many events), but the diagnostics
+# battery reports current health -- and a cause that was fixed weeks ago must not keep the whole
+# verdict at DEGRADED until it ages out of the learner's window.
+PREVENTION_RECENT_DAYS = 7.0
 CLOUD_ERROR_PATTERNS = (
     "RequestError", " 504", "Timeout", "timeout", "ConnectionError", "ClientError",
 )
@@ -1056,6 +1061,25 @@ def _check_prevention_timing(repo) -> dict:
         return _check("prevention_timing", "Awakening pre-emption timing", "fail",
                       rep.detail, rep.remedy)
     if rep.verdict == "timing_limited":
+        # The learner's window is 30 days, which is right for a stable timing/dose split but wrong
+        # for CURRENT health: a cause that was fixed weeks ago keeps producing this verdict until
+        # it ages out. The 2026-08 events were dominated by an external Eight Sleep schedule
+        # fighting the setpoint and a stalled thermal loop -- both since resolved -- yet the same
+        # warning kept pinning the whole battery to DEGRADED. Same hazard the daemon-crash check
+        # already guards against with RECENT_CRASH_WINDOW_S: only report a live WARN when the
+        # problem is still happening, and say plainly how long it has been quiet when it is not.
+        stale_days = None
+        if rep.last_failure_ts is not None:
+            try:
+                stale_days = (datetime.now() - rep.last_failure_ts).total_seconds() / 86400.0
+            except Exception:
+                stale_days = None
+        if stale_days is not None and stale_days > PREVENTION_RECENT_DAYS:
+            return _check(
+                "prevention_timing", "Awakening pre-emption timing", "info",
+                f"{rep.detail} — but the most recent of these was {stale_days:.0f} days ago, so "
+                f"this is history rather than a live fault (window is 30 days)",
+                None)
         return _check("prevention_timing", "Awakening pre-emption timing", "warn",
                       rep.detail, rep.remedy)
     if rep.verdict == "insufficient_data":

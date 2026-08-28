@@ -806,3 +806,44 @@ def test_no_forwarder_heartbeat_is_info_not_a_failure(run_dir):
     as a fault."""
     c = diagnostics._check_verity_forwarder(run_dir, time.time())
     assert c["status"] == "info"
+
+
+# ------------------------------- prevention-timing recency (2026-08-27 stale-warning fix)
+def _timing_report(verdict="timing_limited", last_failure_days_ago=1.0):
+    from datetime import datetime, timedelta
+    from sleepctl.learning.prevention_timing import PreventionTimingReport
+    rep = PreventionTimingReport()
+    rep.verdict = verdict
+    rep.detail = "8/11 prevention failures happened BEFORE the bed had moved"
+    rep.remedy = "look at the actuator"
+    rep.last_failure_ts = (datetime.now() - timedelta(days=last_failure_days_ago)
+                           if last_failure_days_ago is not None else None)
+    return rep
+
+
+def test_a_still_happening_pre_emption_problem_still_warns(repo, monkeypatch):
+    import sleepctl.learning.prevention_timing as pt
+    monkeypatch.setattr(pt, "from_repo", lambda *a, **k: _timing_report(last_failure_days_ago=1))
+    c = diagnostics._check_prevention_timing(repo)
+    assert c["status"] == "warn"
+
+
+def test_a_long_resolved_pre_emption_problem_stops_pinning_the_verdict(repo, monkeypatch):
+    """THE stale-warning fix. The learner's window is 30 days -- correct for a stable timing/dose
+    split -- but it meant a cause fixed weeks ago (an external schedule fighting the setpoint, a
+    stalled loop) kept the whole battery at DEGRADED until it aged out."""
+    import sleepctl.learning.prevention_timing as pt
+    monkeypatch.setattr(pt, "from_repo", lambda *a, **k: _timing_report(last_failure_days_ago=21))
+    c = diagnostics._check_prevention_timing(repo)
+    assert c["status"] == "info"
+    assert "history rather than a live fault" in c["detail"]
+    assert c["remedy"] is None
+
+
+def test_an_unknown_failure_age_is_treated_as_live(repo, monkeypatch):
+    """Absent a timestamp we cannot prove it is old, and silently downgrading would hide a real
+    fault -- fail toward reporting it."""
+    import sleepctl.learning.prevention_timing as pt
+    monkeypatch.setattr(pt, "from_repo",
+                        lambda *a, **k: _timing_report(last_failure_days_ago=None))
+    assert diagnostics._check_prevention_timing(repo)["status"] == "warn"
