@@ -1009,3 +1009,87 @@ def test_a_successful_post_is_what_counts_as_a_productive_session():
     except Exception:
         pass
     assert fwd._STATS["posts"] == before, "a failed POST must not count as produced data"
+
+
+# ------------------------------------- discovery hardening (2026-08-28: pairs with phone, not us)
+def test_a_previously_connected_address_is_tried_when_the_scan_finds_nothing(tmp_path, monkeypatch):
+    """THE 2026-08-28 failure. The band paired fine with the Polar Flow app on the phone while
+    our scans saw nothing for 26 hours. A BLE peripheral already connected to another central
+    generally STOPS advertising -- it is invisible to a scan while remaining perfectly healthy and
+    connectable. Refusing to try a known address makes that look identical to a flat battery."""
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+    fwd._remember_address("AA:BB:CC:DD:EE:FF")
+
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0):
+            return []                      # nothing advertising at all
+
+    got = asyncio.run(fwd._discover(_Scanner, None))
+    assert got == "AA:BB:CC:DD:EE:FF"
+
+
+def test_nothing_is_remembered_before_a_successful_connection(tmp_path, monkeypatch):
+    """A cached address must only ever come from a connection that actually opened -- caching a
+    guess would send every future scan-miss at a device that never worked."""
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0):
+            return []
+
+    assert asyncio.run(fwd._discover(_Scanner, None)) is None
+
+
+def test_an_explicit_address_still_short_circuits_discovery(tmp_path, monkeypatch):
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0):
+            raise AssertionError("must not scan when an address is pinned")
+
+    assert asyncio.run(fwd._discover(_Scanner, "11:22:33:44:55:66")) == "11:22:33:44:55:66"
+
+
+def test_the_scan_reports_what_it_actually_saw(tmp_path, monkeypatch):
+    """'no sensor found' cannot distinguish 'the band is off' from 'the band is there and we
+    failed to match it', and those need opposite fixes. Log the candidates."""
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+    logs: list = []
+    monkeypatch.setattr(fwd, "_log", logs.append)
+
+    class _Dev:
+        def __init__(self, name, address):
+            self.name, self.address = name, address
+            self.metadata = {}
+
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0):
+            return [_Dev("SomeTV", "01:02:03:04:05:06"), _Dev(None, "0A:0B:0C:0D:0E:0F")]
+
+    asyncio.run(fwd._discover(_Scanner, None))
+    joined = " ".join(logs)
+    assert "no match among 2 advertising device" in joined
+    assert "SomeTV" in joined
+
+
+def test_remembering_an_address_never_raises_on_an_unwritable_root(monkeypatch):
+    """Runs on the reconnect path, so a filesystem problem must degrade to "no cached address"
+    rather than taking the forwarder down. /dev/null/... cannot be created even as root, unlike
+    a merely-absent path."""
+    from pathlib import Path
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: Path("/dev/null/nope"))
+    fwd._remember_address("AA:BB")           # must not raise
+    assert fwd._recall_address() is None

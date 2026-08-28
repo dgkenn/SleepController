@@ -362,11 +362,36 @@ def _adv_uuids(device) -> list[str]:
         return []
 
 
+
+def _addr_file(root: Path) -> Path:
+    return root / ".run" / "verity.address"
+
+
+def _remember_address(addr: str) -> None:
+    """Persist an address we have actually connected to, so a later scan failure is survivable."""
+    try:
+        f = _addr_file(_repo_root())
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(str(addr), encoding="ascii")
+    except Exception:
+        pass
+
+
+def _recall_address() -> str | None:
+    try:
+        return (_addr_file(_repo_root()).read_text(encoding="ascii").strip() or None)
+    except Exception:
+        return None
+
+
 async def _discover(BleakScanner, address_hint: str | None):
     if address_hint:
         return address_hint
-    _log("scanning for a Polar/BLE heart-rate sensor (10s)...")
-    devices = await BleakScanner.discover(timeout=10.0)
+    # 20s, not 10. Advertising intervals are long, Windows' scanner is bursty, and a band that a
+    # phone keeps grabbing only surfaces in SOME windows -- a short scan turns an intermittently
+    # visible device into a permanently invisible one.
+    _log("scanning for a Polar/BLE heart-rate sensor (20s)...")
+    devices = await BleakScanner.discover(timeout=20.0)
     for d in devices:
         name = (d.name or "").lower()
         if any(h in name for h in _NAME_HINTS):
@@ -377,6 +402,26 @@ async def _discover(BleakScanner, address_hint: str | None):
         if any("180d" in u for u in _adv_uuids(d)):
             _log(f"found HR-service device '{d.name}' at {d.address}")
             return d.address
+
+    # Nothing matched. Say WHAT WAS THERE -- "no sensor found" alone cannot distinguish "the band
+    # is off" from "the band is present but we failed to match it", and those need opposite fixes.
+    seen = [f"{(d.name or '?')}@{d.address}" for d in devices]
+    _log(f"no match among {len(devices)} advertising device(s): "
+         + (", ".join(seen[:12]) if seen else "<none advertising at all>"))
+
+    # LAST RESORT: try an address we have connected to before, even though it is not advertising.
+    #
+    # A BLE peripheral that is already connected to another central generally STOPS advertising,
+    # so it is invisible to a scan while remaining perfectly healthy and connectable -- which is
+    # exactly what a phone running Polar Flow does to it. On Windows a bonded device can often
+    # still be opened directly by address through the OS's cached record, so a scan miss must not
+    # be treated as "no device". Refusing to try is how a band that pairs fine with a phone looks
+    # identical to a flat one.
+    remembered = _recall_address()
+    if remembered:
+        _log(f"scan found nothing; trying the last known address {remembered} directly "
+             f"(a band connected to another app stops advertising but stays connectable)")
+        return remembered
     return None
 
 
@@ -854,6 +899,9 @@ async def _run_once(args, env) -> None:
     # match the mode the band is actually in.
     async with BleakClient(address, winrt={"use_cached_services": False}) as client:
         _log("connected")
+        # Only remembered once a connection actually OPENED, so we never cache a bad guess.
+        # This is what makes the scan-miss fallback above work at all.
+        _remember_address(address)
         await _report_battery(client, args)
         if args.mode in ("pmd", "auto"):
             ok = False
