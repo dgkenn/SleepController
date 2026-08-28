@@ -1,6 +1,8 @@
 """Run every validation layer this project has built, from the PUBLISHED night record.
 
     python scripts/validation_report.py night-2026-08-27.json [more.json ...]
+        [--powerlog CurrentPowerlog.PLSQL]   # iOS screen-ons as objective wake anchors
+        [--anchors anchors.json]             # any other external known-awake timestamps
 
 Three modules existed for this and were reachable from nothing:
 
@@ -64,6 +66,23 @@ def _external_anchors(path: Optional[str]) -> list:
     return [str(x) for x in data]
 
 
+def _powerlog_anchors(powerlog_path: Optional[str], night: dict) -> tuple:
+    """Screen-on anchors from an iOS PowerLog, bounded to this night."""
+    if not powerlog_path:
+        return [], {}
+    try:
+        from sleepctl.eval.ios_powerlog import screen_on_events
+        cap = night.get("sensor_capture") or {}
+        lo = hi = None
+        if cap.get("first_ts") and cap.get("last_ts"):
+            from datetime import datetime as _dt, timezone as _tz
+            lo = _dt.fromisoformat(str(cap["first_ts"])).astimezone(_tz.utc)
+            hi = _dt.fromisoformat(str(cap["last_ts"])).astimezone(_tz.utc)
+        return screen_on_events(powerlog_path, lo=lo, hi=hi)
+    except Exception as exc:
+        return [], {"error": repr(exc)}
+
+
 def _internal_wake_flags(night: dict) -> list:
     """Our OWN wake_event timestamps -- for the internal-consistency check, never for validation."""
     return [s["ts"] for s in night.get("raw_samples") or [] if s.get("wake_event")]
@@ -71,11 +90,16 @@ def _internal_wake_flags(night: dict) -> list:
 
 def main() -> int:
     argv = sys.argv[1:]
-    anchor_path = None
-    if "--anchors" in argv:
-        i = argv.index("--anchors")
-        anchor_path = argv[i + 1] if i + 1 < len(argv) else None
-        argv = argv[:i] + argv[i + 2:]
+    anchor_path = powerlog_path = None
+    for flag in ("--anchors", "--powerlog"):
+        if flag in argv:
+            i = argv.index(flag)
+            val = argv[i + 1] if i + 1 < len(argv) else None
+            argv = argv[:i] + argv[i + 2:]
+            if flag == "--anchors":
+                anchor_path = val
+            else:
+                powerlog_path = val
     paths = argv
     if not paths:
         print(__doc__)
@@ -104,12 +128,18 @@ def main() -> int:
         # independent, and sustained gait is near-certain evidence of being up.
         markers = list(night.get("marker_anchors") or [])
         gaits = list(night.get("gait_anchors") or [])
-        anchors = markers + gaits + _external_anchors(anchor_path)
+        # iOS screen-ons: RETROSPECTIVE and observer-effect-free. The user was checking the
+        # lock-screen clock on nights already recorded, unaware anything was being marked --
+        # which is a stronger position than any prospective instrument can occupy.
+        phone, plog_report = _powerlog_anchors(powerlog_path, night)
+        anchors = markers + gaits + phone + _external_anchors(anchor_path)
         if anchors:
             print(f"  {len(markers)} DECLARED marker gesture(s) -- the strongest anchor: the user "
                   f"said so")
             print(f"  {len(gaits)} gait anchor(s) -- inferred, but from a signal no detector reads")
-            print(f"  {len(anchors) - len(markers) - len(gaits)} from an external file")
+            print(f"  {len(phone)} iPhone screen-on(s) from the PowerLog -- retrospective, and "
+                  f"the user was not aware of being measured")
+            print(f"  {len(anchors) - len(markers) - len(gaits) - len(phone)} from an external file")
             if markers:
                 print("  marker times: " + ", ".join(str(m)[11:19] for m in markers[:12]))
         if not anchors:
