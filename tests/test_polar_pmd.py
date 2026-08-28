@@ -1186,3 +1186,17 @@ def test_the_last_error_code_is_cleared_per_command():
     body = src[src.index("async def _pmd_command"):]
     body = body[:body.index("async def ", 10)]
     assert '_PMD_LAST_ERROR["code"] = None' in body
+
+
+def test_the_sdk_mode_hint_is_not_shown_for_a_stale_stream_refusal(monkeypatch):
+    """A remedy aimed at the wrong cause is worse than none. 'already in state' (code 6) means a
+    stale stream from OUR unclean disconnect, not SDK mode -- telling the user to power-cycle the
+    armband sends them to do the one thing that cannot help."""
+    fwd = _fwd()
+    logs: list = []
+    monkeypatch.setattr(fwd, "_log", logs.append)
+    client = _FakeBleClient(errors={pmd.MEAS_ACC: 6, pmd.MEAS_PPI: 6})
+    _run_pmd_session(client, feed=[], until_posted=False)
+    joined = " ".join(logs).lower()
+    assert "already-running" in joined            # the real cause IS named
+    assert "sdk mode" not in joined               # the misleading remedy is not

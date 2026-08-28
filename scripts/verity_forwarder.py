@@ -780,7 +780,13 @@ async def _pmd_session(client, args) -> bool:
 
             if resp is None:
                 _log(f"PMD: {what} FAILED; continuing without it")
-                if meas_type == pmd.MEAS_PPI:
+                # The SDK-mode hint is only meaningful for an UNEXPLAINED PPI refusal. Printing it
+                # after an "already in state" (code 6) refusal actively misleads: it tells the user
+                # to power-cycle the armband when the real cause is a stale stream from our own
+                # unclean disconnect, which the retry above already handles. A remedy aimed at the
+                # wrong cause is worse than none -- it sends someone to do the one thing that
+                # cannot help.
+                if meas_type == pmd.MEAS_PPI and _PMD_LAST_ERROR.get("code") != 6:
                     # A refused PPI start is one of the two SDK-mode symptoms; say so up front.
                     _log("PMD: " + pmd.SDK_MODE_REMEDY)
                 continue
