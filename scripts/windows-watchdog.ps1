@@ -222,6 +222,25 @@ $script:updateBranchAllowlist = '^[A-Za-z0-9._/-]+$'
 # post-restart smoke test PASSES. Invoke-SmokeTest checks this on FAILURE and rolls back to
 # priorSha -- see Invoke-DeployRollback.
 $script:pendingRollback = $null
+# PERSISTED because a self-update that changes THIS script now restarts the watchdog, and the
+# rollback arming lives in process memory -- a fresh process would come up with no idea a deploy
+# was on probation, silently disarming auto-rollback for exactly the updates that change the
+# supervisor itself. Written when armed, cleared when the smoke test passes or a rollback runs.
+$script:pendingRollbackFile = Join-Path $run "pending-rollback.json"
+function Save-PendingRollback($rb) {
+    try {
+        if ($null -eq $rb) { Remove-Item -Path $script:pendingRollbackFile -Force -ErrorAction SilentlyContinue }
+        else { ($rb | ConvertTo-Json -Depth 4) | Set-Content -Path $script:pendingRollbackFile -Encoding UTF8 }
+    } catch { Log "WARN: could not persist pending rollback: $_" }
+}
+try {
+    if (Test-Path $script:pendingRollbackFile) {
+        $script:pendingRollback = (Get-Content -Path $script:pendingRollbackFile -Raw -Encoding UTF8 | ConvertFrom-Json)
+        if ($script:pendingRollback) {
+            Log "restored a pending deploy rollback for $($script:pendingRollback.priorSha) (watchdog restarted mid-probation)"
+        }
+    }
+} catch { $script:pendingRollback = $null }
 
 function Write-UpdateResult($record) {
     try {
@@ -318,11 +337,28 @@ function Handle-UpdateRequest {
                         Log "self-update: web UI source changed -- requested a production rebuild"
                     }
                 } catch { Log "WARN: web-change detection failed: $_" }
+                # SAME problem, different file: this watchdog's own settings (publish cadences,
+                # Ensure-Verity behaviour, the funnel capture, the BT-reset handler) are read into
+                # $script: variables ONCE at startup. A "restart=all" cycles api/daemon/web but
+                # NOT the watchdog, so a self-update that changed windows-watchdog.ps1 deploys the
+                # FILE while the running process keeps the old behaviour indefinitely -- observed
+                # 2026-08-28: the health interval was cut 10 min -> 3 min, the commit deployed, and
+                # publishes stayed on the old 10-minute cadence because nothing re-read it.
+                # Restart the watchdog itself when its own script changed; Restart-Watchdog spawns
+                # its successor before exiting, and that successor restarts the children anyway.
+                try {
+                    $wdChanged = & git -C $Root diff --name-only $priorSha HEAD -- scripts/windows-watchdog.ps1 2>$null
+                    if ($wdChanged) {
+                        Log "self-update: the watchdog's own script changed -- requesting a watchdog restart so the new settings take effect"
+                        Set-Content -Path $script:restartRequestFile -Value "watchdog" -Encoding ASCII
+                    }
+                } catch { Log "WARN: watchdog-change detection failed: $_" }
             }
             # Arm the rollback safety net. Handle-RestartRequest's "all" case (below, same tick)
             # re-arms the one-shot smoke test, which will check $script:pendingRollback on FAILURE
             # and revert to $priorSha -- see Invoke-DeployRollback.
             $script:pendingRollback = @{ priorSha = $priorSha; branch = $branch }
+            Save-PendingRollback $script:pendingRollback
             $summary = "update to '$branch' succeeded (validate=$validateVerdict) -- restart requested"
             Log "self-update: $summary"
         } else {
@@ -836,6 +872,7 @@ function Invoke-SmokeTest {
         Set-Content -Path $resultPath -Value "SMOKE PASS" -Encoding ASCII
         Log "smoke test: SMOKE PASS"
         $script:pendingRollback = $null   # this deploy is verified good -- nothing to roll back
+        Save-PendingRollback $null
     } else {
         $msg = "SMOKE FAIL: " + ($failures -join "; ")
         Set-Content -Path $resultPath -Value $msg -Encoding ASCII
@@ -855,6 +892,7 @@ function Invoke-SmokeTest {
 function Invoke-DeployRollback {
     $rb = $script:pendingRollback
     $script:pendingRollback = $null
+    Save-PendingRollback $null
     if (-not $rb -or -not $rb.priorSha) {
         Log "CRITICAL: smoke test failed after self-update but no prior commit was captured -- cannot auto-rollback; needs manual attention"
         Write-Alert "smoke test FAILED after self-update; no prior SHA captured -- manual rollback needed"
