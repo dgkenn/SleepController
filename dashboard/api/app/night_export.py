@@ -324,6 +324,37 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception as exc:
         out["preemption_error"] = repr(exc)
 
+    # ---- 5b. HRV FEATURE WINDOWS (the Verity's richest signal) ---------------------------
+    # The armband streams true beat-to-beat PPI and we persist every interval, but until now the
+    # only thing that ever read them was RMSSD and RSA respiration -- the full HRV feature set
+    # reached nothing at all. Topalidis et al. (Sensors 2023;23:9077) hit kappa 0.75 on THIS
+    # sensor from intervals alone, so this is the largest unused signal we have.
+    #
+    # Exported per epoch (not as raw intervals, which would be ~29k rows a night) so the
+    # autonomic sleep/wake channel can be CALIBRATED against real nights before it is allowed to
+    # drive anything. That gate is the whole reason it ships disabled.
+    try:
+        from sleepctl.ml.sleep_wake import AUTONOMIC_FEATURE_NAMES, windows_from_ibis
+        rr = bridge.recent_rr_intervals(conn, minutes=24 * 60, max_rows=200000)
+        rr = [(t, v) for t, v in rr] if rr else []
+        if rr:
+            feats, starts = windows_from_ibis(rr)
+            keep = set(AUTONOMIC_FEATURE_NAMES)
+            out["hrv_windows"] = [
+                {"t": round(float(ts), 1),
+                 **{k: round(float(v), 4) for k, v in f.items() if k in keep}}
+                for ts, f in zip(starts, feats) if f
+            ]
+            out["hrv_windows_summary"] = {
+                "n_intervals": len(rr),
+                "n_windows": len(out["hrv_windows"]),
+                "features": sorted(keep),
+            }
+        else:
+            out["hrv_windows_summary"] = {"n_intervals": 0, "n_windows": 0}
+    except Exception as exc:
+        out["hrv_windows_error"] = repr(exc)
+
     # ---- 6. in-night STEERING ------------------------------------------------------------
     # Same reasoning as pre-emption above: the steerer's per-tick verdict was already in the
     # decision payload but never exported, so "how did steering do?" could only be answered by
