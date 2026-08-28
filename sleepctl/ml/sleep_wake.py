@@ -26,6 +26,51 @@ So this detector fuses three INDEPENDENT channels:
      algorithm, in the modality it was validated for),
   3. **cardiac**   -- heart rate against the night's own sleeping level.
 
+MEASURED CALIBRATION (2026-08-28, nights 2026-08-23/24/27, 1604 epochs)
+----------------------------------------------------------------------
+The promise recorded below -- that this channel stays off "until it has been calibrated against
+real nights" -- has now been kept. ``sleepctl.eval.autonomic_calibration`` scores each feature by
+AUC against Cole-Kripke+Webster on the armband's own counts: a different MODALITY from the
+inter-beat intervals these features come from, so a feature that separates is carrying real
+information rather than echoing its own label.
+
+Two corrections had to land before the numbers meant anything, and both changed the answer:
+
+  * the published nights mix a naive-local clock with an absolute one, so read from anywhere but
+    the box every epoch got someone else's heart rate. Device heart rate and ``hr_from_ibi``
+    disagreed by a mean of 47 bpm; aligned, 3.6.
+  * the nights contained hours of walking-around morning, because nothing could end a session
+    (see ``sleepctl/controller/bed_exit.py``). Left in, ordinary daytime physiology stands in for
+    this sleeper's wake distribution.
+
+    feature        AUC    per-night range   direction held
+    hr_from_ibi   0.688    0.629 - 0.745    3 of 3
+    ibi_sd1_sd2   0.633    0.597 - 0.687    3 of 3
+    ibi_hf_nu     0.579    0.486 - 0.663    2 of 3
+    ibi_lf_hf     0.579    0.486 - 0.663    2 of 3
+    ibi_lf_nu     0.579    0.486 - 0.663    2 of 3
+    ibi_hf        0.429    0.325 - 0.522    1 of 3   (backwards)
+    ibi_rmssd     0.357    0.248 - 0.472    0 of 3   (backwards)
+    ibi_pnn50     0.356    0.251 - 0.453    0 of 3   (backwards)
+
+The three backwards features are the RAW time-domain vagal indices, and the most likely cause is
+the reference rather than the physiology: it scores wake from MOTION, and motion corrupts PPG
+beat detection toward more interval variability -- so its wake epochs are exactly the epochs
+where RMSSD and pNN50 are inflated by artifact. SD1/SD2 is a ratio and largely cancels that,
+which is consistent with it being the one vagal feature that behaves. Three nights against a
+confounded reference is not grounds to rewrite directions the physiology supports, so the weights
+above are unchanged.
+
+As one composite score the channel reaches AUC 0.535 -- one night below 0.5 -- and at its best
+threshold (0.69, not the 0.5 shipped here) it manages kappa 0.066.
+
+THE CONCLUSION, AND WHY THE DEFAULT DOES NOT CHANGE. The channel as configured separates almost
+nothing. The one feature that clearly does is heart rate, and the CARDIAC channel already carries
+heart rate; the features that would have made this INDEPENDENT evidence rather than a second
+opinion on the first are either weak or confounded. Switching it on would add weight, not
+information. Three nights is thin and the measurement re-runs in one command as more accumulate
+(``scripts/calibrate_autonomic.py``); what it does not support is turning this on today.
+
 WHAT THIS IS NOT
 ----------------
 It is NOT a model fitted to polysomnography. Training an IBI-to-PSG classifier needs
@@ -60,7 +105,15 @@ _WAKE_UP_FEATURES = {
 #: Features whose DECREASE indicates wake -- all vagally mediated, and all suppressed by arousal.
 #: Note ``ibi_sd1_sd2`` is SD1/SD2: SD1 is the SHORT-term (vagal) axis of the Poincare ellipse,
 #: so the ratio FALLS on waking. Getting that direction backwards would have scored every
-#: awakening as evidence of sleep.
+#: awakening as evidence of sleep. MEASURED on this sleeper (see MEASURED CALIBRATION in the
+#: module docstring) the direction holds on 3 nights of 3, at AUC 0.633 -- the second strongest
+#: feature here, and the only vagal one whose direction survives contact with real data. Its
+#: raw counterparts ``ibi_rmssd`` and ``ibi_pnn50`` come out backwards, which is most likely the
+#: reference's fault rather than the physiology's: the reference scores wake FROM MOTION, and
+#: motion corrupts PPG beat detection in the direction of more interval variability. SD1/SD2 is
+#: a ratio, so that artifact largely cancels. The weights below are therefore left as the
+#: literature sets them -- three nights against a motion-derived reference is not grounds to
+#: rewrite established directions, and the channel is off regardless.
 _WAKE_DOWN_FEATURES = {
     "ibi_rmssd": 0.8,
     "ibi_pnn50": 0.5,
