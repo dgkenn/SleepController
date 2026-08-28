@@ -82,14 +82,27 @@ class Tunables:
     # learned neutral at 66.9 F the peak moves ~67.9 -> ~68.9 F. The comfort cap is lifted to 3.0
     # so the nudge is no longer pinned exactly AT its own ceiling, leaving the onset learner
     # headroom to explore further if a warmer peak keeps shortening latency.
-    onset_warm_nudge_f: float = 2.0
-    onset_warm_comfort_cap_f: float = 3.0
+    # Raised from 2.0/3.0 on direct user report that the go-to-sleep phase is not warm enough
+    # ("we want it to get much warmer"), against a measured onset latency of 36.3 min versus a
+    # 15 min target. With the corrected neutral of 69.0 F the warm peak moves ~71 F -> ~73 F.
+    # The mechanism this is buying is cutaneous warming -> peripheral vasodilation -> core-temp
+    # drop -> sleepiness (Raymann/Van Someren), and it is a BRIEF opener: the consolidate-cool
+    # phase follows immediately, so this is not the temperature the night is spent at. That
+    # matters for a hot sleeper whose own evidence records warm-end AWAKENINGS at 70-72 F --
+    # those are maintenance temperatures, and induction is deliberately not clamped to the
+    # comfort band for exactly this reason.
+    onset_warm_nudge_f: float = 4.0
+    onset_warm_comfort_cap_f: float = 6.0
     # 3-phase onset induction (cold settle -> brief warm pulse -> consolidate cool). The opener
     # drives the bed genuinely cold to shed a hot sleeper's heat and prime peripheral
     # vasoconstriction, so the brief warm pulse yields a stronger vasodilation contrast (core-temp
     # drop -> sleepiness); it then cools again to consolidate. Durations are minutes-in-bed; on a
     # short night (DAMAGE_CONTROL) both phases are compressed (see induction.py). The really-cold
     # target itself lives on the learnable SetpointProfile as ``onset_cold_settle_f``.
+    # NOTE: `induction_cold_settle_min` is not read anywhere. The cascade in induction.py is
+    # TWO phases (warm nudge -> consolidate cool), not the three this once described. Left in
+    # place rather than deleted because the onset learner's stored rows reference the tunable
+    # name, but it does not influence behaviour -- do not tune it expecting an effect.
     induction_cold_settle_min: int = 12
     induction_warm_pulse_min: int = 10
     onset_cold_settle_temp_f: float = 60.0  # really-cold opener target (seeds the profile)

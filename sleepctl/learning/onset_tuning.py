@@ -155,6 +155,12 @@ def next_cold_settle_f(best_f: float, night_index: int, bounds=COLD_SETTLE_BOUND
     return round(_clamp(best_f + jitter * delta, *bounds), 2)
 
 
+#: A reported onset latency below this is not a measurement, it is an artifact. Bed entry used
+#: to be re-anchored by any daemon restart, which produced latencies of ~1.0 min (and 0.0) on
+#: nights whose real onset latency was over half an hour.
+_MIN_CREDIBLE_ONSET_LATENCY_MIN = 3.0
+
+
 def decide_warm_pulse(records: List[dict], night_index: int, min_nights: int = 8,
                       min_per_arm: int = 3, margin_min: float = 1.5) -> tuple:
     """A/B the optional warm pulse: does the brief warm nudge (from the cold-primed state) get YOU
@@ -165,8 +171,10 @@ def decide_warm_pulse(records: List[dict], night_index: int, min_nights: int = 8
 
     Returns ``(run_pulse: bool, rationale: str)``.
     """
+    # Only CREDIBLE latencies may decide the arm -- see _MIN_CREDIBLE_ONSET_LATENCY_MIN.
     pool = [r for r in records if r.get("onset_latency_min") is not None
-            and r.get("warm_pulse_on") is not None]
+            and r.get("warm_pulse_on") is not None
+            and float(r["onset_latency_min"]) >= _MIN_CREDIBLE_ONSET_LATENCY_MIN]
     on = [float(r["onset_latency_min"]) for r in pool if r.get("warm_pulse_on")]
     off = [float(r["onset_latency_min"]) for r in pool if not r.get("warm_pulse_on")]
     if len(pool) >= min_nights and len(on) >= min_per_arm and len(off) >= min_per_arm:
@@ -178,7 +186,25 @@ def decide_warm_pulse(records: List[dict], night_index: int, min_nights: int = 8
         if mean_on - mean_off >= margin_min:
             return False, (f"skipping the warm pulse is ~{mean_on - mean_off:.0f} min faster "
                            f"(~{mean_off:.0f} vs ~{mean_on:.0f} min)")
-    # Explore: alternate by night so both arms keep getting sampled (lean to the pulse on even nights).
+    # Explore: alternate by night so both arms keep getting sampled (lean to the pulse on even
+    # nights).
+    #
+    # ...but ONLY when the outcome this A/B is judged on is trustworthy. The comparison above
+    # reads `onset_latency_min`, and that value was corrupted for as long as a daemon restart
+    # could re-anchor bed entry: every onset on 2026-08-27 reported ~1.0 min latency (one exactly
+    # 0.0) against a rollup-computed 36.3 min. An A/B fed a broken outcome cannot converge -- it
+    # just alternates forever, which silently removed the warm opener on every odd night, half of
+    # all nights, for a user who had explicitly opted into it and then reported the go-to-sleep
+    # phase was not warm enough.
+    #
+    # So exploration is gated on having enough usable latencies to eventually decide. With too
+    # few, the pulse RUNS: it is the user's opt-in, and defaulting to the thing they chose is
+    # better than withholding it on a coin flip nothing can learn from.
+    usable = [r for r in records if r.get("onset_latency_min") is not None
+              and float(r["onset_latency_min"]) >= _MIN_CREDIBLE_ONSET_LATENCY_MIN]
+    if len(usable) < min_per_arm * 2:
+        return True, ("running the warm pulse: too few credible onset latencies to A/B it yet "
+                      "(a corrupted latency cannot decide this)")
     run = (night_index % 2 == 0)
     return run, "exploring both arms — not enough evidence yet to fix the warm pulse"
 
