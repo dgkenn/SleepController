@@ -1536,3 +1536,48 @@ def test_a_database_without_the_column_returns_no_anchors():
     conn.execute("CREATE TABLE actigraphy (ts TEXT)")
     assert bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00",
                                "2026-08-28T08:00:00+00:00") == []
+
+
+def _marker_repo(rows):
+    """rows: [(iso_ts, marker_or_None)]"""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE actigraphy (ts TEXT, marker INTEGER)")
+    for ts, m in rows:
+        conn.execute("INSERT INTO actigraphy (ts, marker) VALUES (?,?)", (ts, m))
+    return conn
+
+
+def test_marker_gestures_become_anchors():
+    from app import bridge
+    conn = _marker_repo([("2026-08-27T23:10:00+00:00", 1), ("2026-08-28T03:20:00+00:00", 1)])
+    got = bridge.marker_anchors(conn, "2026-08-27T20:00:00+00:00", "2026-08-28T08:00:00+00:00")
+    assert len(got) == 2
+
+
+def test_markers_are_not_collapsed_the_way_gait_is():
+    """The forwarder already enforces a 20 s debounce, so every stored row is a distinct
+    deliberate act -- collapsing further would discard real awakenings the user reported."""
+    from app import bridge
+    rows = [(f"2026-08-27T23:{m:02d}:00+00:00", 1) for m in (10, 11, 12)]
+    got = bridge.marker_anchors(_marker_repo(rows), "2026-08-27T20:00:00+00:00",
+                                "2026-08-28T08:00:00+00:00")
+    assert len(got) == 3
+
+
+def test_non_marker_rows_are_ignored():
+    from app import bridge
+    conn = _marker_repo([("2026-08-27T23:10:00+00:00", None)] * 4)
+    assert bridge.marker_anchors(conn, "2026-08-27T20:00:00+00:00",
+                                 "2026-08-28T08:00:00+00:00") == []
+
+
+def test_a_database_without_the_marker_column_returns_nothing():
+    import sqlite3
+    from app import bridge
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE actigraphy (ts TEXT)")
+    assert bridge.marker_anchors(conn, "2026-08-27T20:00:00+00:00",
+                                 "2026-08-28T08:00:00+00:00") == []

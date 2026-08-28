@@ -401,6 +401,9 @@ def build_night_export(repo, night_date: str) -> dict:
             hi = datetime.fromisoformat(str(last_ts)).astimezone(timezone.utc).isoformat()
             if bridge_mod is not None:
                 out["gait_anchors"] = bridge_mod.gait_anchors(conn, lo, hi)
+                # DECLARED anchors rank above inferred ones -- they are the only evidence that
+                # can settle a disagreement between two inferences.
+                out["marker_anchors"] = bridge_mod.marker_anchors(conn, lo, hi)
     except Exception as exc:
         out["gait_anchors_error"] = repr(exc)
 

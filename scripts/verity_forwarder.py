@@ -684,6 +684,11 @@ async def _pmd_session(client, args) -> bool:
     # is a far better signal than one confident one.
     resp_win = int(args.acc_rate * respiration.DEFAULT_WINDOW_S)
     acc_resp_buf: "deque[float]" = deque(maxlen=resp_win)
+    # Short, separate buffer for the deliberate MARKER GESTURE. It must not share the respiration
+    # window: a 3 s shake inside a multi-minute buffer is diluted below every threshold that
+    # would detect it.
+    marker_buf: "deque[float]" = deque(maxlen=int(args.acc_rate * 4.0))
+    marker_last = {"t": 0.0}
 
     def _on_control(_handle, data: bytearray) -> None:
         try:
@@ -700,6 +705,7 @@ async def _pmd_session(client, args) -> bool:
                 _mags = pmd.acc_magnitudes_g(samples)
                 acc_mags.extend(_mags)
                 acc_resp_buf.extend(_mags)
+                marker_buf.extend(_mags)
                 if len(acc_mags) > acc_cap:
                     del acc_mags[:len(acc_mags) - acc_cap]
             elif mtype == pmd.MEAS_PPI:
@@ -854,6 +860,23 @@ async def _pmd_session(client, args) -> bool:
                 # batch). None whenever it is not confidently measurable -- the same quality
                 # gates the RR path uses, so a movement burst or a flat spectrum yields nothing
                 # rather than a fabricated rate.
+                # DELIBERATE MARKER GESTURE -- the user shaking their arm to declare "I am awake
+                # right now". Every other anchor we have is INFERRED; this one is declared, which
+                # is what the validation layer has never had. Debounced so one shake produces one
+                # marker rather than one per batch.
+                if len(marker_buf) >= int(pmd.MARKER_MIN_BURST_S * args.acc_rate):
+                    try:
+                        mk = pmd.marker_gesture(list(marker_buf), float(args.acc_rate))
+                        if mk.get("marker") and (time.monotonic() - marker_last["t"]) > 20.0:
+                            marker_last["t"] = time.monotonic()
+                            counts["marker"] = True
+                            counts["marker_hz"] = mk.get("freq_hz")
+                            marker_buf.clear()
+                            _log(f"MARKER gesture detected ({mk.get('freq_hz')} Hz) -- "
+                                 f"logging an awake anchor")
+                    except Exception:
+                        pass
+
                 # GAIT, over the rolling window. Every other motion feature we send is an
                 # AMPLITUDE measure, and amplitude cannot separate a big postural turn in bed
                 # from walking across the room -- measured, a turn registers LARGER than a walk.

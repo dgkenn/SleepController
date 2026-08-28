@@ -724,6 +724,84 @@ def locomotion_features(samples_g, fs: float = 52.0) -> dict:
     return out
 
 
+#: Deliberate MARKER GESTURE band, in Hz. A person shaking their arm on purpose oscillates at
+#: roughly 4-7 Hz -- far above gait (1.2-2.8 Hz) and far above any postural movement in bed.
+MARKER_LO_HZ, MARKER_HI_HZ = 3.5, 8.0
+
+#: A marker must be VIGOROUS. This is the threshold that separates a deliberate shake from
+#: physiological tremor, which lives in an overlapping frequency band (4-12 Hz) but at an order
+#: of magnitude less amplitude. Frequency alone would confuse the two; frequency plus amplitude
+#: does not.
+MARKER_MIN_AMPLITUDE_G = 0.25
+
+#: ...and must be rhythmic, not a single lurch. Set at 0.35 after measuring the confounders:
+#: deliberate shakes score 0.75 across the whole 4-7 Hz range, while restless turning -- which is
+#: broadband and occasionally lands a lucky peak in-band -- reached 0.166 and produced a FALSE
+#: MARKER at a lower gate. For an anchor that is the worst available error: a false marker injects
+#: a fabricated "known awake" instant into the ground truth the whole validation rests on, so a
+#: missed marker (the user simply shakes again) is far cheaper than a spurious one.
+MARKER_MIN_CONCENTRATION = 0.35
+
+#: Shortest burst that counts. Long enough to be unmistakably deliberate, short enough to perform
+#: half-asleep without waking yourself further -- which is the whole point of a gesture over a
+#: phone.
+MARKER_MIN_BURST_S = 1.5
+
+
+def marker_gesture(samples_g, fs: float = 52.0) -> dict:
+    """Detect a DELIBERATE arm-shake marker in a window of accelerometer magnitudes.
+
+    This is a user-initiated event marker, the instrument actigraphy research has used for
+    decades -- Philips Actiwatch ships a physical marker button pressed at lights-off and at
+    awakenings. A gesture is better than a phone button for this purpose: no screen, no light,
+    no unlocking, and the act of using a phone at 3 a.m. is itself arousing, which contaminates
+    the very event being marked.
+
+    It is the missing piece for validation. ``eval/wake_anchors`` needs known-awake instants the
+    system did not infer, and everything else we have is inferred. A marker is DECLARED: the user
+    was awake, at a known second, with no recall required and no algorithm in between. Gait
+    anchors only catch trips out of bed; this catches the quiet awakenings that matter most and
+    that no passive signal can see.
+
+    Discrimination rests on frequency AND amplitude together:
+      * gait is 1.2-2.8 Hz -- below the band,
+      * postural turns are single low-frequency excursions -- not rhythmic,
+      * tremor overlaps in frequency (4-12 Hz) but is an order of magnitude weaker -- below the
+        amplitude gate.
+
+    Returns ``{"marker", "freq_hz", "concentration", "amp_g"}``.
+    """
+    mags = [float(m) for m in (samples_g or []) if m is not None]
+    n = len(mags)
+    out = {"marker": False, "freq_hz": None, "concentration": 0.0, "amp_g": 0.0}
+    if fs <= 0 or n < int(MARKER_MIN_BURST_S * fs):
+        out["too_short"] = True
+        return out
+    mean = sum(mags) / n
+    x = [m - mean for m in mags]
+    amp = max(abs(v) for v in x)
+    out["amp_g"] = round(amp, 5)
+    if amp < MARKER_MIN_AMPLITUDE_G:
+        return out
+    step = 0.25
+    band, total = [], 0.0
+    f = 0.5
+    while f <= 12.0 + 1e-9:
+        p = _goertzel_power(x, fs, f)
+        total += p
+        if MARKER_LO_HZ <= f <= MARKER_HI_HZ:
+            band.append((p, f))
+        f += step
+    if not band or total <= 0:
+        return out
+    peak_p, peak_f = max(band)
+    conc = peak_p / total
+    out["freq_hz"] = round(peak_f, 2)
+    out["concentration"] = round(conc, 4)
+    out["marker"] = bool(conc >= MARKER_MIN_CONCENTRATION)
+    return out
+
+
 def actigraphy_counts(samples_g, zcm_threshold: float = ZCM_THRESHOLD_G,
                       round_values: bool = True) -> dict:
     """Actigraphy counts over a batch of accelerometer samples, in g.

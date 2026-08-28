@@ -167,6 +167,10 @@ CREATE TABLE IF NOT EXISTS actigraphy (
     -- reads periodicity, gait is usable as INDEPENDENT evidence of being awake and out of bed:
     -- the objective anchor the validation layer has had no source for.
     gait INTEGER, cadence_hz REAL, gait_conc REAL,
+    -- DELIBERATE marker gesture: the user shook their arm to declare "awake right now". Every
+    -- other anchor is inferred; this one is declared, which is the only kind that can settle a
+    -- disagreement between two inferences.
+    marker INTEGER, marker_hz REAL,
     source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actigraphy_ts ON actigraphy(ts);
@@ -204,6 +208,8 @@ _MIGRATIONS = [
     ("actigraphy", "gait", "INTEGER"),
     ("actigraphy", "cadence_hz", "REAL"),
     ("actigraphy", "gait_conc", "REAL"),
+    ("actigraphy", "marker", "INTEGER"),
+    ("actigraphy", "marker_hz", "REAL"),
     ("actigraphy", "resp_conc", "REAL"),
     ("sensor_samples", "respiratory_rate", "REAL"),
 ]
