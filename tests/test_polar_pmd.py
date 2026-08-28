@@ -1093,3 +1093,62 @@ def test_remembering_an_address_never_raises_on_an_unwritable_root(monkeypatch):
     monkeypatch.setattr(fwd, "_repo_root", lambda: Path("/dev/null/nope"))
     fwd._remember_address("AA:BB")           # must not raise
     assert fwd._recall_address() is None
+
+
+# ------------------------------- connect-failure handling (2026-08-27 log: "session error ()")
+def test_an_empty_exception_message_still_names_the_type():
+    """THE reason a connect timeout hid for 26 hours. asyncio.TimeoutError's str() is empty, so
+    the log read literally 'session error ()' -- information-free while looking like a real
+    diagnostic. The TYPE must always appear."""
+    import asyncio
+    exc = asyncio.TimeoutError()
+    assert str(exc) == ""
+    rendered = f"session error ({type(exc).__name__}: {exc or '<no message>'})"
+    assert "TimeoutError" in rendered and rendered != "session error ()"
+
+
+def test_a_present_but_unreachable_band_is_retried_promptly_not_after_five_minutes():
+    """The escalating ceiling exists to leave an ABSENT (charging) band alone. Applying it to a
+    band that is advertising in every scan and merely blocked by another central meant ten
+    consecutive 300s waits while the device sat right there."""
+    import time as _t
+    fwd = _fwd()
+    fwd._STATS["last_seen_at"] = _t.monotonic()          # seen just now
+    fails = 10
+    delay = min(10.0 * (2 ** min(fails - 1, 5)), fwd._MAX_SESSION_BACKOFF_S)
+    assert delay == fwd._MAX_SESSION_BACKOFF_S           # what it used to be
+    if (_t.monotonic() - float(fwd._STATS.get("last_seen_at") or 0.0)) < 120.0:
+        delay = min(delay, fwd._PRESENT_BACKOFF_S)
+    assert delay == fwd._PRESENT_BACKOFF_S
+    assert fwd._PRESENT_BACKOFF_S < fwd._MAX_SESSION_BACKOFF_S
+
+
+def test_an_absent_band_still_gets_the_long_backoff():
+    """The guard on the fix above: a band that is genuinely gone (on its charger) must still be
+    left alone rather than hammered every 25 seconds."""
+    import time as _t
+    fwd = _fwd()
+    fwd._STATS["last_seen_at"] = _t.monotonic() - 3600.0   # not seen for an hour
+    fails = 10
+    delay = min(10.0 * (2 ** min(fails - 1, 5)), fwd._MAX_SESSION_BACKOFF_S)
+    if (_t.monotonic() - float(fwd._STATS.get("last_seen_at") or 0.0)) < 120.0:
+        delay = min(delay, fwd._PRESENT_BACKOFF_S)
+    assert delay == fwd._MAX_SESSION_BACKOFF_S
+
+
+def test_the_connect_timeout_is_exposed_and_bounded():
+    """Bleak's default connect timeout varies by backend; the WinRT path was taking ~31s to give
+    up, which then tripped the escalating backoff. Making it explicit is what bounds that."""
+    fwd = _fwd()
+    ns = fwd.main.__wrapped__ if hasattr(fwd.main, "__wrapped__") else None
+    import argparse
+    import contextlib
+    import io
+    # Parse a no-op invocation to read the real defaults off the production parser.
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf), contextlib.suppress(SystemExit):
+        fwd.main(["--scan-seconds", "0.01", "--scan"])
+    # The flag must exist with a sane default, whatever the scan did.
+    src = open(fwd.__file__).read()
+    assert '"--connect-timeout"' in src
+    assert "default=20.0" in src

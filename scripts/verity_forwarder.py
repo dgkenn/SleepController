@@ -201,7 +201,15 @@ _RELEASE = {"run": 0, "until": 0.0}
 #: DATA instead, and escalate through qualitatively different recoveries rather than just waiting
 #: longer: try the other transport, then stop trusting the cached address, then ask for the
 #: Bluetooth stack itself to be reset.
-_STATS = {"posts": 0}
+_STATS = {"posts": 0, "last_seen_at": 0.0}
+
+#: Backoff ceiling when the band WAS found this cycle but the connect failed. The escalating
+#: ceiling (_MAX_SESSION_BACKOFF_S) exists to leave a band that is absent/charging alone; applying
+#: it to a band that is sitting right there, advertising, and merely blocked by another central
+#: means up to five minutes of not retrying after the blocker lets go. Observed 2026-08-27: ten
+#: consecutive connect timeouts, each followed by a 300 s wait, while the band was visible in
+#: every single scan.
+_PRESENT_BACKOFF_S = 25.0
 
 #: Consecutive barren sessions before each rung of the ladder.
 _ALT_TRANSPORT_AFTER = 2     # the Verity exposes two independent streams -- try the other one
@@ -889,6 +897,10 @@ async def _run_once(args, env) -> None:
         return
 
     _log(f"connecting to {address} ...")
+    # Distinguish "the band is not here" from "the band is here but the connect is being
+    # refused/blocked". They deserve opposite backoffs: leave an absent (charging) band alone,
+    # but retry a present one promptly -- whatever is holding it can let go at any moment.
+    _STATS["last_seen_at"] = time.monotonic()
     # Do NOT trust Windows' cached GATT services. The Verity exposes different services per
     # mode, and WinRT caches the service list per device -- so after a power-cycle into a
     # different mode the cache can still describe the OLD one. Observed 2026-08-06: a band that
@@ -897,7 +909,11 @@ async def _run_once(args, env) -> None:
     # actigraphy wake signal runs on (6/6 against labelled awakenings, vs 2/6 for HR-only).
     # Forcing rediscovery costs one connection round-trip and makes the mode we actually get
     # match the mode the band is actually in.
-    async with BleakClient(address, winrt={"use_cached_services": False}) as client:
+    # EXPLICIT connect timeout. Bleak's default varies by backend and the WinRT path was taking
+    # ~31s to give up, which then triggered the escalating session backoff -- so one blocked
+    # connect cost five minutes of not even trying again. Fail fast, retry soon.
+    async with BleakClient(address, timeout=float(getattr(args, "connect_timeout", 20.0)),
+                           winrt={"use_cached_services": False}) as client:
         _log("connected")
         # Only remembered once a connection actually OPENED, so we never cache a bad guess.
         # This is what makes the scan-miss fallback above work at all.
@@ -908,7 +924,7 @@ async def _run_once(args, env) -> None:
             try:
                 ok = await _pmd_session(client, args)
             except Exception as exc:
-                _log(f"PMD session error ({exc})")
+                _log(f"PMD session error ({type(exc).__name__}: {exc or '<no message>'})")
             if ok:
                 _log("disconnected")
                 return
@@ -965,8 +981,16 @@ async def _main_async(args, env) -> None:
             fails += 1
             barren += 1
             delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
-            _log(f"session error ({exc}); reconnecting in {delay:.0f}s "
-                 f"(consecutive failures: {fails})")
+            # If we saw the band this cycle, it is present and something transient is in the way.
+            if (time.monotonic() - float(_STATS.get("last_seen_at") or 0.0)) < 120.0:
+                delay = min(delay, _PRESENT_BACKOFF_S)
+            # ALWAYS include the exception TYPE. asyncio.TimeoutError (and several bleak
+            # errors) have an empty str(), so the old "session error ()" was literally
+            # information-free -- it hid a connect timeout for 26 hours while looking like a
+            # logged failure. A diagnostic that cannot distinguish a timeout from a refusal is
+            # worse than none, because it looks like it is telling you something.
+            _log(f"session error ({type(exc).__name__}: {exc or '<no message>'}); "
+                 f"reconnecting in {delay:.0f}s (consecutive failures: {fails})")
             await asyncio.sleep(delay)
 
 
@@ -986,6 +1010,8 @@ def main(argv=None) -> int:
     p.add_argument("--source", default="verity", help="source tag stored with the samples")
     p.add_argument("--batch-seconds", type=float, default=2.0, help="POST cadence")
     p.add_argument("--retry-seconds", type=float, default=10.0, help="reconnect backoff")
+    p.add_argument("--connect-timeout", type=float, default=20.0,
+                   help="seconds to wait for the BLE connect before giving up and retrying")
     p.add_argument("--hr-max-age", type=float, default=_HR_MAX_AGE_S,
                    help="do not forward a heart rate older than this many seconds (a frozen "
                         "reading must never be laundered into the pipeline as live physiology)")
