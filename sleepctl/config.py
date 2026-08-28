@@ -60,6 +60,11 @@ class Tunables:
     min_hold_nights: int = 3  # nights before judging an intervention across nights
     variability_cap_f: float = 3.0  # cap total thermal swing within a window
     wake_window_min: int = 30  # smart-wake window before required wake time
+    # ...and how long AFTER the required wake time the window stays open. Without this bound the
+    # window never closed: `now >= required_wake - wake_window_min` is true for the rest of the
+    # day, WAKE_WINDOW is written to hold "until the user leaves the bed", and a bed exit needs
+    # a Pod presence reading this account never produces. See SleepStateMachine.transition.
+    wake_window_close_min: float = 60.0
     # Post-wake circadian light dose: hold the dawn bulbs bright + the therapy lamp ON for this
     # many minutes AFTER you've surfaced, then stand them down. Dawn-simulation trials hold light
     # for ~20 min past wake to lock in alertness (Gabel 2014; SAD light-box dosing 30–60 min).
@@ -309,6 +314,28 @@ class Tunables:
     wearable_bed_entry_hr_lo: float = 30.0     # implausible below this => not a worn sensor
     wearable_bed_entry_hr_hi: float = 120.0    # implausible above this for lying down
     wearable_bed_entry_min_hr_range: float = 2.0  # HR must MOVE this much across the window
+
+    # --- BED EXIT on wearable evidence (sleepctl/controller/bed_exit.py) -----------------
+    # The mirror image of wearable bed ENTRY above, and it was missing entirely: `arousal.py`
+    # can only reach OUT_OF_BED via `presence is False`, which on an account without an
+    # Autopilot membership never happens. So sessions could start on wearable evidence but only
+    # ever end on a deadline. Measured on the published nights: 2026-08-27 stayed in
+    # induction/maintenance until 11:21 with 276 ticks above 95 bpm, and 2026-08-25 spent its
+    # ENTIRE active span in daytime, last tick 18:37 -- hours of conditioning an empty bed, and
+    # a morning of walking-around physiology folded into every statistic computed for the night.
+    bed_exit_window_min: float = 10.0          # trailing window graded for "up and about"
+    bed_exit_persist_min: float = 5.0          # evidence must hold this long before acting
+    bed_exit_hr_only_persist_min: float = 15.0  # longer hold when heart rate is the only channel
+    bed_exit_hr_excess_bpm: float = 18.0       # bpm above THIS night's lying baseline
+    bed_exit_hr_ceiling: float = 95.0          # sustained above this is nobody asleep
+    bed_exit_motion_threshold: float = 0.25    # movement index counted as "actually moving"
+    bed_exit_active_fraction: float = 0.6      # share of the window moving => up, not turning
+    bed_exit_ends_session: bool = True         # act on it, rather than only reporting it
+    # Entry is a different question: someone who just lay down still has a walked-up heart rate
+    # but IS lying still, so stillness is the gate and the ceiling sits far below the 120 bpm
+    # that let a morning of walking around open a brand-new "night" every day.
+    bed_entry_max_active_fraction: float = 0.4
+    bed_entry_hr_ceiling: float = 95.0
     # Learned wearable stager (sleepctl/ml/sleep_staging, trained on PhysioNet sleep-accel). Preferred
     # over the heuristic above when its weights are bundled and enough HR history exists; falls back
     # to the heuristic otherwise. Confidence capped below a real Pod stage (staging from a wrist HR

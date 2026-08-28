@@ -41,11 +41,25 @@ class SleepStateMachine:
         prev = self.state
         s = self.state
         wake_window = timedelta(minutes=self.cfg.tunables.wake_window_min)
+        # The window has to CLOSE. Without an upper bound `now >= required_wake - window` stays
+        # true for the whole rest of the day, and WAKE_WINDOW below is written to "remain until
+        # the user leaves the bed" -- where leaving the bed means `presence is False`, which on
+        # an account with no Autopilot membership never happens. Between them that made
+        # WAKE_WINDOW a terminal state escapable only by restarting the daemon, with the
+        # stale-data guard, the data-quality gate and the abandoned-session timeout all
+        # suppressed the entire time, because every one of them stands down inside the window.
+        # Measured: 2026-08-25 sat in WAKE_RECOVERY from 12:00 to 18:37 -- 6.6 hours, 786 ticks,
+        # zero heart rate, zero movement, commanding the bed throughout.
+        close_after = timedelta(minutes=float(
+            getattr(self.cfg.tunables, "wake_window_close_min", 60.0)))
         in_wake_window = (
             required_wake_time is not None
             and now >= (required_wake_time - wake_window)
+            and now <= (required_wake_time + close_after)
         )
         past_wake = required_wake_time is not None and now >= required_wake_time
+        window_closed = (required_wake_time is not None
+                         and now > required_wake_time + close_after)
 
         # Left the bed (after wake time) -> IDLE.
         if frame.presence is False and (past_wake or s is ControllerState.WAKE_WINDOW):
@@ -110,9 +124,20 @@ class SleepStateMachine:
                         ControllerState.MAINTENANCE,
                         "physiology re-stabilized",
                     )
+                elif window_closed:
+                    # Recovery needs `_is_asleep`, which needs a stage, which needs a feed. With
+                    # no feed the stable streak can never build and this state has no exit at
+                    # all -- the 2026-08-25 failure exactly.
+                    self.state, self.reason = (ControllerState.IDLE,
+                                               "wake window closed while recovering")
 
         elif s is ControllerState.WAKE_WINDOW:
-            pass  # remain until the user leaves the bed
+            # Remain until the user leaves the bed -- or until the window itself expires. The
+            # bed-exit branch at the top of this method needs `presence is False` to fire, so on
+            # this hardware the expiry is the ONLY exit that exists.
+            if window_closed:
+                self.state, self.reason = (ControllerState.IDLE,
+                                           "wake window closed without a bed exit")
 
         if self.state is prev and self.reason == "init":
             self.reason = "hold state"

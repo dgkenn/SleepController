@@ -18,6 +18,7 @@ from sleepctl.controller.guardrail import DecisionGuardrail, GuardrailAssessment
 from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
 from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
+from sleepctl.controller.bed_exit import BedExitDetector
 from sleepctl.controller.precursor import PrecursorDetector
 from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
@@ -47,6 +48,13 @@ class SleepController:
         self.wake_detector = WakeDetector()
         self.onset_detector = SleepOnsetDetector(cfg)
         self.arousal_detector = ArousalDetector(cfg)
+        # The counterpart to `_wearable_bed_entry`: on an account where presence is
+        # permanently None, nothing could ever END a session on evidence.
+        self.bed_exit_detector = BedExitDetector()
+        self.last_bed_exit = None
+        self.last_bed_entry_block = None
+        self.bed_exit_events: list = []
+        self._recovered_physio_at = None
         self.precursor_detector = PrecursorDetector(cfg)
         # Proactive sleep-maintenance: a learned WakeProfile can be attached by the loop.
         self.wake_risk_assessor = WakeRiskAssessor(cfg)
@@ -238,6 +246,22 @@ class SleepController:
             return
         self._recovered_bed_entry = ts
 
+    def restore_last_physio(self, ts: Optional[datetime]) -> None:
+        """Seed the abandoned-session clock from persisted data, for use after a daemon restart.
+
+        ``session_abandon_min`` ends a session that has had no physiology for an hour, but the
+        clock it measures against lives in this process. This box auto-deploys and restarts the
+        daemon by design, so on a day with frequent deploys the hour could never elapse -- and
+        2026-08-25 sat in WAKE_RECOVERY from 12:00 to 18:37 with zero heart rate and zero
+        movement, 786 ticks of commanding the bed for nobody.
+
+        Like ``restore_bed_entry``, this only ever fills a gap: it is consumed on the first tick
+        that finds no physiology and is discarded the moment a real reading arrives.
+        """
+        if ts is None or getattr(self, "_last_physio_at", None) is not None:
+            return
+        self._recovered_physio_at = ts
+
     def _hold_stage(self, est, cfg):
         """Hysteresis on the ESTIMATED stage: a new sleep stage must persist before it is adopted.
 
@@ -394,7 +418,23 @@ class SleepController:
             if not all(lo <= h <= hi for h in hrs):
                 return False
             # A live worn sensor varies beat to beat; a frozen/stale reading does not.
-            return (max(hrs) - min(hrs)) >= min_range
+            if (max(hrs) - min(hrs)) < min_range:
+                return False
+            # ...and a worn sensor on someone WALKING AROUND also varies beat to beat, at a
+            # heart rate the 120 bpm ceiling above happily admits. That is how 2026-08-27 opened
+            # a brand-new "night" at about 06:00 and ran induction/maintenance until 11:21 with
+            # a median heart rate of 102-122 bpm by local hour. Someone getting into bed is
+            # LYING STILL, whatever their heart rate is doing on the way down.
+            # Tolerate a controller built without __init__ (the pure-helper style used by the
+            # bed-entry tests): a missing detector must fall back to a fresh one, never to the
+            # broad `except` below, which would silently answer "not in bed" for every caller.
+            detector = getattr(self, "bed_exit_detector", None) or BedExitDetector()
+            blocked = detector.blocks_entry(frame, recent, cfg)
+            if blocked:
+                self.last_bed_entry_block = blocked
+                return False
+            self.last_bed_entry_block = None
+            return True
         except Exception:
             return False
 
@@ -432,7 +472,14 @@ class SleepController:
         wake_window_open = False
         if required_wake is not None:
             lead_min = float(getattr(self.wake_orch.cfg, "window_min", 30) or 30)
-            wake_window_open = now >= required_wake - timedelta(minutes=lead_min)
+            # Bounded at BOTH ends, for the same reason the state machine's own window is (see
+            # SleepStateMachine.transition). Every safety rule below stands down while this flag
+            # is set -- the stale-data guard, the data-quality hold, the abandoned-session
+            # timeout, the bed-exit check -- so an open-ended window disables the controller's
+            # entire safety layer for the rest of the day.
+            close_min = float(getattr(cfg.tunables, "wake_window_close_min", 60.0))
+            wake_window_open = (required_wake - timedelta(minutes=lead_min)
+                                <= now <= required_wake + timedelta(minutes=close_min))
 
         # --- abandoned-session timeout --------------------------------------------------------
         # Must run BEFORE the stale guard below, which returns early and freezes the state
@@ -441,8 +488,20 @@ class SleepController:
         # (onset needs staging, staging needs a feed) and has no evidence anyone is in bed should
         # end, not persist. Never fires inside the wake window (the deadline outranks every
         # data-quality rule) and never contradicts a Pod that positively reports presence.
-        if frame.heart_rate is not None or getattr(self, "_last_physio_at", None) is None:
+        # `_last_physio_at` is process-local, and this box auto-deploys and restarts the daemon
+        # by design -- so without a recovered value every restart resets the abandon clock to
+        # zero and a session that has been dead for hours looks a minute old. That is the same
+        # failure already fixed for `_bed_entry_time` (see `restore_bed_entry`), and it is why
+        # `restore_last_physio` exists: on a development day with frequent deploys the 60-minute
+        # timeout can never elapse.
+        if frame.heart_rate is not None:
             self._last_physio_at = now
+            self._recovered_physio_at = None
+        elif getattr(self, "_last_physio_at", None) is None:
+            # First tick of this process with no physiology in hand: fall back to the persisted
+            # value if the caller supplied one, and only to `now` if it did not.
+            self._last_physio_at = self._recovered_physio_at or now
+            self._recovered_physio_at = None
         abandon_min = float(getattr(cfg.tunables, "session_abandon_min", 60.0) or 0.0)
         if (abandon_min > 0
                 and self.sm.state is not ControllerState.IDLE
@@ -461,6 +520,45 @@ class SleepController:
                     self.onset_detector.reset()
                 except Exception:
                     pass
+
+        # --- BED EXIT on wearable evidence -----------------------------------------------
+        # The abandon rule above only fires when the physiology STOPS. It cannot see the other
+        # way a session outlives the night: the band is still worn, still streaming, and the
+        # person wearing it is making breakfast. `arousal.py` grades that OUT_OF_BED, but only
+        # from `presence is False`, which on this account is never. So this is the only thing
+        # in the system that can end a session because the sleeper got up.
+        try:
+            # Feed the lying baseline only from ticks we believe are ASLEEP, so the ticks being
+            # judged can never raise the bar they are judged against.
+            if (self.sm.state is ControllerState.MAINTENANCE
+                    and frame.stage not in (SleepStage.AWAKE, SleepStage.UNKNOWN)):
+                self.bed_exit_detector.observe_sleeping(frame.heart_rate)
+            bed_exit = self.bed_exit_detector.assess(frame, recent, cfg, now)
+            self.last_bed_exit = bed_exit
+            if (bed_exit.out_of_bed
+                    and bool(getattr(cfg.tunables, "bed_exit_ends_session", True))
+                    and self.sm.state is not ControllerState.IDLE
+                    # The wake deadline outranks every other rule, and a Pod that positively
+                    # reports presence outranks an inference drawn from a wristband.
+                    and not wake_window_open
+                    and frame.presence is not True):
+                self.sm.state = ControllerState.IDLE
+                self.sm.reason = ("bed exit: " + ", ".join(bed_exit.reasons)
+                                  if bed_exit.reasons else "bed exit")
+                self._bed_entry_time = None
+                self._sleep_onset_time = None
+                self._cold_since = None
+                self._cold_relief_f = 0.0
+                self.bed_exit_events.append({
+                    "ts": now.isoformat(), **bed_exit.to_dict()})
+                try:
+                    self.onset_detector.reset()
+                    self.bed_exit_detector.reset()
+                except Exception:
+                    pass
+        except Exception:
+            # A detector fault must never take the control loop down with it.
+            pass
 
         if frame.is_stale(cfg.tunables.stale_data_seconds) and not wake_window_open:
             level = self.thermal.to_level(self._last_target_f)
@@ -1393,6 +1491,12 @@ class SleepController:
             "minutes_in_bed": round(minutes_in_bed, 1),
             "data_quality": dq.to_dict() if dq is not None else None,
             "guardrail": gr.to_dict() if gr is not None else None,
+            # Published every tick, not just when it fires: the interesting question is how
+            # close the detector runs to its threshold on ordinary restless nights, and that is
+            # unanswerable from events alone.
+            "bed_exit": (self.last_bed_exit.to_dict()
+                         if getattr(self, "last_bed_exit", None) is not None else None),
+            "bed_entry_blocked": getattr(self, "last_bed_entry_block", None),
         }
         return Decision(
             timestamp=now,

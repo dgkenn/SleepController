@@ -76,6 +76,19 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception:
         bridge_mod = None
     out = {"schema": SCHEMA, "night_date": night_date, "generated_utc": _iso(None)}
+    # THE TWO CLOCKS IN THIS FILE, AND WHY THE OFFSET HAS TO SHIP WITH THEM.
+    # `raw_samples.ts` is a NAIVE LOCAL string and `hrv_windows[].t` is absolute epoch seconds
+    # (see the convention at the top of storage/schema.py). On the box those reconcile for free,
+    # because Python resolves a naive timestamp against the system clock and the box IS in the
+    # recording timezone. Anywhere else -- a UTC container reading this file, which is the entire
+    # point of publishing it -- the naive read is silently off by the whole UTC offset and every
+    # epoch gets someone else's heart rate. Read that way, 2026-08-27 reported a mean SLEEPING
+    # heart rate of 104 bpm against 69 bpm awake, which is the only thing that gave it away.
+    try:
+        out["local_utc_offset_s"] = int(
+            datetime.now().astimezone().utcoffset().total_seconds())
+    except Exception:
+        pass
 
     # ---- 1. raw samples (the full sensor time series) ------------------------------------
     try:
@@ -461,6 +474,46 @@ def build_night_export(repo, night_date: str) -> dict:
             }
     except Exception as exc:
         out["sleep_wake_shadow_error"] = repr(exc)
+
+    # ---- 5d. BED EXIT --------------------------------------------------------------------
+    # Published every tick, not only when it fires. The question worth answering from a night is
+    # how CLOSE the detector ran to its threshold during ordinary restless hours -- a detector
+    # that only reports its own firings can never be shown to be safe, only to have acted.
+    try:
+        brows = conn.execute(
+            "SELECT ts, log_payload FROM decisions WHERE night_date = ? ORDER BY id ASC",
+            (night_date,)).fetchall()
+        events, judged, near = [], 0, 0
+        max_conf = 0.0
+        blocked: Counter = Counter()
+        for r in brows:
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            why = pl.get("bed_entry_blocked")
+            if why:
+                blocked[str(why)] += 1
+            be = pl.get("bed_exit")
+            if not be:
+                continue
+            judged += 1
+            conf = float(be.get("confidence") or 0.0)
+            max_conf = max(max_conf, conf)
+            if conf > 0:
+                near += 1
+            if be.get("out_of_bed"):
+                events.append({"ts": str(r["ts"]), **be})
+        out["bed_exit_events"] = events
+        out["bed_exit_summary"] = {
+            "ticks_judged": judged,
+            "ticks_with_any_evidence": near,
+            "max_confidence": round(max_conf, 3),
+            "exits": len(events),
+            "entries_blocked": dict(blocked),
+        }
+    except Exception as exc:
+        out["bed_exit_error"] = repr(exc)
 
     # ---- 6. in-night STEERING ------------------------------------------------------------
     # Same reasoning as pre-emption above: the steerer's per-tick verdict was already in the

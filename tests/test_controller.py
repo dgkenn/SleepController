@@ -1,11 +1,14 @@
 
 
 # ------------------------------------------- wearable bed-entry evidence (2026-08-25 audit)
-def _wb_frame(hr, presence=None):
+def _wb_frame(hr, presence=None, movement=None):
     from sleepctl.models import SensorFrame
     f = SensorFrame.__new__(SensorFrame)
     f.heart_rate = hr
     f.presence = presence
+    # Bed entry now also asks whether the candidate is LYING STILL -- see
+    # sleepctl/controller/bed_exit.py. None means "no actigraphy", which must not block entry.
+    f.movement = movement
     return f
 
 

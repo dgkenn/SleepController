@@ -498,6 +498,63 @@ def _check_maintenance_reached(repo) -> dict:
                   f"prevention and steering were able to run", None)
 
 
+#: A session longer than this is not a night. The longest genuine span in the published record
+#: is 8.7 hours (2026-08-23); the phantom ones ran 11.0, 13.8 and 14.8.
+_MAX_PLAUSIBLE_SESSION_H = 11.0
+
+
+def _check_session_outlived_the_night(repo) -> dict:
+    """Did a session keep commanding the bed after the sleeper got up?
+
+    Three separate defects let this happen and none of them showed up in any other check,
+    because from the inside a phantom session looks exactly like a real one:
+
+      * nothing could END a session on wearable evidence -- ``arousal.py`` reaches OUT_OF_BED
+        only via ``presence is False``, which this account never reports,
+      * WAKE_WINDOW had no upper bound and no exit, making it terminal,
+      * the abandoned-session clock lived in process memory, so a redeploy reset it.
+
+    Measured before the fixes: 2026-08-25 held WAKE_RECOVERY from 12:00 to 18:37 on 786 ticks
+    with no heart rate at all, and 2026-08-27 ran induction/maintenance to 11:21 through a
+    morning at 102-124 bpm. This check is how a regression gets noticed the next morning rather
+    than three weeks later.
+    """
+    try:
+        rows = repo.conn.execute(
+            "SELECT night_date, MIN(ts), MAX(ts), COUNT(*) FROM raw_samples "
+            "WHERE controller_state IS NOT NULL AND controller_state != 'idle' "
+            "AND night_date >= date('now','-7 day') GROUP BY night_date "
+            "ORDER BY night_date DESC").fetchall()
+    except Exception as exc:
+        return _check("session_span", "Session ended when you got up", "info",
+                      f"not readable ({exc!r})", None)
+    if not rows:
+        return _check("session_span", "Session ended when you got up", "info",
+                      "no session nights in the last 7 days", None)
+    from datetime import datetime as _dt
+    long_nights = []
+    for night, lo, hi, _n in rows:
+        try:
+            hours = (_dt.fromisoformat(str(hi)) - _dt.fromisoformat(str(lo))).total_seconds() / 3600.0
+        except Exception:
+            continue
+        if hours > _MAX_PLAUSIBLE_SESSION_H:
+            long_nights.append((str(night), hours, str(hi)[11:16]))
+    if not long_nights:
+        return _check("session_span", "Session ended when you got up", "ok",
+                      f"all {len(rows)} recent session(s) ended within "
+                      f"{_MAX_PLAUSIBLE_SESSION_H:.0f}h of starting", None)
+    worst = max(long_nights, key=lambda x: x[1])
+    detail = ", ".join(f"{d} {h:.1f}h (last tick {t})" for d, h, t in long_nights[:4])
+    return _check(
+        "session_span", "Session ended when you got up", "warn",
+        f"{len(long_nights)} of {len(rows)} recent session(s) ran longer than "
+        f"{_MAX_PLAUSIBLE_SESSION_H:.0f}h -- {detail}. The bed was being conditioned for "
+        f"nobody, and every statistic for {worst[0]} includes waking daytime physiology",
+        "check the bed-exit detector (sleepctl/controller/bed_exit.py), the wake-window close "
+        "(wake_window_close_min) and session_abandon_min")
+
+
 def _check_preemption_ran(repo) -> dict:
     """Did awakening PRE-EMPTION actually fire on the most recent night?
 
@@ -1663,6 +1720,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_device_level_glitches(repo))
     add("maintenance_reached", "Sleep maintenance reached",
         lambda: _check_maintenance_reached(repo))
+    add("session_span", "Session ended when you got up",
+        lambda: _check_session_outlived_the_night(repo))
     add("preemption_ran", "Awakening pre-emption", lambda: _check_preemption_ran(repo))
     add("comfort_band", "Comfort-band pinning", lambda: _check_comfort_band_pinning(repo))
     add("preemption_dead_zone", "Pre-emption dead zone",

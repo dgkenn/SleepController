@@ -418,6 +418,14 @@ class LiveDashboardDaemon:
                 controller.restore_bed_entry(self._recover_bed_entry())
             except Exception as exc:
                 self._skip("bed-entry recovery", exc)
+            # Same reasoning, different clock: the abandoned-session timeout measures an hour
+            # without physiology, and a restart used to reset that hour to zero. On a day of
+            # frequent deploys it could therefore never elapse -- which is how 2026-08-25 held
+            # WAKE_RECOVERY from 12:00 to 18:37 on 786 ticks with no heart rate at all.
+            try:
+                controller.restore_last_physio(self._recover_last_physio())
+            except Exception as exc:
+                self._skip("physiology-clock recovery", exc)
             # Personal comfort mapping → the controller's neutral is what YOU feel neutral, not the
             # device's water-scale default.
             # One-time, version-controlled correction of a band its own evidence refutes -- see
@@ -948,6 +956,23 @@ class LiveDashboardDaemon:
             "SELECT MIN(ts) FROM raw_samples WHERE night_date = ? "
             "AND controller_state IS NOT NULL AND controller_state != 'idle'",
             (night,)).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return _dt.fromisoformat(str(row[0]))
+        except Exception:
+            return None
+
+    def _recover_last_physio(self):
+        """Timestamp of the most recent sample that actually carried physiology.
+
+        Feeds ``SleepController.restore_last_physio`` so the abandoned-session timeout survives
+        a restart. Deliberately NOT restricted to tonight: the whole point is to recognise a
+        session whose feed died long ago, and a night boundary would hide exactly that case.
+        """
+        from datetime import datetime as _dt
+        row = self.repo.conn.execute(
+            "SELECT MAX(ts) FROM raw_samples WHERE heart_rate IS NOT NULL").fetchone()
         if not row or not row[0]:
             return None
         try:
