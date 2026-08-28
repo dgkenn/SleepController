@@ -463,6 +463,14 @@ class HRBody(BaseModel):
     # {"pim":..,"zcm":..,"mad":..,"std":..,"pmax":..,"n":..,"fs":..}. Same definitions as the
     # training-set reduction, so unit-comparable with training data.
     acc: dict | None = None
+    # Wearable battery percent. MUST be declared here: the endpoint does
+    # ``body.model_dump(exclude_none=True)``, so any field absent from this model is silently
+    # DROPPED before services.ingest_hr ever sees it. The forwarder has been POSTing
+    # ``battery_pct`` since it learned to read the characteristic, ingest_hr has always had code
+    # to store it, and the diagnostic has always had a check to report it -- but the value never
+    # crossed this boundary, so "no battery reading yet" was permanent. That check is the whole
+    # safety net against the 2026-08-06 failure where the band died flat at 00:01 mid-sleep.
+    battery_pct: float | None = None
 
 
 @app.post("/hr/ingest")

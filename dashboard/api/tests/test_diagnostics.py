@@ -847,3 +847,38 @@ def test_an_unknown_failure_age_is_treated_as_live(repo, monkeypatch):
     monkeypatch.setattr(pt, "from_repo",
                         lambda *a, **k: _timing_report(last_failure_days_ago=None))
     assert diagnostics._check_prevention_timing(repo)["status"] == "warn"
+
+
+# ------------------------------- wearable battery end-to-end (2026-08-28 silent-drop bug)
+def test_a_battery_only_post_actually_reaches_storage(auth_client):
+    """THE bug. HRBody had no battery_pct field, and the endpoint does
+    model_dump(exclude_none=True) -- so the forwarder's battery POST was silently DROPPED at the
+    API boundary. The forwarder sent it, ingest_hr could store it, the diagnostic could report
+    it, and yet "no battery reading yet" was permanent, disarming the only guard against the
+    band dying flat mid-sleep."""
+    from app import services
+    from app.db import get_repo
+
+    r = auth_client.post("/hr/ingest", json={"source": "verity", "battery_pct": 66})
+    assert r.status_code == 200, r.text
+    assert r.json().get("battery_pct") == 66
+
+    repo = get_repo()
+    try:
+        b = services.wearable_battery(repo)
+    finally:
+        repo.close()
+    assert b.get("pct") == 66
+
+
+def test_a_low_battery_is_flagged_low(auth_client):
+    from app import services
+    from app.db import get_repo
+
+    auth_client.post("/hr/ingest", json={"source": "verity", "battery_pct": 12})
+    repo = get_repo()
+    try:
+        b = services.wearable_battery(repo)
+    finally:
+        repo.close()
+    assert b.get("pct") == 12 and b.get("low") is True
