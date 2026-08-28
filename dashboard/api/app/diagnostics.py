@@ -25,12 +25,16 @@ with fake heartbeat/log files.
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import time
 from datetime import datetime, timedelta, timezone
 
 # ------------------------------------------------------------------ thresholds / constants
+#: Mirrors AppConfig.tunables.comfort_clamp_margin_f, which widens the personal comfort band on
+#: BOTH sides before clamping. Kept here so this module stays import-light.
+COMFORT_CLAMP_MARGIN_F = 0.5
 DAEMON_HEARTBEAT_STALE_S = 90     # daemon writes .run/daemon.heartbeat roughly every ~2s
 WATCHDOG_HEARTBEAT_STALE_S = 60   # watchdog writes .run/watchdog.heartbeat roughly every ~15s
 LOG_SIZE_WARN_BYTES = 50 * 1024 * 1024  # 50MB — a runaway/looping log
@@ -450,8 +454,11 @@ def _check_maintenance_reached(repo) -> dict:
     try:
         rows = repo.conn.execute(
             "SELECT night_date, controller_state, COUNT(*) FROM raw_samples "
-            "WHERE night_date IS NOT NULL AND night_date >= date('now', '-7 days') "
-            "GROUP BY night_date, controller_state").fetchall()
+            "WHERE night_date IS NOT NULL AND night_date >= ? "
+            "GROUP BY night_date, controller_state",
+            # LOCAL date, for the same reason as above: date('now') is UTC and would shift the
+            # seven-day boundary by the UTC offset, silently dropping or adding a night.
+            ((datetime.now() - timedelta(days=7)).date().isoformat(),)).fetchall()
     except Exception as exc:
         return _check("maintenance_reached", "Sleep maintenance reached", "info",
                       f"not readable ({exc!r})", None)
@@ -486,7 +493,153 @@ def _check_maintenance_reached(repo) -> dict:
                   f"prevention and steering were able to run", None)
 
 
-def _check_bed_temperature(repo) -> dict:
+def _check_preemption_ran(repo) -> dict:
+    """Did awakening PRE-EMPTION actually fire on the most recent night?
+
+    Detection and prevention are different questions, and only the second one matters to a
+    person who keeps waking up. The ``interventions`` ledger records a narrower class of
+    correction than pre-emption produces, so a pre-emptive nudge that resolved to a small or
+    held command left no trace anywhere -- on 2026-08-27 the only way to establish that
+    prevention had run was to replay the night through the controller offline and inspect
+    ``_preempt_cool`` by hand. That is now recorded per tick in the decision payload, and this
+    reads it back.
+    """
+    try:
+        row = repo.conn.execute(
+            "SELECT night_date FROM decisions WHERE night_date IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return _check("preemption_ran", "Awakening pre-emption", "info",
+                          "no decisions recorded yet", None)
+        night = row[0]
+        rows = repo.conn.execute(
+            "SELECT state, log_payload FROM decisions WHERE night_date = ?", (night,)).fetchall()
+    except Exception as exc:
+        return _check("preemption_ran", "Awakening pre-emption", "info",
+                      f"not readable ({exc!r})", None)
+    maint = pre = 0
+    reasons: dict = {}
+    for state, payload in rows:
+        if str(state) in ("maintenance", "wake_recovery"):
+            maint += 1
+        try:
+            pl = json.loads(payload) if payload else {}
+        except Exception:
+            continue
+        p = pl.get("preemption") or {}
+        if p.get("preempting"):
+            pre += 1
+            for r in (p.get("precursor_reasons") or []) + (p.get("risk_reasons") or []):
+                reasons[r] = reasons.get(r, 0) + 1
+    if not maint:
+        return _check("preemption_ran", "Awakening pre-emption", "warn",
+                      f"{night}: the controller never entered MAINTENANCE, so pre-emption had "
+                      f"no opportunity to run", "see the maintenance_reached check")
+    if pre == 0:
+        return _check(
+            "preemption_ran", "Awakening pre-emption", "warn",
+            f"{night}: {maint} maintenance tick(s) but pre-emption NEVER engaged -- no wake "
+            f"risk, precursor or micro-arousal vote fired all night",
+            "either the night was genuinely undisturbed, or the precursor/wake-risk thresholds "
+            "are not reachable on this sensor set -- compare against the awakenings actually "
+            "recorded in raw_samples.wake_event")
+    top = ", ".join(f"{k} x{v}" for k, v in
+                    sorted(reasons.items(), key=lambda kv: -kv[1])[:4]) or "no reasons recorded"
+    return _check("preemption_ran", "Awakening pre-emption", "ok",
+                  f"{night}: pre-emption engaged on {pre}/{maint} maintenance tick(s) "
+                  f"({top})", None)
+
+
+def _check_comfort_band_pinning(repo) -> dict:
+    """Is the night being spent PINNED at an edge of the personal comfort band?
+
+    The clamp working is not the same as the setpoint being right. On 2026-08-27 the band was
+    65.0-68.5 F (cool_edge 65.5 and warm_edge 68.0, each widened by comfort_clamp_margin_f) and
+    the commanded water sat at exactly 65.0 F -- the floor -- for the entire night, while the
+    user woke 12 times. Every one of those awakenings happened at that floor.
+
+    Two things make that worth reporting rather than treating as normal:
+
+      * The margin widens the band on BOTH sides, so the effective floor is 0.5 F BELOW the
+        learned cool edge -- the coldest temperature still rated comfortable. On the cold side
+        that turns a learned limit into a suggestion, and this profile's own evidence records
+        "cold_end_awakenings" at 63-64 F, only ~1 F further down.
+      * The same evidence records best sleep at 69 F (a 160-minute unbroken stretch), which is
+        ABOVE the band's ceiling of 68.5 F -- so the clamp cannot reach the temperature this
+        user actually slept best at.
+
+    Pinning is not itself a bug; a genuinely hot night should ride the cool edge. It is a signal
+    that the band and the thermal intents disagree, and that the band is the thing deciding the
+    night. Which way to move it is the user's call, so this reports and does not act.
+    """
+    try:
+        prof = repo.conn.execute(
+            "SELECT neutral_f, cool_edge_f, warm_edge_f FROM comfort_profile "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+    except Exception as exc:
+        return _check("comfort_band", "Comfort-band pinning", "info",
+                      f"no comfort profile readable ({exc!r})", None)
+    if not prof or prof[1] is None or prof[2] is None:
+        return _check("comfort_band", "Comfort-band pinning", "info",
+                      "no personal comfort band learned yet", None)
+    _neutral, cool_edge, warm_edge = float(prof[0] or 0), float(prof[1]), float(prof[2])
+    try:
+        row = repo.conn.execute(
+            "SELECT night_date FROM raw_samples WHERE night_date IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return _check("comfort_band", "Comfort-band pinning", "info",
+                          "no nights recorded", None)
+        night = row[0]
+        levels = [r[0] for r in repo.conn.execute(
+            "SELECT commanded_level FROM raw_samples WHERE night_date = ? "
+            "AND commanded_level IS NOT NULL AND controller_state IN "
+            "('maintenance','wake_recovery')", (night,)).fetchall()]
+    except Exception as exc:
+        return _check("comfort_band", "Comfort-band pinning", "info",
+                      f"not readable ({exc!r})", None)
+    if not levels:
+        return _check("comfort_band", "Comfort-band pinning", "info",
+                      f"{night}: no in-maintenance commands to judge", None)
+    try:
+        from sleepctl.controller.calibration import level_to_fahrenheit
+        temps = [level_to_fahrenheit(v) for v in levels]
+    except Exception as exc:
+        return _check("comfort_band", "Comfort-band pinning", "info",
+                      f"level conversion unavailable ({exc!r})", None)
+    lo = cool_edge - COMFORT_CLAMP_MARGIN_F
+    hi = warm_edge + COMFORT_CLAMP_MARGIN_F
+    # Tolerance matches the DEVICE's resolution, not an arbitrary epsilon. The Eight Sleep
+    # level table is coarse (68.0 F and 68.5 F are the same level, -58, which reads back as
+    # 68.0 F), so a band edge on a half-degree is often not exactly reachable. A tolerance
+    # tighter than one level step would report "never pinned" for a night spent welded to the
+    # edge -- the failure mode this check exists to catch.
+    edge_tol = 0.5
+    at_lo = sum(1 for t in temps if t <= lo + edge_tol)
+    at_hi = sum(1 for t in temps if t >= hi - edge_tol)
+    n = len(temps)
+    if at_lo / n >= 0.8:
+        return _check(
+            "comfort_band", "Comfort-band pinning", "warn",
+            f"{night}: {at_lo}/{n} maintenance ticks ({100*at_lo/n:.0f}%) sat at the COLD floor "
+            f"of the comfort band ({lo:.1f}F; cool_edge {cool_edge:.1f}F minus the "
+            f"{COMFORT_CLAMP_MARGIN_F:.1f}F margin) -- the band, not the controller, decided "
+            f"this night, and it decided cold",
+            f"if you are waking cold, raise cool_edge_f (currently {cool_edge:.1f}F) or drop "
+            f"comfort_clamp_margin_f so the learned cold edge is a floor rather than a "
+            f"suggestion; check whether your best-sleep temperature is even inside "
+            f"{lo:.1f}-{hi:.1f}F")
+    if at_hi / n >= 0.8:
+        return _check("comfort_band", "Comfort-band pinning", "warn",
+                      f"{night}: {at_hi}/{n} maintenance ticks ({100*at_hi/n:.0f}%) sat at the "
+                      f"WARM ceiling of the comfort band ({hi:.1f}F)",
+                      f"if you are waking hot, lower warm_edge_f (currently {warm_edge:.1f}F)")
+    return _check("comfort_band", "Comfort-band pinning", "ok",
+                  f"{night}: commands ranged {min(temps):.1f}-{max(temps):.1f}F inside the "
+                  f"{lo:.1f}-{hi:.1f}F band without pinning to an edge", None)
+
+
+def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
     """Is the controller getting a MEASURED bed temperature at all?
 
     This is the primary feedback signal of the whole thermal loop. With it,
@@ -510,9 +663,15 @@ def _check_bed_temperature(repo) -> dict:
     stating plainly rather than leaving the loop silently open.
     """
     try:
+        # LOCAL cutoff, computed in Python. `raw_samples.ts` is NAIVE LOCAL (see the timestamp
+        # convention at the top of storage/schema.py) while SQLite's datetime('now') is UTC, so a
+        # bare `ts >= datetime('now','-2 days')` compares the two conventions and shifts the
+        # window by the machine's whole UTC offset -- the exact class of bug that docstring warns
+        # about, and which already cost this project a capacity detector that never fired.
+        cutoff = (datetime.now() - timedelta(days=2)).isoformat(" ", "seconds")
         row = repo.conn.execute(
-            "SELECT COUNT(*), COUNT(bed_temp_f), MAX(ts) FROM raw_samples "
-            "WHERE ts >= datetime('now', '-2 days')").fetchone()
+            "SELECT COUNT(*), COUNT(bed_temp_f), MAX(ts) FROM raw_samples WHERE ts >= ?",
+            (cutoff,)).fetchone()
     except Exception as exc:
         return _check("bed_temperature", "Bed temperature feedback", "info",
                       f"not readable ({exc!r})", None)
@@ -521,12 +680,13 @@ def _check_bed_temperature(repo) -> dict:
         return _check("bed_temperature", "Bed temperature feedback", "info",
                       "no samples in the last 2 days", None)
     if measured == 0:
+        why = (extra or {}).get("bed_temp_reason")
+        because = f" -- reason: {why}" if why else ""
         return _check(
             "bed_temperature", "Bed temperature feedback", "warn",
             f"NO measured bed temperature in {total} samples over the last 2 days -- the "
-            f"thermal loop is running fully OPEN-LOOP. Feedforward inverts the bed/ambient "
-            f"blend, so every degree of demanded cooling is amplified by 1/composite_bed_weight "
-            f"with nothing measuring the result",
+            f"thermal loop is running fully OPEN-LOOP, so the commanded water is never checked "
+            f"against a measurement{because}",
             "bed temp comes from the trends session timeseries (tempBedC), the same surface as "
             "presence -- which is also permanently unavailable on this account. Until it is "
             "readable, keep the cooling floor conservative rather than trusting the inversion")
@@ -1373,9 +1533,11 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("bed_temperature", "Bed temperature feedback",
-        lambda: _check_bed_temperature(repo))
+        lambda: _check_bed_temperature(repo, extra))
     add("maintenance_reached", "Sleep maintenance reached",
         lambda: _check_maintenance_reached(repo))
+    add("preemption_ran", "Awakening pre-emption", lambda: _check_preemption_ran(repo))
+    add("comfort_band", "Comfort-band pinning", lambda: _check_comfort_band_pinning(repo))
     add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))

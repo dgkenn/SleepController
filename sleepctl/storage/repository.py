@@ -101,9 +101,14 @@ class Repository:
             """INSERT INTO raw_samples
             (ts, night_date, stage, stage_confidence, heart_rate, hrv,
              respiratory_rate, movement, presence, bed_temp_f, room_temp_f,
-             commanded_level, controller_state, wake_event, data_age_seconds)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+             commanded_level, controller_state, wake_event, data_age_seconds, sample_ts)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
+                # `ts` stays the POD FRAME's time so night bucketing, rollups and every existing
+                # query keep behaving exactly as before. `sample_ts` (appended last) is when the
+                # row was actually observed -- see the schema comment: the Pod frame refreshes
+                # ~60 s while we tick ~30 s, so `ts` stalls and then jumps, and any interval
+                # measured from it reads zero for half the rows.
                 _iso(frame.timestamp),
                 night_date,
                 frame.stage.value if frame.stage else None,
@@ -119,6 +124,7 @@ class Repository:
                 controller_state,
                 int(bool(wake_event)),
                 frame.data_age_seconds,
+                _iso(datetime.now()),
             ),
         )
         self.conn.commit()

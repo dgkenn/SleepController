@@ -210,6 +210,50 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception as exc:
         out["interventions_error"] = repr(exc)
 
+    # ---- 5. awakening PRE-EMPTION -------------------------------------------------------
+    # Whether prevention actually ran, read straight from the per-tick decision payload. The
+    # `interventions` ledger above records a narrower class of correction, so a pre-emptive
+    # nudge that resolved to a small or held command left NO trace in this export at all --
+    # which is why answering "did prevention fire?" previously meant re-running the whole night
+    # through the controller offline. It is the most important question this system answers
+    # about itself, so it belongs in the night's own record.
+    try:
+        drows = conn.execute(
+            "SELECT ts, state, action, target_level, log_payload FROM decisions "
+            "WHERE night_date = ? ORDER BY id ASC", (night_date,)).fetchall()
+        ticks = []
+        for r in drows:
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            pre = pl.get("preemption") or {}
+            if not pre.get("preempting"):
+                continue
+            ticks.append({
+                "ts": r["ts"], "state": r["state"], "action": r["action"],
+                "target_level": r["target_level"],
+                "wake_risk": pre.get("wake_risk"),
+                "risk_reasons": pre.get("risk_reasons") or [],
+                "precursor_score": pre.get("precursor_score"),
+                "precursor_reasons": pre.get("precursor_reasons") or [],
+                "wake_window_preempt": pre.get("wake_window_preempt"),
+            })
+        in_maint = [r for r in drows if str(r["state"]) in ("maintenance", "wake_recovery")]
+        out["preemption_events"] = ticks
+        out["preemption_summary"] = {
+            "n_decisions": len(drows),
+            "n_in_maintenance": len(in_maint),
+            "n_preempting": len(ticks),
+            "by_action": dict(Counter(t["action"] for t in ticks)),
+            "risk_reasons": dict(Counter(
+                x for t in ticks for x in (t["risk_reasons"] or []))),
+            "precursor_reasons": dict(Counter(
+                x for t in ticks for x in (t["precursor_reasons"] or []))),
+        }
+    except Exception as exc:
+        out["preemption_error"] = repr(exc)
+
     return out
 
 

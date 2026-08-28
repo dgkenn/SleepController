@@ -1060,3 +1060,133 @@ def test_an_unreadable_database_never_raises_out_of_the_maintenance_check():
                 raise RuntimeError("no such column")
 
     assert _check_maintenance_reached(Broken())["status"] == "info"
+
+
+# ---------------------------------------------------------------------------------------
+# Pre-emption telemetry. Before this, the ONLY way to establish whether awakening prevention
+# had fired was to replay the night through the controller offline and inspect _preempt_cool:
+# the interventions ledger records a narrower class of correction, so a pre-emptive nudge that
+# resolved to a small or held command left no trace anywhere.
+# ---------------------------------------------------------------------------------------
+
+class _DecisionRepo:
+    def __init__(self, rows, night="2026-08-27"):
+        """rows: [(state, preemption_dict_or_None)]"""
+        import sqlite3, json as _j
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute(
+            "CREATE TABLE decisions (id INTEGER PRIMARY KEY, night_date TEXT, state TEXT, "
+            "log_payload TEXT)")
+        for st, pre in rows:
+            self.conn.execute(
+                "INSERT INTO decisions (night_date, state, log_payload) VALUES (?,?,?)",
+                (night, st, _j.dumps({"preemption": pre}) if pre is not None else None))
+
+
+def test_preemption_that_fired_is_reported_with_what_drove_it():
+    from app.diagnostics import _check_preemption_ran
+    rows = [("maintenance", {"preempting": False})] * 40
+    rows += [("maintenance", {"preempting": True, "precursor_reasons": ["hr_creep"],
+                              "risk_reasons": ["resp_irregular"]})] * 6
+    c = _check_preemption_ran(_DecisionRepo(rows))
+    assert c["status"] == "ok"
+    assert "6/46" in c["detail"]
+    assert "hr_creep" in c["detail"]
+
+
+def test_a_maintenance_night_where_preemption_never_engaged_is_a_warning():
+    from app.diagnostics import _check_preemption_ran
+    c = _check_preemption_ran(_DecisionRepo([("maintenance", {"preempting": False})] * 50))
+    assert c["status"] == "warn"
+    assert "NEVER engaged" in c["detail"]
+
+
+def test_never_reaching_maintenance_is_reported_as_no_opportunity_not_as_failure():
+    """Blaming pre-emption for a night it was never allowed to run is a misdiagnosis."""
+    from app.diagnostics import _check_preemption_ran
+    c = _check_preemption_ran(_DecisionRepo([("induction", None)] * 30))
+    assert c["status"] == "warn"
+    assert "no opportunity" in c["detail"]
+
+
+def test_unparseable_payloads_never_raise_out_of_the_preemption_check():
+    from app.diagnostics import _check_preemption_ran
+    r = _DecisionRepo([("maintenance", None)] * 3)
+    r.conn.execute("UPDATE decisions SET log_payload = 'not json'")
+    assert _check_preemption_ran(r)["status"] in ("warn", "ok", "info")
+
+
+# ---------------------------------------------------------------------------------------
+# Comfort-band pinning. On 2026-08-27 the band was 65.0-68.5F and the commanded water sat at
+# exactly 65.0F -- the floor -- for the whole night, across all 12 awakenings.
+# ---------------------------------------------------------------------------------------
+
+class _ComfortRepo:
+    def __init__(self, cool, warm, levels, neutral=66.9, night="2026-08-27"):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE comfort_profile (id INTEGER PRIMARY KEY, neutral_f REAL,"
+                          " cool_edge_f REAL, warm_edge_f REAL)")
+        self.conn.execute("INSERT INTO comfort_profile VALUES (1,?,?,?)", (neutral, cool, warm))
+        self.conn.execute("CREATE TABLE raw_samples (id INTEGER PRIMARY KEY, night_date TEXT,"
+                          " commanded_level INTEGER, controller_state TEXT)")
+        for lv in levels:
+            self.conn.execute("INSERT INTO raw_samples (night_date, commanded_level,"
+                              " controller_state) VALUES (?,?, 'maintenance')", (night, lv))
+
+
+def _lvl(f):
+    from sleepctl.controller.calibration import fahrenheit_to_level
+    return fahrenheit_to_level(f)
+
+
+def test_a_night_spent_at_the_cold_floor_is_reported_with_the_remedy():
+    from app.diagnostics import _check_comfort_band_pinning
+    c = _check_comfort_band_pinning(_ComfortRepo(65.5, 68.0, [_lvl(65.0)] * 100))
+    assert c["status"] == "warn"
+    assert "COLD floor" in c["detail"]
+    assert "cool_edge_f" in (c["remedy"] or "")
+
+
+def test_a_night_spent_at_the_warm_ceiling_is_reported_too():
+    from app.diagnostics import _check_comfort_band_pinning
+    c = _check_comfort_band_pinning(_ComfortRepo(65.5, 68.0, [_lvl(68.5)] * 100))
+    assert c["status"] == "warn"
+    assert "WARM ceiling" in c["detail"]
+
+
+def test_commands_moving_inside_the_band_are_not_flagged():
+    """Pinning is the signal, not clamping. A night that uses the band is working as intended."""
+    from app.diagnostics import _check_comfort_band_pinning
+    levels = [_lvl(f) for f in (65.5, 66.0, 66.5, 67.0, 67.5, 68.0)] * 10
+    c = _check_comfort_band_pinning(_ComfortRepo(65.5, 68.0, levels))
+    assert c["status"] == "ok"
+
+
+def test_a_one_sided_comfort_profile_is_not_judged():
+    from app.diagnostics import _check_comfort_band_pinning
+    c = _check_comfort_band_pinning(_ComfortRepo(65.5, None, [_lvl(65.0)] * 20))
+    assert c["status"] == "info"
+
+
+def test_no_maintenance_commands_means_nothing_to_judge():
+    from app.diagnostics import _check_comfort_band_pinning
+    r = _ComfortRepo(65.5, 68.0, [_lvl(65.0)] * 5)
+    r.conn.execute("UPDATE raw_samples SET controller_state = 'induction'")
+    assert _check_comfort_band_pinning(r)["status"] == "info"
+
+
+def test_the_bed_temperature_warning_names_the_reason_when_the_daemon_supplies_one():
+    """An unexplained absence is a dead end; a named one is a next step."""
+    from app.diagnostics import _check_bed_temperature
+    c = _check_bed_temperature(
+        _BedTempRepo(500, 0),
+        {"bed_temp_reason": "no trends on the user object (account/membership?)"})
+    assert c["status"] == "warn"
+    assert "account/membership" in c["detail"]
+
+
+def test_the_bed_temperature_warning_still_works_with_no_reason_available():
+    from app.diagnostics import _check_bed_temperature
+    c = _check_bed_temperature(_BedTempRepo(500, 0), {})
+    assert c["status"] == "warn" and "OPEN-LOOP" in c["detail"]

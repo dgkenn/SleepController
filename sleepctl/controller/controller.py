@@ -1269,6 +1269,13 @@ class SleepController:
             ),
             "data_age_seconds": frame.data_age_seconds,
             "wake_signals": wake_signals,
+            # Whether PRE-EMPTION was engaged on this tick, and what drove it. Without this the
+            # only way to tell if awakening prevention actually fired was to re-run the night
+            # through the controller offline and inspect `_preempt_cool` -- the `interventions`
+            # ledger records a narrower class of correction, so a pre-emptive nudge that resolved
+            # to a small or held command left no trace anywhere. "Did prevention run?" is the
+            # single most important question this system has to answer about itself.
+            "preemption": self.preemption_summary(),
             "steering": self.steering_summary(),
             "should_wake": self.should_wake,
             "wake_action": self.last_wake_action.to_dict() if self.last_wake_action else None,

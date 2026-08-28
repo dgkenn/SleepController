@@ -988,6 +988,12 @@ class LiveDashboardDaemon:
                       # so /diag, the health branch and the preflight can all say plainly that
                       # vibration is unavailable and the wake is running on light + warmth.
                       "alarm_write_denied": bool(getattr(self, "_alarm_write_denied", False)),
+                      # WHY the sensed bed temperature was unavailable on the last read (None =
+                      # it was available). bed_temp_f has been None on every sample of every
+                      # captured night, holding the thermal loop permanently open, and the cause
+                      # was not knowable from outside the box. Published so /diag and the health
+                      # branch can name it instead of leaving it to be inferred.
+                      "bed_temp_reason": getattr(self.client, "last_bed_temp_reason", None),
                       "nap": self.nap_plan,
                       "nap_deadline": self.nap_deadline.isoformat() if self.nap_deadline else None,
                       # Surfaced constraint when "help me fall asleep" is pressed with little

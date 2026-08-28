@@ -52,7 +52,15 @@ CREATE TABLE IF NOT EXISTS raw_samples (
     commanded_level INTEGER,
     controller_state TEXT,
     wake_event INTEGER,
-    data_age_seconds REAL
+    data_age_seconds REAL,
+    -- When this row was actually OBSERVED (naive local, like `ts`). `ts` carries the POD
+    -- FRAME's timestamp, which refreshes about every 60 s while the daemon ticks every ~30 s
+    -- -- so two consecutive rows routinely share one `ts` while their wearable data is up to a
+    -- minute apart. Measured on the night of 2026-08-27: 673 of 682 distinct timestamps had two
+    -- rows. `ts` is left alone because night bucketing, rollups and every existing query depend
+    -- on it; anything measuring an INTERVAL should read `sample_ts` instead, where a 30 s gap
+    -- shows up as 30 s rather than as zero.
+    sample_ts TEXT
 );
 
 CREATE TABLE IF NOT EXISTS nightly_summaries (
@@ -419,6 +427,7 @@ _MIGRATIONS = [
     ("thermal_calibration", "warmback_levels_per_min", "REAL"),
     ("thermal_calibration", "warmback_lag_min", "REAL"),
     ("events", "data", "TEXT"),
+    ("raw_samples", "sample_ts", "TEXT"),
 ]
 
 

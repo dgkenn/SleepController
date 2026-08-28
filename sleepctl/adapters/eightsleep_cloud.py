@@ -125,6 +125,10 @@ class EightSleepClient:
         self._user = None
         self._last_update: Optional[datetime] = None
         self._alarm_id: Optional[str] = None
+        # Why the SENSED bed temperature was unavailable on the last read (None = it was
+        # available). See _sensed_bed_temp_f: this has been None on every sample of every
+        # captured night, and without this the reason was unknowable from the outside.
+        self.last_bed_temp_reason: Optional[str] = None
 
     # -- lifecycle ---------------------------------------------------------------
     async def connect(self) -> None:  # pragma: no cover - requires live device
@@ -236,23 +240,39 @@ class EightSleepClient:
         """Genuinely SENSED bed temperature from the trends session timeseries (tempBedC, °C),
         converted to °F. Returns None when no session/sample exists (first ~15-30 min each night,
         or bed off) so the controller falls to open-loop rather than closing on a fake signal.
-        NEVER returns the level-derived ``current_bed_temp`` (that is a circular artifact)."""
+        NEVER returns the level-derived ``current_bed_temp`` (that is a circular artifact).
+
+        Records WHICH step came up empty in ``self.last_bed_temp_reason``. This value has been
+        None on 100% of samples across every captured night (6835/6835), which silently keeps the
+        thermal loop open forever -- and a bare ``return None`` at five different steps made it
+        impossible to tell from here whether the account exposes no trends at all, exposes trends
+        with no session, or exposes a session whose timeseries simply lacks tempBedC. Those want
+        completely different responses, so the reason is now reported rather than inferred.
+        """
         try:
             trends = getattr(user, "trends", None) or []
             if not trends:
+                self.last_bed_temp_reason = "no trends on the user object (account/membership?)"
                 return None
             sessions = trends[-1].get("sessions") or []
             if not sessions:
+                self.last_bed_temp_reason = "trends present but the latest has no sessions"
                 return None
             ts = sessions[-1].get("timeseries") or {}
             arr = ts.get("tempBedC")
             if not arr:
+                keys = ",".join(sorted(ts.keys())[:8]) if isinstance(ts, dict) else "?"
+                self.last_bed_temp_reason = (
+                    f"session timeseries has no tempBedC (keys: {keys or 'none'})")
                 return None
             bed_c = arr[-1][1]
             if bed_c is None:
+                self.last_bed_temp_reason = "tempBedC present but its newest sample is null"
                 return None
+            self.last_bed_temp_reason = None
             return bed_c * 9.0 / 5.0 + 32.0
-        except Exception:
+        except Exception as exc:
+            self.last_bed_temp_reason = f"read raised {type(exc).__name__}: {exc}"
             return None
 
     def _room_temp_f(self, user):  # pragma: no cover - requires live device
