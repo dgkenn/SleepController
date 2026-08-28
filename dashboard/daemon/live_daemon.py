@@ -407,6 +407,15 @@ class LiveDashboardDaemon:
                 self._skip("induction latency", exc)
             # In-bed resting-physiology baseline → arousal/wake-risk anchor.
             controller.set_resting_baseline(self.repo.get_resting_baseline())
+            # Recover TONIGHT's bed entry across a restart. `_bed_entry_time` is process-local
+            # and this box redeploys itself, so without this a mid-night restart re-anchors bed
+            # entry to the restart moment -- which on 2026-08-27 reported all three onsets at
+            # ~1 min latency against a real 36.3 min, and (worse) stripped `minutes_since_start`
+            # from the stager, the feature whose loss collapses the hypnogram onto LIGHT.
+            try:
+                controller.restore_bed_entry(self._recover_bed_entry())
+            except Exception as exc:
+                self._skip("bed-entry recovery", exc)
             # Personal comfort mapping → the controller's neutral is what YOU feel neutral, not the
             # device's water-scale default.
             # One-time, version-controlled correction of a band its own evidence refutes -- see
@@ -898,6 +907,25 @@ class LiveDashboardDaemon:
             except Exception as exc:
                 self._skip("dense sensor history", exc)
         return frame
+
+    def _recover_bed_entry(self):
+        """Earliest sample of the CURRENT night at which a session was already running.
+
+        Returns None when tonight has no session yet (a fresh evening), which leaves the live
+        path to stamp bed entry normally.
+        """
+        from datetime import datetime as _dt
+        night = self.cycle.night_date(_dt.now())
+        row = self.repo.conn.execute(
+            "SELECT MIN(ts) FROM raw_samples WHERE night_date = ? "
+            "AND controller_state IS NOT NULL AND controller_state != 'idle'",
+            (night,)).fetchone()
+        if not row or not row[0]:
+            return None
+        try:
+            return _dt.fromisoformat(str(row[0]))
+        except Exception:
+            return None
 
     def _refresh_shift_plan(self) -> None:
         """Advisory cross-shift sleep-debt plan: debt + strategy from recent nights, plus banking /

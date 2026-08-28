@@ -34,7 +34,12 @@ from datetime import datetime, timedelta, timezone
 # ------------------------------------------------------------------ thresholds / constants
 #: Mirrors AppConfig.tunables.comfort_clamp_margin_f, which widens the personal comfort band on
 #: BOTH sides before clamping. Kept here so this module stays import-light.
-COMFORT_CLAMP_MARGIN_F = 0.5
+COMFORT_CLAMP_MARGIN_F = 0.0
+#: Level change between consecutive ~1-minute samples that the bed cannot physically achieve.
+#: Measured slew is ~1.5 levels/min cooling and ~4 warming (docs/THERMAL_LATENCY.md), so this is
+#: several times the fastest real movement -- anything above it is a bad read or an external
+#: write, never the bed responding to us.
+IMPLAUSIBLE_LEVEL_JUMP = 20
 DAEMON_HEARTBEAT_STALE_S = 90     # daemon writes .run/daemon.heartbeat roughly every ~2s
 WATCHDOG_HEARTBEAT_STALE_S = 60   # watchdog writes .run/watchdog.heartbeat roughly every ~15s
 LOG_SIZE_WARN_BYTES = 50 * 1024 * 1024  # 50MB — a runaway/looping log
@@ -637,6 +642,54 @@ def _check_comfort_band_pinning(repo) -> dict:
     return _check("comfort_band", "Comfort-band pinning", "ok",
                   f"{night}: commands ranged {min(temps):.1f}-{max(temps):.1f}F inside the "
                   f"{lo:.1f}-{hi:.1f}F band without pinning to an edge", None)
+
+
+def _check_device_level_glitches(repo) -> dict:
+    """Device-reported heating levels that the bed could not physically have reached.
+
+    ``raw_samples.commanded_level`` is populated from ``user.heating_level`` -- the DEVICE's
+    readback, not our command (the model's own docstring says "level sent", which is wrong and
+    misled an earlier analysis). The bed slews about 1.5 levels/min cooling and 4 warming, so a
+    change of tens of levels between consecutive ~1-minute samples is not something the hardware
+    can do. It is a bad cloud read, or an external setpoint change we did not make.
+
+    Either way it silently corrupts everything computed from the series. On 2026-08-27 a single
+    tick at level -100 (55 F) landed in the middle of a wake ramp that was otherwise a smooth
+    66 -> 74 F climb, and made the night's reported water range read "55.0-74.0 F" -- a 19 F
+    excursion that never happened.
+    """
+    try:
+        cutoff = (datetime.now() - timedelta(days=2)).isoformat(" ", "seconds")
+        rows = repo.conn.execute(
+            "SELECT ts, commanded_level FROM raw_samples WHERE ts >= ? "
+            "AND commanded_level IS NOT NULL ORDER BY id", (cutoff,)).fetchall()
+    except Exception as exc:
+        return _check("device_level_glitch", "Device level glitches", "info",
+                      f"not readable ({exc!r})", None)
+    if len(rows) < 3:
+        return _check("device_level_glitch", "Device level glitches", "info",
+                      "not enough level samples to judge", None)
+    # A jump this large between consecutive samples exceeds any physical slew over a poll
+    # interval, with generous headroom for a slow poll.
+    jumps = []
+    prev = None
+    for ts, lv in rows:
+        if prev is not None and abs(int(lv) - int(prev)) >= IMPLAUSIBLE_LEVEL_JUMP:
+            jumps.append((ts, prev, lv))
+        prev = lv
+    if not jumps:
+        return _check("device_level_glitch", "Device level glitches", "ok",
+                      f"no implausible level jumps in {len(rows)} samples", None)
+    worst = max(jumps, key=lambda j: abs(int(j[2]) - int(j[1])))
+    return _check(
+        "device_level_glitch", "Device level glitches", "warn",
+        f"{len(jumps)} device-level jump(s) larger than {IMPLAUSIBLE_LEVEL_JUMP} levels between "
+        f"consecutive samples -- the bed cannot slew that fast, so these are bad reads or "
+        f"setpoint changes we did not make. Worst: {worst[1]} -> {worst[2]} at "
+        f"{str(worst[0])[:19]}",
+        "treat these samples as suspect in any range/exposure analysis; if they recur at the "
+        "same time each night, check for another controller (the Eight Sleep app's own schedule) "
+        "writing to the pod")
 
 
 def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
@@ -1534,6 +1587,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("bed_temperature", "Bed temperature feedback",
         lambda: _check_bed_temperature(repo, extra))
+    add("device_level_glitch", "Device level glitches",
+        lambda: _check_device_level_glitches(repo))
     add("maintenance_reached", "Sleep maintenance reached",
         lambda: _check_maintenance_reached(repo))
     add("preemption_ran", "Awakening pre-emption", lambda: _check_preemption_ran(repo))

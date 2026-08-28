@@ -97,6 +97,9 @@ class SleepController:
         self.thermal = ThermalController(cfg, profile=setpoints)
 
         self._bed_entry_time: Optional[datetime] = None
+        #: Bed entry recovered from persisted data after a restart (see restore_bed_entry).
+        #: Consumed the first time bed entry is established, then cleared.
+        self._recovered_bed_entry: Optional[datetime] = None
         self._sleep_onset_time: Optional[datetime] = None  # accurate fall-asleep time
         # The onset cascade (cold-settle -> warm pulse -> cool) runs on a clock that starts when
         # INDUCTION begins -- NOT bed-entry. Pressing "help me fall asleep" after lying awake a
@@ -221,6 +224,17 @@ class SleepController:
                     f"(cool_edge {float(cool_edge):.1f}F, cap {cap:.2f}F)")
         except Exception:
             return None, None
+
+    def restore_bed_entry(self, ts: Optional[datetime]) -> None:
+        """Seed the bed-entry anchor from persisted data, for use after a daemon restart.
+
+        Only takes effect while bed entry has not yet been established this process, and never
+        overrides an anchor already set -- so a live session is untouched and this can be called
+        unconditionally at start-up.
+        """
+        if ts is None or self._bed_entry_time is not None:
+            return
+        self._recovered_bed_entry = ts
 
     def _hold_stage(self, est, cfg):
         """Hysteresis on the ESTIMATED stage: a new sleep stage must persist before it is adopted.
@@ -629,7 +643,18 @@ class SleepController:
         # of 0.545. Replaying one real night with the time features restored: light 96%->64%,
         # rem 0%->27%, deep 0%->3%. The whole hypnogram had collapsed onto "light".
         if self._bed_entry_time is None and frame.presence is not False:
-            self._bed_entry_time = now
+            # Prefer a RECOVERED bed entry over stamping `now`. This value is process-local, and
+            # this system auto-deploys and restarts the daemon by design -- so a restart mid-night
+            # would otherwise re-anchor bed entry to the restart moment. Measured on 2026-08-27:
+            # all three sleep onsets reported a latency of ~1.0 min (one exactly 0.0) against a
+            # rollup-computed SOL of 36.3 min, because each followed a restart.
+            #
+            # The damage is not just a wrong latency. `minutes_since_start` is a stager feature,
+            # and losing it is what the comment above measures at REM 27% -> 0% with the whole
+            # hypnogram collapsing onto LIGHT. A restart was silently degrading the staging for
+            # the rest of the night.
+            self._bed_entry_time = self._recovered_bed_entry or now
+            self._recovered_bed_entry = None
             self.onset_detector.reset()
             self._sleep_onset_time = None
         onset_confirmed = None

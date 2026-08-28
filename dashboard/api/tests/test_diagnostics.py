@@ -1240,3 +1240,61 @@ def test_the_endpoint_requires_authentication(client):
     fresh = client.__class__(client.app)
     assert fresh.post("/control/comfort-profile",
                       json={"cool_edge_f": 67.0, "warm_edge_f": 70.0}).status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------------------
+# Device-level glitches. `commanded_level` is the DEVICE's readback, and on 2026-08-27 a
+# single tick at -100 (55F) landed mid wake-ramp, making the night's reported water range
+# read "55.0-74.0F" for a ramp that actually climbed smoothly 66 -> 74F.
+# ---------------------------------------------------------------------------------------
+
+class _LevelRepo:
+    def __init__(self, levels):
+        import sqlite3
+        from datetime import datetime as _dt
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE raw_samples (id INTEGER PRIMARY KEY, ts TEXT, "
+                          "commanded_level INTEGER)")
+        now = _dt.now().isoformat(" ", "seconds")
+        for lv in levels:
+            self.conn.execute("INSERT INTO raw_samples (ts, commanded_level) VALUES (?,?)",
+                              (now, lv))
+
+
+def test_a_physically_impossible_level_jump_is_flagged():
+    from app.diagnostics import _check_device_level_glitches
+    c = _check_device_level_glitches(_LevelRepo([-67, -67, -100, -65, -64]))
+    assert c["status"] == "warn"
+    assert "-100" in c["detail"]
+
+
+def test_an_ordinary_ramp_is_not_flagged():
+    """The real wake ramp: a smooth climb the bed can actually perform."""
+    from app.diagnostics import _check_device_level_glitches
+    c = _check_device_level_glitches(_LevelRepo(list(range(-68, -30, 2))))
+    assert c["status"] == "ok"
+
+
+def test_the_largest_jump_is_the_one_reported():
+    from app.diagnostics import _check_device_level_glitches
+    # jumps here are 30 (-60->-90) and 65 (-90->-25); the second must be the one named.
+    c = _check_device_level_glitches(_LevelRepo([-60, -60, -90, -25, -26]))
+    assert c["status"] == "warn"
+    assert "-90 -> -25" in c["detail"]
+
+
+def test_too_few_samples_is_info_not_a_false_alarm():
+    from app.diagnostics import _check_device_level_glitches
+    assert _check_device_level_glitches(_LevelRepo([-60]))["status"] == "info"
+
+
+def test_an_unreadable_database_never_raises_out_of_the_level_check():
+    from app.diagnostics import _check_device_level_glitches
+
+    class Broken:
+        class conn:
+            @staticmethod
+            def execute(*a, **k):
+                raise RuntimeError("no such column")
+
+    assert _check_device_level_glitches(Broken())["status"] == "info"
