@@ -3,6 +3,7 @@
     python scripts/validation_report.py night-2026-08-27.json [more.json ...]
         [--powerlog CurrentPowerlog.PLSQL]   # iOS screen-ons as objective wake anchors
         [--anchors anchors.json]             # any other external known-awake timestamps
+        [--pickups 1:2,3:1,5:4]              # iPhone Screen Time pickups, by hour
 
 Three modules existed for this and were reachable from nothing:
 
@@ -66,6 +67,26 @@ def _external_anchors(path: Optional[str]) -> list:
     return [str(x) for x in data]
 
 
+def _parse_pickups(arg: str) -> dict:
+    """Hourly pickup counts, as a JSON file or an inline `hour:count,hour:count` list.
+
+    Inline is supported because the realistic workflow is a person reading numbers off a Screen
+    Time chart on their phone -- requiring a file for three integers would mean the check never
+    gets run.
+    """
+    try:
+        return {int(k): int(v) for k, v in json.loads(Path(arg).read_text()).items()}
+    except Exception:
+        pass
+    out: dict = {}
+    for part in str(arg).replace(" ", "").split(","):
+        if not part:
+            continue
+        h, _, n = part.partition(":")
+        out[int(h)] = int(n or 1)
+    return out
+
+
 def _powerlog_anchors(powerlog_path: Optional[str], night: dict) -> tuple:
     """Screen-on anchors from an iOS PowerLog, bounded to this night."""
     if not powerlog_path:
@@ -91,6 +112,11 @@ def _internal_wake_flags(night: dict) -> list:
 def main() -> int:
     argv = sys.argv[1:]
     anchor_path = powerlog_path = None
+    pickups_arg = None
+    if "--pickups" in argv:
+        i = argv.index("--pickups")
+        pickups_arg = argv[i + 1] if i + 1 < len(argv) else None
+        argv = argv[:i] + argv[i + 2:]
     for flag in ("--anchors", "--powerlog"):
         if flag in argv:
             i = argv.index(flag)
@@ -160,6 +186,16 @@ def main() -> int:
             print(anchor_report(res, label=label))
         except Exception as exc:
             print(f"  could not compute: {exc!r}")
+
+        if pickups_arg:
+            print("\n[2c] iPHONE SCREEN TIME PICKUPS (independent, hour-resolution)")
+            try:
+                from sleepctl.eval.pickup_anchors import evaluate_pickups
+                from sleepctl.eval.pickup_anchors import format_report as pickup_report
+                pk = _parse_pickups(pickups_arg)
+                print(pickup_report(evaluate_pickups(rows, pk), label=label))
+            except Exception as exc:
+                print(f"  could not compute: {exc!r}")
 
         print("\n[3] SLEEP/WAKE DETECTOR (shadow mode)")
         sw = night.get("sleep_wake_shadow")
