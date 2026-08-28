@@ -204,6 +204,25 @@ class Tunables:
     # after that -- which is precisely when the false onsets occurred (21 and 50 min in), while
     # leaving a genuinely fast onset free to confirm before it has data.
     onset_resp_cv_window: int = 20
+    # A single non-qualifying sample used to reset the whole persistence run to zero. That makes
+    # the 10-minute requirement mean "the 2-of-N test fires on EVERY sample without exception",
+    # not "sleep held for 10 minutes" -- and the HR-derived signals are per-sample noisy, so with
+    # ~2 samples/min the run essentially cannot survive. Measured on the night of 2026-08-27,
+    # with ACC and PPI down and only HR available: 22 UNBROKEN minutes of LIGHT staging with HR
+    # drifting 70->63, and the run was reset 6 times, reaching at most 4.0 min. Onset never
+    # confirmed, so the controller never left INDUCTION and wake detection/prevention -- which
+    # live in MAINTENANCE -- never armed at all.
+    #
+    # So a lapse is now TOLERATED rather than fatal, bounded by how long it lasts. Every
+    # POSITIVE piece of wake evidence still resets the run outright: bed exit, gross movement,
+    # respiratory irregularity, and an AWAKE stage label. This only forgives the absence of
+    # evidence, never its contradiction.
+    onset_break_tolerance_min: float = 3.0
+    # ...and a run that survives purely on that tolerance must not confirm. At least this many
+    # samples within the run have to carry a TRANSITION signal (see TRANSITION_SIGNALS), so
+    # confirmation still rests on evidence of an actual descent into sleep, sampled across the
+    # whole run rather than demanded of every single tick.
+    onset_min_transition_hits: int = 3
     # --- vitals-based sleep-stage estimate (external HR sensor, e.g. Polar Verity Sense) --------
     # When the Pod provides no sleep stage (staging unavailable/paywalled) but a fresh HR feed is
     # present, derive a COARSE stage (AWAKE/LIGHT/DEEP; never REM) from HR/HRV/movement so onset

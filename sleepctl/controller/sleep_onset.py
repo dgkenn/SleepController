@@ -80,9 +80,13 @@ class SleepOnsetDetector:
         self.resp_regular_cv = getattr(t, "onset_resp_regular_cv", 0.06)
         self.resp_irregular_cv = getattr(t, "onset_resp_irregular_cv", 0.10)
         self.resp_cv_window = int(getattr(t, "onset_resp_cv_window", 20))
+        self.break_tolerance_min = float(getattr(t, "onset_break_tolerance_min", 3.0))
+        self.min_transition_hits = int(getattr(t, "onset_min_transition_hits", 3))
         # internal state
         self._run_start: Optional[datetime] = None
         self._run_len = 0
+        self._lapse_start: Optional[datetime] = None  # start of the current non-qualifying lapse
+        self._transition_hits = 0                     # qualifying samples carrying a TRANSITION signal
         self._confirmed: Optional[SleepOnsetEvent] = None
 
     @property
@@ -92,7 +96,16 @@ class SleepOnsetDetector:
     def reset(self) -> None:
         self._run_start = None
         self._run_len = 0
+        self._lapse_start = None
+        self._transition_hits = 0
         self._confirmed = None
+
+    def _break_run(self) -> None:
+        """Abandon the current persistence run. Called only on POSITIVE evidence of wakefulness."""
+        self._run_start = None
+        self._run_len = 0
+        self._lapse_start = None
+        self._transition_hits = 0
 
     def _awake_baseline(self, recent: List[SensorFrame]) -> dict:
         """Estimate the awake-in-bed baseline from recent AWAKE frames."""
@@ -162,13 +175,13 @@ class SleepOnsetDetector:
 
         # Must be in bed to fall asleep.
         if frame.presence is False:
-            self._run_start, self._run_len = None, 0
+            self._break_run()
             return None
 
         # Reliability gate: the BCG HR/HRV/RR are only valid when still. A high-movement
         # sample can't be sleep onset and breaks the run, regardless of the stage label.
         if frame.movement is not None and frame.movement > self.move_unreliable:
-            self._run_start, self._run_len = None, 0
+            self._break_run()
             return None
 
         # RESPIRATORY-IRREGULARITY VETO. Breathing variability is the one signal that actually
@@ -181,7 +194,7 @@ class SleepOnsetDetector:
         resp_cv = (_cv(resp_window + [frame.respiratory_rate])
                    if len(resp_window) >= self.resp_cv_window - 1 else None)
         if resp_cv is not None and resp_cv >= self.resp_irregular_cv:
-            self._run_start, self._run_len = None, 0
+            self._break_run()
             return None
 
         base = self._awake_baseline(recent or [])
@@ -200,8 +213,15 @@ class SleepOnsetDetector:
             if self._run_start is None:
                 self._run_start = frame.timestamp or now
             self._run_len += 1
+            self._lapse_start = None          # the run is qualifying again; the lapse is over
+            if any(x in self.TRANSITION_SIGNALS for x in sig):
+                self._transition_hits += 1
             elapsed = (now - self._run_start).total_seconds() / 60.0
-            if elapsed >= self.persistence_min - 1e-9:
+            # Confirmation needs BOTH: sleep held long enough, and enough evidence of an actual
+            # descent spread across the run. The second condition is what keeps a run that merely
+            # survived on lapse tolerance from confirming.
+            if (elapsed >= self.persistence_min - 1e-9
+                    and self._transition_hits >= self.min_transition_hits):
                 latency = None
                 if bed_entry_time is not None:
                     latency = max(0.0, (self._run_start - bed_entry_time).total_seconds() / 60.0)
@@ -212,7 +232,16 @@ class SleepOnsetDetector:
                     latency_min=latency,
                 )
                 return self._confirmed
-        else:
-            # broke the run (a stray sleep label or a return to wakefulness) -> reset
-            self._run_start, self._run_len = None, 0
+        elif frame.stage is SleepStage.AWAKE:
+            # A stage label that says AWAKE is positive evidence against sleep, not a gap in it.
+            self._break_run()
+        elif self._run_start is not None:
+            # A LAPSE, not a contradiction: the stage is still sleep (or unknown) and nothing has
+            # positively said otherwise -- the 2-of-N test simply did not fire on this sample,
+            # which the per-sample-noisy HR signals do constantly. Hold the run open, but only for
+            # as long as the lapse stays short; a sustained one means the descent really did break.
+            if self._lapse_start is None:
+                self._lapse_start = frame.timestamp or now
+            if (now - self._lapse_start).total_seconds() / 60.0 > self.break_tolerance_min:
+                self._break_run()
         return None
