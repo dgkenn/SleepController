@@ -64,7 +64,9 @@ class ArousalDetector:
         self.hrv_drop_frac = getattr(t, "arousal_hrv_drop_frac", 0.15)
         self.move_threshold = getattr(t, "arousal_movement", 0.4)
         self.persistence = getattr(t, "arousal_persistence_samples", 3)
-        self.voter = WakeDetector(min_signals=getattr(t, "wake_min_signals", 3))
+        # cfg is threaded through so the voter can read the wearable's actigraphy counts as an
+        # INDEPENDENT signal -- see WakeDetector.STAGER_SIGNALS.
+        self.voter = WakeDetector(min_signals=getattr(t, "wake_min_signals", 3), cfg=cfg)
         self._elevated_streak = 0
 
     def reset(self) -> None:

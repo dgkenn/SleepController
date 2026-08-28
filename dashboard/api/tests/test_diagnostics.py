@@ -1190,3 +1190,53 @@ def test_the_bed_temperature_warning_still_works_with_no_reason_available():
     from app.diagnostics import _check_bed_temperature
     c = _check_bed_temperature(_BedTempRepo(500, 0), {})
     assert c["status"] == "warn" and "OPEN-LOOP" in c["detail"]
+
+
+# ---------------------------------------------------------------------------------------
+# Comfort band editing. The interactive sweep is the right way to LEARN the band, but when
+# the saved band is demonstrably wrong -- on 2026-08-27 it excluded 69F, the temperature this
+# user's own history records as their best sleep (160 min unbroken) -- there has to be a way
+# to correct it without re-running a whole night of calibration.
+# ---------------------------------------------------------------------------------------
+
+def test_setting_the_comfort_band_persists_and_returns_it(auth_client):
+    r = auth_client.post("/control/comfort-profile",
+                         json={"cool_edge_f": 67.0, "warm_edge_f": 70.0, "neutral_f": 69.0})
+    assert r.status_code == 200, r.text
+    p = r.json()["profile"]
+    assert p["cool_edge_f"] == 67.0 and p["warm_edge_f"] == 70.0 and p["neutral_f"] == 69.0
+
+
+def test_omitted_fields_keep_their_existing_value(auth_client):
+    auth_client.post("/control/comfort-profile",
+                     json={"cool_edge_f": 66.0, "warm_edge_f": 70.0, "neutral_f": 68.0})
+    r = auth_client.post("/control/comfort-profile", json={"cool_edge_f": 67.0})
+    assert r.status_code == 200
+    p = r.json()["profile"]
+    assert p["cool_edge_f"] == 67.0 and p["warm_edge_f"] == 70.0
+
+
+def test_an_inverted_band_is_refused(auth_client):
+    r = auth_client.post("/control/comfort-profile",
+                         json={"cool_edge_f": 70.0, "warm_edge_f": 65.0})
+    assert r.status_code == 400
+
+
+def test_a_band_outside_the_device_range_is_refused(auth_client):
+    """A band the device cannot reach would clamp every command to an impossible target."""
+    r = auth_client.post("/control/comfort-profile",
+                         json={"cool_edge_f": 20.0, "warm_edge_f": 30.0})
+    assert r.status_code == 400
+
+
+def test_neutral_is_pulled_inside_its_own_band(auth_client):
+    r = auth_client.post("/control/comfort-profile",
+                         json={"cool_edge_f": 67.0, "warm_edge_f": 70.0, "neutral_f": 90.0})
+    assert r.status_code == 200
+    assert r.json()["profile"]["neutral_f"] == 70.0
+
+
+def test_the_endpoint_requires_authentication(client):
+    fresh = client.__class__(client.app)
+    assert fresh.post("/control/comfort-profile",
+                      json={"cool_edge_f": 67.0, "warm_edge_f": 70.0}).status_code in (401, 403)

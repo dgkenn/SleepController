@@ -218,7 +218,7 @@ class SleepController:
         except Exception:
             return None, None
 
-    def _stabilize_target(self, proposed_f: float, now, cfg):
+    def _stabilize_target(self, proposed_f: float, now, cfg, preempting: bool = False):
         """Should this proposed target be HELD instead of commanded? (arm C)
 
         Returns ``(held_value, reason)`` when the move is suppressed, else ``(None, None)``.
@@ -232,6 +232,18 @@ class SleepController:
              never delayed, so a genuine ramp still runs at full speed; only oscillation is
              damped. This is the rule that targets the measured failure (31 of 36 interventions
              reversing, several within one minute).
+
+        **The dwell does not apply while PRE-EMPTING.** A pre-emptive move is almost always a
+        reversal -- the bed is drifting toward the cool edge and prevention wants to warm -- so
+        the dwell silently swallowed exactly the moves that were most time-critical. Measured on
+        2026-08-27: 235 of 294 pre-empting ticks resolved to HOLD, and the system's own
+        prevention-timing check reported the pre-cool arriving at a median 7.8 min against a
+        median 4.6 min to the awakening. The awakening was beating the dwell clock.
+
+        The dwell exists to damp ORDINARY thermal hunting, which is a comfort/wear concern on a
+        timescale of many minutes. An imminent awakening is not that. The deadband still applies
+        in both cases, because a move the bed cannot physically resolve is not worth making
+        whatever the urgency.
         """
         try:
             deadband = float(getattr(cfg.tunables, "stabilizer_deadband_f", 0.4))
@@ -240,6 +252,8 @@ class SleepController:
             delta = proposed_f - last
             if abs(delta) < deadband:
                 return last, f"stabilizer: held (move {delta:+.2f}F under {deadband}F deadband)"
+            if preempting and getattr(cfg.tunables, "stabilizer_preempt_bypass", True):
+                return None, None
             direction = 1 if delta > 0 else -1
             last_dir = getattr(self, "_stab_last_dir", 0)
             last_move_at = getattr(self, "_stab_last_move_at", None)
@@ -785,7 +799,8 @@ class SleepController:
                 and state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY)
                 and not (guardrail is not None and guardrail.critical)
                 and clamped_from is None):
-            held, why = self._stabilize_target(target_f, now, cfg)
+            held, why = self._stabilize_target(
+                target_f, now, cfg, preempting=bool(getattr(self, "_preempt_cool", False)))
             if held is not None:
                 target_f = held
                 level = self.thermal.to_level(target_f)

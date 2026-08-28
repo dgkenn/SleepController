@@ -251,6 +251,14 @@ class Tunables:
     target_stabilizer: bool = False          # arm C enables it; default off so B is unchanged
     stabilizer_deadband_f: float = 0.4       # ignore proposed moves smaller than this
     stabilizer_min_dwell_min: float = 12.0   # min minutes before REVERSING direction again
+    # ...but NOT while pre-empting an awakening. A pre-emptive move is almost always a reversal
+    # (the bed is drifting toward the cool edge, prevention wants to warm), so the dwell above
+    # swallowed precisely the most time-critical moves: on 2026-08-27, 235 of 294 pre-empting
+    # ticks resolved to HOLD and the prevention-timing check measured the pre-cool arriving at a
+    # median 7.8 min against a median 4.6 min to the awakening. The dwell exists to damp ordinary
+    # thermal hunting over many minutes; an imminent awakening is not that. The DEADBAND still
+    # applies either way -- a move the bed cannot resolve is not worth making at any urgency.
+    stabilizer_preempt_bypass: bool = True
     # --- wearable-inferred bed entry (Pod presence unavailable) --------------------------------
     # IDLE -> INDUCTION normally requires ``frame.presence is True``. On an account without an
     # Autopilot membership the Pod NEVER reports presence -- it is None forever -- so that gate can
@@ -368,7 +376,18 @@ class Tunables:
     # weather still drives the separate, CAPPED feed-forward bias (precomp_max_bias_f).
     ambient_outdoor_fallback: bool = False
     comfort_clamp_enabled: bool = True
-    comfort_clamp_margin_f: float = 0.5   # allow this much beyond the measured band edges
+    # Slack allowed BEYOND the measured comfort edges before clamping. Now 0.0, because
+    # `cool_edge_f` is defined as the COLDEST still-comfortable temperature and `warm_edge_f` as
+    # the warmest -- so any margin pushes the commanded water outside the range the user actually
+    # rated comfortable, in whichever direction it is applied. It is not a safety buffer; it is a
+    # licence to leave the band.
+    #
+    # Measured on 2026-08-27: the band read 65.5-68.0 F, the 0.5 F margin turned that into
+    # 65.0-68.5 F, and the commanded water then sat at exactly 65.0 F -- the widened floor, half
+    # a degree BELOW the learned cool edge -- for two-thirds of the night, across all of that
+    # night's awakenings, for a user whose stated reason for waking is the bed being too cold.
+    # One level step on this device is about 0.5-1.0 F, so the margin was a whole step of slack.
+    comfort_clamp_margin_f: float = 0.0
     # --- sustained-cold relief -----------------------------------------------------------------
     # The comfort clamp bounds how cold the bed may go at any INSTANT, but nothing bounded how
     # LONG it may sit there. Measured 2026-08-24: MAINTENANCE held 65-67F for four consecutive

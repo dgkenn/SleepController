@@ -35,8 +35,23 @@ def _stdev(values: list[float]) -> float:
 class WakeDetector:
     """Votes across signals to decide whether an awakening is occurring."""
 
-    def __init__(self, min_signals: int = 3) -> None:
+    #: Signals derived from the STAGE ESTIMATOR rather than from a sensor directly. All three
+    #: can fire from one observation -- the label moving to AWAKE out of DEEP/REM sets
+    #: ``stage_regression`` AND ``awake_stage``, and the confidence wobble that usually
+    #: accompanies it sets ``confidence_drop`` -- so a min_signals=3 quorum could be met
+    #: entirely by one noisy estimate with no physiological corroboration at all.
+    #:
+    #: Measured on 2026-08-27: 25 of 51 wake ticks had neither elevated heart rate nor
+    #: movement. Three votes from one estimator is one vote.
+    STAGER_SIGNALS = frozenset({"stage_regression", "awake_stage", "confidence_drop"})
+
+    def __init__(self, min_signals: int = 3, require_independent: bool = True, cfg=None) -> None:
         self.min_signals = min_signals
+        self.cfg = cfg
+        # At least one signal must come from OUTSIDE the stage estimator (movement, heart rate
+        # or respiration). The stager is allowed to make the case; it is not allowed to be the
+        # only witness.
+        self.require_independent = require_independent
 
     def evaluate(
         self,
@@ -91,6 +106,22 @@ class WakeDetector:
             if recent_rr and _stdev(recent_rr + [frame.respiratory_rate]) > 1.8 * base_rr_sd:
                 signals.append("resp_variability")
 
+        # 6b) WEARABLE ACTIGRAPHY -- the armband's own PIM counts, read from the dense activity
+        # history rather than the per-tick `movement` field. This is genuinely independent
+        # physiological evidence and it is the best wake signal available (6/6 against
+        # message-timestamp ground truth, versus the HR stager's 2/6).
+        #
+        # It has to be counted HERE rather than left to speak through the stage label: an
+        # actigraphy wake expresses itself by driving the stage to AWAKE, which the independence
+        # rule below classifies as stager-derived. Without this the rule would suppress exactly
+        # the awakenings it should trust most.
+        try:
+            from sleepctl.controller.state_estimator import _actigraphy_wake
+            if self.cfg is not None and _actigraphy_wake(frame, self.cfg):
+                signals.append("actigraphy_motion")
+        except Exception:
+            pass
+
         # 6) sudden break in a stable low-motion pattern
         if base_move is not None and base_move < 0.1 and frame.movement is not None:
             if frame.movement > 0.4:
@@ -99,6 +130,9 @@ class WakeDetector:
         # de-duplicate while preserving order
         signals = list(dict.fromkeys(signals))
 
+        independent = [x for x in signals if x not in self.STAGER_SIGNALS]
+        if self.require_independent and not independent:
+            return None
         if len(signals) >= self.min_signals:
             confidence = min(1.0, len(signals) / 5.0)
             return WakeEvent(

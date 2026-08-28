@@ -34,6 +34,11 @@ def _mean(values) -> Optional[float]:
     return statistics.fmean(vals) if vals else None
 
 
+#: Narrowest useful recurring-window half-width. Below this a window cannot reliably catch
+#: anything at our sample rate, so the coverage budget stops shrinking and switches the signal
+#: off instead -- see WakeProfile.effective_cluster_half_width.
+MIN_CLUSTER_HALF_WIDTH_MIN = 5.0
+
 @dataclass
 class WakeProfile:
     """Per-user awakening phenotype. Starts from an EVIDENCE-BACKED preset and is refined by
@@ -45,6 +50,12 @@ class WakeProfile:
     awakening_minutes: List[int] = field(default_factory=list)  # minutes-past-midnight clusters
     warm_temp_threshold_f: Optional[float] = None  # bed temp above which awakenings cluster
     cluster_window_min: int = 25                   # +/- window around each recurring time
+    #: Total minutes of night the recurring windows may claim BETWEEN THEM. Each learned time
+    #: would otherwise cover 2*cluster_window_min, and the times are learned from the user's own
+    #: awakenings -- so waking more produces more windows, which tile the night until the signal
+    #: is permanently on. Bounding the total keeps it discriminating; see
+    #: effective_cluster_half_width.
+    max_recurring_coverage_min: float = 180.0
     # Cycle/circadian vulnerability (evidence-based, personalised by lead-time learning):
     #   - awakenings cluster at NREM-REM cycle boundaries (~every 90 min)
     #   - the back half of the night is lighter and more wake-prone (sleep pressure spent)
@@ -66,11 +77,45 @@ class WakeProfile:
         """
         return cls(awakening_minutes=[], warm_temp_threshold_f=None, source="preset")
 
+    def effective_cluster_half_width(self) -> float:
+        """Half-width actually used around each recurring time, SHRUNK so the windows together
+        cannot claim more than ``max_recurring_coverage_min`` of the night.
+
+        Each learned time claims ``2 * cluster_window_min`` minutes (50 by default). The times
+        are learned FROM the user's own awakenings, so someone who wakes often accumulates many
+        of them -- and the windows then tile the night until the signal is permanently on and
+        no longer discriminates. That is a feedback loop that degrades the feature precisely
+        for the people who need it most.
+
+        Measured on 2026-08-27: ``recurring_wake_window`` was present on 294 of 294 pre-empting
+        ticks, and its +0.20 supplied the deciding margin on ~227 of them (only 67 would have
+        reached the 0.5 threshold without it). A signal that is always on is not evidence.
+        """
+        n = len(self.awakening_minutes)
+        if n <= 0:
+            return float(self.cluster_window_min)
+        budget = float(getattr(self, "max_recurring_coverage_min", 180.0))
+        half = budget / (2.0 * n)
+        # Below MIN_CLUSTER_HALF_WIDTH_MIN a window is too narrow to catch anything at our
+        # sample rate, so shrinking further is pointless. If the budget cannot even afford every
+        # window at that floor, the profile is claiming more distinct "recurring" times than a
+        # night can hold -- it has stopped identifying moments and become a description of a
+        # generally restless sleeper. An uninformative signal should contribute NOTHING rather
+        # than contribute noise with a +0.20 attached, so it switches off entirely (0.0) and
+        # `near_recurring_time` then never fires.
+        if half < MIN_CLUSTER_HALF_WIDTH_MIN:
+            return 0.0
+        return min(float(self.cluster_window_min), half)
+
     def near_recurring_time(self, now: datetime) -> bool:
         m = now.hour * 60 + now.minute
+        half = self.effective_cluster_half_width()
+        if half <= 0.0:
+            return False        # profile too diffuse to identify anything -- see above
+
         for c in self.awakening_minutes:
             d = min(abs(m - c), 1440 - abs(m - c))  # wrap around midnight
-            if d <= self.cluster_window_min:
+            if d <= half:
                 return True
         return False
 

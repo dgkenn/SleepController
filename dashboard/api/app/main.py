@@ -597,6 +597,51 @@ def comfort_cal_status(repo=Depends(repo_dep), user: str = AuthDep):
             "profile": repo.get_comfort_profile()}
 
 
+class ComfortBandBody(BaseModel):
+    """Direct edit of the learned comfort band. All optional -- omitted fields keep their value."""
+    neutral_f: float | None = None
+    cool_edge_f: float | None = None
+    warm_edge_f: float | None = None
+    source: str | None = None
+
+
+@app.post("/control/comfort-profile")
+def set_comfort_profile(body: ComfortBandBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Set the comfort band directly, without re-running the interactive sweep.
+
+    The sweep is the right way to LEARN the band, but it needs a night and the user awake in
+    bed rating steps. When the existing band is demonstrably wrong -- e.g. it excludes the
+    temperature the user's own history records as their best sleep -- there has to be a way to
+    correct it that does not require re-running the whole calibration. Every in-maintenance
+    command is clamped to this band, so it decides the night.
+    """
+    cur = repo.get_comfort_profile() or {}
+    prof = {
+        "neutral_f": body.neutral_f if body.neutral_f is not None else cur.get("neutral_f"),
+        "cool_edge_f": (body.cool_edge_f if body.cool_edge_f is not None
+                        else cur.get("cool_edge_f")),
+        "warm_edge_f": (body.warm_edge_f if body.warm_edge_f is not None
+                        else cur.get("warm_edge_f")),
+        "ratings": cur.get("ratings"),
+        "source": body.source or "manual",
+    }
+    lo, hi = prof["cool_edge_f"], prof["warm_edge_f"]
+    if lo is None or hi is None:
+        raise HTTPException(status_code=400, detail="both cool_edge_f and warm_edge_f are required")
+    if float(hi) < float(lo):
+        raise HTTPException(status_code=400, detail="warm_edge_f must be >= cool_edge_f")
+    # The device itself cannot go outside this, and a band outside it would silently do nothing.
+    for k in ("neutral_f", "cool_edge_f", "warm_edge_f"):
+        v = prof.get(k)
+        if v is not None and not (55.0 <= float(v) <= 110.0):
+            raise HTTPException(status_code=400, detail=f"{k} must be within the device range 55-110F")
+    if prof.get("neutral_f") is not None:
+        # Keep neutral inside its own band; a neutral outside it is not a neutral.
+        prof["neutral_f"] = max(float(lo), min(float(hi), float(prof["neutral_f"])))
+    repo.save_comfort_profile(prof)
+    return {"ok": True, "profile": repo.get_comfort_profile()}
+
+
 @app.post("/control/{action}")
 def control(action: str, repo=Depends(repo_dep), user: str = AuthDep):
     # Maps the dashboard's control buttons to daemon commands. Includes the

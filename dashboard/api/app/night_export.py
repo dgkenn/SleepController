@@ -239,8 +239,30 @@ def build_night_export(repo, night_date: str) -> dict:
                 "precursor_reasons": pre.get("precursor_reasons") or [],
                 "wake_window_preempt": pre.get("wake_window_preempt"),
             })
+        # Saturation of each RISK REASON across ALL maintenance ticks, not just the pre-empting
+        # ones. Counting reasons only on ticks that pre-empted cannot distinguish "this signal
+        # identifies the risky moments" from "this signal is always on" -- and on 2026-08-27
+        # `recurring_wake_window` appeared on 294/294 pre-empting ticks with no way to tell
+        # which it was. A reason present on nearly every maintenance tick is not evidence.
+        reason_ticks: Counter = Counter()
+        maint_seen = 0
+        for r in drows:
+            if str(r["state"]) not in ("maintenance", "wake_recovery"):
+                continue
+            maint_seen += 1
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            pre = pl.get("preemption") or {}
+            for x in set(pre.get("risk_reasons") or []):
+                reason_ticks[x] += 1
         in_maint = [r for r in drows if str(r["state"]) in ("maintenance", "wake_recovery")]
         out["preemption_events"] = ticks
+        out["risk_reason_saturation"] = {
+            k: {"ticks": v, "frac_of_maintenance": round(v / maint_seen, 3) if maint_seen else None}
+            for k, v in reason_ticks.most_common()
+        }
         out["preemption_summary"] = {
             "n_decisions": len(drows),
             "n_in_maintenance": len(in_maint),
