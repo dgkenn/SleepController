@@ -443,10 +443,12 @@ def _check_bed_temperature(repo) -> dict:
     amplifies every degree of demanded cooling by 1/a with nothing measuring the result.
 
     Measured across the three captured nights (2026-08-25/26/27): ``bed_temp_f`` was NULL on
-    6835 of 6835 samples. The closed loop has never once engaged, every night has run fully
-    open-loop, and the commanded level reached the -100 floor on 2026-08-25 -- against a user
-    who reports waking because the bed is too cold. Nothing in this report said a word about
-    it, which is why this check exists.
+    6835 of 6835 samples. The closed loop has never once engaged; every night has run fully
+    open-loop. What that actually looks like is a STEADY overnight command of about -60 to
+    -70 rather than a runaway (2026-08-25 touched the -100 floor for exactly one tick, so do
+    not read this as saturation) -- but it is a steady level nothing is checking against a
+    measurement, for a user whose reported reason for waking is that the bed gets too cold.
+    Nothing in this report said a word about it, which is why this check exists.
 
     The reading comes from the trends session timeseries (``tempBedC``), the same Eight Sleep
     surface that supplies ``presence`` -- also permanently None here -- so a total absence is
