@@ -633,6 +633,97 @@ def acc_magnitudes_g(samples_milli_g: Iterable[Sequence[int]]) -> list[float]:
     return out
 
 
+#: Human walking cadence band, in Hz of STEP rate. Comfortable adult gait is ~1.6-2.0 steps/s;
+#: the band is widened to catch a slow shuffle to the bathroom and a brisk walk alike.
+GAIT_LO_HZ, GAIT_HI_HZ = 1.2, 2.8
+
+#: A cadence peak must hold at least this share of the in-band spectral power before it counts as
+#: rhythmic locomotion rather than incidental movement. Restless turning in bed is broadband;
+#: walking is not.
+GAIT_MIN_CONCENTRATION = 0.30
+
+#: ...and must carry at least this amplitude (g). Below it the "rhythm" is sensor noise.
+GAIT_MIN_AMPLITUDE_G = 0.04
+
+#: Minimum window, in seconds. Spectral concentration is NOT length-normalised -- the same
+#: 1.9 Hz walk measures 0.101 over 2 s and 0.591 over 12 s -- so a fixed threshold silently
+#: encodes a duration requirement. Made explicit here rather than left as an accident, and set
+#: where the margin is large: at 8 s, walking scores 0.385-0.399 across cadences 1.2-2.8 Hz and
+#: realistic noise, while restless turning, postural drift, breathing and tremor all score below
+#: 0.05. Requiring sustained rhythm is also exactly the right bar for an ANCHOR: several
+#: continuous seconds of gait is near-certain evidence of being up, where a two-second rhythm
+#: could be almost anything.
+GAIT_MIN_WINDOW_S = 8.0
+
+
+def _goertzel_power(x, fs: float, freq: float) -> float:
+    """Power at one frequency, by the Goertzel algorithm -- an O(n) single-bin DFT.
+
+    A full FFT is not in the standard library and a dense DFT over a 52 Hz batch would be
+    needlessly slow inside the forwarder's hot path. Goertzel gives exactly the handful of bins
+    a cadence search needs, at a fraction of the cost.
+    """
+    n = len(x)
+    if n < 8 or fs <= 0:
+        return 0.0
+    k = 2.0 * math.cos(2.0 * math.pi * freq / fs)
+    s1 = s2 = 0.0
+    for v in x:
+        s0 = v + k * s1 - s2
+        s2, s1 = s1, s0
+    return (s1 * s1) + (s2 * s2) - (k * s1 * s2)
+
+
+def locomotion_features(samples_g, fs: float = 52.0) -> dict:
+    """Rhythmic-locomotion (gait) detection from a batch of accelerometer magnitudes.
+
+    WHY THIS IS DIFFERENT FROM EVERY OTHER MOTION FEATURE WE COMPUTE. ``pim``, ``zcm``, ``mad``,
+    ``std`` and ``pmax`` are all AMPLITUDE measures -- how much the body moved. Nothing computes
+    PERIODICITY. That matters because amplitude alone cannot separate a big postural turn in bed
+    from walking across the room, and those two mean completely different things: one is normal
+    sleep behaviour, the other is near-certain evidence of being awake and out of bed.
+
+    It also matters for VALIDATION specifically. Every existing wake signal
+    (``_actigraphy_wake``, ``movement_spike``, ``low_motion_break``) reads amplitude, so using
+    amplitude as an "objective anchor" would validate the wake detector against its own input.
+    Cadence is read by nothing, which is what makes it usable as independent evidence.
+
+    Returns ``{"gait": bool, "cadence_hz": float|None, "concentration": float, "amp_g": float}``.
+    Deliberately high-specificity and low-sensitivity: an anchor has to be nearly always RIGHT
+    when it fires, and does not have to fire often.
+    """
+    mags = [float(m) for m in (samples_g or []) if m is not None]
+    n = len(mags)
+    out = {"gait": False, "cadence_hz": None, "concentration": 0.0, "amp_g": 0.0}
+    if fs <= 0 or n < int(GAIT_MIN_WINDOW_S * fs):
+        out["too_short"] = True
+        return out
+    mean = sum(mags) / n
+    x = [m - mean for m in mags]
+    amp = max(abs(v) for v in x)
+    out["amp_g"] = round(amp, 5)
+    if amp < GAIT_MIN_AMPLITUDE_G:
+        return out
+    # Scan the gait band, plus a wider comparison band for the concentration ratio.
+    step = 0.05
+    band, total = [], 0.0
+    f = 0.3
+    while f <= 5.0 + 1e-9:
+        p = _goertzel_power(x, fs, f)
+        total += p
+        if GAIT_LO_HZ <= f <= GAIT_HI_HZ:
+            band.append((p, f))
+        f += step
+    if not band or total <= 0:
+        return out
+    peak_p, peak_f = max(band)
+    conc = peak_p / total
+    out["cadence_hz"] = round(peak_f, 2)
+    out["concentration"] = round(conc, 4)
+    out["gait"] = bool(conc >= GAIT_MIN_CONCENTRATION)
+    return out
+
+
 def actigraphy_counts(samples_g, zcm_threshold: float = ZCM_THRESHOLD_G,
                       round_values: bool = True) -> dict:
     """Actigraphy counts over a batch of accelerometer samples, in g.

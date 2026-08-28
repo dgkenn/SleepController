@@ -32,7 +32,8 @@ In PMD mode the POST body gains an ``acc`` block of actigraphy counts computed e
 ``scripts/reduce_motion_activity.py`` computes the training counts::
 
     {"hr": 58.0, "rr": [948.0, ...], "source": "verity",
-     "acc": {"pim":.., "zcm":.., "mad":.., "std":.., "pmax":.., "n":.., "fs":52}}
+     "acc": {"pim":.., "zcm":.., "mad":.., "std":.., "pmax":.., "n":.., "fs":52,
+             "gait":true, "cadence_hz":1.9, "gait_conc":0.39}}   # gait only when detected
 
 The Verity is a SEPARATE device: nothing here ever touches, modifies, or risks the Eight Sleep
 Pod. This is the physiology path that works even when the Pod's own sleep-tracking is unavailable
@@ -853,6 +854,21 @@ async def _pmd_session(client, args) -> bool:
                 # batch). None whenever it is not confidently measurable -- the same quality
                 # gates the RR path uses, so a movement burst or a flat spectrum yields nothing
                 # rather than a fabricated rate.
+                # GAIT, over the rolling window. Every other motion feature we send is an
+                # AMPLITUDE measure, and amplitude cannot separate a big postural turn in bed
+                # from walking across the room -- measured, a turn registers LARGER than a walk.
+                # Cadence separates them, and because nothing in the wake detector reads
+                # periodicity, it is usable as INDEPENDENT evidence of being awake and up, which
+                # is exactly what the validation layer has been missing.
+                if len(acc_resp_buf) >= int(pmd.GAIT_MIN_WINDOW_S * args.acc_rate):
+                    try:
+                        gait = pmd.locomotion_features(list(acc_resp_buf), float(args.acc_rate))
+                        if gait.get("gait"):
+                            counts["gait"] = True
+                            counts["cadence_hz"] = gait.get("cadence_hz")
+                            counts["gait_conc"] = gait.get("concentration")
+                    except Exception:
+                        pass
                 if len(acc_resp_buf) >= resp_win // 2:
                     try:
                         est = respiration.estimate_uniform(list(acc_resp_buf),

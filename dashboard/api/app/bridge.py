@@ -262,10 +262,11 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
         n = int(n) if isinstance(n, (int, float)) and math.isfinite(float(n)) else None
         conn.execute(
             """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source,
-                                       resp_brpm, resp_conc)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                       resp_brpm, resp_conc, gait, cadence_hz, gait_conc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source,
-             _num("resp_brpm"), _num("resp_conc")),
+             _num("resp_brpm"), _num("resp_conc"),
+             1 if counts.get("gait") else None, _num("cadence_hz"), _num("gait_conc")),
         )
         now_mono = time.monotonic()
         if now_mono - _last_actigraphy_prune_monotonic >= _RR_PRUNE_INTERVAL_S:
@@ -542,6 +543,38 @@ def write_bed_temp_sample(conn: sqlite3.Connection, sample: dict) -> None:
         (_now(), sample.get("temp_f"), sample.get("source", "external")),
     )
     conn.commit()
+
+
+def gait_anchors(conn: sqlite3.Connection, lo_iso: str, hi_iso: str,
+                 min_gap_s: float = 300.0) -> list:
+    """Timestamps at which RHYTHMIC LOCOMOTION was detected -- objective known-awake instants.
+
+    This is the anchor source the validation layer never had. ``eval/wake_anchors`` needs
+    evidence the system did not produce itself, and every existing wake signal reads motion
+    AMPLITUDE, so amplitude cannot serve: validating the wake detector against its own input
+    measures nothing. Cadence is read by no detector, and sustained gait is near-certain
+    evidence of being awake and out of bed -- you cannot walk through a sleep stage.
+
+    Consecutive detections inside ``min_gap_s`` collapse to one anchor, so a single trip to the
+    bathroom counts once rather than as thirty separate awakenings.
+    """
+    try:
+        rows = conn.execute(
+            "SELECT ts FROM actigraphy WHERE gait = 1 AND ts >= ? AND ts <= ? ORDER BY ts ASC",
+            (lo_iso, hi_iso)).fetchall()
+    except sqlite3.Error:
+        return []
+    out: list = []
+    last = None
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(str(r["ts"]))
+        except Exception:
+            continue
+        if last is None or (t - last).total_seconds() >= min_gap_s:
+            out.append(t.isoformat())
+            last = t
+    return out
 
 
 def read_bed_temp_sample(conn: sqlite3.Connection, max_age_s: float = 600.0) -> dict | None:

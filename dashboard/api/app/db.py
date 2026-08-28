@@ -161,6 +161,12 @@ CREATE TABLE IF NOT EXISTS actigraphy (
     pim REAL, zcm INTEGER, mad REAL, std REAL, pmax REAL,
     n INTEGER,                 -- raw accel samples in the batch
     fs REAL,                   -- accelerometer sample rate (Hz)
+    -- RHYTHMIC LOCOMOTION over the rolling window. Every other column here is an AMPLITUDE
+    -- measure, and amplitude cannot tell a big postural turn in bed from walking across the
+    -- room -- measured, the turn registers LARGER. Cadence can, and because no wake signal
+    -- reads periodicity, gait is usable as INDEPENDENT evidence of being awake and out of bed:
+    -- the objective anchor the validation layer has had no source for.
+    gait INTEGER, cadence_hz REAL, gait_conc REAL,
     source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actigraphy_ts ON actigraphy(ts);
@@ -194,6 +200,10 @@ _MIGRATIONS = [
     # compared: they fail differently (RSA collapses under sympathetic arousal, accelerometry
     # under gross movement), so agreement is much stronger evidence than either alone.
     ("actigraphy", "resp_brpm", "REAL"),
+    # Rhythmic locomotion -- the independent wake anchor. See the actigraphy DDL above.
+    ("actigraphy", "gait", "INTEGER"),
+    ("actigraphy", "cadence_hz", "REAL"),
+    ("actigraphy", "gait_conc", "REAL"),
     ("actigraphy", "resp_conc", "REAL"),
     ("sensor_samples", "respiratory_rate", "REAL"),
 ]

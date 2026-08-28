@@ -1474,3 +1474,65 @@ def test_local_timestamps_convert_to_utc_for_the_rr_query():
     as_utc = local.astimezone(timezone.utc)
     assert as_utc.tzinfo is timezone.utc
     assert as_utc.isoformat() != local.isoformat(), "conversion must actually shift the value"
+
+
+# ---------------------------------------------------------------------------------------
+# Gait anchors: the independent wake evidence the validation layer never had a source for.
+# ---------------------------------------------------------------------------------------
+
+def _acti_repo(rows):
+    """rows: [(iso_ts, gait_or_None)]"""
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE actigraphy (ts TEXT, gait INTEGER)")
+    for ts, g in rows:
+        conn.execute("INSERT INTO actigraphy (ts, gait) VALUES (?,?)", (ts, g))
+    return conn
+
+
+def test_gait_rows_become_anchors():
+    from app import bridge
+    conn = _acti_repo([("2026-08-27T23:00:00+00:00", 1), ("2026-08-27T23:30:00+00:00", 1)])
+    got = bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00", "2026-08-28T08:00:00+00:00")
+    assert len(got) == 2
+
+
+def test_non_gait_rows_are_not_anchors():
+    from app import bridge
+    conn = _acti_repo([("2026-08-27T23:00:00+00:00", None)] * 5)
+    assert bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00",
+                               "2026-08-28T08:00:00+00:00") == []
+
+
+def test_one_bathroom_trip_collapses_to_a_single_anchor():
+    """Thirty consecutive gait detections are one awakening, not thirty."""
+    from app import bridge
+    rows = [(f"2026-08-27T23:{m:02d}:00+00:00", 1) for m in range(0, 3)]
+    conn = _acti_repo(rows)
+    got = bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00", "2026-08-28T08:00:00+00:00")
+    assert len(got) == 1
+
+
+def test_separate_trips_stay_separate():
+    from app import bridge
+    conn = _acti_repo([("2026-08-27T23:00:00+00:00", 1), ("2026-08-28T02:00:00+00:00", 1)])
+    got = bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00", "2026-08-28T08:00:00+00:00")
+    assert len(got) == 2
+
+
+def test_anchors_outside_the_night_window_are_excluded():
+    from app import bridge
+    conn = _acti_repo([("2026-08-27T12:00:00+00:00", 1)])
+    assert bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00",
+                               "2026-08-28T08:00:00+00:00") == []
+
+
+def test_a_database_without_the_column_returns_no_anchors():
+    import sqlite3
+    from app import bridge
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE actigraphy (ts TEXT)")
+    assert bridge.gait_anchors(conn, "2026-08-27T20:00:00+00:00",
+                               "2026-08-28T08:00:00+00:00") == []

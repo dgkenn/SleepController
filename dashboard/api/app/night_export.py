@@ -69,6 +69,12 @@ def build_night_export(repo, night_date: str) -> dict:
     from sleepctl.benchmarks import perfect_sleep_index, NightMode
 
     conn = repo.conn
+    # Imported here rather than at module scope: this module is also run standalone by the
+    # publisher, where `app` may not be importable until sys.path is set up above.
+    try:
+        from app import bridge as bridge_mod
+    except Exception:
+        bridge_mod = None
     out = {"schema": SCHEMA, "night_date": night_date, "generated_utc": _iso(None)}
 
     # ---- 1. raw samples (the full sensor time series) ------------------------------------
@@ -383,6 +389,20 @@ def build_night_export(repo, night_date: str) -> dict:
             out["hrv_windows_summary"] = {"n_intervals": 0, "n_windows": 0}
     except Exception as exc:
         out["hrv_windows_error"] = repr(exc)
+
+    # ---- 5b2. GAIT ANCHORS (independent objective wake evidence) --------------------------
+    # The validation layer has never had an anchor source. `eval/wake_anchors` needs evidence
+    # this system did not produce, and every wake signal we have reads motion AMPLITUDE -- so
+    # amplitude cannot validate it without circularity. Cadence is read by nothing, and
+    # sustained rhythmic locomotion is near-certain evidence of being awake and out of bed.
+    try:
+        if first_ts and last_ts:
+            lo = datetime.fromisoformat(str(first_ts)).astimezone(timezone.utc).isoformat()
+            hi = datetime.fromisoformat(str(last_ts)).astimezone(timezone.utc).isoformat()
+            if bridge_mod is not None:
+                out["gait_anchors"] = bridge_mod.gait_anchors(conn, lo, hi)
+    except Exception as exc:
+        out["gait_anchors_error"] = repr(exc)
 
     # ---- 5c. SLEEP/WAKE DETECTOR in SHADOW MODE ------------------------------------------
     # The dedicated detector runs here and its verdicts are published, but nothing acts on them.

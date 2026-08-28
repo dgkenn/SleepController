@@ -98,8 +98,15 @@ def main() -> int:
         except Exception as exc:
             print(f"  could not compute: {exc!r}")
 
-        print("\n[2] RECALL-FREE WAKE ANCHORS (external evidence)")
-        anchors = _external_anchors(anchor_path)
+        print("\n[2] RECALL-FREE WAKE ANCHORS (independent evidence)")
+        # GAIT anchors ride in the night export. Rhythmic locomotion is the one motion signature
+        # no wake detector reads -- every existing one measures amplitude -- so it is genuinely
+        # independent, and sustained gait is near-certain evidence of being up.
+        anchors = list(night.get("gait_anchors") or []) + _external_anchors(anchor_path)
+        if anchors:
+            n_gait = len(night.get("gait_anchors") or [])
+            print(f"  {n_gait} gait anchor(s) from the accelerometer, "
+                  f"{len(anchors) - n_gait} from an external file")
         if not anchors:
             print("  no external anchor file supplied -- skipping.")
             print("  This layer needs objective known-awake instants the system did NOT produce")
