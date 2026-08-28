@@ -29,6 +29,9 @@ class ControlCycle:
         self.controller = controller or SleepController(cfg)
         self.recent: list[SensorFrame] = []
         self._last_action_level: Optional[int] = None
+        # Target of the last command actually acted on, so an intervention's magnitude can be
+        # measured as the size of the command change when there is no sensed bed temperature.
+        self._last_action_target_f: Optional[float] = None
         self._wake_alarm_sent = False
 
     def pending_alarm(self):
@@ -93,10 +96,23 @@ class ControlCycle:
             if dev is None or abs(int(dev) - int(decision.target_level)) <= int(tol):
                 return None
             return decision.target_level
-        magnitude_f = abs(
-            decision.target_temp_f
-            - (frame.bed_temp_f if frame.bed_temp_f is not None else decision.target_temp_f)
-        )
+        # How BIG was this correction? Preferred definition is the error being corrected --
+        # commanded target minus the measured bed temperature. But the `else` arm subtracted the
+        # target from ITSELF, yielding exactly 0.0 whenever there is no measured bed temperature.
+        # On this deployment that is every sample of every night (6835/6835 on 2026-08-25..27,
+        # the Pod exposing no sensed bed temp), so every intervention ever written to the ledger
+        # the learners read has had magnitude 0.0. An entire learning input was identically null
+        # and nothing said so.
+        #
+        # The honest fallback is the size of the COMMAND CHANGE: how far this decision moved the
+        # target from the last one actually acted on. That is always available, it is what the
+        # bed was actually asked to do, and it is never silently zero for a real move.
+        if frame.bed_temp_f is not None:
+            magnitude_f = abs(decision.target_temp_f - frame.bed_temp_f)
+        elif self._last_action_target_f is not None:
+            magnitude_f = abs(decision.target_temp_f - self._last_action_target_f)
+        else:
+            magnitude_f = 0.0     # first command of the session: nothing to measure against
         self.repo.log_intervention(
             Intervention(
                 timestamp=now,
@@ -108,6 +124,7 @@ class ControlCycle:
             self.night_date(now),
         )
         self._last_action_level = decision.target_level
+        self._last_action_target_f = decision.target_temp_f
         return decision.target_level
 
     def log(self, frame: SensorFrame, decision: Decision, now: datetime) -> None:
