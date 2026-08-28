@@ -790,6 +790,17 @@ function Tailscale-Healthy {
         $funnelOut = (& tailscale funnel status 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { return $false }
         if ($funnelOut -notmatch 'https://') { return $false }   # no active https funnel entry
+        # Record the funnel URL so the health snapshot can publish it (see health_snapshot.py).
+        # This is what lets an off-site operator query /diag LIVE instead of waiting on the
+        # 3-minute snapshot cadence -- the difference between polling and actually debugging.
+        # Deliberate exposure, approved by the operator: the URL is an attack surface, but the
+        # dashboard behind it requires auth and /diag 404s without DIAG_TOKEN.
+        try {
+            $m = [regex]::Match($funnelOut, 'https://[A-Za-z0-9\.\-]+\.ts\.net')
+            if ($m.Success) {
+                Set-Content -Path (Join-Path $run "funnel.url") -Value $m.Value -Encoding ASCII
+            }
+        } catch {}
     } catch { return $false }
     return $true
 }

@@ -215,3 +215,29 @@ def test_a_token_in_a_log_line_is_still_scrubbed(repo, tmp_path):
     snap = health_snapshot.build_health_snapshot(repo, run_dir=str(run))
     blob = repr(snap.get("log_tails"))
     assert "a" * 40 not in blob
+
+
+# ------------------------------------- funnel URL publishing (2026-08-28, operator-approved)
+def test_the_funnel_url_is_published_when_the_watchdog_recorded_one(tmp_path):
+    """The difference between polling a 3-minute snapshot and actually debugging: with the URL
+    an off-site operator can query /api/diag live and on demand."""
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "funnel.url").write_text("https://box.tailnet-abc.ts.net\n", encoding="utf-8")
+    assert health_snapshot._funnel_url(str(run)) == "https://box.tailnet-abc.ts.net"
+
+
+def test_no_funnel_recorded_is_simply_absent(tmp_path):
+    run = tmp_path / ".run"
+    run.mkdir()
+    assert health_snapshot._funnel_url(str(run)) is None
+
+
+def test_the_funnel_url_survives_the_scrub(repo, tmp_path):
+    """The scrub must NOT redact this one. It is a hostname, not a credential, and the entire
+    point is for it to travel -- a redacted URL would silently defeat the feature."""
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "funnel.url").write_text("https://box.tailnet-abc.ts.net", encoding="utf-8")
+    snap = health_snapshot.build_health_snapshot(repo, run_dir=str(run))
+    assert snap["funnel_url"] == "https://box.tailnet-abc.ts.net"

@@ -189,6 +189,34 @@ def _log_tails(run_dir: str | None) -> dict:
     return out
 
 
+
+def _funnel_url(run_dir: str | None) -> str | None:
+    """The public Tailscale Funnel URL, if the watchdog recorded one.
+
+    Published deliberately and with the operator's explicit approval. It IS an attack surface --
+    the health branch is public -- but it is the difference between polling a 3-minute snapshot
+    and actually debugging: with it, an off-site operator can query ``/api/diag?token=...`` live
+    and on demand instead of only seeing whatever was pre-published. The dashboard behind it
+    requires auth, and /diag returns 404 without DIAG_TOKEN, so the URL alone grants nothing.
+
+    The scrub pass deliberately does NOT redact this: it is a hostname, not a credential, and
+    the whole point is for it to travel.
+    """
+    if not run_dir:
+        try:
+            from app.diagnostics import _default_run_dir
+            run_dir = _default_run_dir()
+        except Exception:
+            db = os.environ.get("SLEEPCTL_DB", "")
+            run_dir = os.path.join(os.path.dirname(db) if db else os.getcwd(), ".run")
+    try:
+        with open(os.path.join(run_dir, "funnel.url"), "r", encoding="utf-8") as fh:
+            url = fh.read().strip()
+        return url or None
+    except Exception:
+        return None
+
+
 def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None = None) -> dict:
     """Build the scrubbed operational-health snapshot dict for publishing.
 
@@ -233,6 +261,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "playbook_matches": _copy_playbook_matches(diag.get("playbook_matches")),
         "preflight": _preflight_block(repo, diag.get("checks")),
         "log_tails": _log_tails(run_dir),
+        "funnel_url": _funnel_url(run_dir),
     }
     return scrub(snapshot)
 
