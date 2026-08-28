@@ -112,6 +112,10 @@ class SleepController:
         self.last_onset_event = None
         self.last_arousal = None          # last ArousalAssessment
         self._stage_estimated = False     # was frame.stage derived from vitals this tick (no Pod stage)
+        self._stage_held = None           # stage hysteresis: currently adopted estimate
+        self._stage_pending = None        # candidate stage awaiting persistence
+        self._stage_pending_n = 0
+        self._stage_hold_suppressed = 0   # ticks whose stage flip the hysteresis absorbed
         # "sensor" | "model" | "model+deep" | "heuristic" (which supplied the stage).
         # "model+deep" = the learned stager said light, but the clock-free heuristic had
         # positive physiological evidence for DEEP and upgraded it (see state_estimator).
@@ -217,6 +221,63 @@ class SleepController:
                     f"(cool_edge {float(cool_edge):.1f}F, cap {cap:.2f}F)")
         except Exception:
             return None, None
+
+    def _hold_stage(self, est, cfg):
+        """Hysteresis on the ESTIMATED stage: a new sleep stage must persist before it is adopted.
+
+        Sleep stages are physiologically persistent -- a real bout runs 15-30 minutes -- so a
+        label that changes every 30-second tick is measurement noise, not physiology. Measured on
+        2026-08-27: 233 stage flips across 686 maintenance ticks with a median bout of 2 ticks,
+        and 187 of those flips (80%) were light<->deep oscillation driven by ordinary beat-to-beat
+        HR variation across the boundary. The daemon ticks about every 30 s while the Pod frame
+        refreshes every ~60 s, so consecutive ticks re-score the same physiology and land on
+        different sides of it.
+
+        This costs more than a messy hypnogram. Every deep->light flip fires a
+        ``stage_regression`` vote in the wake detector, so the flapping manufactures wake
+        evidence: 93 such flips on that night.
+
+        AWAKE is deliberately EXEMPT. Wake detection has to stay responsive -- delaying an awake
+        label to smooth the chart would trade the one thing this system exists to catch for
+        cosmetics. Only transitions among the sleep stages are damped.
+        """
+        try:
+            n = int(getattr(cfg.tunables, "stage_hold_ticks", 2))
+        except Exception:
+            n = 2
+        stage, conf, source = est
+        held_now = getattr(self, "_stage_held", None)
+        # Any transition involving AWAKE is immediate, in BOTH directions. Exempting only the
+        # ENTRY made AWAKE sticky -- easy to enter, slow to leave -- which inflated the awake
+        # label count on the 2026-08-27 sequence from 30 to 53 and would have inflated WASO and
+        # the wake-event count with it. Waking must be responsive; so must going back to sleep.
+        if n <= 1 or stage is SleepStage.AWAKE or held_now is SleepStage.AWAKE:
+            self._stage_held = stage
+            self._stage_pending = None
+            self._stage_pending_n = 0
+            return est
+        held = getattr(self, "_stage_held", None)
+        if held is None or stage is held:
+            self._stage_held = stage
+            self._stage_pending = None
+            self._stage_pending_n = 0
+            return est
+        # A DIFFERENT sleep stage: count consecutive agreement before switching.
+        if getattr(self, "_stage_pending", None) is stage:
+            self._stage_pending_n = getattr(self, "_stage_pending_n", 0) + 1
+        else:
+            self._stage_pending = stage
+            self._stage_pending_n = 1
+        if self._stage_pending_n >= n:
+            self._stage_held = stage
+            self._stage_pending = None
+            self._stage_pending_n = 0
+            return est
+        # Not yet persistent -- keep the held stage. The suppression is surfaced on its own
+        # field rather than by decorating `stage_source`, which is a fixed vocabulary other code
+        # and tests match against; smuggling a suffix into it would break that contract.
+        self._stage_hold_suppressed += 1
+        return (held, conf, source)
 
     def _stabilize_target(self, proposed_f: float, now, cfg, preempting: bool = False):
         """Should this proposed target be HELD instead of commanded? (arm C)
@@ -485,6 +546,7 @@ class SleepController:
                 # until the resting baseline is learned, which disables that test on its own.
                 resting_hr=(self.resting_baseline or {}).get("hr"))
             if est is not None:
+                est = self._hold_stage(est, cfg)
                 frame.stage, frame.stage_confidence, self._stage_source = est
                 self._stage_estimated = True
 
@@ -1265,6 +1327,9 @@ class SleepController:
             #   "model"     => the learned wearable stager (HR -> stage; PhysioNet-trained)
             #   "heuristic" => the interpretable HR/HRV/movement fallback
             "stage_source": self._stage_source if self._stage_estimated else "sensor",
+            # How many estimated-stage flips the hysteresis has absorbed so far this session --
+            # the churn stays measurable instead of being silently smoothed away.
+            "stage_flips_suppressed": self._stage_hold_suppressed,
             # Ultradian trajectory: in_light / minutes_to_next_light / typical_deep_bout_min /
             # confidence, accumulated across the whole night (see wake_orch.observe_stage).
             "cycle": self.last_cycle_state or None,

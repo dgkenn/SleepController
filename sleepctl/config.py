@@ -119,6 +119,13 @@ class Tunables:
     thermal_min_progress_levels: int = 5     # min level movement toward target to count responsive
     # Predictive awakening pre-emption: detect the slow pre-arousal DRIFT (trends over a short
     # window) before a full awakening, to buy lead time for a gentle SETTLE_COOL nudge.
+    # Consecutive agreeing ticks before an ESTIMATED sleep stage is switched. Stages are
+    # physiologically persistent (15-30 min bouts), so a label changing every 30 s tick is noise:
+    # measured 2026-08-27, 233 flips over 686 maintenance ticks, 80% of them light<->deep from
+    # ordinary beat-to-beat HR variation across the boundary. Each deep->light flip also fires a
+    # `stage_regression` vote in the wake detector, so the churn manufactures wake evidence
+    # (93 such flips that night). AWAKE is exempt -- see SleepController._hold_stage.
+    stage_hold_ticks: int = 2
     precursor_window_min: float = 4.0          # rolling window for trend fits
     precursor_hr_creep_slope: float = 0.6      # bpm/min rise => autonomic arousal building
     precursor_hrv_decay_slope: float = -0.8    # ms/min fall => sympathetic shift
