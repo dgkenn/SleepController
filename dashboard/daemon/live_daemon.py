@@ -94,6 +94,8 @@ class LiveDashboardDaemon:
         # HR/movement is fused onto every Pod frame (zero device risk; controller unchanged).
         self.wearable = wearable
         self.shift_plan = None  # advisory cross-shift sleep plan, refreshed on the control tick
+        self.trial_arm = None   # tonight's randomized controller-policy assignment (blinded)
+        self._bed_temp_source = None  # which sensor supplied bed_temp_f, when not the Pod
         # Optional WeatherSource for environmental pre-compensation (None -> feature off,
         # keeps the simulator/test path network-free).
         self.weather = weather
@@ -545,6 +547,20 @@ class LiveDashboardDaemon:
             self.cycle.controller.set_night_targets(plan.targets, plan.est_sleep_min)
         except Exception as exc:
             self._skip("night-type planning", exc)
+        # Randomized CONTROLLER-POLICY arm for tonight. Applied here because the trial
+        # stratifies on the night TYPE that plan_night has just determined. Idempotent, so a
+        # mid-night restart cannot re-roll the arm.
+        try:
+            from sleepctl.eval.trial_apply import apply_trial_arm
+            self.trial_arm = apply_trial_arm(
+                self.repo, self.cfg, self.cycle.controller,
+                self.cycle.night_date(datetime.now()), self.context.night_type)
+            if self.trial_arm:
+                # Deliberately NOT logged with the policy name: the daemon log is visible to the
+                # user and printing the arm would defeat the blinding the trial exists to protect.
+                self._log(f"controller trial: assigned (block {self.trial_arm['block_id']})")
+        except Exception as exc:
+            self._skip("controller-trial arm", exc)
         # Night TYPE is only known now (plan_night just classified it) -- the randomized efficacy
         # micro-trial's eligibility gate needs that, so it's applied here, not at daemon start-up.
         self._apply_efficacy_micro_trial()
@@ -879,6 +895,18 @@ class LiveDashboardDaemon:
         bed-in and disengages on bed-out with no phone-side action. (Unknown presence still
         fuses, so we never lose data to a missing reading.)"""
         frame = self.client.read_frame()
+        # INDEPENDENT bed temperature, when the Pod will not supply one. This is the measurement
+        # ThermalPlanner.resolve needs to close its loop; without it every thermal decision is
+        # open-loop feedforward the system cannot check. Never overrides a real Pod reading --
+        # only fills the gap, and only while fresh (read_bed_temp_sample enforces that).
+        if frame is not None and frame.bed_temp_f is None:
+            try:
+                ext = bridge.read_bed_temp_sample(self.repo.conn)
+                if ext:
+                    frame.bed_temp_f = float(ext["temp_f"])
+                    self._bed_temp_source = ext.get("source") or "external"
+            except Exception as exc:
+                self._skip("external bed temperature", exc)
         self._phone_fused = False
         if self.wearable is not None and frame.presence is not False:
             try:

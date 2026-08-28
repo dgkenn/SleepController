@@ -125,6 +125,12 @@ class Tunables:
     # ordinary beat-to-beat HR variation across the boundary. Each deep->light flip also fires a
     # `stage_regression` vote in the wake detector, so the churn manufactures wake evidence
     # (93 such flips that night). AWAKE is exempt -- see SleepController._hold_stage.
+    # Randomized, blinded n-of-1 trial of CONTROLLER POLICIES (sleepctl/eval/trial.py). OFF by
+    # default: it changes what the bed does on a schedule the user does not choose, so it is
+    # opt-in. Turning it on is what makes a change to this system falsifiable rather than a
+    # plausible story told over n=1 nights.
+    controller_trial_enabled: bool = False
+    trial_seed: str = "sleepctl-n-of-1"
     stage_hold_ticks: int = 2
     precursor_window_min: float = 4.0          # rolling window for trend fits
     precursor_hr_creep_slope: float = 0.6      # bpm/min rise => autonomic arousal building

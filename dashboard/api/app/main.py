@@ -488,6 +488,43 @@ def hr_ingest(body: HRBody, request: Request, token: str | None = None,
     return services.ingest_hr(repo, payload)
 
 
+class BedTempBody(BaseModel):
+    """A reading from an INDEPENDENT bed-temperature sensor. Either unit; °C is converted."""
+    temp_f: float | None = None
+    temp_c: float | None = None
+    source: str | None = None
+
+
+@app.post("/bedtemp/ingest")
+def bedtemp_ingest(body: BedTempBody, request: Request, token: str | None = None,
+                   repo=Depends(repo_dep)):
+    """Supply the bed temperature the Pod will not.
+
+    ``ThermalPlanner.resolve`` closes its loop on a measured bed temperature and falls through to
+    open-loop feedforward without one. On this deployment the Pod's sensed value is NULL on 100%
+    of samples -- 6514 across two days, the same account limitation that makes ``presence`` null
+    -- so the loop has never once closed and every thermal decision has been a guess the system
+    could not check. Any external sensor that can POST here closes it: a BLE thermometer under
+    the sheet, a phone shortcut, a Zigbee probe.
+
+    Same header-less auth as the other sensor endpoints (``?token=`` or ``BCG_INGEST_OPEN``).
+    """
+    _bcg_auth(request, token)
+    temp_f = body.temp_f
+    if temp_f is None and body.temp_c is not None:
+        temp_f = body.temp_c * 9.0 / 5.0 + 32.0
+    if temp_f is None:
+        raise HTTPException(status_code=400, detail="one of temp_f or temp_c is required")
+    # The device's own operating range. A reading outside it is a broken sensor or a unit
+    # mix-up (20 C posted as F), and feeding either into a closed loop is worse than staying open.
+    if not (40.0 <= float(temp_f) <= 120.0):
+        raise HTTPException(status_code=400,
+                            detail="temperature outside the plausible range 40-120F")
+    bridge.write_bed_temp_sample(repo.conn, {"temp_f": float(temp_f),
+                                             "source": body.source or "external"})
+    return {"ok": True, "temp_f": round(float(temp_f), 2)}
+
+
 @app.get("/stream/status")
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie

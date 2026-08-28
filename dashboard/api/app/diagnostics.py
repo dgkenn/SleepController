@@ -555,6 +555,78 @@ def _check_preemption_ran(repo) -> dict:
                   f"({top})", None)
 
 
+def _check_preemption_dead_zone(repo) -> dict:
+    """Maintenance ticks that passed, with wake evidence, before pre-emption first engaged.
+
+    This is structural, not a bug on its face: for the first 70 minutes after onset the only
+    vulnerability term the risk model has is ``light_stage`` (+0.10) against a 0.5 threshold --
+    ``cycle_boundary`` needs 70 minutes since onset, ``back_half`` 270, and the circadian window
+    starts at 03:30. The first sleep cycle is normally the deepest and most protected, so having
+    no structural alarm there is a reasonable default.
+
+    It stops being reasonable when awakenings actually happen in that window. On 2026-08-27
+    pre-emption did not engage until 00:49, 92 minutes after maintenance began, and five
+    awakening ticks fell inside the gap. Reported alongside the precursor score distribution so
+    the fix is decidable from evidence: near-miss precursors mean the threshold is wrong, flat
+    ones mean there was genuinely nothing to act on and the gap is not the problem.
+    """
+    try:
+        row = repo.conn.execute(
+            "SELECT night_date FROM decisions WHERE night_date IS NOT NULL "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        if not row:
+            return _check("preemption_dead_zone", "Pre-emption dead zone", "info",
+                          "no decisions recorded yet", None)
+        night = row[0]
+        rows = repo.conn.execute(
+            "SELECT state, log_payload FROM decisions WHERE night_date = ? ORDER BY id",
+            (night,)).fetchall()
+    except Exception as exc:
+        return _check("preemption_dead_zone", "Pre-emption dead zone", "info",
+                      f"not readable ({exc!r})", None)
+    ticks = wakes = 0
+    best_precursor = 0.0
+    seen = False
+    for state, payload in rows:
+        if str(state) not in ("maintenance", "wake_recovery"):
+            continue
+        try:
+            pl = json.loads(payload) if payload else {}
+        except Exception:
+            continue
+        pre = pl.get("preemption") or {}
+        if pre.get("preempting"):
+            seen = True
+            break
+        ticks += 1
+        if pl.get("wake_signals"):
+            wakes += 1
+        try:
+            best_precursor = max(best_precursor, float(pre.get("precursor_score") or 0.0))
+        except (TypeError, ValueError):
+            pass
+    if not ticks:
+        return _check("preemption_dead_zone", "Pre-emption dead zone", "ok",
+                      f"{night}: pre-emption was available from the first maintenance tick", None)
+    if not seen:
+        return _check("preemption_dead_zone", "Pre-emption dead zone", "warn",
+                      f"{night}: pre-emption NEVER engaged across {ticks} maintenance tick(s)",
+                      "see the preemption_ran check")
+    if not wakes:
+        return _check("preemption_dead_zone", "Pre-emption dead zone", "ok",
+                      f"{night}: {ticks} maintenance tick(s) before pre-emption engaged, but no "
+                      f"wake evidence in that window -- nothing to have acted on", None)
+    return _check(
+        "preemption_dead_zone", "Pre-emption dead zone", "warn",
+        f"{night}: {wakes} tick(s) with wake evidence occurred in the {ticks}-tick window before "
+        f"pre-emption first engaged; the highest precursor score reached in that window was "
+        f"{best_precursor:.2f}",
+        "the first ~70 min after onset has no structural vulnerability term, so only the "
+        "precursor path can fire there -- if that peak score sits just under the precursor "
+        "threshold the threshold is the thing to change, and if it is far below it there was no "
+        "signal to act on and the gap is not the problem")
+
+
 def _check_comfort_band_pinning(repo) -> dict:
     """Is the night being spent PINNED at an edge of the personal comfort band?
 
@@ -1593,6 +1665,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_maintenance_reached(repo))
     add("preemption_ran", "Awakening pre-emption", lambda: _check_preemption_ran(repo))
     add("comfort_band", "Comfort-band pinning", lambda: _check_comfort_band_pinning(repo))
+    add("preemption_dead_zone", "Pre-emption dead zone",
+        lambda: _check_preemption_dead_zone(repo))
     add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))

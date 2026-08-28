@@ -527,6 +527,49 @@ def write_cardiac_sample(conn: sqlite3.Connection, sample: dict) -> None:
     conn.commit()
 
 
+def write_bed_temp_sample(conn: sqlite3.Connection, sample: dict) -> None:
+    """Persist a reading from an INDEPENDENT bed-temperature sensor (singleton).
+
+    The Pod's own sensed bed temp is NULL on 100% of samples on this deployment, so the thermal
+    loop has never closed and every decision has been open-loop feedforward. Any external sensor
+    -- a BLE thermometer under the sheet, a phone shortcut, anything that can POST -- can supply
+    the measurement here instead.
+    """
+    conn.execute(
+        """INSERT INTO live_bed_temp (id, updated, temp_f, source) VALUES (1,?,?,?)
+        ON CONFLICT(id) DO UPDATE SET
+         updated=excluded.updated, temp_f=excluded.temp_f, source=excluded.source""",
+        (_now(), sample.get("temp_f"), sample.get("source", "external")),
+    )
+    conn.commit()
+
+
+def read_bed_temp_sample(conn: sqlite3.Connection, max_age_s: float = 600.0) -> dict | None:
+    """Latest independent bed temperature, or None when absent or STALE.
+
+    Staleness matters more here than for any other channel: a closed thermal loop acting on a
+    temperature from an hour ago would chase a state the bed has long left, which is worse than
+    the open-loop feedforward it replaces. Tolerates the table being absent (engine-only DBs).
+    """
+    try:
+        row = conn.execute("SELECT * FROM live_bed_temp WHERE id = 1").fetchone()
+    except sqlite3.Error:
+        return None
+    if row is None:
+        return None
+    d = dict(row)
+    if d.get("temp_f") is None or not d.get("updated"):
+        return None
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(d["updated"])).total_seconds()
+    except Exception:
+        return None
+    if age > max_age_s:
+        return None
+    d["age_seconds"] = max(0.0, age)
+    return d
+
+
 def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
     """Latest dedicated-cardiac-sensor sample with a computed ``age_seconds``, or None.
 

@@ -81,6 +81,16 @@ CREATE TABLE IF NOT EXISTS live_cardiac (
     id INTEGER PRIMARY KEY CHECK (id = 1),
     updated TEXT, hr REAL, hrv REAL, source TEXT
 );
+-- INDEPENDENT bed-temperature sensor (e.g. a BLE thermometer under the sheet). The Pod's own
+-- sensed bed temp comes from the trends session timeseries and is NULL on 100% of samples on
+-- this deployment (6514 in two days) -- the same account limitation that makes `presence` null
+-- -- so ThermalPlanner.resolve has never once closed its loop and every thermal decision has
+-- been open-loop feedforward. This table lets ANY external sensor supply the measurement the
+-- Pod will not, closing the loop without the vendor API.
+CREATE TABLE IF NOT EXISTS live_bed_temp (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    updated TEXT, temp_f REAL, source TEXT
+);
 -- One row per night recording HOW you were woken (stage, how early, window, forced), joined
 -- with the morning check-in grogginess to personalize the wake tuning.
 CREATE TABLE IF NOT EXISTS wake_log (

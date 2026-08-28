@@ -1298,3 +1298,132 @@ def test_an_unreadable_database_never_raises_out_of_the_level_check():
                 raise RuntimeError("no such column")
 
     assert _check_device_level_glitches(Broken())["status"] == "info"
+
+
+# ---------------------------------------------------------------------------------------
+# Independent bed temperature. ThermalPlanner.resolve closes its loop on a measured bed temp
+# and falls through to open-loop feedforward without one. The Pod's value is NULL on 100% of
+# samples here (6514 in two days), so the loop has never closed. Any external sensor can now
+# supply it.
+# ---------------------------------------------------------------------------------------
+
+def test_a_fahrenheit_reading_is_accepted_and_stored(auth_client):
+    r = auth_client.post("/bedtemp/ingest", json={"temp_f": 66.4, "source": "ble_probe"})
+    assert r.status_code == 200, r.text
+    assert r.json()["temp_f"] == 66.4
+
+
+def test_a_celsius_reading_is_converted(auth_client):
+    r = auth_client.post("/bedtemp/ingest", json={"temp_c": 20.0})
+    assert r.status_code == 200
+    assert r.json()["temp_f"] == 68.0
+
+
+def test_a_reading_with_no_temperature_is_refused(auth_client):
+    assert auth_client.post("/bedtemp/ingest", json={"source": "x"}).status_code == 400
+
+
+def test_an_implausible_reading_is_refused(auth_client):
+    """A unit mix-up (20 C posted as F) fed into a CLOSED loop is worse than staying open."""
+    assert auth_client.post("/bedtemp/ingest", json={"temp_f": 20.0}).status_code == 400
+    assert auth_client.post("/bedtemp/ingest", json={"temp_f": 200.0}).status_code == 400
+
+
+def test_a_fresh_reading_reads_back_with_an_age(auth_client):
+    from app import bridge
+    from app.db import get_repo
+    auth_client.post("/bedtemp/ingest", json={"temp_f": 67.2})
+    got = bridge.read_bed_temp_sample(get_repo().conn)
+    assert got is not None and got["temp_f"] == 67.2
+    assert got["age_seconds"] < 60
+
+
+def test_a_stale_reading_is_withheld(auth_client):
+    """Closing the loop on an hour-old temperature would chase a state the bed has long left --
+    worse than the open-loop feedforward it replaces."""
+    from app import bridge
+    from app.db import get_repo
+    auth_client.post("/bedtemp/ingest", json={"temp_f": 67.2})
+    assert bridge.read_bed_temp_sample(get_repo().conn, max_age_s=0.0) is None
+
+
+def test_reading_from_a_database_without_the_table_returns_none():
+    import sqlite3
+    from app import bridge
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    assert bridge.read_bed_temp_sample(conn) is None
+
+
+# ---------------------------------------------------------------------------------------
+# Pre-emption dead zone. For the first ~70 min after onset the only vulnerability term is
+# light_stage (+0.10) against a 0.5 threshold, so only the precursor path can fire there. On
+# 2026-08-27 five awakening ticks fell in the 92-minute gap before pre-emption first engaged.
+# ---------------------------------------------------------------------------------------
+
+def _decisions(rows, night="2026-08-27"):
+    """rows: [(state, preemption_dict, wake_signals_or_None)]"""
+    import sqlite3, json as _j
+
+    class R:
+        pass
+    r = R()
+    r.conn = sqlite3.connect(":memory:")
+    r.conn.execute("CREATE TABLE decisions (id INTEGER PRIMARY KEY, night_date TEXT, "
+                   "state TEXT, log_payload TEXT)")
+    for st, pre, ws in rows:
+        payload = _j.dumps({"preemption": pre or {}, "wake_signals": ws})
+        r.conn.execute("INSERT INTO decisions (night_date, state, log_payload) VALUES (?,?,?)",
+                       (night, st, payload))
+    return r
+
+
+def test_wake_evidence_inside_the_dead_zone_is_reported_with_the_peak_precursor():
+    from app.diagnostics import _check_preemption_dead_zone
+    rows = [("maintenance", {"preempting": False, "precursor_score": 0.37}, ["hr_rise"])] * 5
+    rows += [("maintenance", {"preempting": True}, None)]
+    c = _check_preemption_dead_zone(_decisions(rows))
+    assert c["status"] == "warn"
+    assert "0.37" in c["detail"]
+    assert "threshold" in (c["remedy"] or "")
+
+
+def test_a_quiet_dead_zone_is_not_a_problem():
+    """A gap with nothing to act on is not a gap worth closing."""
+    from app.diagnostics import _check_preemption_dead_zone
+    rows = [("maintenance", {"preempting": False, "precursor_score": 0.05}, None)] * 8
+    rows += [("maintenance", {"preempting": True}, None)]
+    assert _check_preemption_dead_zone(_decisions(rows))["status"] == "ok"
+
+
+def test_pre_emption_available_immediately_is_ok():
+    from app.diagnostics import _check_preemption_dead_zone
+    rows = [("maintenance", {"preempting": True}, None)] * 3
+    assert _check_preemption_dead_zone(_decisions(rows))["status"] == "ok"
+
+
+def test_never_engaging_at_all_is_deferred_to_the_other_check():
+    from app.diagnostics import _check_preemption_dead_zone
+    rows = [("maintenance", {"preempting": False, "precursor_score": 0.1}, None)] * 6
+    c = _check_preemption_dead_zone(_decisions(rows))
+    assert c["status"] == "warn" and "NEVER engaged" in c["detail"]
+
+
+def test_induction_ticks_are_not_counted_as_dead_zone():
+    """Pre-emption is MAINTENANCE-only by design; induction ticks are not a gap."""
+    from app.diagnostics import _check_preemption_dead_zone
+    rows = [("induction", {}, ["hr_rise"])] * 20
+    rows += [("maintenance", {"preempting": True}, None)]
+    assert _check_preemption_dead_zone(_decisions(rows))["status"] == "ok"
+
+
+def test_an_unreadable_database_never_raises_out_of_the_dead_zone_check():
+    from app.diagnostics import _check_preemption_dead_zone
+
+    class Broken:
+        class conn:
+            @staticmethod
+            def execute(*a, **k):
+                raise RuntimeError("no such table")
+
+    assert _check_preemption_dead_zone(Broken())["status"] == "info"

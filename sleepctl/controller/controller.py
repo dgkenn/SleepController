@@ -119,6 +119,8 @@ class SleepController:
         self._stage_pending = None        # candidate stage awaiting persistence
         self._stage_pending_n = 0
         self._stage_hold_suppressed = 0   # ticks whose stage flip the hysteresis absorbed
+        #: Set by the randomized controller trial (arm B off / arm C on). None = trial inactive.
+        self.trial_stabilizer_enabled = None
         # "sensor" | "model" | "model+deep" | "heuristic" (which supplied the stage).
         # "model+deep" = the learned stager said light, but the clock-free heuristic had
         # positive physiological evidence for DEEP and upgraded it (see state_estimator).
@@ -321,6 +323,10 @@ class SleepController:
         whatever the urgency.
         """
         try:
+            # Trial arm B runs with the stabilizer OFF; arm C runs with it on. None means the
+            # controller trial is not active and production behaviour applies.
+            if getattr(self, "trial_stabilizer_enabled", None) is False:
+                return None, None
             deadband = float(getattr(cfg.tunables, "stabilizer_deadband_f", 0.4))
             dwell = float(getattr(cfg.tunables, "stabilizer_min_dwell_min", 12.0))
             last = self._last_target_f

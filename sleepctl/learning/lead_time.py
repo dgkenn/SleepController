@@ -113,6 +113,38 @@ def _measured_cool_lag(repo) -> Optional[float]:
     return max(_LAG_BOUNDS[0], min(_LAG_BOUNDS[1], float(cal["cool_lag_min"])))
 
 
+def _reach_time_lag(repo) -> Optional[float]:
+    """Minutes for the bed to traverse the user's comfort band, from measured DEVICE-LEVEL rates.
+
+    Uses ``ThermalLatencyModel.from_repo``, which derives per-direction rates from
+    ``thermal_samples`` -- device levels, not bed temperature -- so it works on a deployment
+    whose Pod reports no sensed bed temp. The cooling direction is the one that matters: it is
+    the slower of the two and it is what a pre-cool has to complete before the window arrives.
+
+    Returns None if anything is missing, leaving the caller on its existing fallback chain.
+    """
+    try:
+        from sleepctl.controller.calibration import fahrenheit_to_level
+        from sleepctl.controller.thermal_latency import ThermalLatencyModel
+        model = ThermalLatencyModel.from_repo(repo)
+        prof = repo.get_comfort_profile() or {}
+        lo, hi = prof.get("cool_edge_f"), prof.get("warm_edge_f")
+        if lo is None or hi is None:
+            return None
+        lo_lvl = fahrenheit_to_level(float(lo))
+        hi_lvl = fahrenheit_to_level(float(hi))
+        minutes = model.minutes_to_reach(hi_lvl, lo_lvl)   # the cooling traverse
+        if minutes is None or minutes <= 0:
+            return None
+        return _clamp_lag(minutes)
+    except Exception:
+        return None
+
+
+def _clamp_lag(v: float) -> float:
+    return max(_LAG_BOUNDS[0], min(_LAG_BOUNDS[1], float(v)))
+
+
 def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
                             target_prevention: float = 0.75, min_events: int = 4
                             ) -> LeadTimeProfile:
@@ -139,7 +171,26 @@ def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
         cal_lag = _measured_cool_lag(repo)
         if cal_lag is not None:
             lag, measured = cal_lag, True
-    lag = lag if (learned or measured) else _DEFAULT_LAG_MIN
+    # THIRD source, before giving up on the preset: reach-time derived from the thermal latency
+    # model. This matters because the two sources above are both unavailable on this deployment
+    # and cannot become available on their own:
+    #
+    #   * learn_response_lag requires `bed_temp_f IS NOT NULL` -- zero rows here, since the Pod
+    #     exposes no sensed bed temperature (6514 consecutive nulls), so it can never fire;
+    #   * the self-test has not been run.
+    #
+    # So the lead has silently sat on the 12-minute preset forever. ThermalLatencyModel derives
+    # per-direction rates from `thermal_samples` DEVICE LEVELS -- data we collect every night,
+    # needing neither a bed thermistor nor a calibration run. Measured against it, the bed
+    # traverses the entire comfort band in ~9 minutes cooling, while the preset was producing
+    # window leads of 14-24 minutes: pre-emption was starting roughly twice as early as the
+    # hardware needs, which is part of why it fired on 43% of maintenance ticks.
+    reached = False
+    if not (learned or measured):
+        model_lag = _reach_time_lag(repo)
+        if model_lag is not None:
+            lag, reached = model_lag, True
+    lag = lag if (learned or measured or reached) else _DEFAULT_LAG_MIN
 
     bump = 1.0
     try:
@@ -154,7 +205,8 @@ def build_lead_time_profile(repo, need_min_wake_events: float = 1.0,
 
     profile = LeadTimeProfile.from_lag(
         lag, bump=bump,
-        source=("learned" if learned else ("measured" if measured else "preset")))
+        source=("learned" if learned else
+                ("measured" if measured else ("reach_time" if reached else "preset"))))
 
     # Closed-loop adjustment from measured prevention rates.
     try:

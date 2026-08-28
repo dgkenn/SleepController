@@ -257,6 +257,54 @@ def build_night_export(repo, night_date: str) -> dict:
             pre = pl.get("preemption") or {}
             for x in set(pre.get("risk_reasons") or []):
                 reason_ticks[x] += 1
+        # Score distributions across ALL maintenance ticks, and the DEAD ZONE before pre-emption
+        # first engages. Recording scores only on ticks that pre-empted cannot answer the
+        # question that matters when prevention is absent: were the precursors near-miss (so the
+        # threshold is wrong) or flat (so there was genuinely nothing to act on)?
+        #
+        # On 2026-08-27 pre-emption did not engage until 00:49, 92 minutes after maintenance
+        # began at 23:17, and five awakening ticks fell inside that gap. It is structural: for
+        # the first 70 minutes after onset the only vulnerability term available is light_stage
+        # (+0.10) against a 0.5 threshold -- cycle_boundary needs 70 min, back_half 270, the
+        # circadian window 03:30. Whether that gap needs closing depends on the scores inside it.
+        risk_scores, prec_scores = [], []
+        maint_before_preempt = wakes_before_preempt = 0
+        seen_preempt = False
+        first_pre_ts = ticks[0]["ts"] if ticks else None
+        for r in drows:
+            if str(r["state"]) not in ("maintenance", "wake_recovery"):
+                continue
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            pre = pl.get("preemption") or {}
+            if pre.get("wake_risk") is not None:
+                risk_scores.append(float(pre["wake_risk"]))
+            if pre.get("precursor_score") is not None:
+                prec_scores.append(float(pre["precursor_score"]))
+            if pre.get("preempting"):
+                seen_preempt = True
+            if not seen_preempt:
+                maint_before_preempt += 1
+                if (pl.get("wake_signals") or pl.get("should_wake")):
+                    wakes_before_preempt += 1
+
+        def _pcts(xs):
+            if not xs:
+                return None
+            xs = sorted(xs)
+            def q(f):
+                return round(xs[min(len(xs) - 1, int(f * len(xs)))], 3)
+            return {"n": len(xs), "p50": q(0.5), "p90": q(0.9), "max": round(xs[-1], 3)}
+
+        out["risk_score_distribution"] = _pcts(risk_scores)
+        out["precursor_score_distribution"] = _pcts(prec_scores)
+        out["preemption_dead_zone"] = {
+            "maintenance_ticks_before_first_preempt": maint_before_preempt,
+            "wake_signal_ticks_in_that_window": wakes_before_preempt,
+            "first_preempt_ts": first_pre_ts,
+        }
         in_maint = [r for r in drows if str(r["state"]) in ("maintenance", "wake_recovery")]
         out["preemption_events"] = ticks
         out["risk_reason_saturation"] = {

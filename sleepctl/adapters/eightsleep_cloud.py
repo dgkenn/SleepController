@@ -129,6 +129,10 @@ class EightSleepClient:
         # available). See _sensed_bed_temp_f: this has been None on every sample of every
         # captured night, and without this the reason was unknowable from the outside.
         self.last_bed_temp_reason: Optional[str] = None
+        #: Last device heating level that passed the plausibility check, and how many reads have
+        #: been rejected as physically impossible (see _plausible_level).
+        self._last_good_level: Optional[int] = None
+        self._rejected_levels: int = 0
 
     # -- lifecycle ---------------------------------------------------------------
     async def connect(self) -> None:  # pragma: no cover - requires live device
@@ -208,6 +212,7 @@ class EightSleepClient:
         # Use the genuinely SENSED tempBedC from the trends session timeseries instead, or None
         # (None -> the controller falls to safe open-loop control, never closes on a fake signal).
         bed_temp_f = self._sensed_bed_temp_f(user)
+        level = self._plausible_level(_safe(lambda: user.heating_level), age)
 
         return SensorFrame(
             timestamp=self._last_update or now,
@@ -220,14 +225,49 @@ class EightSleepClient:
             presence=_safe(lambda: user.bed_presence),
             bed_temp_f=bed_temp_f,
             room_temp_f=self._room_temp_f(user),
-            commanded_level=_safe(lambda: user.heating_level),
+            commanded_level=level,
             # Water-side truth for the thermal health check (currentDeviceLevel == heating_level).
-            device_level=_safe(lambda: user.heating_level),
+            device_level=level,
             target_level=_safe(lambda: user.target_heating_level),
             data_age_seconds=age,
         )
 
-    def _convert_bed_temp(self, raw):  # pragma: no cover - requires live device
+    def _plausible_level(self, level, age_s):
+        """Reject a device heating level the bed could not physically have reached.
+
+        ``user.heating_level`` is the DEVICE's readback. On six occasions across 2026-08-25..27
+        it returned exactly -100 for a single poll and then reverted -- e.g. -66 -> -100 -> -61
+        inside one minute. The bed slews about 1.5 levels/min cooling and 4 warming, so it can
+        neither reach -100 from -66 nor climb back in that time: these are bad reads, not the
+        hardware doing something.
+
+        They are not harmless. ``ControlCycle.pending_level`` compares this value against the
+        commanded target with a 5-level tolerance and RE-ASSERTS the level when they diverge, so
+        each bad read triggered a spurious device write and a junk intervention row -- and one of
+        them, landing mid wake-ramp, made a night's reported water range read 55-74 F for a ramp
+        that actually climbed smoothly 66 -> 74 F.
+
+        Returns the previous good level instead: holding the last known-good readback is safer
+        than None, which reads as "no device data" and disables the re-assert check entirely.
+        """
+        if level is None:
+            return None
+        try:
+            level = int(level)
+        except (TypeError, ValueError):
+            return None
+        prev = self._last_good_level
+        if prev is not None:
+            # Generous allowance: the fastest direction is ~4 levels/min, so this tolerates a
+            # poll several times slower than normal before calling anything implausible.
+            budget = max(20.0, 8.0 * max(1.0, float(age_s or 60.0) / 60.0))
+            if abs(level - prev) > budget:
+                self._rejected_levels += 1
+                return prev
+        self._last_good_level = level
+        return level
+
+    def _convert_bed_temp(self, raw):  # pragma: no cover - requires live device    def _convert_bed_temp(self, raw):  # pragma: no cover - requires live device
         conv = getattr(self._eight, "convert_raw_bed_temp_to_degrees", None)
         if raw is None or conv is None:
             return None
