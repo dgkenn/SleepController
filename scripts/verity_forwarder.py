@@ -203,6 +203,10 @@ _RELEASE = {"run": 0, "until": 0.0}
 #: Bluetooth stack itself to be reset.
 _STATS = {"posts": 0, "last_seen_at": 0.0}
 
+#: Last PMD control-point error code, so a start refused with "already in state" (6) can be
+#: distinguished from a genuine refusal and recovered by stopping the stale stream first.
+_PMD_LAST_ERROR: dict = {"code": None}
+
 #: Backoff ceiling when the band WAS found this cycle but the connect failed. The escalating
 #: ceiling (_MAX_SESSION_BACKOFF_S) exists to leave a band that is absent/charging alone; applying
 #: it to a band that is sitting right there, advertising, and merely blocked by another central
@@ -574,6 +578,10 @@ async def _pmd_service_present(client) -> bool:
 async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str,
                        timeout: float) -> dict | None:
     """Write a control-point command and wait for its indication. None -> failed (already logged)."""
+    # Cleared per command: the stale-stream retry keys off this, and a code left over from an
+    # EARLIER stream would make an unrelated later failure (a timeout, a write error) look like
+    # "already running" and trigger a stop/start against a stream that was never started.
+    _PMD_LAST_ERROR["code"] = None
     while not responses.empty():
         try:
             responses.get_nowait()
@@ -596,6 +604,7 @@ async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str
         return None
     if not resp["ok"]:
         _log(f"PMD {what}: device refused ({resp['error']}, code {resp['error_code']})")
+        _PMD_LAST_ERROR["code"] = resp.get("error_code")
         # The band tells us outright when it is CHARGING (PMD error code 13). That is the most
         # precise "leave me alone" signal available -- better than inferring not-worn from the
         # data -- and it is exactly the state we must not hold a connection through, because
@@ -749,6 +758,26 @@ async def _pmd_session(client, args) -> bool:
         ]
         for meas_type, what, cmd in wanted:
             resp = await _pmd_command(client, responses, cmd, what, args.control_timeout)
+
+            # "already in state" (code 6) means the band still believes this stream is RUNNING
+            # from a previous session -- which is what an unclean disconnect leaves behind. The
+            # forwarder is killed and relaunched whenever its code changes or the watchdog
+            # restarts, so the streams are not always stopped on the way out, and the very next
+            # session is then refused ACC and PPI and silently degrades to HR-only. Observed
+            # 2026-08-28 22:12: a deploy restarted the forwarder mid-stream and the reconnect
+            # lost the accelerometer -- the single best wake signal (6/6 vs 2/6) -- for the rest
+            # of the night, with nothing but one log line to say so.
+            #
+            # This is recoverable and worth recovering: STOP the stale stream, then start it
+            # again. Only ever attempted once, and only for this specific code, so a genuinely
+            # refused stream still degrades instead of looping.
+            if resp is None and _PMD_LAST_ERROR.get("code") == 6:
+                _log(f"PMD: {what} refused as already-running (stale state from an unclean "
+                     f"disconnect) -- stopping it and retrying once")
+                await _pmd_command(client, responses, pmd.build_stop_command(meas_type),
+                                   f"stop {what}", args.control_timeout)
+                resp = await _pmd_command(client, responses, cmd, what, args.control_timeout)
+
             if resp is None:
                 _log(f"PMD: {what} FAILED; continuing without it")
                 if meas_type == pmd.MEAS_PPI:

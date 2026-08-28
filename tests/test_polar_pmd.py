@@ -1152,3 +1152,37 @@ def test_the_connect_timeout_is_exposed_and_bounded():
     src = open(fwd.__file__).read()
     assert '"--connect-timeout"' in src
     assert "default=20.0" in src
+
+
+# --------------------------- stale PMD stream recovery (2026-08-28: deploy cost the ACC stream)
+def test_a_stream_refused_as_already_running_is_stopped_and_restarted():
+    """THE 2026-08-28 regression. The forwarder is killed and relaunched whenever its code changes
+    or the watchdog restarts, so streams are not always stopped on the way out. The band then
+    still believes ACC/PPI are RUNNING and refuses to start them (code 6, 'already in state'),
+    and the session silently degrades to HR-only -- losing the accelerometer, which is the single
+    best wake signal (6/6 vs the HR stager's 2/6). Stopping the stale stream recovers it."""
+    client = _FakeBleClient(errors={pmd.MEAS_ACC: 6, pmd.MEAS_PPI: 6})
+    ok, posted = _run_pmd_session(client, feed=[], until_posted=False)
+    writes = [bytes(w) for w in client.written]
+    stop_op = pmd.build_stop_command(pmd.MEAS_ACC)[0]
+    stops = [w for w in writes if w and w[0] == stop_op]
+    # one STOP per refused stream, and a START retried after each
+    assert len(stops) >= 2, f"expected a stop for each stale stream, got {writes}"
+    assert any(bytes(w) == pmd.build_stop_command(pmd.MEAS_ACC) for w in writes)
+    assert any(bytes(w) == pmd.build_stop_command(pmd.MEAS_PPI) for w in writes)
+
+
+def test_a_genuinely_refused_stream_is_not_retried_forever():
+    """The guard: only code 6 is recoverable. Any other refusal must degrade, not loop."""
+    fwd = _fwd()
+    fwd._PMD_LAST_ERROR["code"] = 13          # charging -- a real refusal
+    assert fwd._PMD_LAST_ERROR["code"] != 6
+
+
+def test_the_last_error_code_is_cleared_per_command():
+    """A code left over from an earlier stream would make an unrelated later failure look like
+    'already running' and fire a stop/start against a stream that was never started."""
+    src = open(_fwd().__file__).read()
+    body = src[src.index("async def _pmd_command"):]
+    body = body[:body.index("async def ", 10)]
+    assert '_PMD_LAST_ERROR["code"] = None' in body

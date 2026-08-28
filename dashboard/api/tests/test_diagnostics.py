@@ -882,3 +882,52 @@ def test_a_low_battery_is_flagged_low(auth_client):
     finally:
         repo.close()
     assert b.get("pct") == 12 and b.get("low") is True
+
+
+# ------------------------------- actigraphy reaching the wake detector (2026-08-28)
+def _seed_actigraphy(repo, n=5, age_s=10.0):
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    for i in range(n):
+        repo.conn.execute(
+            "INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ((now - timedelta(seconds=age_s + i)).isoformat(), 3.0 + i, 1.0, 0.1, 0.1, 0.2,
+             52, 52, "verity"))
+    repo.conn.commit()
+
+
+def test_live_accelerometer_counts_report_the_wake_detector_as_active(repo):
+    """The accelerometer is a SEPARATE PMD stream from HR and can be refused independently, so
+    cardiac_sensor going green says nothing about it -- yet it is the signal that actually catches
+    awakenings (6/6 vs the HR stager's 2/6, which called three misses REM)."""
+    _seed_actigraphy(repo)
+    c = diagnostics._check_actigraphy(repo)
+    assert c["status"] == "ok"
+    assert "wake detector is live" in c["detail"]
+
+
+def test_no_accelerometer_counts_is_surfaced_rather_than_looking_healthy(repo):
+    """THE silent failure: every night before 2026-08-28 looked fine while the best wake signal
+    was absent."""
+    c = diagnostics._check_actigraphy(repo)
+    assert c["status"] == "info"
+    assert "actigraphy wake detector" in c["detail"]
+    assert c["remedy"] is not None
+
+
+def test_stale_accelerometer_counts_warn(repo):
+    """Counts present but going stale -- the ACC stream stopped while the band stayed connected.
+    Must be inside the 15-min read window to be visible at all, and older than 5 min to warn;
+    beyond the window it is indistinguishable from "no counts" and reports as info instead."""
+    _seed_actigraphy(repo, age_s=600.0)
+    c = diagnostics._check_actigraphy(repo)
+    assert c["status"] == "warn"
+    assert "min old" in c["detail"]
+
+
+def test_the_actigraphy_check_never_raises(repo, monkeypatch):
+    from app import bridge
+    monkeypatch.setattr(bridge, "recent_actigraphy",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    assert diagnostics._check_actigraphy(repo)["status"] == "info"

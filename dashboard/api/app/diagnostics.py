@@ -60,7 +60,7 @@ _CHECK_ORDER = [
     "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
-    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "thermal_trial",
+    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "actigraphy", "thermal_trial",
     "wake_alarm", "degraded", "calibration", "prevention_timing", "verity_forwarder",
     "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "log_sizes",
     "calendar", "shift",
@@ -392,6 +392,44 @@ def _check_self_update(run_dir: str) -> dict:
         remedy = ("check .run\\update.result / .run\\watchdog.log on the box; clear "
                   ".run\\watchdog.alert once the cause is understood")
     return _check("self_update", "Self-update / deploy history", status, " | ".join(parts), remedy)
+
+
+
+def _check_actigraphy(repo) -> dict:
+    """Is the WEARABLE's own accelerometer reaching the wake detector?
+
+    This is a different question from "is the band streaming". ``cardiac_sensor`` goes green on
+    heart rate alone, but the accelerometer is a separate PMD stream that can be refused
+    independently -- and it is the one that actually catches awakenings: measured 6/6 against
+    message-timestamp ground truth versus 2/6 for the HR-based stager, which called three of its
+    misses REM. So a night can look perfectly healthy while the single best wake signal is
+    silently absent, which is exactly what every night before 2026-08-28 looked like.
+
+    ``_actigraphy_wake`` additionally REQUIRES ``activity_units == "counts"``: the phone's 0..1
+    index is a ~17x different scale and a PIM threshold applied to it would be nonsense. So this
+    reports the units too -- counts (the armband) enable the detector, phone_index does not.
+    """
+    try:
+        from app import bridge
+        rows = bridge.recent_actigraphy(repo.conn, minutes=15.0)
+    except Exception as exc:
+        return _check("actigraphy", "Wearable accelerometer", "info",
+                      f"not readable ({exc!r})", None)
+    if not rows:
+        return _check(
+            "actigraphy", "Wearable accelerometer", "info",
+            "no accelerometer counts in the last 15 min -- the actigraphy wake detector "
+            "(6/6 vs the stager's 2/6) is inactive; HR-only staging is in use",
+            "check the forwarder log for 'start ACC ... ok'; PMD ACC can be refused "
+            "independently of PPI/HR")
+    latest = max(t for t, _ in rows)
+    age_s = max(0.0, time.time() - latest)
+    if age_s > 300:
+        return _check("actigraphy", "Wearable accelerometer", "warn",
+                      f"{len(rows)} counts but the newest is {age_s / 60:.0f} min old", None)
+    return _check("actigraphy", "Wearable accelerometer", "ok",
+                  f"{len(rows)} accelerometer count batches in the last 15 min "
+                  f"(newest {age_s:.0f}s ago) -- the actigraphy wake detector is live", None)
 
 
 def _check_verity_forwarder(run_dir: str, now: float) -> dict:
@@ -1192,6 +1230,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
     add("self_update", "Self-update / deploy history", lambda: _check_self_update(run_dir))
     add("publishers", "GitHub relay publishers", lambda: _check_publishers(run_dir))
+    add("actigraphy", "Wearable accelerometer", lambda: _check_actigraphy(repo))
     add("verity_forwarder", "Verity forwarder process",
         lambda: _check_verity_forwarder(run_dir, now))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
