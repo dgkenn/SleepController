@@ -432,6 +432,60 @@ def _check_actigraphy(repo) -> dict:
                   f"(newest {age_s:.0f}s ago) -- the actigraphy wake detector is live", None)
 
 
+def _check_maintenance_reached(repo) -> dict:
+    """Did the controller actually reach MAINTENANCE on recent nights?
+
+    MAINTENANCE is the load-bearing state of the whole system. Awakening PREVENTION runs
+    only there (``SleepController.decide`` gates the wake-risk assessor, the precursor
+    detector and the micro-arousal vote on ``sm.state is MAINTENANCE``), and the in-night
+    steerer is MAINTENANCE-only too. A night that never gets past INDUCTION therefore runs
+    with no wake protection whatsoever -- and every other check stays green while it happens,
+    because the sensors are fine, the daemon is looping and the bed is being commanded.
+
+    Measured on the three captured nights (2026-08-25/26/27): NOT ONE reached MAINTENANCE
+    live. States were idle/wake_recovery, idle/induction/wake_window, and idle/induction.
+    The cause was the sleep-onset persistence run resetting on a single noisy sample, so
+    onset could not confirm and the INDUCTION -> MAINTENANCE transition never fired.
+    """
+    try:
+        rows = repo.conn.execute(
+            "SELECT night_date, controller_state, COUNT(*) FROM raw_samples "
+            "WHERE night_date IS NOT NULL AND night_date >= date('now', '-7 days') "
+            "GROUP BY night_date, controller_state").fetchall()
+    except Exception as exc:
+        return _check("maintenance_reached", "Sleep maintenance reached", "info",
+                      f"not readable ({exc!r})", None)
+    if not rows:
+        return _check("maintenance_reached", "Sleep maintenance reached", "info",
+                      "no nights recorded in the last 7 days", None)
+    by_night: dict = {}
+    for night, state, n in rows:
+        by_night.setdefault(night, {})[str(state)] = n
+    # Only judge nights that actually ran a session; a day spent entirely idle is not a failure.
+    ran = {d: st for d, st in by_night.items()
+           if any(k not in ("idle", "None") for k in st)}
+    if not ran:
+        return _check("maintenance_reached", "Sleep maintenance reached", "info",
+                      f"{len(by_night)} night(s) recorded but none started a session", None)
+    reached = [d for d, st in ran.items() if st.get("maintenance")]
+    missed = sorted(d for d in ran if d not in reached)
+    if not reached:
+        return _check(
+            "maintenance_reached", "Sleep maintenance reached", "warn",
+            f"NONE of {len(ran)} recent session night(s) reached MAINTENANCE "
+            f"({', '.join(missed)}) -- awakening prevention and in-night steering both run "
+            f"ONLY in that state, so those nights had no wake protection at all",
+            "check sleep-onset confirmation: MAINTENANCE is entered from INDUCTION on "
+            "onset_confirmed, so an onset that never confirms strands the whole night")
+    if missed:
+        return _check("maintenance_reached", "Sleep maintenance reached", "warn",
+                      f"{len(reached)}/{len(ran)} session night(s) reached MAINTENANCE; "
+                      f"no wake protection on {', '.join(missed)}", None)
+    return _check("maintenance_reached", "Sleep maintenance reached", "ok",
+                  f"all {len(ran)} recent session night(s) reached MAINTENANCE -- awakening "
+                  f"prevention and steering were able to run", None)
+
+
 def _check_bed_temperature(repo) -> dict:
     """Is the controller getting a MEASURED bed temperature at all?
 
@@ -1320,6 +1374,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
     add("bed_temperature", "Bed temperature feedback",
         lambda: _check_bed_temperature(repo))
+    add("maintenance_reached", "Sleep maintenance reached",
+        lambda: _check_maintenance_reached(repo))
     add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))

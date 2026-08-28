@@ -986,3 +986,77 @@ def test_an_unreadable_database_never_raises_out_of_the_check():
                 raise RuntimeError("no such table")
 
     assert _check_bed_temperature(Broken())["status"] == "info"
+
+
+# ---------------------------------------------------------------------------------------
+# MAINTENANCE is where awakening prevention and in-night steering both live. Measured on
+# 2026-08-25/26/27: not one night reached it, and every other check stayed green throughout.
+# ---------------------------------------------------------------------------------------
+
+class _StateRepo:
+    def __init__(self, nights):
+        """nights: {night_date: {controller_state: count}}"""
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE raw_samples (night_date TEXT, controller_state TEXT)")
+        for night, states in nights.items():
+            for st, n in states.items():
+                self.conn.executemany(
+                    "INSERT INTO raw_samples VALUES (?, ?)", [(night, st)] * n)
+
+
+def _today(offset=0):
+    from datetime import date, timedelta
+    return (date.today() - timedelta(days=offset)).isoformat()
+
+
+def test_a_night_stranded_in_induction_is_reported_as_unprotected():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(_StateRepo({_today(1): {"idle": 500, "induction": 120}}))
+    assert c["status"] == "warn"
+    assert "no wake protection at all" in c["detail"]
+    assert "onset" in (c["remedy"] or "")
+
+
+def test_a_night_that_reaches_maintenance_is_ok():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(
+        _StateRepo({_today(1): {"idle": 500, "induction": 20, "maintenance": 400}}))
+    assert c["status"] == "ok"
+
+
+def test_a_mixed_week_names_the_unprotected_nights():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(_StateRepo({
+        _today(1): {"idle": 100, "maintenance": 300},
+        _today(2): {"idle": 100, "induction": 200},
+    }))
+    assert c["status"] == "warn"
+    assert _today(2) in c["detail"]
+    assert _today(1) not in c["detail"]
+
+
+def test_a_fully_idle_day_is_not_counted_as_a_failed_night():
+    """A day with no session is not a night without wake protection."""
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(_StateRepo({_today(1): {"idle": 900}}))
+    assert c["status"] == "info"
+    assert "none started a session" in c["detail"]
+
+
+def test_no_recorded_nights_is_info():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(_StateRepo({}))
+    assert c["status"] == "info"
+
+
+def test_an_unreadable_database_never_raises_out_of_the_maintenance_check():
+    from app.diagnostics import _check_maintenance_reached
+
+    class Broken:
+        class conn:
+            @staticmethod
+            def execute(*a, **k):
+                raise RuntimeError("no such column")
+
+    assert _check_maintenance_reached(Broken())["status"] == "info"
