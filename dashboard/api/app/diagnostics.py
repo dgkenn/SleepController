@@ -432,6 +432,58 @@ def _check_actigraphy(repo) -> dict:
                   f"(newest {age_s:.0f}s ago) -- the actigraphy wake detector is live", None)
 
 
+def _check_bed_temperature(repo) -> dict:
+    """Is the controller getting a MEASURED bed temperature at all?
+
+    This is the primary feedback signal of the whole thermal loop. With it,
+    ``ThermalPlanner.resolve`` closes the loop on the composite (bed+ambient) temperature:
+    error in felt degrees nudges the commanded water, and an overshoot corrects itself.
+    Without it, ``resolve`` falls through to ``required_water_open_loop`` -- pure feedforward
+    that INVERTS the blend, dividing (target - ambient) by ``composite_bed_weight``. That
+    amplifies every degree of demanded cooling by 1/a with nothing measuring the result.
+
+    Measured across the three captured nights (2026-08-25/26/27): ``bed_temp_f`` was NULL on
+    6835 of 6835 samples. The closed loop has never once engaged, every night has run fully
+    open-loop, and the commanded level reached the -100 floor on 2026-08-25 -- against a user
+    who reports waking because the bed is too cold. Nothing in this report said a word about
+    it, which is why this check exists.
+
+    The reading comes from the trends session timeseries (``tempBedC``), the same Eight Sleep
+    surface that supplies ``presence`` -- also permanently None here -- so a total absence is
+    most likely an account/membership limitation rather than a transient gap. That is worth
+    stating plainly rather than leaving the loop silently open.
+    """
+    try:
+        row = repo.conn.execute(
+            "SELECT COUNT(*), COUNT(bed_temp_f), MAX(ts) FROM raw_samples "
+            "WHERE ts >= datetime('now', '-2 days')").fetchone()
+    except Exception as exc:
+        return _check("bed_temperature", "Bed temperature feedback", "info",
+                      f"not readable ({exc!r})", None)
+    total, measured, _last = (row[0] or 0), (row[1] or 0), row[2]
+    if not total:
+        return _check("bed_temperature", "Bed temperature feedback", "info",
+                      "no samples in the last 2 days", None)
+    if measured == 0:
+        return _check(
+            "bed_temperature", "Bed temperature feedback", "warn",
+            f"NO measured bed temperature in {total} samples over the last 2 days -- the "
+            f"thermal loop is running fully OPEN-LOOP. Feedforward inverts the bed/ambient "
+            f"blend, so every degree of demanded cooling is amplified by 1/composite_bed_weight "
+            f"with nothing measuring the result",
+            "bed temp comes from the trends session timeseries (tempBedC), the same surface as "
+            "presence -- which is also permanently unavailable on this account. Until it is "
+            "readable, keep the cooling floor conservative rather than trusting the inversion")
+    frac = measured / total
+    if frac < 0.25:
+        return _check("bed_temperature", "Bed temperature feedback", "warn",
+                      f"measured on only {measured}/{total} samples ({frac:.0%}) in the last "
+                      f"2 days -- the loop is open more often than it is closed", None)
+    return _check("bed_temperature", "Bed temperature feedback", "ok",
+                  f"measured on {measured}/{total} samples ({frac:.0%}) -- the composite "
+                  f"feedback loop is closing", None)
+
+
 def _check_verity_forwarder(run_dir: str, now: float) -> dict:
     """Is the BLE bridge PROCESS alive, as distinct from data arriving?
 
@@ -1264,6 +1316,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_recent_errors(run_dir, now, daemon_hb_age))
     add("eight_sleep_creds", "Eight Sleep credentials", _check_eight_sleep_creds)
     add("cardiac_sensor", "Cardiac sensor (Verity)", lambda: _check_cardiac_sensor(repo))
+    add("bed_temperature", "Bed temperature feedback",
+        lambda: _check_bed_temperature(repo))
     add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))

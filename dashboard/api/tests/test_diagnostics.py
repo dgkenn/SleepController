@@ -931,3 +931,58 @@ def test_the_actigraphy_check_never_raises(repo, monkeypatch):
     monkeypatch.setattr(bridge, "recent_actigraphy",
                         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
     assert diagnostics._check_actigraphy(repo)["status"] == "info"
+
+
+# ---------------------------------------------------------------------------------------
+# Bed-temperature feedback. Measured across 2026-08-25/26/27: bed_temp_f was NULL on
+# 6835/6835 samples -- the composite feedback loop has never once engaged, every night ran
+# fully open-loop, and nothing in this report mentioned it.
+# ---------------------------------------------------------------------------------------
+
+class _BedTempRepo:
+    def __init__(self, total, measured):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE raw_samples (ts TEXT, bed_temp_f REAL)")
+        for i in range(total):
+            self.conn.execute("INSERT INTO raw_samples VALUES (datetime('now'), ?)",
+                              (70.0 + i * 0.01 if i < measured else None,))
+
+
+def test_a_total_absence_of_bed_temperature_is_reported_not_swallowed():
+    from app.diagnostics import _check_bed_temperature
+    c = _check_bed_temperature(_BedTempRepo(500, 0))
+    assert c["status"] == "warn"
+    assert "OPEN-LOOP" in c["detail"]
+    assert c["remedy"]
+
+
+def test_mostly_missing_bed_temperature_is_still_a_warning():
+    from app.diagnostics import _check_bed_temperature
+    c = _check_bed_temperature(_BedTempRepo(500, 50))
+    assert c["status"] == "warn"
+    assert "10%" in c["detail"]
+
+
+def test_a_closing_loop_is_ok():
+    from app.diagnostics import _check_bed_temperature
+    c = _check_bed_temperature(_BedTempRepo(500, 480))
+    assert c["status"] == "ok"
+
+
+def test_no_samples_at_all_is_info_not_a_false_alarm():
+    from app.diagnostics import _check_bed_temperature
+    c = _check_bed_temperature(_BedTempRepo(0, 0))
+    assert c["status"] == "info"
+
+
+def test_an_unreadable_database_never_raises_out_of_the_check():
+    from app.diagnostics import _check_bed_temperature
+
+    class Broken:
+        class conn:
+            @staticmethod
+            def execute(*a, **k):
+                raise RuntimeError("no such table")
+
+    assert _check_bed_temperature(Broken())["status"] == "info"
