@@ -409,6 +409,21 @@ class LiveDashboardDaemon:
             controller.set_resting_baseline(self.repo.get_resting_baseline())
             # Personal comfort mapping → the controller's neutral is what YOU feel neutral, not the
             # device's water-scale default.
+            # One-time, version-controlled correction of a band its own evidence refutes -- see
+            # sleepctl.controller.comfort_correction. Runs BEFORE the profile is read so the
+            # corrected band takes effect on this very session rather than the next one. It is
+            # surgical (matches one specific superseded source), idempotent (the source changes
+            # once applied) and self-cancelling (skipped the moment the stored band can reach
+            # the measured best-sleep temperature), so a real comfort sweep always wins.
+            try:
+                from sleepctl.controller.comfort_correction import apply_comfort_correction
+                corrected = apply_comfort_correction(self.repo)
+                if corrected is not None:
+                    self._log(f"comfort band corrected -> cool {corrected['cool_edge_f']}F / "
+                              f"neutral {corrected['neutral_f']}F / "
+                              f"warm {corrected['warm_edge_f']}F")
+            except Exception as exc:
+                self._skip("comfort-band correction", exc)
             comfort = self.repo.get_comfort_profile()
             if comfort and comfort.get("neutral_f") is not None:
                 # set_measured_neutral (not a bare assignment) so the controller KNOWS this
