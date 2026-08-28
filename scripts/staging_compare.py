@@ -69,9 +69,9 @@ def main() -> int:
             continue
         print(f"\n=== {night.get('night_date')}  ({res['n']} labelled minutes; count scale "
               f"CK {res['scale_cole_kripke']}, Sadeh {res['scale_sadeh']}) ===")
-        for name in ("cole_kripke", "sadeh"):
+        for name in ("cole_kripke", "cole_kripke_webster", "sadeh", "oakley"):
             a = res[name]
-            print(f"  {name:12} agreement {a['agreement']:.3f}  "
+            print(f"  {name:20} agreement {a['agreement']:.3f}  "
                   f"(both asleep {a['both_sleep']}, both awake {a['both_wake']})")
             print(f"    STRONG disagreement -- motion says awake, we said asleep: "
                   f"{a['missed_wake_we_called_sleep']}")
@@ -79,6 +79,8 @@ def main() -> int:
                   f"{a['we_called_wake_ref_quiet']}")
             totals[f"{name}_strong"] += a["missed_wake_we_called_sleep"]
             totals[f"{name}_weak"] += a["we_called_wake_ref_quiet"]
+            totals[f"{name}_agree"] += a["agreement"]
+            totals[f"{name}_nights"] += 1
         print(f"  the two references disagree with each other on {res['references_disagree']} "
               f"minute(s) -- our label cannot be judged there")
         totals["n"] += res["n"]
@@ -86,9 +88,11 @@ def main() -> int:
 
     if totals["n"]:
         print(f"\n=== ACROSS ALL NIGHTS ({totals['n']} minutes) ===")
-        for name in ("cole_kripke", "sadeh"):
+        for name in ("cole_kripke", "cole_kripke_webster", "sadeh", "oakley"):
             s, w = totals[f"{name}_strong"], totals[f"{name}_weak"]
-            print(f"  {name:12} strong disagreements {s} ({100*s/totals['n']:.1f}% of minutes), "
+            nn = totals[f"{name}_nights"] or 1
+            print(f"  {name:20} mean agreement {totals[f'{name}_agree']/nn:.3f} | "
+                  f"strong disagreements {s} ({100*s/totals['n']:.1f}%), "
                   f"weak {w} ({100*w/totals['n']:.1f}%)")
         print(f"  references disagree with each other on {totals['ref_disagree']} "
               f"({100*totals['ref_disagree']/totals['n']:.1f}%)")

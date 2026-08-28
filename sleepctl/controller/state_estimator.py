@@ -79,25 +79,29 @@ def _hr_series(recent, frame) -> list:
 
 
 def _activity_series(recent, frame) -> "Optional[list]":
-    """Trailing (t_seconds, movement) series, or None when no motion signal is available (the
-    Verity-alone case) so the caller uses the HR-only model. Prefers the daemon's dense series."""
+    """Trailing (t_seconds, movement) series, or None when no USABLE motion signal is available,
+    so the caller falls back to the HR-only model.
+
+    REQUIRES ``activity_units == "counts"``. The bundled ``hrmotion`` weights are the
+    scale-SENSITIVE variant, trained on actigraphy counts; the iPhone's 0..1 movement index is a
+    ~17x different scale, so feeding it here would put the model badly out of distribution on
+    exactly the feature the variant exists to use. This is the same guard, for the same measured
+    reason, that ``_actigraphy_wake`` already applies -- and it is what makes enabling motion
+    safe now that the armband's own PMD accelerometer supplies counts in the training modality.
+    """
+    if getattr(frame, "activity_units", None) != "counts":
+        return None
+    # ONLY the dense history, never the per-frame `movement` fallback. `activity_units` describes
+    # the history series; `frame.movement` is the FUSED 0..1 index, which read as counts would
+    # smuggle in exactly the ~17x scale error the units check exists to prevent. Without a counts
+    # series there is no usable motion for this model, and HR-only is the correct answer.
     dense = getattr(frame, "activity_history", None)
-    if dense:
-        try:
-            out = [(float(t), float(v)) for t, v in dense if v is not None]
-            if out:
-                return out
-        except Exception:
-            pass
-    out = []
-    for f in list(recent or []) + [frame]:
-        mv = getattr(f, "movement", None)
-        ts = getattr(f, "timestamp", None)
-        if mv is not None and ts is not None:
-            try:
-                out.append((ts.timestamp(), float(mv)))
-            except Exception:
-                continue
+    if not dense:
+        return None
+    try:
+        out = [(float(t), float(v)) for t, v in dense if v is not None]
+    except Exception:
+        return None
     return out or None
 
 

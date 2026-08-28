@@ -341,7 +341,17 @@ class Tunables:
     # unit-matched actigraphy, contradicting the assumption that matched units would win --
     # normalizing within the night evidently generalizes better across people.
     # Revisit per-user once enough of the user's own nights exist to evaluate on them directly.
-    stager_use_motion: bool = False
+    # Feed the wearable's motion to the learned stager. Was OFF because the model's activity
+    # features are trained on actigraphy COUNTS while the only motion source was the iPhone's
+    # 0..1 index -- a ~17x scale difference that would put the bundled (scale-sensitive)
+    # hrmotion weights badly out of distribution.
+    #
+    # Both halves of that blocker are now resolved: the Polar PMD accelerometer supplies counts
+    # in the training modality, and `_activity_series` refuses anything that is not
+    # `activity_units == "counts"`, so a phone-only night silently falls back to HR-only exactly
+    # as before. Measured in cross-validation, motion is worth wake_f1 0.450 -> 0.493 and
+    # kappa 0.395 -> 0.417 -- and wake detection is the failure mode this system exists to fix.
+    stager_use_motion: bool = True
     # Let the interpretable (clock-free) heuristic upgrade a model "light" to DEEP when it has
     # positive physiological evidence -- sustained stillness plus HR below the trailing sleep
     # baseline. The learned stager's deep emission is suppressed by its own clock features after

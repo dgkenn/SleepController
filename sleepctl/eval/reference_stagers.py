@@ -126,6 +126,95 @@ def calibrate_scale(counts: Sequence[float], target_sleep_fraction: float = 0.88
     return math.sqrt(lo * hi)
 
 
+#: Oakley / Philips Actiwatch weighting for 1-minute epochs, and its standard sensitivity
+#: thresholds. Wake when the weighted score exceeds the threshold.
+_OAKLEY_W = (0.04, 0.20, 1.0, 0.20, 0.04)     # A-2 A-1 A0 A+1 A+2 (A0 weight folded to 1.0)
+_OAKLEY_A0 = 2.0
+OAKLEY_THRESHOLDS = {"low": 20.0, "medium": 40.0, "high": 80.0}
+
+
+def oakley(counts: Sequence[float], scale: float = 1.0, sensitivity: str = "medium") -> List[bool]:
+    """Sleep/wake by the Oakley algorithm, as shipped in the Philips Actiwatch. True = ASLEEP.
+
+    A third independent reference, and a deliberately different SHAPE from the other two: a
+    narrow five-minute weighted window against an explicit threshold, rather than Cole-Kripke's
+    seven-minute regression or Sadeh's multi-feature discriminant. Its sensitivity setting is
+    exposed because it is the knob clinicians actually turn, and the "medium" default is the one
+    most validation studies report.
+    """
+    thr = OAKLEY_THRESHOLDS.get(sensitivity, OAKLEY_THRESHOLDS["medium"])
+    a = [c * scale for c in _clip_counts(counts)]
+    n = len(a)
+    out: List[bool] = []
+    for i in range(n):
+        acc = 0.0
+        for k, w in enumerate(_OAKLEY_W):
+            j = i + (k - 2)
+            if 0 <= j < n:
+                acc += (w if k != 2 else _OAKLEY_A0) * a[j]
+        out.append(acc <= thr)
+    return out
+
+
+def webster_rescore(asleep: Sequence[bool]) -> List[bool]:
+    """Webster's rescoring rules, applied on top of any sleep/wake sequence.
+
+    Actigraphy's well-known failure is calling quiet wakefulness sleep, and these five rules
+    exist specifically to claw back that specificity by rescoring sleep as wake around periods
+    of activity. They are the standard companion to Cole-Kripke and they are directly relevant
+    to the blind spot found on 2026-08-27 -- 17 minutes where independent motion said awake and
+    we said asleep, 16 of them within five minutes of an awakening we had already detected. Our
+    awakening BOUNDARIES were too narrow, which is exactly the error these rules correct.
+
+    Rules (Webster et al., Sleep 1982), applied in order:
+      1. after >=4 min of wake, rescore the first 1 min of sleep as wake
+      2. after >=10 min of wake, rescore the first 3 min
+      3. after >=15 min of wake, rescore the first 4 min
+      4. <=6 min of sleep flanked by >=10 min of wake on both sides becomes wake
+      5. <=10 min of sleep flanked by >=20 min of wake on both sides becomes wake
+    """
+    out = list(bool(x) for x in asleep)
+    n = len(out)
+    for wake_run, rescore in ((4, 1), (10, 3), (15, 4)):
+        i = 0
+        while i < n:
+            if out[i]:
+                i += 1
+                continue
+            j = i
+            while j < n and not out[j]:
+                j += 1
+            if (j - i) >= wake_run:
+                for k in range(j, min(n, j + rescore)):
+                    out[k] = False
+            i = max(j, i + 1)
+    for sleep_max, wake_flank in ((6, 10), (10, 20)):
+        i = 0
+        while i < n:
+            if not out[i]:
+                i += 1
+                continue
+            j = i
+            while j < n and out[j]:
+                j += 1
+            if (j - i) <= sleep_max:
+                before = 0
+                k = i - 1
+                while k >= 0 and not out[k]:
+                    before += 1
+                    k -= 1
+                after = 0
+                k = j
+                while k < n and not out[k]:
+                    after += 1
+                    k += 1
+                if before >= wake_flank and after >= wake_flank:
+                    for k in range(i, j):
+                        out[k] = False
+            i = max(j, i + 1)
+    return out
+
+
 def compare(ours_asleep: Sequence[Optional[bool]], counts: Sequence[float],
             scale: Optional[float] = None) -> dict:
     """Agreement between our sleep/wake calls and both references, reported ASYMMETRICALLY.
@@ -137,8 +226,13 @@ def compare(ours_asleep: Sequence[Optional[bool]], counts: Sequence[float],
     # it is a bug that manufactures disagreement.
     ck_scale = scale if scale is not None else calibrate_scale(counts, algorithm=cole_kripke)
     sd_scale = scale if scale is not None else calibrate_scale(counts, algorithm=sadeh)
+    ok_scale = scale if scale is not None else calibrate_scale(counts, algorithm=oakley)
     ck = cole_kripke(counts, scale=ck_scale)
     sd = sadeh(counts, scale=sd_scale)
+    ok = oakley(counts, scale=ok_scale)
+    # Cole-Kripke + Webster is the standard clinical pairing; reported separately because the
+    # rescoring is precisely the specificity correction our blind spot calls for.
+    ckw = webster_rescore(ck)
     idx = [i for i, v in enumerate(ours_asleep) if v is not None and i < len(ck)]
     if not idx:
         return {"n": 0, "scale": scale}
@@ -162,8 +256,9 @@ def compare(ours_asleep: Sequence[Optional[bool]], counts: Sequence[float],
         }
 
     return {"n": len(idx), "scale_cole_kripke": round(ck_scale, 6),
-            "scale_sadeh": round(sd_scale, 6),
-            "cole_kripke": _agree(ck), "sadeh": _agree(sd),
+            "scale_sadeh": round(sd_scale, 6), "scale_oakley": round(ok_scale, 6),
+            "cole_kripke": _agree(ck), "sadeh": _agree(sd), "oakley": _agree(ok),
+            "cole_kripke_webster": _agree(ckw),
             # Where the two references disagree with EACH OTHER, neither is authoritative and our
             # label cannot be judged. Reporting it stops a coin-flip epoch counting as evidence.
             "references_disagree": sum(1 for i in idx if ck[i] != sd[i])}
