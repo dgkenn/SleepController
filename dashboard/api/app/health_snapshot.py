@@ -142,6 +142,53 @@ def _copy_playbook_matches(matches) -> list:
     return out
 
 
+#: Operational log tails published alongside the checks. Checks say WHAT is wrong; these say WHY,
+#: and without them a remote operator has to ask someone to read a file off the box -- which is
+#: exactly the loop this whole GitHub relay exists to remove. 2026-08-28: the wearable had been
+#: silent for 26 h and the only record of what the BLE bridge was actually seeing each scan
+#: ("no Polar/HR sensor found" vs "connecting to AA:BB..." vs a PMD refusal) sat in .run\verity.log
+#: where nothing could reach it.
+#:
+#: Operational only, and everything still goes through ``scrub`` afterwards like every other
+#: field. These logs carry device addresses and connection state, never physiology -- the
+#: forwarder POSTs samples onward rather than logging them, and it already redacts the ingest
+#: token (see verity_forwarder._redact).
+_LOG_TAILS = (
+    ("verity", "verity.log", 40),
+    ("verity_err", "verity.err", 10),
+)
+
+
+def _log_tails(run_dir: str | None) -> dict:
+    """Last N lines of each operational log, best-effort. Never raises, never blocks publishing."""
+    out: dict = {}
+    if not run_dir:
+        # publish-health.ps1 invokes this with (db_path, out_path) and no run_dir, so it arrives
+        # None in production -- resolving the same default diagnostics uses is what makes this
+        # work on the real box rather than only when a caller happens to pass one.
+        try:
+            from app.diagnostics import _default_run_dir
+            run_dir = _default_run_dir()
+        except Exception:
+            db = os.environ.get("SLEEPCTL_DB", "")
+            run_dir = os.path.join(os.path.dirname(db) if db else os.getcwd(), ".run")
+    if not run_dir:
+        return out
+    for label, name, n in _LOG_TAILS:
+        path = os.path.join(run_dir, name)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()[-n:]
+            text = [ln.rstrip("\n") for ln in lines if ln.strip()]
+            if text:
+                out[label] = text
+        except FileNotFoundError:
+            continue
+        except Exception as exc:
+            out[label] = [f"<unreadable: {exc!r}>"]
+    return out
+
+
 def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None = None) -> dict:
     """Build the scrubbed operational-health snapshot dict for publishing.
 
@@ -185,6 +232,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "checks": _copy_checks(diag.get("checks")),
         "playbook_matches": _copy_playbook_matches(diag.get("playbook_matches")),
         "preflight": _preflight_block(repo, diag.get("checks")),
+        "log_tails": _log_tails(run_dir),
     }
     return scrub(snapshot)
 

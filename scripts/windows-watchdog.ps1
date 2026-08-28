@@ -882,7 +882,12 @@ $script:smokeTestDone = $false
 # BOTH sides can reach GitHub -- so every $healthPublishEveryMin minutes the watchdog fires the
 # publish-health script DETACHED (see the loop below). First push a couple minutes after boot so
 # the components have settled.
-$script:healthPublishEveryMin = 10
+# 3 min, not 10. The operator has no other way to see this box, so the publish interval IS the
+# debugging latency: at 10 min a question like "did the power-cycle reconnect the band?" could
+# not be answered for ten minutes, which is useless while someone is trying to get to sleep.
+# Each snapshot is ~7KB and the branch is re-rooted to a single commit every push, so the cost of
+# a shorter interval is bounded -- it does not accumulate.
+$script:healthPublishEveryMin = 3
 $script:healthPublishAt = (Get-Date).AddMinutes(2)
 
 # --- remote-visibility: how often to publish FULL night data (biometrics, unencrypted) ---------

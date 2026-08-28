@@ -166,3 +166,52 @@ def test_write_snapshot_writes_parseable_file(tmp_path):
         parsed = json.load(fh)
     assert parsed["schema"] == "sleepctl.health/v1"
     assert "verdict" in parsed
+
+
+# ------------------------------------- operational log tails (2026-08-28 remote-debug gap)
+def test_log_tails_are_published_so_a_remote_operator_can_see_WHY(tmp_path):
+    """Checks say WHAT is wrong; the forwarder's own log says WHY. Without it, diagnosing a
+    26-hour wearable outage required someone to read a file off the box by hand -- exactly the
+    loop this GitHub relay exists to remove."""
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "verity.log").write_text(
+        "\n".join(f"2026-08-28 01:0{i}  no Polar/HR sensor found this scan; will retry"
+                  for i in range(9)), encoding="utf-8")
+    tails = health_snapshot._log_tails(str(run))
+    assert "verity" in tails
+    assert any("no Polar/HR sensor found" in ln for ln in tails["verity"])
+
+
+def test_log_tails_are_bounded(tmp_path):
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "verity.log").write_text("\n".join(str(i) for i in range(5000)), encoding="utf-8")
+    assert len(health_snapshot._log_tails(str(run))["verity"]) <= 40
+
+
+def test_missing_logs_are_simply_absent_not_an_error(tmp_path):
+    run = tmp_path / ".run"
+    run.mkdir()
+    assert health_snapshot._log_tails(str(run)) == {}
+
+
+def test_log_tails_appear_in_the_published_snapshot(repo, tmp_path, monkeypatch):
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "verity.log").write_text("connecting to AA:BB:CC ...\n", encoding="utf-8")
+    snap = health_snapshot.build_health_snapshot(repo, run_dir=str(run))
+    assert "log_tails" in snap
+    assert any("connecting to" in ln for ln in snap["log_tails"].get("verity", []))
+
+
+def test_a_token_in_a_log_line_is_still_scrubbed(repo, tmp_path):
+    """Log tails go through the same belt-and-suspenders scrub as every other field."""
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "verity.log").write_text(
+        "forwarding to http://localhost:8000/hr/ingest?token=" + ("a" * 40) + "\n",
+        encoding="utf-8")
+    snap = health_snapshot.build_health_snapshot(repo, run_dir=str(run))
+    blob = repr(snap.get("log_tails"))
+    assert "a" * 40 not in blob
