@@ -174,6 +174,15 @@ class Tunables:
     # DOI 10.1093/sleep/31.2.233) -> the controller learns the sign/magnitude that prevents
     # THIS user's awakenings. Default cool (hot sleeper), bounded by the cap.
     maintenance_settle_nudge_f: float = -1.0   # <0 cooler, >0 warmer (relative to neutral)
+    # ...and the DEEPER settle used while actively PRE-EMPTING an awakening, as opposed to
+    # settling after one. The ordinary -1.0 F lands at 68.0 F against a measured band of
+    # 67.0-69.5 F -- only 40% of the way to the cool edge, and small enough that 12 of 23
+    # prevention failures showed NO measurable bed movement at all. This reaches the cool edge,
+    # where the comfort clamp bounds it: 67.0 F is itself the evidence-backed floor, a full 3 F
+    # above the 63-64 F water that is recorded as waking this user.
+    # Bounded by maintenance_settle_cap_f like the learned nudge, so this saturates AT the
+    # cap rather than routing around it: 69.0 - 2.0 = 67.0 F, the cool edge exactly.
+    preempt_settle_nudge_f: float = -2.0
     maintenance_settle_cap_f: float = 2.0
     # Environmental pre-compensation: feed-forward bed bias from tonight's outdoor forecast so
     # the bed is ahead of an overnight heat soak (hot sleeper) instead of chasing it.
@@ -567,6 +576,17 @@ class Tunables:
     wake_risk_movement: float = 0.3          # movement at/above this counts as restlessness
     wake_risk_warm_margin_f: float = 1.5     # bed this far above target counts as "running warm"
     wake_risk_preempt_threshold: float = 0.5  # combined risk score that triggers a pre-empt
+    # The most that pure TIMING may contribute to the risk score. Time of night modulates risk;
+    # it does not create it. Without this cap the clock terms summed to 0.60 against a 0.5
+    # threshold -- light 0.10 + cycle boundary 0.10 + back half 0.08 + circadian nadir 0.12 +
+    # recurring window 0.20 -- so risk was pinned high all night with no evidence at all, while
+    # the two strongest evidence terms both need a bed temperature this account never reports.
+    wake_risk_context_cap: float = 0.30
+    # Share of maintenance ticks the evidence-free ANTICIPATORY pre-cool may claim before it
+    # stands down. It reached 72% on 2026-08-30, which is not a run-up to a vulnerable window,
+    # it is the whole night -- and an always-on pre-cool now parks the bed at the cool edge.
+    # Evidence-backed pre-emption is never rate-limited by this.
+    preempt_duty_cycle_max: float = 0.35
     # --- Data-quality gate (do-no-harm on untrustworthy frames) --------------------------
     # Below this score, confidence is down-weighted and the decision is biased toward HOLD
     # (see ``sleepctl.controller.data_quality`` + ``SleepController.decide``).

@@ -167,6 +167,11 @@ class WakeRisk:
     score: float           # 0..1
     reasons: List[str]
     preempt: bool          # True -> apply a pre-emptive cooling assist now
+    #: The score split into what the sleeper is DOING right now versus what the clock says.
+    #: Published so saturation is visible per tick instead of only in a nightly rollup.
+    evidence_score: float = 0.0
+    context_score: float = 0.0
+    anticipatory: bool = False
 
 
 class WakeRiskAssessor:
@@ -179,6 +184,7 @@ class WakeRiskAssessor:
         self.move_rise = getattr(t, "wake_risk_movement", 0.3)
         self.warm_margin_f = getattr(t, "wake_risk_warm_margin_f", 1.5)
         self.preempt_threshold = getattr(t, "wake_risk_preempt_threshold", 0.5)
+        self.context_cap = getattr(t, "wake_risk_context_cap", 0.30)
         # Default to the evidence-backed presets until the ML supplies learned profiles.
         self.profile = profile or WakeProfile.evidence_default()
         self.lead_profile = lead_profile  # LeadTimeProfile (learned cooling lead times)
@@ -192,8 +198,23 @@ class WakeRiskAssessor:
         sleep_hr_baseline: Optional[float] = None,
         minutes_since_onset: Optional[float] = None,
     ) -> WakeRisk:
+        # EVIDENCE vs CONTEXT.
+        #
+        # The score used to be one flat sum, and the terms that fire most are the ones that
+        # carry the least. Measured on 2026-08-29: `light_stage` fired on 99% of pre-empting
+        # maintenance ticks, `circadian_nadir` and `back_half_of_night` on 42% each. Worse, the
+        # arithmetic made timing SUFFICIENT on its own -- light 0.10 + cycle boundary 0.10 +
+        # back half 0.08 + circadian nadir 0.12 + recurring window 0.20 = 0.60, against a
+        # threshold of 0.5 -- while the two strongest evidence terms (`running_warm` 0.30 and
+        # `near_personal_warm_threshold` 0.18) both need `bed_temp_f`, which is None on 100% of
+        # samples on this account. So risk sat pinned high all night on the clock alone.
+        #
+        # Time of night is a MODULATOR of risk, not a source of it. Context is summed
+        # separately and capped, so it can push a real signal over the line but can never clear
+        # the threshold by itself.
         reasons: List[str] = []
-        score = 0.0
+        evidence = 0.0
+        context = 0.0
         window = recent[-12:] if recent else []
 
         # 1) HR creeping above the sleep baseline (autonomic arousal precursor)
@@ -201,23 +222,23 @@ class WakeRiskAssessor:
             [f.heart_rate for f in window[:-3]]) if len(window) > 4 else None
         if frame.heart_rate is not None and base_hr is not None:
             if frame.heart_rate >= base_hr + self.hr_creep:
-                score += 0.28
+                evidence += 0.28
                 reasons.append("hr_creep")
 
         # 2) movement / restlessness rising
         if frame.movement is not None and frame.movement >= self.move_rise:
-            score += 0.22
+            evidence += 0.22
             reasons.append("restless")
 
         # 3) bed running warm vs target -- the dominant trigger for a hot sleeper
         if frame.bed_temp_f is not None and target_temp_f is not None:
             if frame.bed_temp_f >= target_temp_f + self.warm_margin_f:
-                score += 0.30
+                evidence += 0.30
                 reasons.append("running_warm")
         if (self.profile.warm_temp_threshold_f is not None
                 and frame.bed_temp_f is not None
                 and frame.bed_temp_f >= self.profile.warm_temp_threshold_f):
-            score += 0.18
+            evidence += 0.18
             reasons.append("near_personal_warm_threshold")
 
         # 4) respiration irregular vs its recent self
@@ -225,30 +246,30 @@ class WakeRiskAssessor:
         if len(rrs) >= 4 and frame.respiratory_rate is not None:
             sd = statistics.pstdev(rrs)
             if sd > 1.5:
-                score += 0.12
+                evidence += 0.12
                 reasons.append("resp_irregular")
 
         # 5) vulnerable stage (light sleep / cycle boundary)
         if frame.stage is SleepStage.LIGHT:
-            score += 0.10
+            context += 0.10
             reasons.append("light_stage")
 
         # 6) learned recurring awakening time approaching (personalised)
         if self.profile.near_recurring_time(now):
-            score += 0.20
+            context += 0.20
             reasons.append("recurring_wake_window")
 
         # 7) evidence-based structural vulnerabilities (seeded, then tuned per-user):
         #    cycle boundaries, the lighter back half, and the circadian core-temp nadir —
         #    where a hot sleeper, with REM-suspended thermoregulation, is most exposed.
         if self.profile.near_cycle_boundary(minutes_since_onset):
-            score += 0.10
+            context += 0.10
             reasons.append("cycle_boundary")
         if self.profile.in_back_half(minutes_since_onset):
-            score += 0.08
+            context += 0.08
             reasons.append("back_half_of_night")
         if self.profile.in_circadian_danger_zone(now):
-            score += 0.12
+            context += 0.12
             reasons.append("circadian_nadir")
 
         # 8) ANTICIPATORY pre-cool: if a vulnerable window is closer than the learned cooling
@@ -258,11 +279,25 @@ class WakeRiskAssessor:
             eta, wtype = self.profile.next_window_eta(now, minutes_since_onset)
             if eta is not None and eta <= self.lead_profile.lead_for(wtype):
                 anticipatory = True
-                score += 0.16
+                context += 0.16
                 reasons.append(f"anticipatory_{wtype}")
 
-        score = min(1.0, score)
-        # Only pre-empt in non-deep sleep (never jolt deep sleep, which is protective).
-        preempt = ((score >= self.preempt_threshold or anticipatory)
+        capped_context = min(context, self.context_cap)
+        score = min(1.0, evidence + capped_context)
+        # Only pre-empt in non-deep sleep (never jolt deep sleep, which is protective) -- and
+        # the threshold path now also requires at least SOME live evidence. Without that, the
+        # capped context still could not reach 0.5 today, but the requirement is the point:
+        # "it is 3 a.m. and you are in light sleep" is true most of the night and must never by
+        # itself be read as an awakening brewing.
+        #
+        # The ANTICIPATORY pre-cool is deliberately exempt. Its whole purpose is to start
+        # cooling BEFORE there is evidence, so that the bed has already arrived when a learned
+        # vulnerable window does. Its duty cycle is bounded by the caller instead (see
+        # AppConfig.preempt_duty_cycle_max), because a pre-cool that never stands down would
+        # park the bed at the cool edge all night.
+        preempt = (((score >= self.preempt_threshold and evidence > 0) or anticipatory)
                    and frame.stage is not SleepStage.DEEP)
-        return WakeRisk(score=score, reasons=reasons, preempt=preempt)
+        return WakeRisk(score=score, reasons=reasons, preempt=preempt,
+                        evidence_score=round(evidence, 4),
+                        context_score=round(capped_context, 4),
+                        anticipatory=anticipatory)

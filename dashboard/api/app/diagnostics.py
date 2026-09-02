@@ -69,8 +69,10 @@ _CHECK_ORDER = [
     "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
-    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "actigraphy", "thermal_trial",
-    "wake_alarm", "degraded", "calibration", "prevention_timing", "verity_forwarder",
+    "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "wearable_reachable",
+    "actigraphy", "thermal_trial",
+    "wake_alarm", "wake_cue", "degraded", "calibration", "prevention_timing", "session_span",
+    "verity_forwarder",
     "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "log_sizes",
     "calendar", "shift",
 ]
@@ -1449,6 +1451,75 @@ def _check_wake_alarm(repo) -> dict:
                   "no alarm-write refusal recorded", None)
 
 
+def _check_wake_cue(repo) -> dict:
+    """What will ACTUALLY wake you tomorrow -- an inventory, not a per-channel status.
+
+    ``wake_alarm`` reports that the Pod refused the alarm write and says waking now happens "via
+    the thermal ramp + dawn light only". Nothing checked whether there IS a dawn light. If the
+    Hue is unconfigured and vibration is gone, the entire wake system is a bed that gets warm,
+    and no check on this page would say so -- each individual channel is behaving correctly, and
+    the failure exists only in the total.
+
+    That matters more here than the arithmetic suggests: this user works rotating clinical
+    shifts and needs silence, so an audible alarm is not the fallback it would be for most
+    people.
+    """
+    channels: list[str] = []
+    missing: list[str] = []
+    # 1) the bed itself -- always present, but on its own the weakest cue we have.
+    channels.append("thermal ramp")
+    # 2) vibration, unless the Pod refused the write.
+    try:
+        from app import bridge
+        extra = (bridge.read_runtime_state(repo.conn, 180) or {}).get("extra") or {}
+        if extra.get("alarm_write_denied"):
+            missing.append("Pod vibration (subscription-gated)")
+        else:
+            channels.append("Pod vibration")
+    except Exception:
+        missing.append("Pod vibration (state unreadable)")
+    # 3) the dawn light and 4) the bright therapy lamp, on either transport.
+    try:
+        from app import services as _svc
+        hue = _svc._get_hue_config(repo)
+        plug = _svc._get_plug_config(repo)
+        if hue.get("enabled") and hue.get("bridge_ip") and hue.get("target_ids"):
+            channels.append(f"dawn light ({len(hue['target_ids'])} Hue lamp(s))")
+        else:
+            missing.append("dawn light (Hue not configured)")
+        if (hue.get("enabled") and hue.get("therapy_ids")) or plug.get("enabled"):
+            channels.append("bright therapy lamp")
+        else:
+            missing.append("bright therapy lamp")
+    except Exception as exc:
+        missing.append(f"light channels (unreadable: {exc!r})")
+
+    detail = f"available: {', '.join(channels)}"
+    if missing:
+        detail += f" | unavailable: {', '.join(missing)}"
+    has_vibration = "Pod vibration" in channels
+    has_light = any(c.startswith("dawn light") or c == "bright therapy lamp" for c in channels)
+
+    # SEVERITY TRACKS WHAT IS LOST, NOT WHAT IS UNCONFIGURED. A light that was never set up is a
+    # preference; a wake system with nothing but a warming bed in it is a missed shift. Grading
+    # every unconfigured channel as a warning would leave this permanently amber for anyone who
+    # simply does not own a Hue, and an alert that is always on is one nobody reads.
+    if not has_vibration and not has_light:
+        return _check("wake_cue", "Wake cues available", "fail",
+                      f"the ONLY thing left to wake you is a warming bed -- {detail}",
+                      "configure the Hue dawn light or a Wi-Fi therapy plug; with vibration "
+                      "subscription-gated, light is the strongest silent cue available")
+    if not has_vibration:
+        return _check("wake_cue", "Wake cues available", "warn", detail,
+                      "vibration is gone, so light is now the primary cue -- worth confirming "
+                      "it actually fires before relying on this for a clinical shift")
+    if missing:
+        return _check("wake_cue", "Wake cues available", "info", detail,
+                      "a dawn light would add a second independent cue; vibration is currently "
+                      "the only one that does not depend on the bed")
+    return _check("wake_cue", "Wake cues available", "ok", detail, None)
+
+
 def _check_degraded(repo) -> dict:
     """Subsystems that failed QUIETLY and were skipped.
 
@@ -1820,6 +1891,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))
     add("thermal_trial", "Thermal dose-response trial", lambda: _check_thermal_trial(repo))
     add("wake_alarm", "Wake alarm (vibration)", lambda: _check_wake_alarm(repo))
+    add("wake_cue", "Wake cues available", lambda: _check_wake_cue(repo))
     add("degraded", "Silently skipped subsystems", lambda: _check_degraded(repo))
     add("calibration", "Personal calibration", lambda: _check_calibration(repo))
     add("prevention_timing", "Awakening pre-emption timing",

@@ -43,6 +43,12 @@ from sleepctl.models import (
 )
 
 
+#: Enough of a night to judge a duty cycle by. Before this the ratio is dominated by whichever
+#: way the first few ticks happened to go, and rate-limiting on that would silence the pre-cool
+#: exactly when the most night is left to protect.
+MIN_TICKS_FOR_DUTY_CYCLE = 60
+
+
 class SleepController:
     def __init__(self, cfg: AppConfig, setpoints=None) -> None:
         self.cfg = cfg
@@ -59,6 +65,10 @@ class SleepController:
         self.last_bed_entry_block = None
         self.bed_exit_events: list = []
         self._recovered_physio_at = None
+        self._preempt_ticks_maint = 0
+        self._maint_ticks = 0
+        self.last_preempt_duty = 0.0
+        self.last_preempt_duty_capped = False
         self.precursor_detector = PrecursorDetector(cfg)
         # Proactive sleep-maintenance: a learned WakeProfile can be attached by the loop.
         self.wake_risk_assessor = WakeRiskAssessor(cfg)
@@ -559,6 +569,8 @@ class SleepController:
                     self.onset_detector.reset()
                     self.bed_exit_detector.reset()
                     self.hypnogram.reset()
+                    self._preempt_ticks_maint = 0
+                    self._maint_ticks = 0
                 except Exception:
                     pass
         except Exception:
@@ -705,8 +717,37 @@ class SleepController:
                     frame, recent, now, sleep_hr_base, sleep_hrv_base)
                 self.last_precursor = precursor
                 # Pre-empt on rising risk OR a leading-edge precursor OR a micro-arousal.
+                evidence_backed = (
+                    (risk.preempt and getattr(risk, "evidence_score", 0.0) > 0)
+                    or precursor.should_preempt
+                    or (arousal.level is ArousalLevel.MICRO
+                        and frame.stage is not SleepStage.DEEP))
                 self._preempt_cool = risk.preempt or precursor.should_preempt or (
                     arousal.level is ArousalLevel.MICRO and frame.stage is not SleepStage.DEEP)
+                # DUTY CYCLE on the evidence-free ANTICIPATORY pre-cool.
+                #
+                # The pre-cool is meant to start cooling before a learned vulnerable window
+                # arrives. Measured on 2026-08-30 it claimed 72% of pre-empting maintenance
+                # ticks, which is not a run-up to anything -- it is the whole night. That was
+                # tolerable while a pre-empt barely moved the bed; now that the settle actually
+                # reaches the cool edge, an always-on pre-cool would park the bed at 67 F all
+                # night, and this user's own record puts awakenings at the cold end too.
+                #
+                # Evidence-backed pre-empts are never rate-limited. Only the anticipatory-only
+                # case stands down, and only once it has already had more than its share.
+                self._preempt_ticks_maint = getattr(self, "_preempt_ticks_maint", 0)
+                self._maint_ticks = getattr(self, "_maint_ticks", 0) + 1
+                duty_max = float(getattr(cfg.tunables, "preempt_duty_cycle_max", 0.35) or 0.0)
+                self.last_preempt_duty = (self._preempt_ticks_maint / self._maint_ticks
+                                          if self._maint_ticks else 0.0)
+                self.last_preempt_duty_capped = False
+                if (duty_max > 0 and self._preempt_cool and not evidence_backed
+                        and self._maint_ticks >= MIN_TICKS_FOR_DUTY_CYCLE
+                        and self.last_preempt_duty > duty_max):
+                    self._preempt_cool = False
+                    self.last_preempt_duty_capped = True
+                if self._preempt_cool:
+                    self._preempt_ticks_maint += 1
                 # 3AM WAKE targeted analysis: a fourth, purely ADDITIVE vote -- a HIGH-CONFIDENCE
                 # personal recurring wake window (see sleepctl.analysis.wake_patterns) approaching
                 # on the clock. Gated (enabled flag + min-nights + confidence) inside
@@ -886,10 +927,16 @@ class SleepController:
         # --- resolve safe target + level (composite feedback) ------------------
         # The water command is nudged so the blended effective temperature hits target;
         # slew is anchored to the last command so the device never jumps > max_step_f.
+        # While PRE-EMPTING, settle deeper than the ordinary post-awakening nudge -- see
+        # AppConfig.preempt_settle_nudge_f. The comfort clamp downstream still bounds it to the
+        # measured band, so "deeper" can never mean "colder than this user tolerates".
+        settle_nudge = (float(getattr(cfg.tunables, "preempt_settle_nudge_f", -2.5))
+                        if getattr(self, "_preempt_cool", False) else None)
         target_f, level = self.thermal.resolve(
             intent, objective, cfg.profile.hot_sleeper, self._last_target_f,
-            bed_temp_f, ambient_temp_f, now=now,
+            bed_temp_f, ambient_temp_f, now=now, settle_nudge_f=settle_nudge,
         )
+        self._settle_nudge_used = settle_nudge
 
         # --- correction action vs current bed temp -----------------------------
         action = self._action_for(current_f, target_f)
@@ -1095,6 +1142,13 @@ class SleepController:
             "preempting": preempting,
             "intent": "settle_cool" if preempting else None,
             "wake_risk": round(risk.score, 3) if risk else None,
+            # Split out so a saturated score is visible per tick: a risk of 0.58 built from
+            # 0.28 of evidence plus 0.30 of clock is a different fact from 0.58 of pure clock,
+            # and the flat number could not tell them apart.
+            "wake_risk_evidence": (round(getattr(risk, "evidence_score", 0.0), 3)
+                                   if risk else None),
+            "wake_risk_context": (round(getattr(risk, "context_score", 0.0), 3)
+                                  if risk else None),
             "risk_reasons": list(risk.reasons) if risk else [],
             "precursor_score": round(pre.score, 3) if pre else None,
             "precursor_reasons": list(pre.reasons) if pre else [],
@@ -1494,7 +1548,8 @@ class SleepController:
             ),
             "effective_target_f": round(
                 self.thermal.target_for(intent, objective, self.cfg.profile.hot_sleeper,
-                                        self._last_target_f), 2
+                                        self._last_target_f,
+                                        getattr(self, "_settle_nudge_used", None)), 2
             ),
             "data_age_seconds": frame.data_age_seconds,
             "wake_signals": wake_signals,
@@ -1518,6 +1573,11 @@ class SleepController:
                          if getattr(self, "last_bed_exit", None) is not None else None),
             "bed_entry_blocked": getattr(self, "last_bed_entry_block", None),
             "architecture_implausible": getattr(self, "last_architecture_implausible", None),
+            "preempt_duty": {
+                "duty": round(float(getattr(self, "last_preempt_duty", 0.0)), 3),
+                "capped": bool(getattr(self, "last_preempt_duty_capped", False)),
+                "maintenance_ticks": int(getattr(self, "_maint_ticks", 0)),
+            },
             "hypnogram": (self.hypnogram.summary()
                           if getattr(self, "hypnogram", None) is not None else None),
         }

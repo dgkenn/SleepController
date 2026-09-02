@@ -135,6 +135,7 @@ class ThermalController:
         objective: NightObjective,
         hot_sleeper: bool,
         last_target_f: Optional[float] = None,
+        settle_nudge_f: Optional[float] = None,
     ) -> float:
         """Per-intent EFFECTIVE comfort target (the blended temperature we want felt).
 
@@ -171,7 +172,16 @@ class ThermalController:
             # cools (settle_nudge_f<0, the hot-sleeper evidence default), but learnable to
             # warm if that better prevents this user's awakenings; slew-limited downstream so
             # it never jolts the sleeper.
-            target = neutral + self.settle_nudge_f
+            # An override is bounded by the SAME cap as the learned nudge (see set_settle_nudge).
+            # Routing a deeper pre-emption around that cap would turn a safety bound into a
+            # suggestion, and the bound is what keeps every settle inside the temperatures this
+            # user has actually been observed to tolerate.
+            if settle_nudge_f is None:
+                nudge = self.settle_nudge_f
+            else:
+                cap = t.maintenance_settle_cap_f
+                nudge = max(-cap, min(cap, float(settle_nudge_f)))
+            target = neutral + nudge
         elif intent is ThermalIntent.ONSET_WARM:
             # Small WARM nudge to induce onset (cutaneous warming speeds sleep onset). Bounded
             # by the comfort cap so a hot sleeper is never overheated; the controller cools
@@ -272,6 +282,7 @@ class ThermalController:
         bed_temp_f: Optional[float] = None,
         ambient_temp_f: Optional[float] = None,
         now=None,
+        settle_nudge_f: Optional[float] = None,
     ) -> tuple[float, int]:
         """Composite-feedback pipeline -> safe (water_target_f, device level).
 
@@ -292,7 +303,7 @@ class ThermalController:
         elif intent is ThermalIntent.WAKE_RAMP:
             water = self.target_for(intent, objective, hot_sleeper, last)  # direct warming
         else:
-            eff_target = self.target_for(intent, objective, hot_sleeper, last)
+            eff_target = self.target_for(intent, objective, hot_sleeper, last, settle_nudge_f)
             measured = self.composite_temp(bed_temp_f, ambient_temp_f)
             if measured is not None:
                 # Closed loop on the composite: error in effective-comfort °F nudges water.
@@ -303,6 +314,19 @@ class ThermalController:
             else:
                 # No measured bed temp -> feedforward blend inversion (ambient only).
                 water = self.required_water_open_loop(eff_target, ambient_temp_f)
+
+        # A COOLING SETTLE MUST NEVER WARM THE BED.
+        #
+        # The settle target is ABSOLUTE (neutral + nudge), not a nudge from where the bed
+        # currently is, so from any colder starting point it resolves to a WARM command -- and
+        # the commonest colder starting point is deep sleep. With this user's evidence-corrected
+        # profile (neutral 69.0 F, deep bias 66.0 F, settle nudge -1.0 F) every pre-emption that
+        # began in DEEP commanded the water ~2 F WARMER, at the precise moment it was trying to
+        # prevent an awakening. Measured on 2026-08-29 and 2026-08-31: almost every pre-emption
+        # episode that moved the bed at all moved it in the warm direction.
+        nudge_now = (self.settle_nudge_f if settle_nudge_f is None else float(settle_nudge_f))
+        if intent is ThermalIntent.SETTLE_COOL and nudge_now < 0:
+            water = min(water, last)
 
         slewed = self.slew_limit(last, water)
         capped = self.enforce_variability_cap(slewed)
