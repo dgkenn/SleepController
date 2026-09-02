@@ -824,6 +824,7 @@ class SleepController:
             onset_confirmed = onset_event is not None
 
         # --- advance state machine ---------------------------------------------
+        state_before = self.sm.state
         state = self.sm.transition(frame, now, wake_detected, required_wake,
                                    onset_confirmed=onset_confirmed,
                                    wearable_bed_entry=self._wearable_bed_entry(frame, recent, cfg))
@@ -849,13 +850,32 @@ class SleepController:
         self.should_wake = False
         self.last_wake_action = None      # only set inside WAKE_WINDOW (drives lights/therapy)
         if state in (ControllerState.IDLE, ControllerState.CALIBRATION):
-            # Night ended / out of bed: reset onset tracking for the next night.
-            if frame.presence is False:
+            # Night ended: reset onset tracking and the realized architecture for the next one.
+            #
+            # This used to require `presence is False`, which on an account with no Autopilot
+            # membership NEVER happens -- the same gate that left the system with no bed-exit
+            # path at all. The consequence here is quieter and worse: `_arch_rem_min` and
+            # `_arch_deep_min` are what IN-NIGHT STEERING reads, and without a reset they
+            # accumulate across days. Measured on 2026-08-31, the steerer believed 402.4 min of
+            # REM in an 8.3-hour night; the night's own stage record and the nightly rollup both
+            # say ~70. It was steering by a number six times too large, which is how it came to
+            # "defend" a 300-minute REM surplus that did not exist.
+            #
+            # Reaching IDLE at all is the end of a session, whatever the Pod will or will not
+            # say about presence, so that is the condition.
+            # ...on the TRANSITION into IDLE, not on every idle tick. Bed entry is stamped
+            # while still IDLE (onset detection runs from IDLE/INDUCTION/CALIBRATION), so
+            # clearing it unconditionally here would wipe the anchor a moment after it was set --
+            # including one recovered across a restart.
+            if state_before is not ControllerState.IDLE:
                 self._bed_entry_time = None
                 self._sleep_onset_time = None
                 self.onset_detector.reset()
                 self.wake_orch.reset()
                 self._reset_architecture()
+                self.hypnogram.reset()
+                self._preempt_ticks_maint = 0
+                self._maint_ticks = 0
             intent = ThermalIntent.NEUTRAL
             self._induction_entered_at = None  # left induction -> next entry restarts the cascade
         elif state is ControllerState.INDUCTION:

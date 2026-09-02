@@ -1707,17 +1707,26 @@ def _verity_consecutive_failures(run_dir: str) -> int | None:
     """How many reconnects in a row the forwarder has failed, from its own log.
 
     The forwarder already prints this ("consecutive failures: 837"); nothing has ever read it.
+
+    A successful reconnect does NOT print a new counter line -- it just prints "connected" -- so
+    the last count in the log outlives the outage it described. Read naively, this reported "the
+    band is not merely unworn, it is unreachable" at the same moment the band was streaming a
+    sample a second old (2026-09-01 21:36). Anything after the newest count is therefore
+    inspected for a success, and a success clears it.
     """
     lines = _tail_lines(os.path.join(run_dir, "verity.log"), 200)
     if not lines:
         return None
-    for line in reversed(lines):
-        marker = "consecutive failures:"
-        i = line.find(marker)
+    marker = "consecutive failures:"
+    for idx in range(len(lines) - 1, -1, -1):
+        i = lines[idx].find(marker)
         if i < 0:
             continue
+        if any("connected" in later and "connecting" not in later
+               for later in lines[idx + 1:]):
+            return 0
         try:
-            return int(line[i + len(marker):].strip().rstrip(")").strip())
+            return int(lines[idx][i + len(marker):].strip().rstrip(")").strip())
         except ValueError:
             return None
     return None
@@ -1752,7 +1761,10 @@ def _check_wearable_reachable(repo, run_dir: str) -> dict:
                       "no wearable sample on record yet", None)
     hours = float(age) / 3600.0
     fails = _verity_consecutive_failures(run_dir)
-    refused = fails is not None and fails >= _WEARABLE_REFUSED_FAILURES
+    # A fresh sample settles the question by itself: whatever the log says about past attempts,
+    # data arriving a second ago is data arriving. The failure count only characterises a gap.
+    refused = (fails is not None and fails >= _WEARABLE_REFUSED_FAILURES
+               and hours >= _WEARABLE_GAP_OK_H)
     tail = (f"; the forwarder has failed to connect {fails} times in a row" if refused else "")
     remedy = ("power-cycle the Verity (hold the button until it re-advertises) and check it is "
               "not held by the Polar app -- a band connected elsewhere stops advertising")
