@@ -567,12 +567,17 @@ def _check_preemption_ran(repo) -> dict:
     reads it back.
     """
     try:
+        # The most recent night that actually RAN A SESSION, not simply the most recent
+        # night_date. Judged the latter way this check condemns the evening in progress: at
+        # 20:00 on 2026-09-01 it reported "the controller never entered MAINTENANCE, so
+        # pre-emption had no opportunity to run" about a night that had not started yet, and
+        # that warning sat next to five real ones.
         row = repo.conn.execute(
             "SELECT night_date FROM decisions WHERE night_date IS NOT NULL "
-            "ORDER BY id DESC LIMIT 1").fetchone()
+            "AND state IS NOT NULL AND state != 'idle' ORDER BY id DESC LIMIT 1").fetchone()
         if not row:
             return _check("preemption_ran", "Awakening pre-emption", "info",
-                          "no decisions recorded yet", None)
+                          "no night with a session recorded yet", None)
         night = row[0]
         rows = repo.conn.execute(
             "SELECT state, log_payload FROM decisions WHERE night_date = ?", (night,)).fetchall()
@@ -1616,6 +1621,90 @@ def _check_cardiac_sensor(repo) -> dict:
                   f"not currently streaming (last sample {ago})", None)
 
 
+#: A gap shorter than this is an ordinary day out of bed, not a fault.
+_WEARABLE_GAP_OK_H = 6.0
+#: A gap this long has spanned a night's sleep opportunity.
+_WEARABLE_GAP_NIGHT_H = 18.0
+#: ...and this long has spanned two.
+_WEARABLE_GAP_TWO_NIGHTS_H = 42.0
+#: Consecutive reconnect failures that mean the band is being actively refused rather than
+#: simply not worn. The forwarder retries roughly every 45 s, so 100 is over an hour of trying.
+_WEARABLE_REFUSED_FAILURES = 100
+
+
+def _verity_consecutive_failures(run_dir: str) -> int | None:
+    """How many reconnects in a row the forwarder has failed, from its own log.
+
+    The forwarder already prints this ("consecutive failures: 837"); nothing has ever read it.
+    """
+    lines = _tail_lines(os.path.join(run_dir, "verity.log"), 200)
+    if not lines:
+        return None
+    for line in reversed(lines):
+        marker = "consecutive failures:"
+        i = line.find(marker)
+        if i < 0:
+            continue
+        try:
+            return int(line[i + len(marker):].strip().rstrip(")").strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _check_wearable_reachable(repo, run_dir: str) -> dict:
+    """How long has it been since the band delivered ANYTHING?
+
+    Nothing asked this question, and the gap it leaves is wide. ``verity_forwarder`` watches the
+    forwarder's own heartbeat, which stays green while it retries a band that is not there.
+    ``cardiac_sensor`` and ``actigraphy`` look at a short recent window, which is legitimately
+    empty whenever you are out of bed -- so they report "info" all day and cannot tell a normal
+    afternoon from a dead sensor.
+
+    Measured: the Verity's last sample was 2026-09-01 04:41 and by that evening the forwarder had
+    logged 837 consecutive connection failures -- more than a day and a whole night with no
+    physiology at all -- while every check on the page was green or informational, and the
+    headline complaint was about the alarm.
+
+    The band being off is a legitimate choice, so this never escalates on a short gap. What it
+    refuses to stay quiet about is a gap that has already swallowed a night.
+    """
+    try:
+        from app import bridge
+        s = bridge.read_cardiac_sample(repo.conn)
+    except Exception as exc:
+        return _check("wearable_reachable", "Wearable reachable", "info",
+                      f"not readable ({exc!r})", None)
+    age = (s or {}).get("age_seconds")
+    if not s or age is None:
+        return _check("wearable_reachable", "Wearable reachable", "info",
+                      "no wearable sample on record yet", None)
+    hours = float(age) / 3600.0
+    fails = _verity_consecutive_failures(run_dir)
+    refused = fails is not None and fails >= _WEARABLE_REFUSED_FAILURES
+    tail = (f"; the forwarder has failed to connect {fails} times in a row" if refused else "")
+    remedy = ("power-cycle the Verity (hold the button until it re-advertises) and check it is "
+              "not held by the Polar app -- a band connected elsewhere stops advertising")
+    if hours >= _WEARABLE_GAP_TWO_NIGHTS_H:
+        return _check("wearable_reachable", "Wearable reachable", "fail",
+                      f"no wearable data for {hours:.0f}h -- that is two nights with no stage, "
+                      f"heart rate or movement{tail}", remedy)
+    if hours >= _WEARABLE_GAP_NIGHT_H:
+        return _check("wearable_reachable", "Wearable reachable", "warn",
+                      f"no wearable data for {hours:.0f}h -- a whole night's sleep opportunity "
+                      f"has passed with no physiology{tail}", remedy)
+    if refused:
+        return _check("wearable_reachable", "Wearable reachable", "warn",
+                      f"last sample {hours:.1f}h ago and the forwarder has failed to connect "
+                      f"{fails} times in a row -- the band is not merely unworn, it is "
+                      f"unreachable", remedy)
+    if hours >= _WEARABLE_GAP_OK_H:
+        return _check("wearable_reachable", "Wearable reachable", "info",
+                      f"last sample {hours:.1f}h ago (an ordinary gap out of bed)", None)
+    return _check("wearable_reachable", "Wearable reachable", "ok",
+                  f"last sample {hours:.1f}h ago", None)
+
+
 def _check_wearable_battery(repo) -> dict:
     """Wearable battery level. Its absence is what turned a flat battery into a lost night."""
     from app import services as _svc
@@ -1683,6 +1772,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("actigraphy", "Wearable accelerometer", lambda: _check_actigraphy(repo))
     add("verity_forwarder", "Verity forwarder process",
         lambda: _check_verity_forwarder(run_dir, now))
+    add("wearable_reachable", "Wearable reachable",
+        lambda: _check_wearable_reachable(repo, run_dir))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
     add("watchdog_heartbeat", "Watchdog heartbeat", lambda: _check_watchdog_heartbeat(run_dir, now))
     add("api", "API process", _check_api)

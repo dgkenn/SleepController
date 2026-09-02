@@ -19,6 +19,8 @@ from sleepctl.controller.induction import InductionRoutine
 from sleepctl.controller.maintenance import MaintenanceRoutine, WakeRecoveryRoutine
 from sleepctl.controller.arousal import ArousalDetector, ArousalLevel
 from sleepctl.controller.bed_exit import BedExitDetector
+from sleepctl.controller.hypnogram import (HypnogramConstraint, architecture_plausible,
+                                           constrain)
 from sleepctl.controller.precursor import PrecursorDetector
 from sleepctl.controller.sleep_onset import SleepOnsetDetector
 from sleepctl.controller.smart_wake import SmartWakeRoutine
@@ -51,6 +53,8 @@ class SleepController:
         # The counterpart to `_wearable_bed_entry`: on an account where presence is
         # permanently None, nothing could ever END a session on evidence.
         self.bed_exit_detector = BedExitDetector()
+        # Structural plausibility on the hypnogram -- see controller/hypnogram.py.
+        self.hypnogram = HypnogramConstraint()
         self.last_bed_exit = None
         self.last_bed_entry_block = None
         self.bed_exit_events: list = []
@@ -554,6 +558,7 @@ class SleepController:
                 try:
                     self.onset_detector.reset()
                     self.bed_exit_detector.reset()
+                    self.hypnogram.reset()
                 except Exception:
                     pass
         except Exception:
@@ -664,9 +669,14 @@ class SleepController:
                 # until the resting baseline is learned, which disables that test on its own.
                 resting_hr=(self.resting_baseline or {}).get("hr"))
             if est is not None:
+                # Structural constraints FIRST, then hysteresis -- so the damping operates on
+                # labels that are physiologically possible rather than smoothing impossible
+                # ones into a confident, impossible average.
+                est = constrain(est, now, cfg, self.hypnogram, self._sleep_onset_time)
                 est = self._hold_stage(est, cfg)
                 frame.stage, frame.stage_confidence, self._stage_source = est
                 self._stage_estimated = True
+                self.hypnogram.observe(frame.stage, now)
 
         arousal = None
         wake_detected = False
@@ -1162,6 +1172,16 @@ class SleepController:
                 or self.session_keep_light:
             self._deepen_active = False
             return False
+        # Refuse to steer by an architecture that cannot be true. The steerer's inputs are the
+        # accrued deep/REM minutes, and on 2026-08-30 those read 336 min of REM against 2 min of
+        # deep -- so it concluded a 216-minute REM surplus and spent the night defending it.
+        # Standing down is the correct response to a bad measurement; acting on it is not.
+        ok, why = architecture_plausible(self._arch_deep_min, self._arch_rem_min,
+                                         getattr(self, "_arch_light_min", 0.0))
+        self.last_architecture_implausible = None if ok else why
+        if not ok:
+            self._deepen_active = False
+            return False
         mso = ((now - self._sleep_onset_time).total_seconds() / 60.0
                if self._sleep_onset_time is not None else minutes_in_bed)
         est = self.est_sleep_min or getattr(self.night_targets, "total_sleep_target_min", 0) or 0.0
@@ -1497,6 +1517,9 @@ class SleepController:
             "bed_exit": (self.last_bed_exit.to_dict()
                          if getattr(self, "last_bed_exit", None) is not None else None),
             "bed_entry_blocked": getattr(self, "last_bed_entry_block", None),
+            "architecture_implausible": getattr(self, "last_architecture_implausible", None),
+            "hypnogram": (self.hypnogram.summary()
+                          if getattr(self, "hypnogram", None) is not None else None),
         }
         return Decision(
             timestamp=now,

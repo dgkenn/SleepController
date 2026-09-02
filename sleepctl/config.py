@@ -336,6 +336,23 @@ class Tunables:
     # that let a morning of walking around open a brand-new "night" every day.
     bed_entry_max_active_fraction: float = 0.4
     bed_entry_hr_ceiling: float = 95.0
+
+    # --- HYPNOGRAM PLAUSIBILITY (sleepctl/controller/hypnogram.py) -----------------------
+    # Stage hysteresis damps flapping BETWEEN sleep stages but exempts every transition through
+    # AWAKE, in both directions -- deliberately, so a wake label is never delayed. A stage that
+    # oscillates THROUGH awake therefore bypasses it entirely, which is what 2026-08-30 did for
+    # hours: R A R A R A, ending at 69.0% REM and 0.4% deep, with the architecture accrual
+    # reporting 336 min of REM so in-night steering defended a surplus that did not exist.
+    # These constrain WHEN a stage is possible rather than how fast it may change, and they can
+    # only ever reclassify REM/DEEP down to LIGHT -- never touch an AWAKE label.
+    hypnogram_constraints: bool = True
+    # First REM follows onset by ~70-110 min in a normal adult; this floor sits well below that
+    # so a genuinely short-latency night is not rewritten.
+    rem_earliest_min: float = 35.0
+    # Slow-wave sleep begins sooner, but not two minutes after getting into bed (2026-08-31).
+    deep_earliest_min: float = 8.0
+    # Sleep resumes through LIGHT and descends from there; it does not resume in REM.
+    reentry_light_min: float = 5.0
     # Learned wearable stager (sleepctl/ml/sleep_staging, trained on PhysioNet sleep-accel). Preferred
     # over the heuristic above when its weights are bundled and enough HR history exists; falls back
     # to the heuristic otherwise. Confidence capped below a real Pod stage (staging from a wrist HR
