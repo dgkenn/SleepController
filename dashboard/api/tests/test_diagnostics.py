@@ -1262,10 +1262,22 @@ class _LevelRepo:
 
 
 def test_a_physically_impossible_level_jump_is_flagged():
+    """Still surfaced, but now classified: this series is a one-sample SPIKE that reverts, which
+    the bed cannot have slewed to and back from, so it is a bad cloud read rather than another
+    controller. It used to warn with both explanations offered at once; a sustained step is the
+    case that warrants chasing, and it still warns (see below)."""
     from app.diagnostics import _check_device_level_glitches
     c = _check_device_level_glitches(_LevelRepo([-67, -67, -100, -65, -64]))
-    assert c["status"] == "warn"
+    assert c["status"] == "info"
     assert "-100" in c["detail"]
+    assert "spike" in c["detail"]
+
+
+def test_a_sustained_impossible_level_change_still_warns():
+    from app.diagnostics import _check_device_level_glitches
+    c = _check_device_level_glitches(_LevelRepo([-67, -67, -20, -21, -20, -19]))
+    assert c["status"] == "warn"
+    assert "sustained step" in c["detail"]
 
 
 def test_an_ordinary_ramp_is_not_flagged():

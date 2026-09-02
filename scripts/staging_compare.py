@@ -21,11 +21,17 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from sleepctl.eval.performance import evaluate, format_report  # noqa: E402
+from sleepctl.eval.in_bed import provenance, split_in_bed  # noqa: E402
+from sleepctl.eval.performance import (evaluate, format_report,  # noqa: E402
+                                       reference_discriminability)
 from sleepctl.eval.reference_stagers import (calibrate_scale, cole_kripke,  # noqa: E402
                                              oakley, sadeh, webster_rescore)
 
 _SLEEP = {"light", "deep", "rem"}
+
+#: Below this many scorable epochs a night is reported but not pooled -- see the
+#: guard in main() for what happened when it was.
+MIN_EPOCHS_TO_JUDGE = 60
 
 
 def _per_minute(night: dict):
@@ -36,7 +42,7 @@ def _per_minute(night: dict):
     scale does not matter -- ``calibrate_scale`` fits it -- only that it is proportional.
     """
     ours: dict = {}
-    counts: dict = {}
+    counts: dict = {}   # ONLY minutes that actually carried an actigraphy sample
     for s in night.get("raw_samples") or []:
         if str(s.get("controller_state")) in ("idle", "None"):
             continue
@@ -49,8 +55,27 @@ def _per_minute(night: dict):
         mv = s.get("movement")
         if mv is not None:
             counts[minute] = max(counts.get(minute, 0.0), float(mv) * 1000.0)
-    keys = sorted(set(ours) | set(counts))
-    return ([ours.get(k) for k in keys], [counts.get(k, 0.0) for k in keys], keys)
+    # INTERSECTION, not union. A minute with no actigraphy used to enter the comparison with a
+    # default count of 0.0, which Cole-Kripke reads as perfect stillness -- so the reference
+    # scored absent data as confidently asleep, and every wake call we made there became a false
+    # positive. On 2026-08-29, 26 of 2830 samples carried movement: the reference was scoring
+    # ~337 fabricated epochs and returned a specificity of 1.000 off the back of them.
+    #
+    # This is the same rule the sleep/wake detector already states for its own channels: a
+    # missing channel is dropped from the average rather than scored as zero, because treating
+    # "no accelerometer" as positive evidence of sleep is how a sensor outage becomes a report
+    # of a perfect night.
+    keys = sorted(set(ours) & set(counts))
+    # DROP THE EPOCHS THE SLEEPER WAS NOT IN BED FOR. Until bed exit could be detected at all, a
+    # session ran on for hours after the sleeper got up, so "the night" as published routinely
+    # contains a walking-around morning -- and scoring a sleep stager over it measures the wrong
+    # thing. On 2026-08-27 that is 179 of 684 epochs, and including them takes kappa against
+    # Cole-Kripke+Webster from 0.513 to 0.154. See sleepctl/eval/in_bed.py for why this is not a
+    # flattering filter: it makes 2026-08-30 slightly worse.
+    samples = [s for s in (night.get("raw_samples") or [])
+               if str(s.get("controller_state")) not in ("idle", "None")]
+    kept, dropped = split_in_bed(samples, keys)
+    return ([ours.get(k) for k in kept], [counts.get(k, 0.0) for k in kept], kept, dropped)
 
 
 def main() -> int:
@@ -61,9 +86,19 @@ def main() -> int:
     totals = Counter()
     for p in paths:
         night = json.loads(Path(p).read_text())
-        ours, counts, keys = _per_minute(night)
+        ours, counts, keys, dropped = _per_minute(night)
         if not any(c > 0 for c in counts):
             print(f"{night.get('night_date')}: no actigraphy -- cannot compare")
+            continue
+        # A night that survives the filters with a handful of epochs must not be averaged in as
+        # an equal. 2026-08-29 carried actigraphy on 26 of 2830 samples and came out of the
+        # filters with 7 scorable epochs; pooled with equal weight against two ~500-epoch nights
+        # it moved the reported kappa by more than either real night did.
+        if len(counts) < MIN_EPOCHS_TO_JUDGE:
+            print(f"{night.get('night_date')}: only {len(counts)} scorable epoch(s) "
+                  f"(actigraphy on {(night.get('sensor_capture') or {}).get('movement_present')} "
+                  f"of {(night.get('sensor_capture') or {}).get('n_samples')} samples) "
+                  f"-- too few to judge")
             continue
         # Standardized evaluation (Menghini et al., SLEEP 2021) against each reference. This
         # replaces the ad-hoc "strong/weak disagreement" counting that used to live here, which
@@ -76,7 +111,20 @@ def main() -> int:
             "sadeh": sadeh(counts, scale=calibrate_scale(counts, algorithm=sadeh)),
             "oakley": oakley(counts, scale=calibrate_scale(counts, algorithm=oakley)),
         }
+        # Print WHAT WAS SCORED alongside the scores. Two runs of this comparison over the
+        # same night produced 456 and 684 epochs and could not be reconciled afterwards,
+        # because neither run recorded its own denominator.
         print(f"\n=== {night.get('night_date')} ===")
+        print(f"  {provenance(night, len(keys), len(dropped))}")
+        # How much the reference's own wake calls rest on motion. A kappa quoted without this
+        # overstates what was established -- see reference_discriminability.
+        disc = reference_discriminability(counts, refs["cole_kripke_webster"])
+        if disc.get("reference_wake_epochs"):
+            print(f"  reference quality: {disc['reference_wake_epochs']} wake call(s), "
+                  f"{disc['wake_calls_at_or_below_median_motion']} of them "
+                  f"({disc['wake_calls_without_motion_evidence_frac']:.0%}) at or below the "
+                  f"night's median movement; motion dynamic range "
+                  f"p95/median = {disc['motion_dynamic_range']}")
         for name, ref_sleep in refs.items():
             res = evaluate(ours, ref_sleep)
             print(format_report(res, label=str(night.get("night_date")), reference=name))
@@ -87,29 +135,6 @@ def main() -> int:
                 totals[f"{name}_sens"] += (ebe["sensitivity"] or 0.0)
                 totals[f"{name}_kappa"] += (ebe["kappa"] or 0.0)
                 totals[f"{name}_n"] += 1
-        continue
-        res = compare(ours, counts)
-        if not res.get("n"):
-            print(f"{night.get('night_date')}: no overlapping labelled minutes")
-            continue
-        print(f"\n=== {night.get('night_date')}  ({res['n']} labelled minutes; count scale "
-              f"CK {res['scale_cole_kripke']}, Sadeh {res['scale_sadeh']}) ===")
-        for name in ("cole_kripke", "cole_kripke_webster", "sadeh", "oakley"):
-            a = res[name]
-            print(f"  {name:20} agreement {a['agreement']:.3f}  "
-                  f"(both asleep {a['both_sleep']}, both awake {a['both_wake']})")
-            print(f"    STRONG disagreement -- motion says awake, we said asleep: "
-                  f"{a['missed_wake_we_called_sleep']}")
-            print(f"    weak   disagreement -- we said awake, motion quiet:       "
-                  f"{a['we_called_wake_ref_quiet']}")
-            totals[f"{name}_strong"] += a["missed_wake_we_called_sleep"]
-            totals[f"{name}_weak"] += a["we_called_wake_ref_quiet"]
-            totals[f"{name}_agree"] += a["agreement"]
-            totals[f"{name}_nights"] += 1
-        print(f"  the two references disagree with each other on {res['references_disagree']} "
-              f"minute(s) -- our label cannot be judged there")
-        totals["n"] += res["n"]
-        totals["ref_disagree"] += res["references_disagree"]
 
     names = ("cole_kripke", "cole_kripke_webster", "sadeh", "oakley")
     if any(totals[f"{n}_n"] for n in names):

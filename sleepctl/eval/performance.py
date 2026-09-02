@@ -200,3 +200,43 @@ def format_report(res: Dict[str, object], label: str = "", reference: str = "ref
                      f"{disc.get(k):+} {unit}" if disc.get(k) is not None
                      else f"    {k:9} {dev.get(k)} / {ref.get(k)} / n/a")
     return "\n".join(lines)
+
+
+def reference_discriminability(counts: Sequence[float],
+                               reference_sleep: Sequence[Optional[bool]]) -> Dict[str, object]:
+    """How much MOTION evidence the reference's own wake calls actually rest on.
+
+    WHY A COMPARISON NEEDS THIS. ``calibrate_scale`` fits the count scale so a night reaches a
+    target sleep fraction, which forces roughly 12% of epochs to be scored wake whether or not
+    any of them contain motion. On a night whose movement distribution is compressed -- and this
+    sleeper's are: median 27, p95 103, on a scale that saturates at 1000 -- the threshold lands
+    inside the noise, and the reference labels wake on epochs indistinguishable from its own
+    sleep epochs.
+
+    Measured on 2026-08-27 and 2026-08-30, roughly ONE THIRD of the reference's wake epochs sit
+    at or below the night's median movement. So a third of the epochs where we "disagree" are
+    epochs where the reference has no motion basis for its call either. That does not make our
+    number better; it makes the comparison less informative than a bare kappa implies, and a
+    kappa quoted without it overstates what was established.
+    """
+    pairs = [(c, r) for c, r in zip(counts, reference_sleep) if r is not None]
+    if not pairs:
+        return {"n": 0}
+    vals = sorted(c for c, _ in pairs)
+    med = vals[len(vals) // 2]
+    wake = [c for c, r in pairs if not r]
+    if not wake:
+        return {"n": len(pairs), "reference_wake_epochs": 0}
+    quiet = sum(1 for c in wake if c <= med)
+    p95 = vals[min(len(vals) - 1, int(0.95 * len(vals)))]
+    return {
+        "n": len(pairs),
+        "reference_wake_epochs": len(wake),
+        # The headline: wake calls with no more motion than a typical sleeping minute.
+        "wake_calls_at_or_below_median_motion": quiet,
+        "wake_calls_without_motion_evidence_frac": round(quiet / len(wake), 3),
+        "motion_median": round(med, 1),
+        "motion_p95": round(p95, 1),
+        # A compressed distribution is what makes the threshold arbitrary in the first place.
+        "motion_dynamic_range": round(p95 / med, 1) if med > 0 else None,
+    }

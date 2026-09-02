@@ -1749,6 +1749,66 @@ _WEARABLE_BATTERY_KEY = "wearable_battery"
 WEARABLE_BATTERY_LOW_PCT = 40
 
 
+#: Battery readings kept for the discharge-rate estimate. The band reports once per connection,
+#: so this is a handful of points per day, not a time series.
+_WEARABLE_BATTERY_HISTORY_KEY = "wearable_battery_history"
+_WEARABLE_BATTERY_HISTORY_MAX = 40
+
+
+def _append_battery_history(repo, pct: int, ts: str) -> None:
+    """Append one reading, oldest-first, capped. Never raises -- a telemetry nicety must not be
+    able to fail an ingest that is otherwise carrying real physiology."""
+    try:
+        hist = _kv_get_json(repo, _WEARABLE_BATTERY_HISTORY_KEY) or []
+        if not isinstance(hist, list):
+            hist = []
+        if hist and hist[-1].get("pct") == pct:
+            return                                  # unchanged; nothing to learn from it
+        hist.append({"pct": pct, "ts": ts})
+        _kv_set_json(repo, _WEARABLE_BATTERY_HISTORY_KEY,
+                     hist[-_WEARABLE_BATTERY_HISTORY_MAX:])
+    except Exception:
+        pass
+
+
+#: Measured full-charge runtime, from the night it died: 25.5 h of continuous streaming from a
+#: full charge to flat on 2026-08-06. Used only until the history yields a real discharge rate.
+WEARABLE_FULL_RUNTIME_H = 25.5
+
+
+def wearable_runtime_left_h(repo) -> tuple:
+    """``(hours_left, basis)`` -- how long the band can keep streaming, and where that came from.
+
+    Prefers a rate MEASURED from this band's own recent readings; falls back to scaling the
+    documented full-charge runtime. Returns ``(None, reason)`` when neither is available.
+    """
+    b = wearable_battery(repo)
+    pct = (b or {}).get("pct")
+    if pct is None:
+        return None, "no battery reading"
+    try:
+        hist = _kv_get_json(repo, _WEARABLE_BATTERY_HISTORY_KEY) or []
+    except Exception:
+        hist = []
+    # Only a MONOTONIC DECLINE measures discharge. A rise means it was charged in between, and
+    # averaging across a charge would report a band that gains capacity by being worn.
+    best = None
+    for older, newer in zip(hist, hist[1:]):
+        try:
+            drop = float(older["pct"]) - float(newer["pct"])
+            hrs = ((datetime.fromisoformat(newer["ts"])
+                    - datetime.fromisoformat(older["ts"])).total_seconds() / 3600.0)
+        except Exception:
+            continue
+        if drop > 0 and hrs >= 0.5:
+            rate = drop / hrs                       # percent per hour
+            best = rate if best is None else (0.5 * best + 0.5 * rate)
+    if best and best > 0:
+        return round(pct / best, 1), f"measured {best:.1f}%/h"
+    return (round(WEARABLE_FULL_RUNTIME_H * pct / 100.0, 1),
+            f"scaled from the measured {WEARABLE_FULL_RUNTIME_H:.1f}h full-charge runtime")
+
+
 def wearable_battery(repo) -> dict:
     """Last reported wearable battery, as ``{"pct", "ts", "age_h", "low"}`` (empty if unknown)."""
     d = _kv_get_json(repo, _WEARABLE_BATTERY_KEY) or {}
@@ -1790,9 +1850,15 @@ def ingest_hr(repo, payload: dict) -> dict:
     # cost a full night: the band ran 25.5 h unattended and died flat at 00:01 mid-sleep.
     batt = payload.get("battery_pct")
     if isinstance(batt, (int, float)) and 0 <= batt <= 100:
+        _now_iso = datetime.now(timezone.utc).isoformat()
         _kv_set_json(repo, _WEARABLE_BATTERY_KEY,
-                     {"pct": int(batt), "ts": datetime.now(timezone.utc).isoformat(),
+                     {"pct": int(batt), "ts": _now_iso,
                       "source": payload.get("source", "verity")})
+        # ...and keep a short HISTORY alongside the latest value. A single reading can only be
+        # compared against a fixed threshold, which is why the check could say "32% -- unlikely
+        # to last the night" and nothing more useful. Two readings give a discharge RATE, and a
+        # rate answers the question that actually matters: will it still be running at wake time.
+        _append_battery_history(repo, int(batt), _now_iso)
         if not payload.get("hr") and not payload.get("rr"):
             return {"ok": True, "battery_pct": int(batt), "ingested": 0}
 

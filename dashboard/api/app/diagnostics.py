@@ -816,16 +816,49 @@ def _check_device_level_glitches(repo) -> dict:
     if not jumps:
         return _check("device_level_glitch", "Device level glitches", "ok",
                       f"no implausible level jumps in {len(rows)} samples", None)
+
+    # WHICH KIND OF GLITCH, because the two have completely different remedies and the check
+    # used to offer both at once. A SPIKE is one sample at an impossible level with the series
+    # returning to where it was -- a bad cloud read, nothing to chase. A STEP is a jump that
+    # STAYS: the bed really is at a new setpoint, which the bed cannot have slewed to, which
+    # means something else wrote it. Measured on 2026-08-29/30, all three excursions are spikes
+    # to exactly -100 (the device floor) reverting within one sample, twice while IDLE, and two
+    # of them share a timestamp with their neighbour -- the signature of a duplicated bad read,
+    # not of the Eight Sleep app running a schedule.
+    # Classify the EXCURSION, not each edge of it. A spike is two jumps -- out and back -- and
+    # counting them separately makes every spike look like one spike plus one sustained step.
+    levels = [int(lv) for _ts, lv in rows]
+    spikes = steps = 0
+    i = 1
+    while i < len(levels):
+        if abs(levels[i] - levels[i - 1]) >= IMPLAUSIBLE_LEVEL_JUMP:
+            returned = (i + 1 < len(levels)
+                        and abs(levels[i + 1] - levels[i - 1]) < IMPLAUSIBLE_LEVEL_JUMP)
+            if returned:
+                spikes += 1
+                i += 2          # skip the return edge; it is the same excursion
+                continue
+            steps += 1
+        i += 1
+
     worst = max(jumps, key=lambda j: abs(int(j[2]) - int(j[1])))
+    shape = (f"{spikes} one-sample spike(s) that reverted"
+             + (f" and {steps} sustained step(s)" if steps else ""))
+    if steps == 0:
+        return _check(
+            "device_level_glitch", "Device level glitches", "info",
+            f"{len(jumps)} device-level jump(s) larger than {IMPLAUSIBLE_LEVEL_JUMP} levels -- "
+            f"all {shape}, i.e. bad cloud reads rather than another controller. Worst: "
+            f"{worst[1]} -> {worst[2]} at {str(worst[0])[:19]}",
+            "no action needed beyond treating these samples as suspect in any range/exposure "
+            "analysis; a spike that reverts within one sample cannot be a real setpoint change")
     return _check(
         "device_level_glitch", "Device level glitches", "warn",
         f"{len(jumps)} device-level jump(s) larger than {IMPLAUSIBLE_LEVEL_JUMP} levels between "
-        f"consecutive samples -- the bed cannot slew that fast, so these are bad reads or "
-        f"setpoint changes we did not make. Worst: {worst[1]} -> {worst[2]} at "
-        f"{str(worst[0])[:19]}",
-        "treat these samples as suspect in any range/exposure analysis; if they recur at the "
-        "same time each night, check for another controller (the Eight Sleep app's own schedule) "
-        "writing to the pod")
+        f"consecutive samples -- {shape}. A sustained step is not something the bed can slew to, "
+        f"so something else wrote it. Worst: {worst[1]} -> {worst[2]} at {str(worst[0])[:19]}",
+        "check for another controller (the Eight Sleep app's own schedule) writing to the pod; "
+        "treat these samples as suspect in any range/exposure analysis")
 
 
 def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
@@ -1788,8 +1821,41 @@ def _check_wearable_reachable(repo, run_dir: str) -> dict:
                   f"last sample {hours:.1f}h ago", None)
 
 
+def _hours_until_wake(repo) -> float | None:
+    """Hours from now until tonight's required wake time, or None when none is set."""
+    try:
+        from app import services as _svc
+        iso = (_svc.schedule_brief(repo) or {}).get("required_wake_time")
+        if not iso:
+            return None
+        wake = datetime.fromisoformat(str(iso))
+        now = datetime.now(wake.tzinfo) if wake.tzinfo else datetime.now()
+        hrs = (wake - now).total_seconds() / 3600.0
+        if hrs < 0:                      # the deadline has passed; the next one is tomorrow
+            hrs += 24.0
+        return hrs
+    except Exception:
+        return None
+
+
+_BATTERY_MARGIN_H = 1.0
+
+
 def _check_wearable_battery(repo) -> dict:
-    """Wearable battery level. Its absence is what turned a flat battery into a lost night."""
+    """Will the band still be running at wake time?
+
+    A percentage against a fixed threshold could only ever say "32% -- unlikely to last the
+    night", which is a guess dressed as a finding: unlikely compared to what, and by how much?
+    The band reports its level once per connection, so two connections give a discharge RATE,
+    and a rate plus the wake deadline answers the question the user actually has.
+
+    The fallback when there is no measured rate is the night it died: 25.5 h of continuous
+    streaming from full to flat on 2026-08-06, scaled by the current level.
+
+    Note the projection is deliberately compared against the WAKE TIME rather than a nominal
+    eight hours. A band that dies at 05:30 has lost the back half of the night -- which for this
+    user is the half that matters, and the half every prevention change is measured on.
+    """
     from app import services as _svc
     try:
         b = _svc.wearable_battery(repo)
@@ -1801,13 +1867,36 @@ def _check_wearable_battery(repo) -> dict:
                       "no battery reading yet (reported once per sensor connection)", None)
     pct, age_h = b["pct"], b.get("age_h")
     stamp = f" (read {age_h:.1f}h ago)" if isinstance(age_h, (int, float)) else ""
+    try:
+        left_h, basis = _svc.wearable_runtime_left_h(repo)
+    except Exception:
+        left_h, basis = None, "runtime estimate unavailable"
+    remedy = ("Charge the band BEFORE bed, powered OFF (on the charger while running it "
+              "may not gain net charge). It died mid-sleep at 00:01 on 2026-08-06 after "
+              "25.5h of continuous streaming.")
+    if left_h is None:
+        if b["low"]:
+            return _check("wearable_battery", "Wearable battery", "warn",
+                          f"{pct}%{stamp} -- unlikely to last the night", remedy)
+        return _check("wearable_battery", "Wearable battery", "ok", f"{pct}%{stamp}", None)
+
+    detail = f"{pct}%{stamp} -- about {left_h:.1f}h of streaming left ({basis})"
+    until_wake = _hours_until_wake(repo)
+    if until_wake is not None:
+        detail += f"; {until_wake:.1f}h until wake"
+        if left_h + _BATTERY_MARGIN_H < until_wake:
+            return _check(
+                "wearable_battery", "Wearable battery", "fail",
+                f"{detail} -- it will die about {until_wake - left_h:.1f}h BEFORE you wake, "
+                f"taking the back half of the night with it", remedy)
+        if left_h < until_wake + _BATTERY_MARGIN_H:
+            return _check("wearable_battery", "Wearable battery", "warn",
+                          f"{detail} -- that is cutting it fine", remedy)
+        return _check("wearable_battery", "Wearable battery", "ok", detail, None)
     if b["low"]:
         return _check("wearable_battery", "Wearable battery", "warn",
-                      f"{pct}%{stamp} -- unlikely to last the night",
-                      "Charge the band BEFORE bed, powered OFF (on the charger while running it "
-                      "may not gain net charge). It died mid-sleep at 00:01 on 2026-08-06 after "
-                      "25.5h of continuous streaming.")
-    return _check("wearable_battery", "Wearable battery", "ok", f"{pct}%{stamp}", None)
+                      f"{detail} -- unlikely to last a full night", remedy)
+    return _check("wearable_battery", "Wearable battery", "ok", detail, None)
 
 
 # ------------------------------------------------------------------ entry point
