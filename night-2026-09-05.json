@@ -1,0 +1,5377 @@
+{
+  "architecture": {
+    "avg_hr": null,
+    "avg_hrv": null,
+    "avg_respiratory_rate": null,
+    "deep_min": null,
+    "light_min": null,
+    "rem_min": null,
+    "sleep_efficiency": null,
+    "sleep_onset_latency_min": null,
+    "total_sleep_min": null,
+    "wake_events": null,
+    "waso_min": null
+  },
+  "bed_exit_events": [],
+  "bed_exit_summary": {
+    "entries_blocked": {},
+    "exits": 0,
+    "max_confidence": 0.0,
+    "ticks_judged": 169,
+    "ticks_with_any_evidence": 0
+  },
+  "comfort_profile": {
+    "cool_edge_f": 67.0,
+    "id": 1,
+    "neutral_f": 69.0,
+    "ratings": {
+      "caveat": "n=1 night. The real fix was disabling the outdoor-weather ambient fallback, which was swinging water ~32 levels at a constant target; this band is secondary.",
+      "correction": "v1 (64.0/65.5/66.5) was derived from the CONTROLLER TARGET scale, which does NOT discriminate: target read 66.9F during the best 160-min unbroken stretch AND at most disruptions. The water LEVEL discriminates cleanly.",
+      "correction_reason": "The superseded band excluded 69 F, the water temperature its own evidence records as this user's best sleep (160 min unbroken). With it in force on 2026-08-27 the commanded water sat at 64-67 F all night, pinned at the floor for two thirds of maintenance ticks across 16 wake events, and pre-emption could not warm above 67 F. Re-centred on the measured best-sleep temperature with ~3 F clearance from both recorded awakening zones (cold 63-64 F, warm 70-72 F).",
+      "evidence": {
+        "best_sleep_median_level": "-55 (69F water), 160 min unbroken",
+        "cold_end_awakenings": "levels -77..-80 (63-64F water)",
+        "warm_end_awakenings": "levels -38..-51 (70-72F water)"
+      },
+      "superseded": {
+        "cool_edge_f": 65.5,
+        "neutral_f": 66.9,
+        "source": "observed_night_2026-08-04_v2",
+        "warm_edge_f": 68.0
+      }
+    },
+    "source": "evidence_corrected_2026-08-28",
+    "ts": "2026-08-28T07:00:06.087473",
+    "warm_edge_f": 69.5
+  },
+  "gait_anchors": [],
+  "generated_utc": "2026-09-05T17:25:44.150032+00:00",
+  "hrv_windows_summary": {
+    "n_intervals": 0,
+    "n_windows": 0
+  },
+  "interventions": [],
+  "interventions_summary": {
+    "by_action": {},
+    "by_controller_state": {},
+    "n": 0
+  },
+  "local_utc_offset_s": -14400,
+  "marker_anchors": [],
+  "night_date": "2026-09-05",
+  "onset_events": [],
+  "precursor_score_distribution": null,
+  "preemption_dead_zone": {
+    "first_preempt_ts": "2026-09-05T12:00:00.888074",
+    "maintenance_ticks_before_first_preempt": 0,
+    "wake_signal_ticks_in_that_window": 0
+  },
+  "preemption_events": [
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:00:00.888074",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:00:31.558640",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:01:02.163044",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:01:32.897614",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:02:03.391869",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:02:34.094466",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:03:04.723892",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:03:35.574396",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:04:06.201771",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:04:36.905786",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:05:07.411151",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:05:38.114163",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:06:08.090046",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:06:38.776996",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:07:09.349926",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:07:40.001643",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:08:10.555485",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:08:41.373324",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:09:11.920087",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:09:42.681552",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:10:13.283788",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:10:43.991382",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:11:14.511125",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:11:45.490514",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:12:15.986761",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:12:46.971009",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:13:17.603688",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:13:48.465539",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:14:19.308074",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:14:49.971663",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:15:20.525296",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:15:51.671550",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:16:21.229164",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:16:51.869908",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:17:22.387023",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:17:53.002148",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:18:23.501150",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:18:54.379487",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:19:24.857992",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:19:55.551379",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:20:26.172580",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:20:56.902720",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:21:27.458056",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:21:58.158906",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:22:28.715586",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:22:59.424481",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:23:29.985972",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:24:00.843139",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:24:31.367652",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:25:01.980059",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:25:32.473012",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:26:03.200813",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:26:33.722335",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:27:04.423987",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:27:34.936104",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:28:05.811503",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:28:36.538105",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:29:07.924227",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:29:37.378406",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:30:08.322974",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:30:39.075447",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:31:08.788266",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:31:39.722769",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:32:09.669257",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:32:40.662889",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:33:10.245973",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:33:40.752199",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:34:11.608429",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:34:42.120383",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:35:12.878471",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:35:43.434133",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:36:14.271580",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:36:44.750653",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:37:15.499795",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:37:46.459166",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:38:16.048840",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:38:46.996624",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:39:16.784373",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:39:47.345933",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:40:18.054773",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:40:48.578354",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:41:19.161598",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:41:50.427429",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:42:20.038211",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:42:51.347982",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:43:20.935611",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:43:51.512131",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:44:22.459313",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:44:52.960523",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:45:23.809642",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:45:54.287938",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:46:23.990352",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:46:54.929763",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:47:24.591071",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:47:55.274706",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:48:25.947379",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:48:56.531798",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:49:27.395614",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:49:58.082271",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:50:28.774022",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:50:59.497052",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:51:30.164315",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:52:00.660848",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:52:31.351644",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:53:02.465905",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:53:32.243969",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:54:03.028154",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:54:33.932018",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:55:04.454888",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:55:35.418907",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:56:05.939948",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:56:37.044616",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:57:07.516342",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:57:38.199361",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:58:09.216915",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:58:38.817578",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:59:09.320886",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T12:59:40.073861",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:00:10.571881",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:00:41.279744",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:01:12.024039",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:01:42.667696",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:02:13.179474",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:02:43.791940",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:03:14.339045",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:03:45.036868",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:04:15.533741",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:04:46.461870",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:05:16.948899",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:05:47.651462",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:06:17.666113",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:06:48.404296",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:07:19.067854",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:07:49.748294",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:08:20.290275",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:08:51.035280",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:09:21.585302",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:09:52.478374",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:10:23.121058",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:10:53.822478",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:11:24.338620",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:11:55.008593",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:12:25.496402",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:12:56.709504",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:13:26.260532",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:13:57.216616",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:14:27.710399",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:14:58.686853",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:15:29.592532",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:15:59.215752",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:16:29.890175",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:17:00.595932",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:17:31.134627",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:18:01.759464",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:18:32.455872",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:19:03.194179",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:19:33.814033",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:20:04.824287",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:20:35.614093",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:21:05.686080",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:21:36.305488",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:22:07.498714",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:22:37.054464",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:23:07.729058",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:23:38.237609",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:24:08.892905",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:24:40.326449",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:25:10.081258",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    },
+    {
+      "action": "hold",
+      "precursor_reasons": [
+        "hr_creep"
+      ],
+      "precursor_score": 0.18,
+      "risk_reasons": [
+        "hr_creep",
+        "light_stage",
+        "recurring_wake_window"
+      ],
+      "state": "idle",
+      "target_level": -54,
+      "ts": "2026-09-05T13:25:40.793403",
+      "wake_risk": 0.58,
+      "wake_window_preempt": null
+    }
+  ],
+  "preemption_summary": {
+    "by_action": {
+      "hold": 169
+    },
+    "n_decisions": 169,
+    "n_in_maintenance": 0,
+    "n_preempting": 169,
+    "precursor_reasons": {
+      "hr_creep": 169
+    },
+    "risk_reasons": {
+      "hr_creep": 169,
+      "light_stage": 169,
+      "recurring_wake_window": 169
+    }
+  },
+  "raw_samples": [
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T11:59:14.859855",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:00:16.086867",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:00:16.086867",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:01:17.370945",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:01:17.370945",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:02:18.612420",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:02:18.612420",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:03:19.877410",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:03:19.877410",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -51,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:04:21.403281",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:04:21.403281",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:05:22.619364",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:05:22.619364",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:06:23.278078",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:06:23.278078",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:07:24.534510",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -52,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:07:24.534510",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:08:25.740434",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:08:25.740434",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:09:27.110251",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:09:27.110251",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:10:28.462374",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:10:28.462374",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:11:29.684629",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:11:29.684629",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:12:31.165011",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:12:31.165011",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:13:32.761143",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -53,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:13:32.761143",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:14:34.476642",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:14:34.476642",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:15:35.718321",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:15:35.718321",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:16:36.429331",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:16:36.429331",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:17:37.564854",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:17:37.564854",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:18:38.672350",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:18:38.672350",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:19:40.065343",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:19:40.065343",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:20:41.350114",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:20:41.350114",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:21:42.657825",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:21:42.657825",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:22:43.878284",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:22:43.878284",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:23:45.169551",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:23:45.169551",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:24:46.561604",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:24:46.561604",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:25:47.677424",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:25:47.677424",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:26:48.920177",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:26:48.920177",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:27:50.129301",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:27:50.129301",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:28:51.730159",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:28:51.730159",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:29:52.538421",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:29:52.538421",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:30:54.245522",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:30:54.245522",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:31:54.885469",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:31:54.885469",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:32:55.843905",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:32:55.843905",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:33:55.965050",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:33:55.965050",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:34:57.322695",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:34:57.322695",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:35:58.747363",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:35:58.747363",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:36:59.959450",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:36:59.959450",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:38:01.651650",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:38:01.651650",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:39:02.201013",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:39:02.201013",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:40:02.538116",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:40:02.538116",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:41:03.724084",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:41:03.724084",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:42:04.599195",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:42:04.599195",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:43:05.533991",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:43:05.533991",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:44:06.712982",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:44:06.712982",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:45:08.145174",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:45:08.145174",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:46:09.485773",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:46:09.485773",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:47:10.154085",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:47:10.154085",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:48:10.468455",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:48:10.468455",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:49:11.724051",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:49:11.724051",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:50:13.264532",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:50:13.264532",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:51:14.696261",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:51:14.696261",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:52:15.869909",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:52:15.869909",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:53:16.654517",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:53:16.654517",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:54:18.210282",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:54:18.210282",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:55:19.640273",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:55:19.640273",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:56:21.095097",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:56:21.095097",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:57:22.724137",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:57:22.724137",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:58:24.417740",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:58:24.417740",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:59:24.491345",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T12:59:24.491345",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:00:25.730348",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:00:25.730348",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:01:27.207626",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:01:27.207626",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:02:28.345898",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:02:28.345898",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:03:29.521774",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:03:29.521774",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:04:30.714676",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:04:30.714676",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:05:32.118671",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:05:32.118671",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:06:32.891426",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:06:32.891426",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:07:34.284502",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:07:34.284502",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:08:35.465705",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:08:35.465705",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:09:36.776534",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:09:36.776534",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:10:38.299030",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:10:38.299030",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:11:39.526748",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:11:39.526748",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:12:40.706433",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:12:40.706433",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:13:41.413092",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:13:41.413092",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:14:42.889730",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:14:42.889730",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:15:44.796892",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:15:44.796892",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:16:45.099806",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:16:45.099806",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:17:46.309647",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:17:46.309647",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -55,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:18:47.613358",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:18:47.613358",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:19:49.008461",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:19:49.008461",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:20:50.801265",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:20:50.801265",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:21:51.501338",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:21:51.501338",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:22:52.218116",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:22:52.218116",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:23:53.439753",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:23:53.439753",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:24:54.518583",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -54,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-05T13:24:54.518583",
+      "wake_event": 0
+    }
+  ],
+  "risk_reason_saturation": {},
+  "risk_score_distribution": null,
+  "schema": "sleepctl.night_data/v1",
+  "sensor_capture": {
+    "first_ts": "2026-09-05T11:59:14.859855",
+    "heart_rate_present": 0,
+    "last_ts": "2026-09-05T13:24:54.518583",
+    "movement_present": 0,
+    "n_samples": 169,
+    "usable_stage_present": 0
+  },
+  "staging": {
+    "stage_distribution": {
+      "unknown": 169
+    },
+    "transitions": [
+      {
+        "confidence": null,
+        "stage": "unknown",
+        "ts": "2026-09-05T11:59:14.859855"
+      }
+    ],
+    "wake_events": []
+  },
+  "steering_summary": {
+    "final": {
+      "active": false,
+      "deep_deficit_min": null,
+      "deep_min_so_far": 57.9,
+      "defending": false,
+      "frac_of_night": null,
+      "maneuver": "hold",
+      "observing": false,
+      "reason": null,
+      "rem_deficit_min": null,
+      "rem_min_so_far": 97.9
+    },
+    "maneuvers": {
+      "hold": 169
+    },
+    "n_acquiring": 0,
+    "n_decisions": 169,
+    "n_defending": 0,
+    "n_judged": 0
+  },
+  "thermal_exposure": {
+    "n_commanded": 169
+  },
+  "wake_log": null
+}
