@@ -1815,6 +1815,40 @@ def _verity_consecutive_failures(run_dir: str) -> int | None:
     return None
 
 
+def _verity_link_shape(run_dir: str) -> tuple:
+    """``(shape, detail)`` describing HOW the forwarder is currently failing, or ``(None, None)``.
+
+    "Cannot see the band" and "can see the band but it refuses the connection" have completely
+    different remedies, and nothing distinguished them. On 2026-09-05 the log read
+
+        found 'Polar Sense 16961D33' at 24:AC:AC:16:96:1D
+        connecting to 24:AC:AC:16:96:1D ...
+        session error (TimeoutError: ); reconnecting in 25s (consecutive failures: 153)
+
+    over and over -- the band advertising healthily, on the wrist, and every connect timing out.
+    That is the signature of the band already being held by ANOTHER central (the phone's Polar
+    app is the usual one); a Bluetooth stack reset on this side cannot fix it, and the forwarder
+    had already escalated to that rung twice. Meanwhile every check on the page was green or
+    informational, because the last sample was only a couple of hours old.
+    """
+    lines = [ln.strip() for ln in (_tail_lines(os.path.join(run_dir, "verity.log"), 60) or [])
+             if ln.strip()]
+    if not lines:
+        return None, None
+    tail = lines[-30:]
+    if any("connected" in ln and "connecting" not in ln for ln in tail):
+        return None, None                      # a live session in the recent past; not stuck
+    seen = sum(1 for ln in tail if ln.startswith("found ") or " found '" in ln)
+    timeouts = sum(1 for ln in tail if "session error" in ln)
+    if seen and timeouts:
+        return ("refusing",
+                "the band is advertising and being found, but every connection attempt times "
+                "out -- something else is holding it (most often the Polar app on your phone)")
+    if timeouts and not seen:
+        return ("absent", "the band is not advertising at all")
+    return None, None
+
+
 def _check_wearable_reachable(repo, run_dir: str) -> dict:
     """How long has it been since the band delivered ANYTHING?
 
@@ -1843,6 +1877,17 @@ def _check_wearable_reachable(repo, run_dir: str) -> dict:
         return _check("wearable_reachable", "Wearable reachable", "info",
                       "no wearable sample on record yet", None)
     hours = float(age) / 3600.0
+    # A band that is RIGHT THERE and refusing connections is a different fault from one that is
+    # simply unworn, and it will not fix itself: report it whatever the age of the last sample,
+    # because the alternative is a green page an hour before bed and no feed all night.
+    shape, shape_detail = _verity_link_shape(run_dir)
+    if shape == "refusing":
+        return _check(
+            "wearable_reachable", "Wearable reachable", "warn",
+            f"last sample {hours:.1f}h ago -- {shape_detail}",
+            "disconnect the band from anything else holding it (close the Polar app, or turn "
+            "the phone's Bluetooth off), then power-cycle the band by holding its button until "
+            "it re-advertises")
     fails = _verity_consecutive_failures(run_dir)
     # A fresh sample settles the question by itself: whatever the log says about past attempts,
     # data arriving a second ago is data arriving. The failure count only characterises a gap.
