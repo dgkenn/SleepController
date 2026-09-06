@@ -48,6 +48,10 @@ from sleepctl.models import (
 #: exactly when the most night is left to protect.
 MIN_TICKS_FOR_DUTY_CYCLE = 60
 
+#: A gap this long between architecture accruals means a different night. Comfortably
+#: longer than any within-night sensor dropout, comfortably shorter than a day.
+ARCHITECTURE_GAP_RESET_MIN = 180.0
+
 
 class SleepController:
     def __init__(self, cfg: AppConfig, setpoints=None) -> None:
@@ -211,7 +215,23 @@ class SleepController:
             cool_edge = self.comfort_profile.get("cool_edge_f")
             if cool_edge is None:
                 return None, None
+            # THE MARGIN HAS TO BE SMALL RELATIVE TO THE BAND, not an absolute degree.
+            #
+            # This was written when the maintenance settle was -1.0 F, which lands at 68.0 F and
+            # never approached the 67.0 F cool edge -- so a 1.0 F margin cost nothing. Once the
+            # pre-emptive settle was deepened to target the cool edge deliberately, that same
+            # margin swallowed the entire intended operating range: with a measured band of
+            # 67.0-69.5 F, "within 1 F of the edge" is 40% of the whole band, so every pre-empt
+            # was immediately classified as camping and eased back up.
+            #
+            # Measured: the bed did not once go below 68.0 F on 2026-09-01 or 2026-09-04, on
+            # either side of the settle fix -- the floor was this test, not the settle.
             margin = float(getattr(cfg.tunables, "cold_dwell_margin_f", 1.0))
+            warm_edge = self.comfort_profile.get("warm_edge_f")
+            if warm_edge is not None:
+                band = max(0.5, float(warm_edge) - float(cool_edge))
+                frac = float(getattr(cfg.tunables, "cold_dwell_margin_band_frac", 0.2))
+                margin = min(margin, band * frac)
             limit = float(getattr(cfg.tunables, "cold_dwell_limit_min", 75.0))
             step = float(getattr(cfg.tunables, "cold_dwell_step_f", 0.75))
             cap = float(getattr(cfg.tunables, "cold_dwell_max_relief_f", 2.5))
@@ -528,6 +548,7 @@ class SleepController:
                 self.sm.reason = f"session abandoned: no physiology for {gap_min:.0f} min"
                 self._bed_entry_time = None
                 self._sleep_onset_time = None
+                self._reset_architecture()
                 self._cold_since = None
                 self._cold_relief_f = 0.0
                 try:
@@ -563,6 +584,7 @@ class SleepController:
                 self._sleep_onset_time = None
                 self._cold_since = None
                 self._cold_relief_f = 0.0
+                self._reset_architecture()
                 self.bed_exit_events.append({
                     "ts": now.isoformat(), **bed_exit.to_dict()})
                 try:
@@ -1406,7 +1428,21 @@ class SleepController:
 
     def _accrue_architecture(self, now: datetime, stage) -> None:
         """Accumulate realized time-in-stage since onset (the night's unfolding architecture).
-        Ignores gaps/jumps so a stale tick can't inflate a bucket."""
+        Ignores gaps/jumps so a stale tick can't inflate a bucket.
+
+        A LONG GAP ENDS THE NIGHT, here, unconditionally. The reset on entering IDLE is the
+        intended path, but it lives in the intent block and several guards return from the tick
+        before reaching it -- the stale-data guard in particular, which fires on every tick of a
+        day with no wearable. So on 2026-09-04 the accumulator still carried 2026-09-01's totals
+        across three idle days: deep read 57.9 min, which is 30.3 from the earlier night plus
+        27.6 from this one, and REM read 97.9 against a rollup that scored ZERO REM.
+
+        Doing it here catches every path, because this is the one place that sees the gap.
+        """
+        if self._arch_last_ts is not None:
+            gap = (now - self._arch_last_ts).total_seconds() / 60.0
+            if gap > ARCHITECTURE_GAP_RESET_MIN or gap < 0:
+                self._reset_architecture()
         if self._arch_last_ts is not None and stage is not None:
             dt = (now - self._arch_last_ts).total_seconds() / 60.0
             if 0.0 < dt <= 10.0:

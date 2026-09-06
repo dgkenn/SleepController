@@ -1803,9 +1803,23 @@ def wearable_runtime_left_h(repo) -> tuple:
         if drop > 0 and hrs >= 0.5:
             rate = drop / hrs                       # percent per hour
             best = rate if best is None else (0.5 * best + 0.5 * rate)
+    # The band reports once per CONNECTION, and most connections happen while it is sitting
+    # idle rather than streaming ACC at 52 Hz plus PPI. So a rate measured between two readings
+    # is a floor on the real drain, not an estimate of it -- and taken at face value it produced
+    # "100% -- about 374.5h of streaming left (measured 0.3%/h)", which is fifteen days from a
+    # band that has been measured flat in 25.5.
+    #
+    # Both bounds are computed and the SMALLER wins. Under-promising is the right direction for
+    # a device whose failure costs a night, and the reported basis says which bound applied.
+    scaled = WEARABLE_FULL_RUNTIME_H * pct / 100.0
     if best and best > 0:
-        return round(pct / best, 1), f"measured {best:.1f}%/h"
-    return (round(WEARABLE_FULL_RUNTIME_H * pct / 100.0, 1),
+        measured = pct / best
+        if measured <= scaled:
+            return round(measured, 1), f"measured {best:.1f}%/h"
+        return (round(scaled, 1),
+                f"capped at the measured {WEARABLE_FULL_RUNTIME_H:.1f}h full-charge runtime; "
+                f"the {best:.1f}%/h seen between readings was not measured under streaming load")
+    return (round(scaled, 1),
             f"scaled from the measured {WEARABLE_FULL_RUNTIME_H:.1f}h full-charge runtime")
 
 

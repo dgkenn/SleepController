@@ -586,20 +586,32 @@ def _check_preemption_ran(repo) -> dict:
     except Exception as exc:
         return _check("preemption_ran", "Awakening pre-emption", "info",
                       f"not readable ({exc!r})", None)
-    maint = pre = 0
+    # COUNT THE SAME TICKS ON BOTH SIDES OF THE RATIO.
+    #
+    # `pre` used to count every decision whose payload said preempting, INCLUDING ticks the
+    # controller spent IDLE, while `maint` counted only maintenance ones. The result was a
+    # ratio with a numerator drawn from a different population: 2026-09-04 reported
+    # "pre-emption engaged on 2712/246 maintenance tick(s)". Pre-emption cannot act outside a
+    # session, so an idle tick that computes a wake risk is telemetry, not prevention.
+    maint = pre = pre_outside = 0
     reasons: dict = {}
     for state, payload in rows:
-        if str(state) in ("maintenance", "wake_recovery"):
+        in_session = str(state) in ("maintenance", "wake_recovery")
+        if in_session:
             maint += 1
         try:
             pl = json.loads(payload) if payload else {}
         except Exception:
             continue
         p = pl.get("preemption") or {}
-        if p.get("preempting"):
-            pre += 1
-            for r in (p.get("precursor_reasons") or []) + (p.get("risk_reasons") or []):
-                reasons[r] = reasons.get(r, 0) + 1
+        if not p.get("preempting"):
+            continue
+        if not in_session:
+            pre_outside += 1
+            continue
+        pre += 1
+        for r in (p.get("precursor_reasons") or []) + (p.get("risk_reasons") or []):
+            reasons[r] = reasons.get(r, 0) + 1
     if not maint:
         return _check("preemption_ran", "Awakening pre-emption", "warn",
                       f"{night}: the controller never entered MAINTENANCE, so pre-emption had "
@@ -614,9 +626,11 @@ def _check_preemption_ran(repo) -> dict:
             "recorded in raw_samples.wake_event")
     top = ", ".join(f"{k} x{v}" for k, v in
                     sorted(reasons.items(), key=lambda kv: -kv[1])[:4]) or "no reasons recorded"
+    aside = (f"; {pre_outside} further tick(s) computed a pre-empt while OUT of session, where "
+             f"it cannot act" if pre_outside else "")
     return _check("preemption_ran", "Awakening pre-emption", "ok",
                   f"{night}: pre-emption engaged on {pre}/{maint} maintenance tick(s) "
-                  f"({top})", None)
+                  f"({top}){aside}", None)
 
 
 def _check_preemption_dead_zone(repo) -> dict:
@@ -1290,6 +1304,21 @@ def _check_cloud_errors(run_dir: str) -> dict:
                  "if this persists, check status.eightsleep.com")
 
 
+#: A daemon.err untouched for longer than this is history, not a live fault.
+RECENT_ERROR_WINDOW_S = 6 * 3600
+
+
+def _error_signature(line: str) -> str:
+    """Collapse an error line to what makes it the SAME error, so repeats can be counted.
+
+    Timestamps, request ids and device ids differ every time; the exception type and message
+    shape are what identify a recurring fault.
+    """
+    import re as _re
+    out = _re.sub(r"\d", "#", line)
+    return out[-160:].strip()
+
+
 def _check_recent_errors(run_dir: str, now: float, daemon_heartbeat_age: float | None) -> dict:
     err_lines = [l for l in (_tail_lines(os.path.join(run_dir, "daemon.err"), 200) or [])
                  if l.strip()]
@@ -1319,9 +1348,30 @@ def _check_recent_errors(run_dir: str, now: float, daemon_heartbeat_age: float |
             parts.append(f"last crash {crash_age / 60:.0f}m ago "
                          f"(stale; daemon healthy since): {last}")
     if err_lines:
-        parts.append(f"daemon.err last: {err_lines[-1].strip()[:300]}")
-        if remedy is None:
-            remedy = "read the daemon.err/daemon-crash.log tails below for the full traceback"
+        # RECENCY AND VOLUME, not mere existence. daemon.err is append-only, so any error ever
+        # written held the whole report at DEGRADED forever. The one that did it was a HANDLED
+        # transient -- "device update failed, using stale data: EightSleepRequestError(...
+        # TimeoutError())" -- an Eight Sleep cloud timeout the controller recovered from by
+        # design, reported for days as the headline finding of the entire system.
+        #
+        # An old error with nothing since is history. A repeating one is a live problem, and
+        # what makes it one is how often it recurs, which the single last line could not show.
+        last = err_lines[-1].strip()[:300]
+        err_age = _file_age_s(os.path.join(run_dir, "daemon.err"), now)
+        signature = _error_signature(last)
+        repeats = sum(1 for line in err_lines if _error_signature(line.strip()) == signature)
+        if err_age is not None and err_age > RECENT_ERROR_WINDOW_S:
+            parts.append(f"last daemon.err entry {err_age / 3600:.1f}h ago "
+                         f"(nothing since): {last}")
+            if status == "warn":
+                status = "info"
+        else:
+            hint = (f" (x{repeats} in the last {len(err_lines)} log lines)"
+                    if repeats > 1 else "")
+            parts.append(f"daemon.err last{hint}: {last}")
+            if remedy is None:
+                remedy = ("read the daemon.err/daemon-crash.log tails below for the full "
+                          "traceback")
     return _check("recent_errors", "Recent daemon errors", status, " | ".join(parts), remedy)
 
 

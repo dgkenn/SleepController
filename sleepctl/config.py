@@ -495,6 +495,10 @@ class Tunables:
     cold_dwell_relief_enabled: bool = True
     cold_dwell_limit_min: float = 75.0     # continuous minutes at the cold edge before easing
     cold_dwell_margin_f: float = 1.0       # "at the cold edge" = within this of cool_edge_f
+    # ...but never more than this fraction of the measured comfort band. An absolute degree is
+    # meaningless without knowing how wide the band is: 1.0 F is 40% of a 2.5 F band, which
+    # classified every deliberate pre-emptive settle as camping at the edge and eased it back up.
+    cold_dwell_margin_band_frac: float = 0.2
     cold_dwell_step_f: float = 0.75        # how much to ease per trigger
     cold_dwell_max_relief_f: float = 2.5   # total ceiling on accumulated relief
     hot_sleeper_cool_bias_f: float = -1.5

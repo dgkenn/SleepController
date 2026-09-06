@@ -49,9 +49,20 @@ def test_a_comfortable_margin_is_ok(monkeypatch):
 
 
 def test_a_thin_margin_warns(monkeypatch):
-    """~2.5%/h against 20% is 8h; waking in 7.5h leaves under an hour of slack."""
-    r = _patch(monkeypatch, pct=20, history=_DISCHARGING, until_wake_h=7.5)
+    """20% of the 25.5h full-charge runtime is 5.1h; waking in 5.5h leaves under an hour."""
+    r = _patch(monkeypatch, pct=20, history=_DISCHARGING, until_wake_h=5.5)
     assert r["status"] == "warn"
+
+
+def test_an_optimistic_between_connections_rate_is_capped(monkeypatch):
+    """The band reports once per CONNECTION, mostly while idle rather than streaming ACC at
+    52 Hz plus PPI. Taken at face value that produced "100% -- about 374.5h left (measured
+    0.3%/h)": fifteen days from a band measured flat in 25.5 hours."""
+    slow = [{"pct": 100, "ts": _iso(4.0)}, {"pct": 99, "ts": _iso(1.0)}]   # 0.33 %/h
+    r = _patch(monkeypatch, pct=100, history=slow, until_wake_h=None)
+    assert "374" not in r["detail"]
+    assert "25.5h full-charge" in r["detail"]
+    assert "not measured under streaming load" in r["detail"]
 
 
 def test_the_measured_rate_is_preferred_over_the_fallback(monkeypatch):
