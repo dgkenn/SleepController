@@ -65,10 +65,34 @@ def test_runs_in_the_evening_window(repo, monkeypatch):
     assert services.check_pre_bed_readiness(repo, now=_at(20)) is None  # already ran today
 
 
-@pytest.mark.parametrize("hour", [3, 9, 12, 15, 22, 23])
+@pytest.mark.parametrize("hour", [3, 9, 12, 15])
 def test_does_not_run_outside_the_window(repo, monkeypatch, hour):
     _verdict(monkeypatch, "NO_GO", ["daemon_heartbeat"])
     assert services.check_pre_bed_readiness(repo, now=_at(hour)) is None
+
+
+@pytest.mark.parametrize("hour", [21, 22])
+def test_keeps_checking_into_the_night_window(repo, monkeypatch, hour):
+    """A single check two hours out cannot see a failure that arrives afterwards -- which is the
+    failure that happened. On 2026-09-05 the band was still streaming at 18:52, so the evening
+    check said GO; it dropped shortly after, and the user went to bed at 21:40 with a dead feed,
+    no page, and no data at all from the night."""
+    _verdict(monkeypatch, "NO_GO", ["cardiac_sensor"])
+    assert services.check_pre_bed_readiness(repo, now=_at(hour)) is not None
+
+
+def test_a_go_earlier_does_not_silence_a_later_no_go(repo, monkeypatch):
+    """What must not repeat is the PAGE, not the evaluation."""
+    _verdict(monkeypatch, "GO", [])
+    assert services.check_pre_bed_readiness(repo, now=_at(19)) is None
+    _verdict(monkeypatch, "NO_GO", ["cardiac_sensor"])
+    assert services.check_pre_bed_readiness(repo, now=_at(21)) is not None
+
+
+def test_a_no_go_is_only_paged_once_a_night(repo, monkeypatch):
+    _verdict(monkeypatch, "NO_GO", ["cardiac_sensor"])
+    assert services.check_pre_bed_readiness(repo, now=_at(19)) is not None
+    assert services.check_pre_bed_readiness(repo, now=_at(21)) is None
 
 
 def test_runs_before_the_night_window_opens(repo, monkeypatch):

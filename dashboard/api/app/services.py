@@ -2925,13 +2925,21 @@ def check_and_alert_failures(repo) -> list[dict]:
 # something. Runs at most once per calendar day (the full battery is far too expensive for a
 # per-tick path) and only pages on NO_GO -- a degraded night still goes ahead.
 _PREBED_LAST_RUN_KEY = "prebed_readiness_last_run"      # settings_kv -> ISO date string
+_PREBED_LAST_VERDICT_KEY = "prebed_readiness_last_verdict"
 _PREBED_LEAD_HOURS = 2                                  # how long before the night window to check
+
+#: ...and how far INTO the night window to keep re-checking. A single check two hours out cannot
+#: see a failure that arrives afterwards, and that is the failure that actually happened: on
+#: 2026-09-05 the band was still streaming at 18:52, so the evening check said GO; it dropped
+#: shortly after, and the user went to bed at 21:40 with a dead feed, no page, and no data at all
+#: from the night. Nothing re-evaluated between the check and lights-out.
+_PREBED_TRAIL_HOURS = 2
 
 
 def _prebed_window(now: datetime) -> bool:
-    """True in the couple of hours before the night window opens (default 19:00-21:00)."""
+    """True from a couple of hours before the night window until a couple of hours into it."""
     start = (_NIGHT_WINDOW_START_HOUR - _PREBED_LEAD_HOURS) % 24
-    end = _NIGHT_WINDOW_START_HOUR
+    end = (_NIGHT_WINDOW_START_HOUR + _PREBED_TRAIL_HOURS) % 24
     h = now.hour
     return start <= h < end if start <= end else (h >= start or h < end)
 
@@ -2949,7 +2957,14 @@ def check_pre_bed_readiness(repo, now: datetime | None = None, force: bool = Fal
     if not force:
         if not _prebed_window(now):
             return None
-        if _kv_get_json(repo, _PREBED_LAST_RUN_KEY) == now.date().isoformat():
+        # ONE PAGE PER NIGHT, BUT KEEP LOOKING UNTIL LIGHTS-OUT.
+        #
+        # The once-a-day guard used to stop the check running again at all, which meant a GO at
+        # 19:00 silenced everything for the rest of the evening -- including the band dying at
+        # 19:30. What must not repeat is the PAGE, not the evaluation. So a stored NO_GO ends it
+        # for the night; a stored GO leaves the door open for the verdict to get worse.
+        already = _kv_get_json(repo, _PREBED_LAST_RUN_KEY) == now.date().isoformat()
+        if already and _kv_get_json(repo, _PREBED_LAST_VERDICT_KEY) == "NO_GO":
             return None
         _kv_set_json(repo, _PREBED_LAST_RUN_KEY, now.date().isoformat())
 
@@ -2964,6 +2979,10 @@ def check_pre_bed_readiness(repo, now: datetime | None = None, force: bool = Fal
             pass
         return None
 
+    try:
+        _kv_set_json(repo, _PREBED_LAST_VERDICT_KEY, rep.verdict)
+    except Exception:
+        pass
     if rep.verdict != "NO_GO":
         try:
             repo.log_event("alert", "info", "prebed_readiness",
