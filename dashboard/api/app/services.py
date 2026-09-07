@@ -1749,6 +1749,92 @@ _WEARABLE_BATTERY_KEY = "wearable_battery"
 WEARABLE_BATTERY_LOW_PCT = 40
 
 
+#: --- wearable link state -> a push the user can actually see ---------------------------------
+#: On 2026-09-05 the user put the band on, said "about to go to bed", and went to sleep. The
+#: forwarder had been failing to connect for two hours and kept failing all night; the night
+#: recorded nothing. Everything that knew this -- the forwarder log, the health page -- lived on
+#: a box the user does not look at before bed. The one channel that reaches them in bed is a
+#: push to the phone, so the link state now produces one: a confirmation when the band connects
+#: (naming which streams came up, because "HR only, no accelerometer" is a different night from
+#: "ACC + PPI"), and a loss alert when a band that WAS streaming drops during the evening or the
+#: night. Both are rate-limited so a flapping link cannot page every 25 seconds.
+_WEARABLE_LINK_KEY = "wearable_link"
+_WEARABLE_LINK_PUSH_KEY = "wearable_link_last_push"
+_WEARABLE_LINK_PUSH_MIN_GAP_S = 30 * 60
+#: A "lost" only matters if the band was streaming recently -- taking it off at lunch is not
+#: an outage. Longer than a normal reconnect cycle, shorter than a deliberate removal.
+_WEARABLE_LINK_LOSS_RECENT_S = 15 * 60
+
+
+def _record_wearable_link(repo, state: str, streams: list, source: str = "verity") -> None:
+    """Store the link state and page the user when it is worth their attention. Never raises."""
+    now = datetime.now(timezone.utc)
+    try:
+        prev = _kv_get_json(repo, _WEARABLE_LINK_KEY) or {}
+        _kv_set_json(repo, _WEARABLE_LINK_KEY,
+                     {"state": state, "streams": list(streams), "ts": now.isoformat(),
+                      "source": source})
+    except Exception:
+        prev = {}
+    try:
+        repo.log_event("sensor", "info", f"wearable_link_{state}",
+                       f"wearable link {state}" + (f" ({', '.join(streams)})" if streams else ""),
+                       {"streams": list(streams)})
+    except Exception:
+        pass
+
+    if state == "connected":
+        title = "Armband connected"
+        names = [str(x) for x in streams]
+        has_acc = any("ACC" in n.upper() for n in names)
+        has_ppi = any("PPI" in n.upper() for n in names)
+        if has_acc and has_ppi:
+            body = "Streaming heart rate, beat-to-beat intervals and movement. You're good."
+        elif has_acc or has_ppi:
+            missing = "movement (accelerometer)" if not has_acc else "beat-to-beat intervals"
+            body = f"Streaming, but WITHOUT {missing} -- a power-cycle usually brings it back."
+        else:
+            body = ("Heart rate only -- no accelerometer, so wake detection is running blind "
+                    "tonight. Hold the button until it re-advertises to get the full stream.")
+        _push_wearable_link(repo, "connected", title, body, now)
+        return
+
+    # LOST: only page when it was actually streaming a moment ago, and only when losing it
+    # costs a night -- the evening run-up or the night itself.
+    try:
+        prev_ts = datetime.fromisoformat(str(prev.get("ts")))
+        was_live = (prev.get("state") == "connected"
+                    and (now - prev_ts).total_seconds() <= _WEARABLE_LINK_LOSS_RECENT_S)
+    except Exception:
+        was_live = False
+    if not was_live:
+        return
+    if not (_prebed_window(now) or _in_night_window(now)):
+        return
+    _push_wearable_link(
+        repo, "lost", "Armband dropped",
+        f"The band stopped streaming at {now.astimezone().strftime('%H:%M')} -- nothing is "
+        f"recording. Hold its button until it re-advertises; if it keeps dropping, make sure "
+        f"the Polar app isn't connected to it.", now)
+
+
+def _push_wearable_link(repo, kind: str, title: str, body: str, now: datetime) -> None:
+    try:
+        last = _kv_get_json(repo, _WEARABLE_LINK_PUSH_KEY) or {}
+        last_ts = last.get(kind)
+        if last_ts:
+            gap = (now - datetime.fromisoformat(str(last_ts))).total_seconds()
+            if gap < _WEARABLE_LINK_PUSH_MIN_GAP_S:
+                return
+        last[kind] = now.isoformat()
+        _kv_set_json(repo, _WEARABLE_LINK_PUSH_KEY, last)
+        push_sender.deliver_custom(title=title, body=body,
+                                   subscriptions=list_push_subscriptions(repo),
+                                   tag=f"sleepctl-wearable-{kind}")
+    except Exception:
+        pass
+
+
 #: Battery readings kept for the discharge-rate estimate. The band reports once per connection,
 #: so this is a handful of points per day, not a time series.
 _WEARABLE_BATTERY_HISTORY_KEY = "wearable_battery_history"
@@ -1859,6 +1945,15 @@ def ingest_hr(repo, payload: dict) -> dict:
                 "ingested": 0}
 
     hr = _finite_or_none(payload.get("hr"))
+    # WEARABLE LINK STATE. Same shape as the battery report below: a data-free POST the
+    # forwarder sends when the BLE link opens or closes, handled before the "no hr/rr" rejection.
+    # This is how the person wearing the band gets told it is working -- see
+    # ``_record_wearable_link`` for why that needed to exist.
+    link = payload.get("link")
+    if link in ("connected", "lost"):
+        _record_wearable_link(repo, link, payload.get("streams") or [], source)
+        if not payload.get("hr") and not rr:
+            return {"ok": True, "link": link, "ingested": 0}
     # WEARABLE BATTERY. A battery-only POST carries no hr/rr, so it must be handled before the
     # "no usable hr/rr in batch" rejection below. Recorded because NOT knowing the charge level
     # cost a full night: the band ran 25.5 h unattended and died flat at 00:01 mid-sleep.

@@ -545,7 +545,11 @@ def _run_pmd_session(client, args=None, feed=(), until_posted=True, timeout=10):
     args = args or _pmd_args()
     posted: list[dict] = []
     original_post = fwd._post
-    fwd._post = lambda url, payload, t=5.0: posted.append(payload)
+    # Capture DATA posts only. The session also posts a data-free link-state message when the
+    # streams come up ({"link": "connected", ...}); it is status, not a sample, and letting it
+    # satisfy "until_posted" would end the run before the first real batch.
+    fwd._post = lambda url, payload, t=5.0: (
+        posted.append(payload) if "link" not in payload else None)
 
     async def _drive():
         for _ in range(400):

@@ -174,6 +174,25 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
         return None
 
 
+def _post_link(args, state: str, streams=None) -> None:
+    """Tell the API the LINK changed, so the person wearing the band can be told too.
+
+    The forwarder has always logged "connected" and "disconnected" -- into a file on a box the
+    user does not look at. The question they actually have at 21:40 with the band on their arm
+    is "is this thing working", and the only place that can reach them is a push from the API.
+    So the link state is reported the same way the battery is: a data-free POST to /hr/ingest,
+    handled before the "no hr/rr" rejection. Best-effort -- a failed status post must never
+    take down the session it is describing.
+    """
+    try:
+        payload = {"source": args.source, "link": state}
+        if streams:
+            payload["streams"] = list(streams)
+        _post(args.url, payload)
+    except Exception:
+        pass
+
+
 #: Consecutive not-worn batches before we RELEASE the band. At the default ~2 s batch cadence
 #: this is about 10 minutes -- long enough that real motionless deep sleep never trips it (the
 #: server's not-worn test additionally requires a physiologically implausible RMSSD, measured at
@@ -490,6 +509,7 @@ def _scan_main(args) -> int:
 
 async def _hr_session(client, args) -> None:
     """Generic 0x180D Heart Rate Service path (the long-standing production behaviour)."""
+    _post_link(args, "connected", ["HR/RR (generic 0x180D)"])
     # Coalesce notifications into small batches so we POST a few times a second, not per-beat.
     batch_rr: list[float] = []
     last_hr: dict = {"v": None, "t": 0.0}
@@ -819,6 +839,7 @@ async def _pmd_session(client, args) -> bool:
             except Exception as exc:
                 _log(f"PMD: generic HR service unavailable too ({exc}); ACC only, no heart rate")
         _log(f"PMD: streaming {' + '.join(sources)}; forwarding to {_redact(args.url)}")
+        _post_link(args, "connected", sources)
         if ppi_running:
             _log(f"PMD: PPI warm-up -- Polar documents ~{pmd.PPI_FIRST_SAMPLE_S:.0f}s to the first "
                  f"batch and HR updates only every ~{pmd.PPI_HR_UPDATE_S:.0f}s; silence until then "
@@ -1002,6 +1023,7 @@ async def _run_once(args, env) -> None:
                 _log(f"PMD session error ({type(exc).__name__}: {exc or '<no message>'})")
             if ok:
                 _log("disconnected")
+                _post_link(args, "lost")
                 return
             if args.mode == "pmd":
                 _log(f"PMD unavailable on this device; retrying in {args.retry_seconds}s")
@@ -1010,6 +1032,7 @@ async def _run_once(args, env) -> None:
             _log("falling back to the generic HR service")
         await _hr_session(client, args)
     _log("disconnected")
+    _post_link(args, "lost")
 
 
 async def _main_async(args, env) -> None:
