@@ -163,3 +163,27 @@ def test_write_exports_hard_failure_writes_error_file_and_exits_nonzero(tmp_path
     with open(f"{out_dir}/error.json") as fh:
         parsed = json.load(fh)
     assert "db exploded" in parsed["error"]
+
+
+def test_preempting_ticks_carry_their_reason_and_the_night_carries_a_reason_histogram(repo):
+    from app import night_export
+    night = "2026-09-07"
+    for i in range(6):
+        pre = json.dumps({"preemption": {"preempting": i % 2 == 0, "wake_risk": 0.3,
+                                         "risk_reasons": ["light_stage"]}})
+        repo.conn.execute(
+            "INSERT INTO decisions (ts, night_date, state, thermal_intent, target_temp_f, target_level,"
+            " action, reason, log_payload) VALUES (?,?,?,?,?,?,?,?,?)",
+            (f"2026-09-08T00:{i:02d}:00", night, "maintenance",
+             "settle_cool" if i % 2 == 0 else "stabilize", 69.0, -54, "hold",
+             f"maintenance -> settle_cool; clamped to band (was 66.{i}F)" if i % 2 == 0 else "hold", pre))
+    repo.conn.execute("INSERT INTO efficacy_trials (night_date, arm, eligible, seed, resolved)"
+                      " VALUES (?,?,?,?,0)", (night, "active", 1, 0.223))
+    repo.conn.commit()
+    out = night_export.build_night_export(repo, night)
+    ev = out["preemption_events"]
+    assert len(ev) == 3 and ev[0]["intent"] == "settle_cool" and ev[0]["target_f"] == 69.0
+    assert "clamped" in ev[0]["reason"]
+    hist = out["decision_reasons"]["maintenance"]
+    assert any(h["reason"].endswith("clamped to band (was #F)") and h["n"] == 3 for h in hist), hist
+    assert out["trial_arms"]["efficacy"]["arm"] == "active"

@@ -1593,3 +1593,50 @@ def test_a_database_without_the_marker_column_returns_nothing():
     conn.execute("CREATE TABLE actigraphy (ts TEXT)")
     assert bridge.marker_anchors(conn, "2026-08-27T20:00:00+00:00",
                                  "2026-08-28T08:00:00+00:00") == []
+
+
+def test_a_night_held_at_neutral_is_not_pinned_at_the_ceiling():
+    """The evidence-corrected band is 67.0 / 69.0 / 69.5: the warm half is one device step.
+    Holding at neutral is the intended resting point, not pinning."""
+    from app.diagnostics import _check_comfort_band_pinning
+    c = _check_comfort_band_pinning(_ComfortRepo(67.0, 69.5, [_lvl(69.0)] * 100, neutral=69.0))
+    assert c["status"] == "ok", c["detail"]
+    c = _check_comfort_band_pinning(_ComfortRepo(67.0, 69.5, [_lvl(70.0)] * 100, neutral=69.0))
+    assert c["status"] == "warn" and "WARM ceiling" in c["detail"]
+
+
+class _DecisionsRepo:
+    def __init__(self, rows, night="2026-09-07"):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE decisions (id INTEGER PRIMARY KEY, night_date TEXT, state TEXT,"
+                          " target_temp_f REAL, action TEXT, reason TEXT, thermal_intent TEXT)")
+        for t, action, reason, intent in rows:
+            self.conn.execute("INSERT INTO decisions (night_date, state, target_temp_f, action, reason,"
+                              " thermal_intent) VALUES (?,?,?,?,?,?)",
+                              (night, "maintenance", t, action, reason, intent))
+
+
+def test_a_night_that_judged_all_night_and_never_moved_the_water_is_flagged_with_the_reasons():
+    from app.diagnostics import _check_maintenance_acted
+    rows = [(69.0, "hold", f"maintenance -> settle_cool (x) [data_quality=0.5{i%2}:missing]; clamped 67.0-69.5F (was 66.{i}F)", "settle_cool")
+            for i in range(150)] + [(69.0, "hold", "maintenance -> stabilize", "stabilize")] * 50
+    c = _check_maintenance_acted(_DecisionsRepo(rows))
+    assert c["status"] == "warn", c
+    assert "never moved the water" in c["detail"]
+    assert "clamped #-#F (was #F)" in c["detail"], c["detail"]     # numbers normalized, pattern kept
+    assert "settle_cool x150" in c["detail"]
+
+
+def test_a_night_that_moved_the_water_is_ok():
+    from app.diagnostics import _check_maintenance_acted
+    rows = [(69.0 - (i % 5) * 0.5, "cooler" if i % 5 else "hold", "maintenance -> settle_cool", "settle_cool")
+            for i in range(200)]
+    c = _check_maintenance_acted(_DecisionsRepo(rows))
+    assert c["status"] == "ok", c
+
+
+def test_a_short_maintenance_is_not_judged():
+    from app.diagnostics import _check_maintenance_acted
+    c = _check_maintenance_acted(_DecisionsRepo([(69.0, "hold", "x", "settle_cool")] * 20))
+    assert c["status"] == "info"

@@ -1270,6 +1270,23 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._skip("session restore", exc)
 
+    def _restore_session_state(self) -> None:
+        try:
+            from sleepctl.controller.session_recovery import recover_session_state
+            now = datetime.now()
+            rec = recover_session_state(self.repo.conn, self.cycle.night_date(now), now)
+            if not rec:
+                return
+            self.cycle.controller.restore_session_state(
+                rec["state"], rec["onset_ts"], rec.get("architecture"))
+            if getattr(self.cycle.controller, "_restored_session", None):
+                a = rec.get("architecture") or {}
+                self._log(f"resumed {rec['state']} after daemon restart: onset "
+                          f"{rec['onset_ts'].strftime('%H:%M')}, deep {a.get('deep_min', 0):.0f} / "
+                          f"REM {a.get('rem_min', 0):.0f} / light {a.get('light_min', 0):.0f} min")
+        except Exception as exc:
+            self._skip("session-state recovery", exc)
+
     def _persist_session_clear(self) -> None:
         try:
             self.repo.conn.execute(
@@ -1836,6 +1853,10 @@ class LiveDashboardDaemon:
         # the night ran uncontrolled and the morning wake -- which only fires from inside a
         # session -- never came.
         self._restore_session()
+        # ...and WHERE the night was. The session restore above re-arms it as a fresh induction;
+        # if the previous process was already past sleep onset, resume MAINTENANCE with the
+        # recorded onset and architecture instead of running the warm opener on a sleeper.
+        self._restore_session_state()
         # Away mode idles the pod to target 0 (bed does nothing) and poisons side
         # resolution. Something outside our control (Eight Sleep's own app/Autopilot)
         # can enable it -- so the daemon owns this flag: unless the *user* commanded

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import time
 from datetime import datetime, timedelta, timezone
@@ -72,6 +73,7 @@ _CHECK_ORDER = [
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "wearable_reachable",
     "actigraphy", "thermal_trial",
     "wake_alarm", "wake_cue", "degraded", "calibration", "prevention_timing", "session_span",
+    "maintenance_acted",
     "verity_forwarder",
     "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "log_sizes",
     "calendar", "shift",
@@ -770,8 +772,17 @@ def _check_comfort_band_pinning(repo) -> dict:
     # tighter than one level step would report "never pinned" for a night spent welded to the
     # edge -- the failure mode this check exists to catch.
     edge_tol = 0.5
-    at_lo = sum(1 for t in temps if t <= lo + edge_tol)
-    at_hi = sum(1 for t in temps if t >= hi - edge_tol)
+    # ...but never so loose that the NEUTRAL counts as an edge. With the evidence-corrected band
+    # (67.0 / 69.0 / 69.5) the warm half is only 0.5 F wide, so a night held exactly at neutral
+    # -- the intended resting point -- read as "100% pinned at the WARM ceiling" on 2026-09-07.
+    # Pinned means beyond neutral, on the edge side.
+    lo_thr = lo + edge_tol
+    hi_thr = hi - edge_tol
+    if _neutral:
+        lo_thr = min(lo_thr, _neutral - 0.01)
+        hi_thr = max(hi_thr, _neutral + 0.01)
+    at_lo = sum(1 for t in temps if t <= lo_thr)
+    at_hi = sum(1 for t in temps if t >= hi_thr)
     n = len(temps)
     if at_lo / n >= 0.8:
         return _check(
@@ -874,6 +885,75 @@ def _check_device_level_glitches(repo) -> dict:
         "check for another controller (the Eight Sleep app's own schedule) writing to the pod; "
         "treat these samples as suspect in any range/exposure analysis")
 
+
+
+#: Maintenance ticks a night needs before "the controller never moved the water" is a verdict
+#: rather than a short night.
+MAINT_ACTED_MIN_TICKS = 120
+#: A commanded range under this across the whole of maintenance is "never moved".
+MAINT_ACTED_MIN_RANGE_F = 0.6
+
+
+def _normalize_reason(reason: str) -> str:
+    """Collapse a decision reason to its pattern: numbers out, trailing data-quality note out."""
+    r = re.sub(r"\[data_quality=[^\]]*\]", "", reason or "")
+    r = re.sub(r"\d+(\.\d+)?", "#", r)
+    return re.sub(r"\s+", " ", r).strip()[:120]
+
+
+def _check_maintenance_acted(repo) -> dict:
+    """Did the controller ever MOVE the water during last night's maintenance, and if not, what
+    did every tick say instead?
+
+    2026-09-07: 482 maintenance ticks, 162 of them pre-empting and 136 with a deepen verdict,
+    and the commanded water never left 69.0-69.5 F. Every per-tick check was green -- the
+    pre-empt ran, steering judged, the band was respected -- and the one question that mattered
+    ("did anything happen?") was not asked. The reason histogram is the diagnosis: the same
+    text that explains each individual hold, counted across the night."""
+    try:
+        night = repo.conn.execute(
+            "SELECT night_date FROM decisions WHERE night_date IS NOT NULL AND state IN "
+            "('maintenance','wake_recovery') ORDER BY id DESC LIMIT 1").fetchone()
+        if not night:
+            return _check("maintenance_acted", "Maintenance moved the water", "info",
+                          "no maintenance decisions recorded yet", None)
+        night = night[0]
+        rows = repo.conn.execute(
+            "SELECT target_temp_f, action, reason, thermal_intent FROM decisions "
+            "WHERE night_date = ? AND state IN ('maintenance','wake_recovery')",
+            (night,)).fetchall()
+    except Exception as exc:
+        return _check("maintenance_acted", "Maintenance moved the water", "info",
+                      f"not readable ({exc!r})", None)
+    n = len(rows)
+    temps = [float(r[0]) for r in rows if r[0] is not None]
+    hist: dict = {}
+    intents: dict = {}
+    for r in rows:
+        key = _normalize_reason(r[2] or "")
+        hist[key] = hist.get(key, 0) + 1
+        intents[r[3] or "?"] = intents.get(r[3] or "?", 0) + 1
+    top = sorted(hist.items(), key=lambda kv: -kv[1])[:4]
+    top_txt = "; ".join(f"{c}x '{k}'" for k, c in top)
+    intents_txt = ", ".join(f"{k} x{v}" for k, v in sorted(intents.items(), key=lambda kv: -kv[1]))
+    if n < MAINT_ACTED_MIN_TICKS or not temps:
+        return _check("maintenance_acted", "Maintenance moved the water", "info",
+                      f"{night}: only {n} maintenance tick(s) -- too short to judge", None)
+    rng = max(temps) - min(temps)
+    moved = sum(1 for r in rows if (r[1] or "hold") != "hold")
+    active_intents = sum(v for k, v in intents.items() if k not in ("stabilize", "?"))
+    if rng < MAINT_ACTED_MIN_RANGE_F and active_intents > 0:
+        return _check(
+            "maintenance_acted", "Maintenance moved the water", "warn",
+            f"{night}: {n} maintenance ticks commanded {min(temps):.1f}-{max(temps):.1f}F "
+            f"(range {rng:.1f}F) with {active_intents} tick(s) asking for something other than "
+            f"a hold (intents: {intents_txt}) -- the controller judged all night and never "
+            f"moved the water. Reasons: {top_txt}",
+            "the reasons above name the layer that swallowed the moves (clamp, cap, stabilizer, "
+            "guardrail, data quality); fix that layer rather than the detector")
+    return _check("maintenance_acted", "Maintenance moved the water", "ok",
+                  f"{night}: {n} maintenance ticks, {moved} moved the water, commanded "
+                  f"{min(temps):.1f}-{max(temps):.1f}F (intents: {intents_txt})", None)
 
 def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
     """Is the controller getting a MEASURED bed temperature at all?
@@ -2110,6 +2190,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_session_outlived_the_night(repo))
     add("preemption_ran", "Awakening pre-emption", lambda: _check_preemption_ran(repo))
     add("comfort_band", "Comfort-band pinning", lambda: _check_comfort_band_pinning(repo))
+    add("maintenance_acted", "Maintenance moved the water",
+        lambda: _check_maintenance_acted(repo))
     add("preemption_dead_zone", "Pre-emption dead zone",
         lambda: _check_preemption_dead_zone(repo))
     add("wearable_battery", "Wearable battery", lambda: _check_wearable_battery(repo))

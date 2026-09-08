@@ -21,6 +21,7 @@ import hiccup, an empty night -- none of it should crash the publish. On a hard 
 from __future__ import annotations
 
 import json
+import re
 import os
 import sqlite3
 import sys
@@ -61,6 +62,14 @@ def _recent_night_dates(conn, limit: int) -> list:
         (limit,),
     ).fetchall()
     return [r["night_date"] for r in rows]
+
+
+
+def _normalize_reason(reason: str) -> str:
+    """Collapse a decision reason to its pattern: numbers out, the data-quality suffix out."""
+    r = re.sub(r"\[data_quality=[^\]]*\]", "", reason or "")
+    r = re.sub(r"\d+(\.\d+)?", "#", r)
+    return re.sub(r"\s+", " ", r).strip()[:120]
 
 
 def build_night_export(repo, night_date: str) -> dict:
@@ -228,6 +237,15 @@ def build_night_export(repo, night_date: str) -> dict:
         }
     except Exception as exc:
         out["interventions_error"] = repr(exc)
+    # Which experimental arm the night ran under. A SHAM night of the efficacy micro-trial is a
+    # deliberate fixed-neutral hold; without this a reader cannot tell it from a broken night.
+    try:
+        trow = conn.execute("SELECT arm, eligible, seed FROM efficacy_trials WHERE night_date = ?",
+                            (night_date,)).fetchone()
+        out["trial_arms"] = {"efficacy": ({"arm": trow["arm"], "eligible": bool(trow["eligible"]),
+                                           "seed": trow["seed"]} if trow else None)}
+    except Exception as exc:
+        out["trial_arms"] = {"error": repr(exc)}
 
     # ---- 5. awakening PRE-EMPTION -------------------------------------------------------
     # Whether prevention actually ran, read straight from the per-tick decision payload. The
@@ -238,20 +256,27 @@ def build_night_export(repo, night_date: str) -> dict:
     # about itself, so it belongs in the night's own record.
     try:
         drows = conn.execute(
-            "SELECT ts, state, action, target_level, log_payload FROM decisions "
-            "WHERE night_date = ? ORDER BY id ASC", (night_date,)).fetchall()
+            "SELECT ts, state, action, target_level, target_temp_f, thermal_intent, reason, "
+            "log_payload FROM decisions WHERE night_date = ? ORDER BY id ASC",
+            (night_date,)).fetchall()
         ticks = []
+        reason_hist: dict = {}
         for r in drows:
             try:
                 pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
             except Exception:
                 continue
+            if r["state"] in ("maintenance", "wake_recovery"):
+                key = _normalize_reason(r["reason"] or "")
+                reason_hist[key] = reason_hist.get(key, 0) + 1
             pre = pl.get("preemption") or {}
             if not pre.get("preempting"):
                 continue
             ticks.append({
                 "ts": r["ts"], "state": r["state"], "action": r["action"],
                 "target_level": r["target_level"],
+                "target_f": r["target_temp_f"], "intent": r["thermal_intent"],
+                "reason": (r["reason"] or "")[:200],
                 "wake_risk": pre.get("wake_risk"),
                 "risk_reasons": pre.get("risk_reasons") or [],
                 "precursor_score": pre.get("precursor_score"),
@@ -326,6 +351,13 @@ def build_night_export(repo, night_date: str) -> dict:
         }
         in_maint = [r for r in drows if str(r["state"]) in ("maintenance", "wake_recovery")]
         out["preemption_events"] = ticks
+        # Why each maintenance tick did what it did, as a pattern histogram. The events above
+        # say WHAT the pre-empt wanted; this says which layer (clamp, cap, guardrail, data
+        # quality, stabilizer) had the last word -- the question 2026-09-07 could not answer.
+        out["decision_reasons"] = {
+            "maintenance": sorted(({"reason": k, "n": v} for k, v in reason_hist.items()),
+                                  key=lambda d: -d["n"])[:12],
+        }
         out["risk_reason_saturation"] = {
             k: {"ticks": v, "frac_of_maintenance": round(v / maint_seen, 3) if maint_seen else None}
             for k, v in reason_ticks.most_common()

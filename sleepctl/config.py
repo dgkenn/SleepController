@@ -258,6 +258,9 @@ class Tunables:
     # respiratory irregularity, and an AWAKE stage label. This only forgives the absence of
     # evidence, never its contradiction.
     onset_break_tolerance_min: float = 3.0
+    # The awake-in-bed HR reference when the stager never labels AWAKE: the median heart rate
+    # over the first N minutes after bed entry (see SleepOnsetDetector._awake_baseline).
+    onset_entry_ref_min: float = 5.0
     # ...and a run that survives purely on that tolerance must not confirm. At least this many
     # samples within the run have to carry a TRANSITION signal (see TRANSITION_SIGNALS), so
     # confirmation still rests on evidence of an actual descent into sleep, sampled across the

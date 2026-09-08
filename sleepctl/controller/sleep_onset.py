@@ -82,6 +82,8 @@ class SleepOnsetDetector:
         self.resp_cv_window = int(getattr(t, "onset_resp_cv_window", 20))
         self.break_tolerance_min = float(getattr(t, "onset_break_tolerance_min", 3.0))
         self.min_transition_hits = int(getattr(t, "onset_min_transition_hits", 3))
+        self.entry_ref_min = float(getattr(t, "onset_entry_ref_min", 5.0))
+        self._entry_hrs: List[float] = []      # HR over the first minutes after bed entry
         # internal state
         self._run_start: Optional[datetime] = None
         self._run_len = 0
@@ -99,6 +101,23 @@ class SleepOnsetDetector:
         self._lapse_start = None
         self._transition_hits = 0
         self._confirmed = None
+        self._entry_hrs = []
+
+    def mark_confirmed(self, ts: datetime, latency_min: Optional[float] = None) -> None:
+        """Adopt an onset established by a PREVIOUS process (a daemon restart mid-night). The
+        detector then reports it exactly as if it had confirmed it itself."""
+        self._confirmed = SleepOnsetEvent(timestamp=ts, confidence=0.5, signals=["restored"],
+                                          latency_min=latency_min)
+
+    def _note_entry_hr(self, frame: SensorFrame, bed_entry_time: Optional[datetime]) -> None:
+        """Remember the heart rate over the first ``entry_ref_min`` minutes in bed: the
+        AWAKE-in-bed reference the ``hr_drop`` signal is measured against when the stager never
+        labels a frame AWAKE."""
+        if bed_entry_time is None or frame.heart_rate is None or frame.timestamp is None:
+            return
+        since = (frame.timestamp - bed_entry_time).total_seconds() / 60.0
+        if 0.0 <= since <= self.entry_ref_min and len(self._entry_hrs) < 40:
+            self._entry_hrs.append(float(frame.heart_rate))
 
     def _break_run(self) -> None:
         """Abandon the current persistence run. Called only on POSITIVE evidence of wakefulness."""
@@ -111,8 +130,18 @@ class SleepOnsetDetector:
         """Estimate the awake-in-bed baseline from recent AWAKE frames."""
         awake = [f for f in recent if f.stage is SleepStage.AWAKE]
         pool = awake if len(awake) >= 3 else recent  # fall back to whole window
+        # With no AWAKE-labelled frames the fallback above is a ROLLING mean that sinks with
+        # the heart rate it is supposed to be the reference for, so ``hr_drop`` only ever fired
+        # on momentary dips and a run could not persist. Measured on 2026-09-07 (heart-rate-only
+        # night: no movement / HRV / respiration): the stager said LIGHT from 22:00 and HR sat
+        # 3-5 bpm under its bed-entry level, yet onset confirmed at 23:54 -- 122 minutes of
+        # INDUCTION on someone who was asleep. The first minutes after bed entry are the honest
+        # awake reference, so they win whenever no frame was ever labelled AWAKE.
+        hr = _mean([f.heart_rate for f in pool])
+        if len(awake) < 3 and len(self._entry_hrs) >= 3:
+            hr = statistics.median(self._entry_hrs)
         return {
-            "hr": _mean([f.heart_rate for f in pool]),
+            "hr": hr,
             "rr": _mean([f.respiratory_rate for f in pool]),
             "hrv": _mean([f.hrv for f in pool]),
             "rr_cv": _cv([f.respiratory_rate for f in pool]),
@@ -172,6 +201,7 @@ class SleepOnsetDetector:
         call), or None while still awake / not yet persistent."""
         if self._confirmed is not None:
             return self._confirmed
+        self._note_entry_hr(frame, bed_entry_time)
 
         # Must be in bed to fall asleep.
         if frame.presence is False:

@@ -280,6 +280,39 @@ class SleepController:
             return
         self._recovered_bed_entry = ts
 
+    def restore_session_state(self, state: Optional[str], onset_ts: Optional[datetime],
+                              architecture: Optional[dict] = None) -> None:
+        """Resume a night that was already past sleep onset when the daemon restarted.
+
+        The daemon's session restore re-arms the SESSION (so the night is not dropped to IDLE),
+        but it re-arms it as a fresh induction: the state machine re-enters INDUCTION, the onset
+        detector starts from zero, and the onset thermal cascade (a +2 F warm opener) runs again
+        -- on someone who may have been asleep for hours. Observed 2026-09-07 21:55: a deploy
+        restart mid-induction cost two minutes of IDLE and a second warm opener; the same
+        restart at 01:00 would have warmed a sleeping user out of MAINTENANCE.
+
+        Only fills a gap: no effect once this process has established its own onset, and only
+        from IDLE/INDUCTION. ``state`` is the last persisted controller state; anything past
+        onset resumes as MAINTENANCE and the state machine re-derives WAKE_WINDOW from the
+        deadline on its own."""
+        if state not in ("maintenance", "wake_recovery", "wake_window") or onset_ts is None:
+            return
+        if self._sleep_onset_time is not None or self.sm.state not in (
+                ControllerState.IDLE, ControllerState.INDUCTION, ControllerState.CALIBRATION):
+            return
+        self._sleep_onset_time = onset_ts
+        self.onset_detector.mark_confirmed(onset_ts)
+        self.last_onset_event = self.onset_detector._confirmed
+        self.sm.state = ControllerState.MAINTENANCE
+        self.sm.reason = "session resumed after daemon restart (onset already confirmed)"
+        self._induction_restart = False
+        self._induction_entered_at = None
+        if architecture:
+            self._arch_deep_min = float(architecture.get("deep_min") or 0.0)
+            self._arch_rem_min = float(architecture.get("rem_min") or 0.0)
+            self._arch_light_min = float(architecture.get("light_min") or 0.0)
+        self._restored_session = {"state": state, "onset": onset_ts.isoformat()}
+
     def restore_last_physio(self, ts: Optional[datetime]) -> None:
         """Seed the abandoned-session clock from persisted data, for use after a daemon restart.
 

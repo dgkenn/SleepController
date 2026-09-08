@@ -75,6 +75,7 @@ def test_stale_and_recent_enough_gets_a_restart_request_once(tmp_path):
     assert wc.maybe_request_restart(root, run, NOW + 60) == "rate_limited"
     later = NOW + wc.AUTO_REQUEST_EVERY_S + 1
     os.utime(os.path.join(run, "watchdog.heartbeat"), (later, later))  # still alive at `later`
+    os.utime(os.path.join(run, wc.AUTO_MARKER), (NOW, NOW))              # pin the marker to NOW
     assert wc.maybe_request_restart(root, run, later) == "requested"
 
 
