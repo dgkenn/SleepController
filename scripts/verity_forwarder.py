@@ -189,6 +189,9 @@ _RESP_MOVEMENT_GATE_PIM = 2.5
 #: The arm rotating more than this across the breathing window is a slow roll (a posture
 #: change too gentle for the PIM gate); its 0.1-0.4 Hz energy would read as breathing.
 _RESP_ROLL_GATE_DEG = 15.0
+#: Beat-accurate HR from accepted PPI: window and the minimum beats to trust the median.
+_PPI_HR_WINDOW_S = 8.0
+_PPI_HR_MIN_BEATS = 3
 
 
 def _gravity(samples_milli_g) -> "tuple | None":
@@ -820,6 +823,7 @@ async def _pmd_session(client, args) -> bool:
     batch_rr: list[float] = []
     acc_mags: list[float] = []
     last_hr: dict = {"v": None, "t": 0.0}
+    ok_ppi: "deque[tuple]" = deque(maxlen=64)   # (monotonic, ms) accepted beat intervals
     fresh = _Freshness()
     stats = {"blocked": 0, "bad_frames": 0}
     frames = {"acc": 0, "ppi": 0}
@@ -876,15 +880,27 @@ async def _pmd_session(client, args) -> bool:
             elif mtype == pmd.MEAS_PPI:
                 _ts, samples = pmd.parse_ppi_frame(data)
                 frames["ppi"] += 1
+                _now_m = time.monotonic()
                 for s in samples:
                     if s["hr"]:
                         last_hr["v"] = s["hr"]
-                        last_hr["t"] = time.monotonic()
+                        last_hr["t"] = _now_m
                         fresh.note()
                     if s["ok"]:
                         batch_rr.append(float(s["ppi_ms"]))
+                        ok_ppi.append((_now_m, float(s["ppi_ms"])))
                     else:
                         stats["blocked"] += 1
+                # Beat-accurate heart rate: the median of the accepted intervals over the last
+                # few seconds beats the band's 8-bit per-sample HR (which is a smoothed, lagging
+                # value and is reported even alongside blocked intervals).
+                recent_ok = [v for t, v in ok_ppi if _now_m - t <= _PPI_HR_WINDOW_S]
+                if len(recent_ok) >= _PPI_HR_MIN_BEATS:
+                    recent_ok.sort()
+                    med = recent_ok[len(recent_ok) // 2]
+                    if med > 0:
+                        last_hr["v"] = round(60000.0 / med, 1)
+                        last_hr["t"] = _now_m
             else:
                 # A frame of a type we did not start is not silence -- it must be visible, or a
                 # firmware that answers a start with a new frame type reads as "no sensor data".

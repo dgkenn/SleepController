@@ -40,6 +40,34 @@ _STAGER = None
 _STAGER_LOADED = False
 
 
+_RESCORER = None
+
+
+def _autonomic_assess(frame, minutes_since_onset):
+    """Run the beat-interval HRV rescorer on the frame's RR history; stash the reading on the
+    frame for the decision log. Resets the night's distribution while onset is pending."""
+    global _RESCORER
+    from sleepctl.controller.autonomic_rescoring import AutonomicRescorer
+    if _RESCORER is None:
+        _RESCORER = AutonomicRescorer()
+    if minutes_since_onset is None:
+        _RESCORER.reset()
+        return None
+    rr = getattr(frame, "rr_history", None)
+    if not rr:
+        return None
+    try:
+        t_end = max(float(p[0]) for p in rr)
+        out = _RESCORER.assess(rr, t_end)
+    except Exception:
+        out = None
+    try:
+        frame.stage_autonomic = out
+    except Exception:
+        pass
+    return out
+
+
 def _get_stager():
     global _STAGER, _STAGER_LOADED
     if not _STAGER_LOADED:
@@ -211,6 +239,16 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                 if est is not None:
                     stage = _LABEL_TO_STAGE.get(est.stage_label, SleepStage.LIGHT)
                     conf = min(float(est.confidence), getattr(t, "est_model_conf_cap", 0.7))
+                    # Beat-interval HRV rescoring of REM vs deep (autonomic_rescoring): bounded
+                    # to LOW-confidence sleep labels with strong, self-normalised evidence.
+                    auto = _autonomic_assess(frame, minutes_since_onset)
+                    if (auto and auto.get("suggest")
+                            and getattr(t, "autonomic_rescoring_enabled", True)
+                            and stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
+                            and conf < float(getattr(t, "autonomic_rescore_max_conf", 0.55))):
+                        want = SleepStage.DEEP if auto["suggest"] == "deep" else SleepStage.REM
+                        if want is not stage:
+                            return (want, round(max(conf, 0.5), 3), "model+autonomic")
                     # DEEP-SLEEP CORROBORATION. The learned stager leans heavily on its clock
                     # features, and deep sleep is front-loaded in its training data, so its deep
                     # emission decays to ~0 after the first ~100 min and it then reports deep for

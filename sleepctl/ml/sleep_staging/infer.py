@@ -277,6 +277,20 @@ class SleepStager:
         self._hrmotion_ok = wake_hrmotion is not None and stage4_hrmotion is not None
         self.available = self._hr_ok or self._hrmotion_ok
 
+    def set_wake_bias(self, bias: float) -> None:
+        self.wake_bias = max(0.5, min(2.0, float(bias or 1.0)))
+
+    def set_personal_hmm(self, trans, prior=None) -> None:
+        """Replace the smoothing model's transitions (and prior) with a personalised blend
+        (see learning.hypnogram_priors). No-op when no HMM is bundled."""
+        if not self.hmm or not trans:
+            return
+        hmm = dict(self.hmm)
+        hmm["trans"] = [list(map(float, r)) for r in trans]
+        if prior:
+            hmm["prior"] = list(map(float, prior))
+        self.hmm = hmm
+
     @classmethod
     def load(cls, weights_dir: str = WEIGHTS_DIR,
              smoothing_epochs: Optional[int] = None) -> "SleepStager":
@@ -378,6 +392,9 @@ class SleepStager:
             stage_raw = _ordered_stage_probs(stage_model, feats)
             p_wake_raw = _prob_of_class(wake_model.predict_proba(feats),
                                         wake_model.classes, 0)
+            # Personal wake calibration (learning.wake_truth): scale toward the rate that
+            # would have caught this user's declared awakenings. 1.0 until learned.
+            p_wake_raw = min(1.0, p_wake_raw * float(getattr(self, "wake_bias", 1.0) or 1.0))
             emissions.append(blend_emission(stage_raw, p_wake_raw))
             p_wake_last = p_wake_raw
 

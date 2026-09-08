@@ -501,6 +501,25 @@ class LiveDashboardDaemon:
             from sleepctl.learning.wake_causation import awakening_precursor_profile
             self._precursor_profile = awakening_precursor_profile(self.repo)
             controller.set_precursor_profile(self._precursor_profile)
+            # Staging personalisation: wake threshold from declared awakenings, stage
+            # transitions from this user's own nights (both learn-only until enough data).
+            try:
+                from sleepctl.controller.state_estimator import _get_stager
+                from sleepctl.learning.wake_truth import wake_truth_profile
+                from sleepctl.learning.hypnogram_priors import learn_transitions
+                stager = _get_stager()
+                if stager is not None:
+                    self._wake_truth = wake_truth_profile(self.repo)
+                    stager.set_wake_bias(self._wake_truth.get("bias", 1.0))
+                    self._hmm_priors = learn_transitions(self.repo, stager.hmm or {})
+                    if self._hmm_priors.get("personalized"):
+                        stager.set_personal_hmm(self._hmm_priors["trans"], self._hmm_priors.get("prior"))
+                    self._log(f"staging personalisation: wake x{self._wake_truth.get('bias', 1.0):.2f} "
+                              f"({self._wake_truth.get('n', 0)} markers); hmm "
+                              f"{'personal' if self._hmm_priors.get('personalized') else 'population'} "
+                              f"({self._hmm_priors.get('n_nights', 0)} nights)")
+            except Exception as exc:
+                self._skip("staging personalisation", exc)
         except Exception as exc:
             self._skip("learned profile load", exc)
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the
@@ -941,6 +960,8 @@ class LiveDashboardDaemon:
                         # motion threshold is meaningless without it, so thread it through rather
                         # than letting the controller guess.
                         frame.activity_units = hist.get("activity_units")
+                    if hist.get("rr"):
+                        frame.rr_history = hist["rr"]   # beat intervals for per-epoch HRV
             except Exception as exc:
                 self._skip("dense sensor history", exc)
         return frame

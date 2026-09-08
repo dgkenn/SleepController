@@ -415,6 +415,10 @@ class Tunables:
     # as before. Measured in cross-validation, motion is worth wake_f1 0.450 -> 0.493 and
     # kappa 0.395 -> 0.417 -- and wake detection is the failure mode this system exists to fix.
     stager_use_motion: bool = True
+    # Beat-interval HRV rescoring of REM vs deep (see controller.autonomic_rescoring): only a
+    # low-confidence sleep label may be moved, and only on strong self-normalised evidence.
+    autonomic_rescoring_enabled: bool = True
+    autonomic_rescore_max_conf: float = 0.55
     # Let the interpretable (clock-free) heuristic upgrade a model "light" to DEEP when it has
     # positive physiological evidence -- sustained stillness plus HR below the trailing sleep
     # baseline. The learned stager's deep emission is suppressed by its own clock features after

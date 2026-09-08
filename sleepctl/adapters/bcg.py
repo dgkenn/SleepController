@@ -135,7 +135,13 @@ class BridgeWearableSource(RealtimeWearableSource):
         empty series on any failure so the caller falls back to the frame buffer."""
         try:
             from app import bridge
-            return bridge.sensor_history_series(self.repo.conn, minutes=minutes)
+            d = bridge.sensor_history_series(self.repo.conn, minutes=minutes)
+            try:
+                # Beat intervals for per-epoch HRV (autonomic rescoring): the last 10 minutes.
+                d["rr"] = bridge.recent_rr_intervals(self.repo.conn, minutes=10.0)
+            except Exception:
+                d["rr"] = []
+            return d
         except Exception:
             # Same SHAPE as bridge.sensor_history_series' own failure path -- callers read
             # ``activity_units`` to decide whether an absolute motion threshold is meaningful,

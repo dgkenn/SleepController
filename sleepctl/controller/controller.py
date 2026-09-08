@@ -1726,6 +1726,7 @@ class SleepController:
             "hrv": frame.hrv,
             "respiratory_rate": frame.respiratory_rate,
             "respiratory_rate_conf": getattr(frame, "respiratory_rate_conf", None),
+            "stage_autonomic": getattr(frame, "stage_autonomic", None),
             "respiratory_rate_source": getattr(frame, "respiratory_rate_source", None),
             "movement": frame.movement,
             "bed_temp_f": frame.bed_temp_f,

@@ -307,6 +307,18 @@ def _controller_block(repo) -> dict:
     except Exception as exc:
         out["steering_policy"] = {"error": repr(exc)}
     try:
+        from sleepctl.learning.wake_truth import wake_truth_profile
+        from sleepctl.learning.hypnogram_priors import learn_transitions
+        from sleepctl.controller.state_estimator import _get_stager
+        st = _get_stager()
+        hp = learn_transitions(repo, (st.hmm if st is not None else {}) or {})
+        out["staging_personalization"] = {
+            "wake_truth": wake_truth_profile(repo),
+            "hmm": {k: hp.get(k) for k in ("personalized", "n_nights", "n_epochs", "rationale")},
+        }
+    except Exception as exc:
+        out["staging_personalization"] = {"error": repr(exc)}
+    try:
         import json as _json
         row = repo.conn.execute(
             "SELECT ts, log_payload FROM decisions ORDER BY id DESC LIMIT 1").fetchone()

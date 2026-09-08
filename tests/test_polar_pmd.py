@@ -1307,3 +1307,15 @@ def test_an_api_rejection_is_logged_instead_of_counted_as_success(monkeypatch):
     assert resp["ok"] is False
     assert fwd._STATS["posts"] == before          # a rejected batch is not a productive one
     assert any("API rejected the batch" in m for m in logs), logs
+
+
+def test_heart_rate_comes_from_the_accepted_beat_intervals_when_there_are_enough():
+    """Three or more accepted PPI in the last seconds: HR is 60000 / their median, not the
+    band's lagging 8-bit per-sample value."""
+    client = _FakeBleClient()
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", _ppi([(58, 1034, 10, 0b110), (58, 1000, 10, 0b110), (58, 1020, 10, 0b110),
+                       (58, 990, 10, 0b110)])),
+    ])
+    assert ok is True and posted
+    assert posted[0]["hr"] == round(60000.0 / 1020.0, 1)   # upper median of four accepted beats
