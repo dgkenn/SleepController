@@ -282,3 +282,10 @@ def test_the_controller_block_publishes_the_thermal_anchors_in_force(repo):
     assert c["learned_setpoints"]["neutral_f"] == 71.5
     assert c["in_force"]["thermal_profile"]["neutral_f"] == 69.0
     assert "comfort_band" in c
+
+
+def test_the_controller_block_says_whether_steering_may_act_tonight(repo):
+    snap = health_snapshot.build_health_snapshot(repo)
+    sp = snap["controller"]["steering_policy"]
+    assert "enabled" in sp and sp["tonight"] in ("act", "observe")
+    assert "rationale" in sp and sp["n_records"] == 0

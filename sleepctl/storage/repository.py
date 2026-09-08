@@ -621,8 +621,8 @@ class Repository:
         caused_wake, night_type}. ``succeeded`` is reaching the maneuver's target stage (deep for
         deepen, REM for rem_warm). Joins each night's mode from context for per-mode learning."""
         rows = self.conn.execute(
-            "SELECT night_date, applied, deepened, succeeded, caused_wake FROM steer_events "
-            "WHERE resolved = 1 AND maneuver = ? ORDER BY id DESC LIMIT ?",
+            "SELECT night_date, ts, horizon_min, maneuver, applied, deepened, succeeded, caused_wake "
+            "FROM steer_events WHERE resolved = 1 AND maneuver = ? ORDER BY id DESC LIMIT ?",
             (maneuver, int(nights) * 40),     # several events per night
         ).fetchall()
         out = []
@@ -631,14 +631,55 @@ class Repository:
             succeeded = r["succeeded"]
             if succeeded is None:                       # back-compat: deepen rows pre-`succeeded`
                 succeeded = r["deepened"]
+            applied = 1 if r["applied"] in (1, None) else 0
+            delivered = self._steer_event_delivered(r) if applied else None
+            # An actuated maneuver whose water never moved is a CONTROL condition, whatever the
+            # steerer intended. Through 2026-09-07 every "deepen" resolved against a bed pinned
+            # at neutral by the learned-setpoint bug, so the learner was comparing two arms of
+            # nothing and could only ever conclude "doesn't beat the base rate" -- and then
+            # disable the maneuver on its own verdict.
+            if applied and delivered is False:
+                applied = 0
             out.append({
-                "applied": 1 if r["applied"] in (1, None) else 0,
+                "applied": applied,
+                "delivered": delivered,
                 "deepened": int(r["deepened"] or 0),
                 "succeeded": int(succeeded or 0),
                 "caused_wake": int(r["caused_wake"] or 0),
                 "night_type": (getattr(ctx, "night_type", None) or "normal") if ctx else "normal",
             })
         return out
+
+    #: A maneuver counts as delivered when the commanded target fell by at least this much
+    #: inside its response horizon (deepen) -- one device step, the smallest real cooling.
+    STEER_DELIVERED_MIN_DROP_F = 0.5
+
+    def _steer_event_delivered(self, row) -> Optional[bool]:
+        """Did the bed actually move for this steer event? None when it cannot be judged (no
+        decisions recorded around it, e.g. events older than the decision log)."""
+        try:
+            t0 = _dt(row["ts"])
+            if t0 is None:
+                return None
+            end = t0 + timedelta(minutes=float(row["horizon_min"] or 20.0))
+            before = self.conn.execute(
+                "SELECT target_temp_f FROM decisions WHERE ts <= ? AND target_temp_f IS NOT NULL "
+                "ORDER BY id DESC LIMIT 1", (_iso(t0),)).fetchone()
+            low = self.conn.execute(
+                "SELECT MIN(target_temp_f) m, COUNT(*) c FROM decisions WHERE ts > ? AND ts <= ? "
+                "AND target_temp_f IS NOT NULL", (_iso(t0), _iso(end))).fetchone()
+            if before is None or low is None or not low["c"]:
+                return None
+            start_f = float(before["target_temp_f"])
+            drop = start_f - float(low["m"])
+            if row["maneuver"] == "rem_warm":
+                high = self.conn.execute(
+                    "SELECT MAX(target_temp_f) m FROM decisions WHERE ts > ? AND ts <= ? "
+                    "AND target_temp_f IS NOT NULL", (_iso(t0), _iso(end))).fetchone()
+                return (float(high["m"]) - start_f) >= self.STEER_DELIVERED_MIN_DROP_F
+            return drop >= self.STEER_DELIVERED_MIN_DROP_F
+        except Exception:
+            return None
 
     def deepening_records(self, nights: int = 60) -> list:
         """Resolved 'deepen' steer events as learner rows (see ``maneuver_records``)."""

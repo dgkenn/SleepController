@@ -294,6 +294,19 @@ def _controller_block(repo) -> dict:
     except Exception as exc:
         out["comfort_band"] = {"error": repr(exc)}
     try:
+        # Whether in-night steering is allowed to ACT tonight, and why. Through 2026-09-07 the
+        # steerer judged 136 ticks a night and actuated none; nothing off-site said which gate.
+        from sleepctl.learning.deepening import deepening_records, learn_deepening, next_steer_mode
+        from datetime import datetime as _dt
+        recs = deepening_records(repo)
+        pol = learn_deepening(recs)
+        out["steering_policy"] = dict(pol.to_dict(), tonight=next_steer_mode(pol, _dt.now().timetuple().tm_yday),
+                                      n_records=len(recs),
+                                      n_delivered=sum(1 for r in recs if r.get("delivered")),
+                                      n_undelivered=sum(1 for r in recs if r.get("delivered") is False))
+    except Exception as exc:
+        out["steering_policy"] = {"error": repr(exc)}
+    try:
         import json as _json
         row = repo.conn.execute(
             "SELECT ts, log_payload FROM decisions ORDER BY id DESC LIMIT 1").fetchone()
