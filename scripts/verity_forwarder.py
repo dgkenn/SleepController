@@ -524,6 +524,7 @@ async def _discover(BleakScanner, address_hint: str | None):
     if remembered:
         _log(f"scan found nothing; trying the last known address {remembered} directly "
              f"(a band connected to another app stops advertising but stays connectable)")
+        _STATS["via_last_resort"] = True
         return remembered
     return None
 
@@ -1093,6 +1094,7 @@ async def _run_once(args, env) -> None:
         await asyncio.sleep(min(remaining, 60.0))
         return
 
+    _STATS["via_last_resort"] = False
     address = await _discover(BleakScanner, args.address)
     if not address:
         _log("no Polar/HR sensor found this scan; will retry")
@@ -1124,6 +1126,15 @@ async def _run_once(args, env) -> None:
         client_kwargs["winrt"] = {"use_cached_services": False}
     async with BleakClient(address, **client_kwargs) as client:
         _log("connected")
+        if _STATS.get("via_last_resort"):
+            # A free Verity Sense advertises continuously. One that accepts a direct connection
+            # while NOT advertising already has another central on it (a phone with Polar Flow,
+            # or an OS-level bond), and Polar's PMD channel serves ONE client: "start ok" with no
+            # data frames is what the second client sees. Observed every session 2026-09-07/08.
+            _log("link: the band was not advertising but accepted a direct connection -- another "
+                 "central already holds a link to it (phone / Polar Flow / OS bond). Expect the "
+                 "PMD data channel to be silent here until that link is gone; heart rate still "
+                 "streams over the shared service.")
         try:
             # The negotiated MTU decides whether high-rate PMD notifications (ACC at 52 Hz is
             # ~200-byte frames) can be delivered at all. Logged once per link so a silent data

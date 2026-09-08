@@ -21,7 +21,8 @@ def test_a_learned_profile_cannot_move_the_measured_neutral():
     c.set_setpoints(learned)
     assert c.thermal.profile.neutral_f == 69.0
     assert c.thermal.profile.source == "ml"            # the rest of the profile still applies
-    assert c.last_setpoint_override == {"learned_neutral_f": 71.5, "kept_neutral_f": 69.0}
+    assert c.last_setpoint_override["learned_neutral_f"] == 71.5
+    assert c.last_setpoint_override["kept_neutral_f"] == 69.0
     settle = c.thermal.target_for(ThermalIntent.SETTLE_COOL, NightObjective.OPTIMIZE, True, 69.0, -2.0)
     assert settle == 67.0
 
@@ -29,7 +30,8 @@ def test_a_learned_profile_cannot_move_the_measured_neutral():
 def test_a_deep_bias_warmer_than_neutral_is_bounded_below_it():
     c = _ctl()
     c.set_setpoints(replace(c.thermal.profile, deep_bias_f=70.5))
-    assert c.thermal.profile.deep_bias_f <= 69.0 - SleepController.DEEP_BIAS_MIN_BELOW_NEUTRAL_F
+    assert c.thermal.profile.deep_bias_f == 69.0 - SleepController.DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F
+    assert c.last_setpoint_override["learned_deep_bias_f"] == 70.5
     deep = c.thermal.target_for(ThermalIntent.DEEP_BIAS_COOL, NightObjective.OPTIMIZE, True, 69.0)
     assert deep < 69.0
 

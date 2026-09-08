@@ -1540,6 +1540,9 @@ class SleepController:
 
     #: A deep-bias anchor must sit at least this far BELOW neutral, or "deepen" warms.
     DEEP_BIAS_MIN_BELOW_NEUTRAL_F = 0.5
+    #: A learned deep bias that is not credibly below neutral is replaced by this offset (the
+    #: config default relationship, 70 -> 66 F); the comfort clamp still bounds the result.
+    DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F = 3.0
 
     def set_setpoints(self, profile, keep_measured_neutral: bool = True) -> None:
         """Swap the active SetpointProfile for the night (e.g. an experiment arm applied on top
@@ -1568,7 +1571,14 @@ class SleepController:
             profile = _replace(profile, neutral_f=float(measured))
         cap = float(profile.neutral_f) - self.DEEP_BIAS_MIN_BELOW_NEUTRAL_F
         if profile.deep_bias_f > cap:
-            profile = _replace(profile, deep_bias_f=cap)
+            # 2026-09-08: the learned deep bias read 72.5 F against a 69.0 F neutral. A value
+            # that close to (or above) neutral is not a measurement of anything; fall back to
+            # the default offset rather than a token half degree.
+            fixed = float(profile.neutral_f) - self.DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F
+            ov = dict(getattr(self, "last_setpoint_override", None) or {})
+            ov.update({"learned_deep_bias_f": float(profile.deep_bias_f), "kept_deep_bias_f": fixed})
+            self.last_setpoint_override = ov
+            profile = _replace(profile, deep_bias_f=fixed)
         self.thermal.profile = profile
 
     def thermal_profile_summary(self) -> dict:
