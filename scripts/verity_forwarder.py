@@ -232,7 +232,55 @@ _RELEASE = {"run": 0, "until": 0.0}
 #: DATA instead, and escalate through qualitatively different recoveries rather than just waiting
 #: longer: try the other transport, then stop trusting the cached address, then ask for the
 #: Bluetooth stack itself to be reset.
-_STATS = {"posts": 0, "last_seen_at": 0.0}
+_STATS = {"posts": 0, "last_seen_at": 0.0, "acc_rung": 0}
+
+# --- accelerometer rate ladder -------------------------------------------------------------
+# Every PMD session since 2026-08-31 on the Windows box started PPI and ACC successfully and
+# then delivered ZERO accelerometer frames and two rejected PPI samples before the stall guard
+# dropped the link; the generic 1 Hz heart-rate service on the same link never missed a beat.
+# ACC at 52 Hz is ~10-13 notifications a second of ~200 bytes; a central that cannot service
+# that rate makes the band's PMD channel go quiet as a whole, PPI included. So after a session
+# that stalled WITH the accelerometer running, the next session asks for less: half the rate,
+# then no accelerometer at all (PPI still gives beat intervals and HR). The rung is persisted
+# across forwarder restarts and climbs back to the top after a long clean stretch, so a better
+# link (the Pi bridge) gets the full stream again without anyone touching it.
+_ACC_FALLBACK_RATE_HZ = 26
+_ACC_RUNG_FILE = "verity-acc-rung"
+_ACC_RESTORE_AFTER_S = 3 * 3600.0
+
+
+def _acc_ladder(cli_rate: int) -> list:
+    """Accelerometer rates to try, best first; ``None`` is "no accelerometer (PPI only)"."""
+    rungs: list = [int(cli_rate)]
+    if int(cli_rate) > _ACC_FALLBACK_RATE_HZ:
+        rungs.append(_ACC_FALLBACK_RATE_HZ)
+    rungs.append(None)
+    return rungs
+
+
+def _load_acc_rung(root: Path) -> int:
+    try:
+        return max(0, int((root / ".run" / _ACC_RUNG_FILE).read_text().strip() or "0"))
+    except Exception:
+        return 0
+
+
+def _save_acc_rung(root: Path, rung: int) -> None:
+    try:
+        (root / ".run").mkdir(parents=True, exist_ok=True)
+        (root / ".run" / _ACC_RUNG_FILE).write_text(str(int(rung)))
+    except Exception:
+        pass
+
+
+def _next_acc_rung(rung: int, ladder_len: int, stall: "dict | None", streamed_s: float) -> int:
+    """Where the ladder goes after a session: down one rung after a stall with the
+    accelerometer running, back to the top after a long clean stretch, else unchanged."""
+    if stall is not None and stall.get("acc") is not None and rung < ladder_len - 1:
+        return rung + 1
+    if streamed_s >= _ACC_RESTORE_AFTER_S and rung > 0:
+        return 0
+    return rung
 
 #: Last PMD control-point error code, so a start refused with "already in state" (6) can be
 #: distinguished from a genuine refusal and recovered by stopping the stale stream first.
@@ -812,11 +860,24 @@ async def _pmd_session(client, args) -> bool:
             pmd.SETTING_RESOLUTION: args.acc_resolution,
             pmd.SETTING_CHANNELS: 3,
         }
+        ladder = _acc_ladder(int(getattr(args, "acc_rate_cli", args.acc_rate)))
+        rung = min(int(_STATS.get("acc_rung", 0) or 0), len(ladder) - 1)
+        acc_rate = ladder[rung]
+        if acc_rate is not None:
+            args.acc_rate = int(acc_rate)
+            acc_settings[pmd.SETTING_SAMPLE_RATE] = int(acc_rate)
+        if rung > 0:
+            _log(f"PMD: accelerometer rung {rung}/{len(ladder) - 1}: "
+                 + (f"ACC@{acc_rate}Hz" if acc_rate is not None else "no accelerometer (PPI only)")
+                 + " -- after a stalled session; restores after "
+                 f"{_ACC_RESTORE_AFTER_S / 3600:.0f}h of clean streaming")
         wanted = [
             (pmd.MEAS_PPI, "start PPI", pmd.build_start_command(pmd.MEAS_PPI, None)),
-            (pmd.MEAS_ACC, f"start ACC @{args.acc_rate}Hz/{args.acc_resolution}bit/{args.acc_range}G",
-             pmd.build_start_command(pmd.MEAS_ACC, acc_settings)),
         ]
+        if acc_rate is not None:
+            wanted.append(
+                (pmd.MEAS_ACC, f"start ACC @{args.acc_rate}Hz/{args.acc_resolution}bit/{args.acc_range}G",
+                 pmd.build_start_command(pmd.MEAS_ACC, acc_settings)))
         for meas_type, what, cmd in wanted:
             resp = await _pmd_command(client, responses, cmd, what, args.control_timeout)
 
@@ -909,6 +970,8 @@ async def _pmd_session(client, args) -> bool:
                     and (time.monotonic() - t0) > args.pmd_grace_seconds):
                 _log(f"PMD: no sensor data for {fresh.age():.0f}s while connected -- "
                      f"dropping the link to force a reconnect")
+                _STATS["pmd_stall"] = {"rung": rung, "acc": acc_rate,
+                                       "streamed_s": time.monotonic() - t0}
                 return False
 
             payload: dict = {"source": args.source}
@@ -991,6 +1054,7 @@ async def _pmd_session(client, args) -> bool:
                         _log("PMD: " + pmd.SDK_MODE_HINT.format(seconds=elapsed))
                     elif state == "streaming" and "stalled" in warned:
                         _log(f"PMD: PPI data arrived after {elapsed:.0f}s")
+        _STATS["pmd_streamed_s"] = time.monotonic() - t0
         return True
     finally:
         if hr_notify:
@@ -1103,6 +1167,11 @@ async def _main_async(args, env) -> None:
     barren = 0                 # consecutive sessions that produced NO data (see _STATS)
     preferred_mode = args.mode
     pinned_address = args.address
+    args.acc_rate_cli = int(args.acc_rate)
+    ladder = _acc_ladder(args.acc_rate_cli)
+    _STATS["acc_rung"] = min(_load_acc_rung(_repo_root()), len(ladder) - 1)
+    if _STATS["acc_rung"]:
+        _log(f"PMD: resuming at accelerometer rung {_STATS['acc_rung']}/{len(ladder) - 1}")
     while True:
         try:
             _beat(_repo_root())
@@ -1122,6 +1191,17 @@ async def _main_async(args, env) -> None:
 
             before = _STATS["posts"]
             await _run_once(args, env)
+            stall = _STATS.pop("pmd_stall", None)
+            streamed = float(_STATS.pop("pmd_streamed_s", 0.0) or 0.0)
+            nxt = _next_acc_rung(int(_STATS["acc_rung"]), len(ladder), stall, streamed)
+            if nxt != _STATS["acc_rung"]:
+                what = ladder[nxt]
+                _log(f"PMD: accelerometer rung {_STATS['acc_rung']} -> {nxt} "
+                     + (f"(ACC@{what}Hz)" if what is not None else "(no accelerometer, PPI only)")
+                     + (" after a stall with the accelerometer running" if stall else
+                        f" after {streamed / 3600:.1f}h of clean streaming"))
+                _STATS["acc_rung"] = nxt
+                _save_acc_rung(_repo_root(), nxt)
             if _STATS["posts"] > before:
                 if barren:
                     _log(f"recovered after {barren} barren session(s)")

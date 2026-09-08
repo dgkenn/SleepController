@@ -1759,6 +1759,7 @@ WEARABLE_BATTERY_LOW_PCT = 40
 #: "ACC + PPI"), and a loss alert when a band that WAS streaming drops during the evening or the
 #: night. Both are rate-limited so a flapping link cannot page every 25 seconds.
 _WEARABLE_LINK_KEY = "wearable_link"
+_WEARABLE_LINK_REASSERT_S = 15 * 60   # a same-state "connected" inside this window is a refresh
 _WEARABLE_LINK_PUSH_KEY = "wearable_link_last_push"
 _WEARABLE_LINK_PUSH_MIN_GAP_S = 30 * 60
 #: A "lost" only matters if the band was streaming recently -- taking it off at lunch is not
@@ -1776,6 +1777,17 @@ def _record_wearable_link(repo, state: str, streams: list, source: str = "verity
                       "source": source})
     except Exception:
         prev = {}
+    # The forwarder re-asserts "connected" every couple of minutes so a post lost to an API
+    # restart is not lost for the night. A repeat of the same state and streams is a refresh of
+    # the timestamp above, not a new link event and not another notification.
+    if state == "connected" and prev.get("state") == "connected" \
+            and list(prev.get("streams") or []) == list(streams):
+        try:
+            age = (now - datetime.fromisoformat(str(prev.get("ts")))).total_seconds()
+        except Exception:
+            age = None
+        if age is not None and 0 <= age <= _WEARABLE_LINK_REASSERT_S:
+            return
     try:
         repo.log_event("sensor", "info", f"wearable_link_{state}",
                        f"wearable link {state}" + (f" ({', '.join(streams)})" if streams else ""),

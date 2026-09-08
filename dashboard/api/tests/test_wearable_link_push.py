@@ -120,3 +120,16 @@ def test_ingest_never_raises_when_push_fails(repo, monkeypatch):
                         lambda **kw: (_ for _ in ()).throw(RuntimeError("boom")))
     monkeypatch.setattr(services, "list_push_subscriptions", lambda repo: [{"endpoint": "x"}])
     assert _link(repo, "connected", ["PPI"])["ok"] is True
+
+
+def test_a_reasserted_connected_link_is_a_refresh_not_a_new_event(repo, pushes):
+    _link(repo, "connected", ["ACC@52Hz", "PPI"])
+    _link(repo, "connected", ["ACC@52Hz", "PPI"])
+    _link(repo, "connected", ["ACC@52Hz", "PPI"])
+    n = repo.conn.execute("SELECT COUNT(*) FROM events WHERE code='wearable_link_connected'").fetchone()[0]
+    assert n == 1
+    assert len(pushes) == 1
+    # a CHANGE of streams is a new link event
+    _link(repo, "connected", ["HR/RR (generic 0x180D)"])
+    n = repo.conn.execute("SELECT COUNT(*) FROM events WHERE code='wearable_link_connected'").fetchone()[0]
+    assert n == 2
