@@ -124,3 +124,24 @@ schtasks /Run /TN "SleepController Verity"
 - **Range.** BLE is ~10 m line-of-sight; keep the PC's Bluetooth adapter within range of the bed.
 - **RR units.** Polar RR intervals arrive in 1/1024-second units; the forwarder converts to
   milliseconds before POSTing, and the API computes HRV = RMSSD over them.
+
+
+## What the upper-arm placement means for the accelerometer
+
+The band is worn on the upper arm, not the wrist, and every motion use is read with that in mind:
+
+* **Movement** is trunk-and-arm movement. Turns and shoulder shifts register strongly (an
+  upper-arm turn measures larger than a walk); hand and finger fidgets barely register; leg
+  movements do not register at all. Restlessness here means the trunk was restless.
+* **Breathing** transmits to the band only when the arm rests against the ribcage or the
+  shoulder rides the chest. Side-lying with the band arm on top is the best case; supine with
+  arms at the sides is weak; the band arm under the body or under a pillow is damped. Expect
+  stretches with no accelerometer breathing rate; the beat-interval rate covers them. The
+  export records how the arm lay (`g`) beside every epoch so the detectable orientations can
+  be learned from your own nights.
+* **Posture** is inferred from gravity on the band: a rotation over 30 degrees between
+  epochs is logged as a turn, and the night's turns per hour and orientation mix are
+  summarised. The band can rotate on the arm; the breathing estimate picks its axis per
+  window, so that does not matter.
+* **Placement that helps:** snug enough not to rotate freely, sensor over the muscle belly of
+  the upper arm, on the arm you do not usually sleep on.

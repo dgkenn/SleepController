@@ -56,6 +56,7 @@ from __future__ import annotations
 import argparse
 from collections import deque
 import asyncio
+import math
 import json
 import re
 import os
@@ -185,13 +186,41 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
 _LINK_REPOST_S = 120.0  # re-assert "connected" this often while streaming
 #: A batch PIM at/above this inside the breathing window is gross movement: no rate that window.
 _RESP_MOVEMENT_GATE_PIM = 2.5
+#: The arm rotating more than this across the breathing window is a slow roll (a posture
+#: change too gentle for the PIM gate); its 0.1-0.4 Hz energy would read as breathing.
+_RESP_ROLL_GATE_DEG = 15.0
 
 
-def _best_respiration(mag_buf, axis_bufs, batch_pims, sample_hz: float):
+def _gravity(samples_milli_g) -> "tuple | None":
+    """Mean acceleration over a batch in g -- the gravity direction on the band, i.e. how the
+    arm is lying. On the upper arm this tracks the trunk when the arm rests against it."""
+    n = 0
+    sx = sy = sz = 0.0
+    for x, y, z in samples_milli_g:
+        sx += x; sy += y; sz += z; n += 1
+    if not n:
+        return None
+    return (round(sx / n / 1000.0, 4), round(sy / n / 1000.0, 4), round(sz / n / 1000.0, 4))
+
+
+def _angle_deg(a, b) -> float:
+    """Angle between two gravity vectors, degrees."""
+    na = math.sqrt(sum(v * v for v in a)); nb = math.sqrt(sum(v * v for v in b))
+    if na <= 1e-9 or nb <= 1e-9:
+        return 0.0
+    c = sum(x * y for x, y in zip(a, b)) / (na * nb)
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def _best_respiration(mag_buf, axis_bufs, batch_pims, sample_hz: float, gravity_buf=None):
     """Breathing rate from whichever of |a|, x, y, z carries the most concentrated respiratory
-    peak, or (None, None) when the window holds gross movement or no axis passes the gates."""
+    peak, or (None, None) when the window holds gross movement, a slow roll, or no axis passes
+    the gates."""
     if any(p >= _RESP_MOVEMENT_GATE_PIM for p in batch_pims):
         return None, None
+    if gravity_buf and len(gravity_buf) >= 2:
+        if _angle_deg(gravity_buf[0], gravity_buf[-1]) >= _RESP_ROLL_GATE_DEG:
+            return None, None
     best, best_axis = None, None
     for name, buf in (("mag", mag_buf), ("x", axis_bufs[0]), ("y", axis_bufs[1]), ("z", axis_bufs[2])):
         if len(buf) < 16:
@@ -811,6 +840,8 @@ async def _pmd_session(client, args) -> bool:
     # Per-batch PIM over the breathing window: gross movement corrupts the spectrum, so a window
     # containing a burst yields no rate rather than a wrong one.
     acc_batch_pim: "deque[float]" = deque(maxlen=max(1, int(respiration.DEFAULT_WINDOW_S / max(args.batch_seconds, 0.5))))
+    acc_batch_gravity: "deque[tuple]" = deque(maxlen=acc_batch_pim.maxlen)
+    batch_gravity = {"g": None}
     # Short, separate buffer for the deliberate MARKER GESTURE. It must not share the respiration
     # window: a 3 s shake inside a multi-minute buffer is diluted below every threshold that
     # would detect it.
@@ -832,6 +863,9 @@ async def _pmd_session(client, args) -> bool:
                 _mags = pmd.acc_magnitudes_g(samples)
                 acc_mags.extend(_mags)
                 acc_resp_buf.extend(_mags)
+                _g = _gravity(samples)
+                if _g is not None:
+                    batch_gravity["g"] = _g
                 for _x, _y, _z in samples:
                     acc_axis_buf[0].append(_x / 1000.0)
                     acc_axis_buf[1].append(_y / 1000.0)
@@ -1095,12 +1129,15 @@ async def _pmd_session(client, args) -> bool:
                         pass
                 try:
                     acc_batch_pim.append(float(counts.get("pim") or 0.0))
+                    if batch_gravity["g"] is not None:
+                        acc_batch_gravity.append(batch_gravity["g"])
+                        counts["gx"], counts["gy"], counts["gz"] = batch_gravity["g"]
                 except Exception:
                     pass
                 if len(acc_resp_buf) >= resp_win // 2:
                     try:
                         est, axis = _best_respiration(acc_resp_buf, acc_axis_buf, acc_batch_pim,
-                                                      float(args.acc_rate))
+                                                      float(args.acc_rate), acc_batch_gravity)
                         if est is not None:
                             counts["resp_brpm"] = round(est.breaths_per_min, 2)
                             counts["resp_conc"] = round(est.concentration, 3)

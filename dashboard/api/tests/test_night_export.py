@@ -227,3 +227,28 @@ def test_the_accelerometer_night_is_exported_at_30_second_resolution(repo):
     assert any(e["marker"] for e in ep)
     assert all(e["resp_brpm"] is not None for e in ep)
     assert out["marker_audit"]["n"] >= 0
+
+
+def test_posture_turns_and_orientation_are_exported(repo):
+    from datetime import datetime, timedelta
+    from app import bridge, night_export
+    night = "2026-09-08"
+    now_local = datetime.now()
+    _insert_sample(repo.conn, (now_local - timedelta(minutes=2)).isoformat(), night, controller_state="maintenance", heart_rate=60.0)
+    _insert_sample(repo.conn, (now_local + timedelta(minutes=2)).isoformat(), night, controller_state="maintenance", heart_rate=61.0)
+    import time
+    # two epochs lying one way, then a turn: the export cannot fake time, so write the gravity
+    # rows and rewrite their timestamps into distinct 30-second epochs
+    for i, g in enumerate([(0.0, 0.0, 1.0), (0.0, 0.0, 1.0), (0.0, 1.0, 0.0), (0.0, 1.0, 0.0)]):
+        bridge.append_actigraphy(repo.conn, {"pim": 0.3, "n": 104, "fs": 52, "gx": g[0], "gy": g[1], "gz": g[2],
+                                             "resp_brpm": 13.0 if i < 2 else None, "resp_conc": 0.7})
+        rid = repo.conn.execute("SELECT MAX(id) FROM actigraphy").fetchone()[0]
+        ts = (datetime.now(tz=__import__("datetime").timezone.utc) - timedelta(seconds=(4 - i) * 31)).isoformat()
+        repo.conn.execute("UPDATE actigraphy SET ts=? WHERE id=?", (ts, rid))
+    repo.conn.commit()
+    out = night_export.build_night_export(repo, night)
+    ep = out["actigraphy_epochs"]
+    assert sum(e["turn"] for e in ep) == 1
+    ps = out["posture_summary"]
+    assert ps["turns"] == 1 and "+z" in ps["by_orientation"] and "+y" in ps["by_orientation"]
+    assert ps["by_orientation"]["+z"]["resp_fraction"] == 1.0

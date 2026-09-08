@@ -73,7 +73,7 @@ def _actigraphy_epochs(conn, lo_iso: str, hi_iso: str, epoch_s: float = 30.0,
     only), any gait, any marker. Epoch times are UTC epoch seconds."""
     try:
         rows = conn.execute(
-            "SELECT ts, pim, zcm, resp_brpm, resp_conc, gait, marker, fs FROM actigraphy "
+            "SELECT ts, pim, zcm, resp_brpm, resp_conc, gait, marker, fs, gx, gy, gz FROM actigraphy "
             "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC", (lo_iso, hi_iso)).fetchall()
     except Exception:
         return []
@@ -85,8 +85,15 @@ def _actigraphy_epochs(conn, lo_iso: str, hi_iso: str, epoch_s: float = 30.0,
             continue
         k = int(t // epoch_s) * int(epoch_s)
         b = buckets.setdefault(k, {"t": k, "n": 0, "pim_max": 0.0, "pim_sum": 0.0, "zcm": 0,
-                                   "resp": [], "gait": 0, "marker": 0, "fs": None})
+                                   "resp": [], "gait": 0, "marker": 0, "fs": None,
+                                   "g": [0.0, 0.0, 0.0], "ng": 0})
         b["n"] += 1
+        try:
+            if r["gx"] is not None:
+                b["g"][0] += float(r["gx"]); b["g"][1] += float(r["gy"] or 0.0)
+                b["g"][2] += float(r["gz"] or 0.0); b["ng"] += 1
+        except Exception:
+            pass
         if r["pim"] is not None:
             b["pim_max"] = max(b["pim_max"], float(r["pim"]))
             b["pim_sum"] += float(r["pim"])
@@ -101,14 +108,59 @@ def _actigraphy_epochs(conn, lo_iso: str, hi_iso: str, epoch_s: float = 30.0,
         if r["fs"] is not None:
             b["fs"] = r["fs"]
     out = []
+    prev_g = None
     for k in sorted(buckets)[-max_epochs:]:
         b = buckets[k]
         resp = sorted(b["resp"])
+        g = ([round(v / b["ng"], 3) for v in b["g"]] if b["ng"] else None)
+        # A rotation of the gravity vector over TURN_DEG between epochs is a posture change --
+        # on an upper-arm band, the trunk turning or the arm moving off the body.
+        turn = 0
+        if g is not None and prev_g is not None and _angle_deg(g, prev_g) >= TURN_DEG:
+            turn = 1
+        if g is not None:
+            prev_g = g
         out.append({"t": b["t"], "n": b["n"], "pim_max": round(b["pim_max"], 3),
                     "pim_mean": round(b["pim_sum"] / b["n"], 3) if b["n"] else None,
                     "zcm": b["zcm"], "resp_brpm": (resp[len(resp) // 2] if resp else None),
-                    "gait": b["gait"], "marker": b["marker"], "fs": b["fs"]})
+                    "gait": b["gait"], "marker": b["marker"], "fs": b["fs"],
+                    "g": g, "turn": turn})
     return out
+
+
+TURN_DEG = 30.0
+
+
+def _angle_deg(a, b) -> float:
+    import math
+    na = math.sqrt(sum(v * v for v in a)); nb = math.sqrt(sum(v * v for v in b))
+    if na <= 1e-9 or nb <= 1e-9:
+        return 0.0
+    c = sum(x * y for x, y in zip(a, b)) / (na * nb)
+    return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+
+
+def _posture_summary(epochs: list) -> dict:
+    """Turns per hour and where the breathing rate was measurable, by how the arm lay."""
+    if not epochs:
+        return {"turns": 0, "epochs": 0}
+    turns = sum(1 for e in epochs if e.get("turn"))
+    hours = max(1e-6, len(epochs) * 30.0 / 3600.0)
+    by_orient: dict = {}
+    for e in epochs:
+        g = e.get("g")
+        if not g:
+            continue
+        ax = max(range(3), key=lambda i: abs(g[i]))
+        key = ("+" if g[ax] >= 0 else "-") + "xyz"[ax]
+        d = by_orient.setdefault(key, {"epochs": 0, "with_resp": 0})
+        d["epochs"] += 1
+        if e.get("resp_brpm") is not None:
+            d["with_resp"] += 1
+    for d in by_orient.values():
+        d["resp_fraction"] = round(d["with_resp"] / d["epochs"], 2) if d["epochs"] else None
+    return {"turns": turns, "turns_per_hour": round(turns / hours, 2), "epochs": len(epochs),
+            "by_orientation": by_orient}
 
 def _normalize_reason(reason: str) -> str:
     """Collapse a decision reason to its pattern: numbers out, the data-quality suffix out."""
@@ -577,6 +629,7 @@ def build_night_export(repo, night_date: str) -> dict:
             # The accelerometer night at 30-second resolution: enough to audit wake detection,
             # restlessness ramps, breathing and gait the next morning without the box.
             out["actigraphy_epochs"] = _actigraphy_epochs(conn, lo, hi)
+            out["posture_summary"] = _posture_summary(out["actigraphy_epochs"])
             out["marker_audit"] = {
                 "n": len(audit),
                 "n_scored_awake": sum(1 for a in audit if a["scored_awake"]),

@@ -263,12 +263,13 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
         conn.execute(
             """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source,
                                        resp_brpm, resp_conc, gait, cadence_hz, gait_conc,
-                                       marker, marker_hz)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                       marker, marker_hz, gx, gy, gz)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source,
              _num("resp_brpm"), _num("resp_conc"),
              1 if counts.get("gait") else None, _num("cadence_hz"), _num("gait_conc"),
-             1 if counts.get("marker") else None, _num("marker_hz")),
+             1 if counts.get("marker") else None, _num("marker_hz"),
+             _num("gx"), _num("gy"), _num("gz")),
         )
         if counts.get("marker"):
             # Ground truth: the user declared "awake right now". Record what the stager said at

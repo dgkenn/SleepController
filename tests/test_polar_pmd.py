@@ -611,7 +611,8 @@ def test_pmd_session_streams_acc_and_ppi_into_the_post_body():
     assert body["rr"] == [1034.0]                    # blocked interval filtered out
     assert body["acc"]["n"] == 10
     assert body["acc"]["fs"] == 52
-    assert set(body["acc"]) == {"pim", "zcm", "mad", "std", "pmax", "n", "fs"}
+    # gravity direction on the band (gx/gy/gz) rides along with every batch
+    assert set(body["acc"]) == {"pim", "zcm", "mad", "std", "pmax", "n", "fs", "gx", "gy", "gz"}
     assert body["acc"]["pim"] > 0
 
 

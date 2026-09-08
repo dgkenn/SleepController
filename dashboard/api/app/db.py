@@ -214,6 +214,11 @@ _MIGRATIONS = [
     ("actigraphy", "marker", "INTEGER"),
     ("actigraphy", "marker_hz", "REAL"),
     ("actigraphy", "resp_conc", "REAL"),
+    # Gravity direction on the band per batch (g): how the arm lies, which on an upper-arm band
+    # tracks the trunk. Posture changes and breathing detectability both follow from it.
+    ("actigraphy", "gx", "REAL"),
+    ("actigraphy", "gy", "REAL"),
+    ("actigraphy", "gz", "REAL"),
     ("sensor_samples", "respiratory_rate", "REAL"),
 ]
 

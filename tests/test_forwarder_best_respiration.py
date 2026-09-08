@@ -37,3 +37,19 @@ def test_gross_movement_in_the_window_yields_no_rate():
     mag, axes = _bufs(breath_axis=0)
     est, axis = vf._best_respiration(mag, axes, deque([0.2, 6.0, 0.3]), FS)
     assert est is None and axis is None
+
+
+def test_a_slow_roll_across_the_window_yields_no_rate():
+    mag, axes = _bufs(breath_axis=0)
+    rolling = deque([(0.0, 0.0, 1.0), (0.0, 0.2, 0.98), (0.0, 0.5, 0.87)])   # ~30 degrees
+    est, axis = vf._best_respiration(mag, axes, deque([0.2, 0.3]), FS, rolling)
+    assert est is None
+    steady = deque([(0.0, 0.0, 1.0), (0.01, 0.0, 1.0)])
+    est, axis = vf._best_respiration(mag, axes, deque([0.2, 0.3]), FS, steady)
+    assert est is not None
+
+
+def test_gravity_is_the_batch_mean_in_g():
+    assert vf._gravity([(0, 0, 1000), (0, 0, 980)]) == (0.0, 0.0, 0.99)
+    assert vf._gravity([]) is None
+    assert abs(vf._angle_deg((0, 0, 1), (0, 1, 0)) - 90.0) < 1e-6
