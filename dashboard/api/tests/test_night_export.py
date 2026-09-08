@@ -204,3 +204,4 @@ def test_the_onset_trace_and_thermal_profile_are_exported(repo):
     out = night_export.build_night_export(repo, night)
     assert len(out["onset_trace"]) == 4 and out["onset_trace"][0]["awake_hr_ref"] == 70.2
     assert out["thermal_profile"]["neutral_f"] == 71.5
+    assert len(out["induction_trace"]) == 4 and out["induction_trace"][0]["stage"] == "light"

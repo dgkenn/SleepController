@@ -370,6 +370,29 @@ def build_night_export(repo, night_date: str) -> dict:
                                     "entry_ref_n": o.get("entry_ref_n")})
         out["onset_trace"] = onset_trace
         out["thermal_profile"] = profile_seen
+        # Every INDUCTION tick as the controller saw it (stage, confidence, source, heart rate,
+        # data quality, dense-history depth). The onset trace above needs the new per-tick
+        # detector state; this one reads fields every decision has always carried, so it also
+        # answers for nights recorded before the detector was instrumented.
+        induction = []
+        for r in drows:
+            if r["state"] != "induction" or len(induction) >= 900:
+                continue
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            dq = pl.get("data_quality") or {}
+            wi = pl.get("wearable_inputs") or {}
+            induction.append({
+                "ts": r["ts"], "stage": pl.get("stage"), "conf": pl.get("stage_confidence"),
+                "src": pl.get("stage_source"), "hr": pl.get("heart_rate"),
+                "mov": pl.get("movement"), "age_s": pl.get("data_age_seconds"),
+                "dq": dq.get("score"), "dq_why": dq.get("reasons"), "hist_n": wi.get("hr_history_n"),
+                "mib": pl.get("minutes_in_bed"), "action": r["action"],
+                "reason": (r["reason"] or "")[:90],
+            })
+        out["induction_trace"] = induction
         # Why each maintenance tick did what it did, as a pattern histogram. The events above
         # say WHAT the pre-empt wanted; this says which layer (clamp, cap, guardrail, data
         # quality, stabilizer) had the last word -- the question 2026-09-07 could not answer.
