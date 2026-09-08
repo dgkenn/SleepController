@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Disclosure from '@/components/Disclosure';
 import useSWR from 'swr';
 import AuthGuard from '@/components/AuthGuard';
 import BottomNav from '@/components/BottomNav';
@@ -139,6 +140,9 @@ function DiagnosticsContent() {
   const sortedChecks = report
     ? [...report.checks].sort((a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status])
     : [];
+  const problems = sortedChecks.filter((c) => c.status === 'fail' || c.status === 'warn');
+  const passing = sortedChecks.filter((c) => c.status === 'ok');
+  const infos = sortedChecks.filter((c) => c.status === 'info');
 
   return (
     <div className="flex flex-col min-h-screen">
@@ -197,23 +201,56 @@ function DiagnosticsContent() {
             </button>
           )}
 
-          {/* Per-check list */}
-          {report && (
+          {/* Per-check list -- problems expanded, the rest one tap away. Forty-two flat rows
+              made the page five screens tall, and thirty of them were OK/INFO: the reader had to
+              scroll past everything that was fine to find out whether anything was not. */}
+          {report && problems.length > 0 && (
             <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
               <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-                Checks ({report.checks.length})
+                Needs attention ({problems.length})
               </p>
               <div>
-                {sortedChecks.map((c) => (
+                {problems.map((c) => (
                   <CheckRow key={c.id} check={c} />
                 ))}
               </div>
             </div>
           )}
+          {report && problems.length === 0 && (
+            <div className="bg-surface-card rounded-2xl p-4 border border-surface-border text-center">
+              <p className="text-sm text-success font-medium">Nothing needs attention</p>
+            </div>
+          )}
+          {report && (
+            <Disclosure
+              title="Passing"
+              summary={`${passing.length} OK`}
+              storageKey="diag-ok"
+            >
+              <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
+                {passing.map((c) => (
+                  <CheckRow key={c.id} check={c} />
+                ))}
+              </div>
+            </Disclosure>
+          )}
+          {report && (
+            <Disclosure
+              title="Informational"
+              summary={`${infos.length} notes`}
+              storageKey="diag-info"
+            >
+              <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
+                {infos.map((c) => (
+                  <CheckRow key={c.id} check={c} />
+                ))}
+              </div>
+            </Disclosure>
+          )}
 
           {/* Recent structured events */}
+          <Disclosure title="Recent events" summary={events ? `${events.length}` : undefined} storageKey="diag-events">
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">Recent events</p>
             {eventsLoading && !events && (
               <p className="text-sm text-gray-600 text-center py-4">Loading…</p>
             )}
@@ -233,6 +270,7 @@ function DiagnosticsContent() {
               </div>
             )}
           </div>
+          </Disclosure>
         </div>
       </div>
 

@@ -25,7 +25,7 @@ const { chromium } = require('playwright');
 const BASE = process.env.UI_BASE || 'http://127.0.0.1:3000';
 const USER = process.env.DASHBOARD_USER || 'admin';
 const PASS = process.env.DASHBOARD_PASSWORD || 'test1234';
-const ROUTES = ['/', '/tonight', '/data', '/learning', '/analytics', '/settings', '/admin'];
+const ROUTES = ['/', '/tonight', '/data', '/learning', '/analytics', '/insights', '/more', '/diagnostics', '/settings', '/admin'];
 
 const problems = [];
 function attach(page, where) {

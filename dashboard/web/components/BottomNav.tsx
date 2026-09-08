@@ -11,6 +11,10 @@ interface NavItem {
   alsoActiveOn?: string[];
 }
 
+// Five tabs, not seven. Seven at 10px labels on a 390px phone was cramped, and two of them
+// overlapped: Insights and Learning both showed "what it's learned", and Analytics was one
+// chart of the same nights Data already shows. Both pages still exist and are reachable from
+// the tab they belong under (and from More), so nothing is lost -- only the crowding.
 const navItems: NavItem[] = [
   {
     href: '/',
@@ -33,6 +37,7 @@ const navItems: NavItem[] = [
   {
     href: '/data',
     label: 'Data',
+    alsoActiveOn: ['/analytics'],
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
         <path d="M5 9.2h3V19H5zM10.6 5h2.8v14h-2.8zm5.6 8H19v6h-2.8z" />
@@ -42,27 +47,10 @@ const navItems: NavItem[] = [
   {
     href: '/learning',
     label: 'Learning',
+    alsoActiveOn: ['/insights'],
     icon: (
       <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
         <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z" />
-      </svg>
-    ),
-  },
-  {
-    href: '/analytics',
-    label: 'Analytics',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-        <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z" />
-      </svg>
-    ),
-  },
-  {
-    href: '/insights',
-    label: 'Insights',
-    icon: (
-      <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
-        <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z" />
       </svg>
     ),
   },
@@ -94,14 +82,14 @@ export default function BottomNav() {
             <Link
               key={item.href}
               href={item.href}
-              className={`flex flex-col items-center justify-center flex-1 py-3 min-h-[56px] gap-0.5 transition-colors ${
+              className={`flex flex-col items-center justify-center flex-1 py-2.5 min-h-[56px] gap-1 transition-colors ${
                 isActive
                   ? 'text-brand'
                   : 'text-gray-500 hover:text-gray-300 active:text-gray-200'
               }`}
             >
               {item.icon}
-              <span className="text-[10px] font-medium leading-none">{item.label}</span>
+              <span className="text-[11px] font-medium leading-none">{item.label}</span>
             </Link>
           );
         })}

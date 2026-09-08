@@ -14,6 +14,7 @@ import CheckInCard from '@/components/CheckInCard';
 import ReadinessCard from '@/components/ReadinessCard';
 import ShiftCard from '@/components/ShiftCard';
 import CircadianCard from '@/components/CircadianCard';
+import Disclosure from '@/components/Disclosure';
 import { useStatusStream } from '@/lib/useStatusStream';
 import useSWR from 'swr';
 import { CheckInStatus, fetcher } from '@/lib/api';
@@ -88,24 +89,7 @@ function HomeContent() {
           {/* Realtime temperature control */}
           <QuickTemp targetF={data.target_temp_f} powerOn={data.power_on ?? true} />
 
-          {/* Wake-up exit survey (shown when a check-in is due) */}
-          {checkin?.due && (
-            <CheckInCard date={checkin.date} onDone={() => mutateCheckin()} />
-          )}
-
-          {/* Morning readiness — daytime performance forecast */}
-          <ReadinessCard />
-
-          {/* Cross-shift sleep strategy: debt, banking, naps, anchor */}
-          <ShiftCard />
-
-          {/* Circadian phase estimate + OAuth-free calendar auto-ingest */}
-          <CircadianCard />
-
-          {/* Recommendation */}
-          <RecommendationCard recommendation={data.recommendation} />
-
-          {/* Last night summary */}
+          {/* Last night summary -- the one number you want first thing */}
           {data.last_night && (
             <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
               <div className="flex items-center justify-between mb-3">
@@ -153,6 +137,25 @@ function HomeContent() {
               </div>
             </div>
           )}
+
+          {/* Wake-up exit survey (shown when a check-in is due). Below the summary, not above
+              it: a 20-second form is a lot to put between a half-awake person and "how did I
+              sleep", and it only appears on mornings anyway. */}
+          {checkin?.due && (
+            <CheckInCard date={checkin.date} onDone={() => mutateCheckin()} />
+          )}
+
+          {/* Planning -- readiness, shift debt, circadian. Three tall cards of guidance that
+              used to sit above the summary and make Home three screens long. Collapsed by
+              default; the section remembers if you open it. */}
+          <Disclosure title="Today's plan" summary="readiness · shift · circadian" storageKey="home-plan">
+            <ReadinessCard />
+            <ShiftCard />
+            <CircadianCard />
+          </Disclosure>
+
+          {/* Recommendation */}
+          <RecommendationCard recommendation={data.recommendation} />
 
           {/* Emergency Stop */}
           <EmergencyStop />

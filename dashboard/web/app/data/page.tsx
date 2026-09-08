@@ -7,6 +7,7 @@ import NightCard from '@/components/NightCard';
 import NoteEditor from '@/components/NoteEditor';
 import MetricChart from '@/components/MetricChart';
 import useSWR from 'swr';
+import Link from 'next/link';
 import { NightSummary, NightSample, Note, Intervention, fetcher, api } from '@/lib/api';
 
 function DataContent() {
@@ -57,7 +58,12 @@ function DataContent() {
     <div className="flex flex-col min-h-screen">
       <div className="flex-1 overflow-y-auto pb-24">
         <div className="px-4 pt-14 pb-4">
-          <h1 className="text-xl font-bold text-white mb-1">Sleep Data</h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold text-white mb-1">Sleep Data</h1>
+            <Link href="/analytics" className="text-xs text-brand font-medium min-h-[44px] flex items-center">
+              Trends →
+            </Link>
+          </div>
         </div>
 
         <div className="px-4 space-y-4">

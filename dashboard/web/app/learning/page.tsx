@@ -10,6 +10,8 @@ import ExperimentsCard from '@/components/ExperimentsCard';
 import EfficacyCard from '@/components/EfficacyCard';
 import TargetsCard from '@/components/TargetsCard';
 import LearningPhasesCard from '@/components/LearningPhasesCard';
+import Disclosure from '@/components/Disclosure';
+import Link from 'next/link';
 import useSWR from 'swr';
 import { LearningLedgerResponse, MLOverview, ThermalDoseResponseResponse, fetcher } from '@/lib/api';
 
@@ -263,7 +265,12 @@ function LearningContent() {
     <div className="flex flex-col min-h-screen">
       <div className="flex-1 overflow-y-auto pb-24">
         <div className="px-4 pt-14 pb-4">
-          <h1 className="text-xl font-bold text-white mb-1">Learning</h1>
+          <div className="flex items-center justify-between">
+            <h1 className="text-xl font-bold text-white mb-1">Learning</h1>
+            <Link href="/insights" className="text-xs text-brand font-medium min-h-[44px] flex items-center">
+              Why it acted →
+            </Link>
+          </div>
           <p className="text-sm text-gray-500">ML model status and insights</p>
         </div>
 
@@ -284,14 +291,13 @@ function LearningContent() {
           {/* Awakening forensics: root-cause attribution */}
           <ForensicsCard />
 
-          {/* Self-experiments: A/B testing sleep levers */}
-          <ExperimentsCard />
-
-          {/* Standing efficacy trial: does the closed loop actually help? */}
-          <EfficacyCard />
-
-          {/* Personal thermal dose-response trial: what maintenance offset works best for ME? */}
-          <ThermalDoseResponseCard />
+          {/* Trials: self-experiments, the standing efficacy trial, the thermal dose-response
+              trial. Three long cards nobody reads nightly. */}
+          <Disclosure title="Trials" summary="experiments · efficacy · dose-response" storageKey="learning-trials">
+            <ExperimentsCard />
+            <EfficacyCard />
+            <ThermalDoseResponseCard />
+          </Disclosure>
 
           {/* Model confidence */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">
@@ -343,6 +349,10 @@ function LearningContent() {
             </div>
           )}
 
+          {/* Raw detail -- the recent-actions ledger, the phenotype correlations and the
+              baselines table. The baselines alone were dozens of median/mean cells; this page was
+              seven screens tall on a phone, and most of it was this. */}
+          <Disclosure title="Raw detail" summary="actions · phenotype · baselines" storageKey="learning-raw">
           {/* Recent actions */}
           {data.actions && data.actions.length > 0 && (
             <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
@@ -425,6 +435,7 @@ function LearningContent() {
               </div>
             </div>
           )}
+          </Disclosure>
         </div>
       </div>
 

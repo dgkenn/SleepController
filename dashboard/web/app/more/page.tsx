@@ -13,6 +13,26 @@ interface MoreLink {
 
 const LINKS: MoreLink[] = [
   {
+    href: '/analytics',
+    title: 'Analytics',
+    description: 'Trends over 7-90 nights and what the controller changed',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+        <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z" />
+      </svg>
+    ),
+  },
+  {
+    href: '/insights',
+    title: 'Insights',
+    description: 'Why the controller acted, and the parameters it has learned',
+    icon: (
+      <svg viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
+        <path d="M9 21c0 .55.45 1 1 1h4c.55 0 1-.45 1-1v-1H9v1zm3-19C8.14 2 5 5.14 5 9c0 2.38 1.19 4.47 3 5.74V17c0 .55.45 1 1 1h6c.55 0 1-.45 1-1v-2.26c1.81-1.27 3-3.36 3-5.74 0-3.86-3.14-7-7-7z" />
+      </svg>
+    ),
+  },
+  {
     href: '/diagnostics',
     title: 'Diagnostics',
     description: 'Fused health verdict, checks, and recent system events',
@@ -50,7 +70,7 @@ function MoreContent() {
       <div className="flex-1 overflow-y-auto pb-24">
         <div className="px-4 pt-14 pb-4">
           <h1 className="text-xl font-bold text-white mb-1">More</h1>
-          <p className="text-sm text-gray-500">System health, admin tools, and settings</p>
+          <p className="text-sm text-gray-500">Analytics, insights, health, admin and settings</p>
         </div>
 
         <div className="px-4 space-y-3">

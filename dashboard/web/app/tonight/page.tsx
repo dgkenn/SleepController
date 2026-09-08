@@ -15,6 +15,7 @@ import SafetyGuardrailCard from '@/components/SafetyGuardrailCard';
 import GymCard from '@/components/GymCard';
 import HueCard from '@/components/HueCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
+import Disclosure from '@/components/Disclosure';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
 import useSWR from 'swr';
@@ -299,50 +300,8 @@ function TonightContent() {
             onToast={showToast}
           />
 
-          {/* Predictive pre-emption — live awakening avoidance */}
-          <PreemptionCard />
-
-          {/* Safety backstop — data-quality gate + decision guardrail */}
-          <SafetyGuardrailCard />
-
-          {/* Live device health (power / link / water / thermal-response) */}
-          {data && <DeviceStatusCard data={data} />}
-
-          {/* Power / Away / Prime */}
-          <PowerControls
-            powerOn={data?.power_on ?? true}
-            away={data?.away ?? false}
-            onChanged={() => mutate()}
-            onToast={showToast}
-          />
-
-          {/* Smart Wake */}
-          <WakeTimePicker
-            value={wakeTime}
-            windowMin={windowMin}
-            vibration={vibration}
-            nightType={nightType}
-            onChange={handleWakeSave}
-            onClear={data?.wake ? handleWakeClear : undefined}
-            disabled={mode === 'view'}
-          />
-
-          {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
-          {plan && <SleepPlanCard plan={plan} />}
-
-          {/* Advisory CBT-I sleep-window guidance — never changes controller behavior */}
-          <CBTIAdviceCard />
-
-          {/* Gym vs. sleep morning call */}
-          <GymCard />
-
-          {/* Philips Hue silent-sunrise dawn light */}
-          <HueCard />
-
-          {/* Overnight weather feed-forward */}
-          <WeatherCard />
-
-          {/* Control Buttons */}
+          {/* Control Buttons -- used to be the LAST card on a five-screen page, under gym, Hue and
+              the weather. The thing you tap most lives near the top now. */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-3">
             <p className="text-xs text-gray-500 uppercase tracking-wider">Controls</p>
             <div className="grid grid-cols-2 gap-3">
@@ -381,8 +340,46 @@ function TonightContent() {
             </div>
           </div>
 
+          {/* Pre-emption, safety backstop and device health: worth a glance, not a scroll. */}
+          <Disclosure title="System" summary="pre-emption · safety · device" storageKey="tonight-system">
+            <PreemptionCard />
+            <SafetyGuardrailCard />
+            {data && <DeviceStatusCard data={data} />}
+          </Disclosure>
+
+          {/* Power / Away / Prime */}
+          <PowerControls
+            powerOn={data?.power_on ?? true}
+            away={data?.away ?? false}
+            onChanged={() => mutate()}
+            onToast={showToast}
+          />
+
+          {/* Smart Wake */}
+          <WakeTimePicker
+            value={wakeTime}
+            windowMin={windowMin}
+            vibration={vibration}
+            nightType={nightType}
+            onChange={handleWakeSave}
+            onClear={data?.wake ? handleWakeClear : undefined}
+            disabled={mode === 'view'}
+          />
+
+          {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
+          {plan && <SleepPlanCard plan={plan} />}
+
+          {/* Advisory and setup cards: CBT-I guidance, gym call, dawn light, weather. */}
+          <Disclosure title="More for tonight" summary="CBT-I · gym · dawn light · weather" storageKey="tonight-extras">
+            <CBTIAdviceCard />
+            <GymCard />
+            <HueCard />
+            <WeatherCard />
+          </Disclosure>
+
           {/* Setpoint info */}
           {data?.setpoint && (
+            <Disclosure title="Current setpoint" summary={`neutral ${data.setpoint.neutral_f.toFixed(1)}°F · v${data.setpoint.version}`} storageKey="tonight-setpoint">
             <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
               <p className="text-xs text-gray-500 uppercase tracking-wider mb-3">
                 Current Setpoint
@@ -404,6 +401,7 @@ function TonightContent() {
                 Source: {data.setpoint.source} · v{data.setpoint.version}
               </p>
             </div>
+            </Disclosure>
           )}
 
           {/* Emergency Stop */}
