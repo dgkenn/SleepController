@@ -65,6 +65,9 @@ def test_controller_setter_swaps_profile():
     sc = SleepController(AppConfig.default())
     new = replace(sc.thermal.profile, deep_bias_f=60.0)
     sc.set_setpoints(new)
-    assert sc.thermal.profile.deep_bias_f == 60.0
+    # the profile is swapped, but the deep-bias anchor is bounded to the evidence (see
+    # SleepController.DEEP_BIAS_MAX_BELOW_NEUTRAL_F): 60 F against a 70 F neutral becomes 68 F
+    bounded = sc.thermal.profile.neutral_f - SleepController.DEEP_BIAS_MAX_BELOW_NEUTRAL_F
+    assert sc.thermal.profile.deep_bias_f == bounded
     sc.set_setpoints(None)  # no-op safe
-    assert sc.thermal.profile.deep_bias_f == 60.0
+    assert sc.thermal.profile.deep_bias_f == bounded

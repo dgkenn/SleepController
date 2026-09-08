@@ -245,6 +245,9 @@ _STATS = {"posts": 0, "last_seen_at": 0.0, "acc_rung": 0}
 # across forwarder restarts and climbs back to the top after a long clean stretch, so a better
 # link (the Pi bridge) gets the full stream again without anyone touching it.
 _ACC_FALLBACK_RATE_HZ = 26
+#: An accelerometer that has started but delivered no frame within this long is not going to.
+#: (PPI has a documented ~25 s warm-up; ACC has none -- it streams within a second or two.)
+_ACC_PROBE_S = 45.0
 _ACC_RUNG_FILE = "verity-acc-rung"
 _ACC_RESTORE_AFTER_S = 3 * 3600.0
 
@@ -944,9 +947,49 @@ async def _pmd_session(client, args) -> bool:
         t0 = time.monotonic()
         warned: set = set()
         link_epoch = 0
+        acc_probe_at = (t0 + _ACC_PROBE_S) if pmd.MEAS_ACC in started else None
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
             _beat(_repo_root())
+            # In-session accelerometer probe: an ACC stream that started and then sent nothing
+            # is stepped down HERE, on the live link, rather than after a two-minute stall and
+            # a reconnect. 52 Hz -> 26 Hz -> off, one rung per probe; the rung persists.
+            if acc_probe_at is not None and time.monotonic() >= acc_probe_at:
+                acc_probe_at = None
+                if frames["acc"] == 0:
+                    try:
+                        await _pmd_command(client, responses, pmd.build_stop_command(pmd.MEAS_ACC),
+                                           "stop silent ACC", args.control_timeout)
+                    except Exception:
+                        pass
+                    if pmd.MEAS_ACC in started:
+                        started.remove(pmd.MEAS_ACC)
+                    if rung < len(ladder) - 1:
+                        rung += 1
+                        _STATS["acc_rung"] = rung
+                        _save_acc_rung(_repo_root(), rung)
+                    nxt = ladder[rung]
+                    if nxt is not None:
+                        args.acc_rate = int(nxt)
+                        acc_settings[pmd.SETTING_SAMPLE_RATE] = int(nxt)
+                        _log(f"PMD: accelerometer started but sent nothing in {_ACC_PROBE_S:.0f}s "
+                             f"-- retrying at {nxt}Hz on the same link (rung {rung}/{len(ladder) - 1})")
+                        resp = await _pmd_command(client, responses,
+                                                  pmd.build_start_command(pmd.MEAS_ACC, acc_settings),
+                                                  f"start ACC @{nxt}Hz", args.control_timeout)
+                        if resp is not None:
+                            started.append(pmd.MEAS_ACC)
+                            acc_probe_at = time.monotonic() + _ACC_PROBE_S
+                            sources = [x for x in sources if not x.startswith("ACC@")] + [f"ACC@{nxt}Hz"]
+                        else:
+                            _log("PMD: ACC restart refused; continuing without the accelerometer")
+                            sources = [x for x in sources if not x.startswith("ACC@")]
+                    else:
+                        _log("PMD: accelerometer sent nothing at any rate -- continuing with "
+                             "PPI only (rung persists; restores after "
+                             f"{_ACC_RESTORE_AFTER_S / 3600:.0f}h of clean streaming)")
+                        sources = [x for x in sources if not x.startswith("ACC@")]
+                    _post_link(args, "connected", sources)
             # Re-assert the link state periodically. The one-shot post at connect time is lost
             # when the API is mid-restart (2026-09-07 21:54: forwarder connected 24 s after a
             # deploy took the API down), and the UI then showed "no link" all night.

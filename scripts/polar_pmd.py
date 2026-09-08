@@ -168,6 +168,7 @@ ERROR_NAMES = {
 # test_acc_frame_type_0x02_without_compression_bit_is_not_delta.
 FRAME_TYPE_UNCOMPRESSED = (0x00, 0x01)
 FRAME_TYPE_COMPRESSED_BIT = 0x80
+MEAS_TYPE_MASK = 0x3F  # measurement-type id lives in the low six bits of data byte 0
 
 # Default ACC stream configuration: 52 Hz, 16-bit, +/-8 G.
 # Ordered RANGE -> SAMPLE_RATE -> RESOLUTION to match Polar's own verified byte sequence.
@@ -385,14 +386,16 @@ def frame_measurement_type(data: bytes | bytearray) -> int:
     """Measurement type of a data-characteristic frame (byte 0)."""
     if not data:
         raise PmdParseError("empty PMD data frame")
-    return data[0]
+    # Low six bits only: Polar's measurement-type ids are all under 0x40, and a firmware that
+    # sets flag bits in this byte must not turn every data frame into an unknown type.
+    return data[0] & MEAS_TYPE_MASK
 
 
 def _split_frame(data: bytes | bytearray, expect_type: int) -> tuple[int, int, bytes]:
     data = bytes(data)
     if len(data) < 10:
         raise PmdParseError(f"PMD data frame too short ({len(data)} bytes)")
-    meas_type = data[0]
+    meas_type = data[0] & MEAS_TYPE_MASK
     if meas_type != expect_type:
         raise PmdParseError(
             f"expected measurement type 0x{expect_type:02X}, got 0x{meas_type:02X}")

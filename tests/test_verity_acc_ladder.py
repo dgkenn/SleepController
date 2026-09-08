@@ -8,6 +8,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import polar_pmd as pmd  # noqa: E402
 import verity_forwarder as vf  # noqa: E402
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_rung(monkeypatch):
+    """Module-global forwarder state must not leak into other test files."""
+    monkeypatch.setitem(vf._STATS, "acc_rung", 0)
+    monkeypatch.setitem(vf._STATS, "pmd_stall", None)
+    yield
+    vf._STATS.pop("pmd_stall", None)
+    vf._STATS.pop("pmd_streamed_s", None)
+
+
 from test_verity_pmd_stale_stream import FakeClient, _starts  # noqa: E402
 
 

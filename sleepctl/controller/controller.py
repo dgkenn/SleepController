@@ -1005,8 +1005,7 @@ class SleepController:
         # While PRE-EMPTING, settle deeper than the ordinary post-awakening nudge -- see
         # AppConfig.preempt_settle_nudge_f. The comfort clamp downstream still bounds it to the
         # measured band, so "deeper" can never mean "colder than this user tolerates".
-        settle_nudge = (float(getattr(cfg.tunables, "preempt_settle_nudge_f", -2.5))
-                        if getattr(self, "_preempt_cool", False) else None)
+        settle_nudge = self._preempt_nudge_f(cfg) if getattr(self, "_preempt_cool", False) else None
         target_f, level = self.thermal.resolve(
             intent, objective, cfg.profile.hot_sleeper, self._last_target_f,
             bed_temp_f, ambient_temp_f, now=now, settle_nudge_f=settle_nudge,
@@ -1542,7 +1541,12 @@ class SleepController:
     DEEP_BIAS_MIN_BELOW_NEUTRAL_F = 0.5
     #: A learned deep bias that is not credibly below neutral is replaced by this offset (the
     #: config default relationship, 70 -> 66 F); the comfort clamp still bounds the result.
-    DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F = 3.0
+    DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F = 1.0
+    #: No deepen may cool more than this below neutral, learned or not. This user's own nights
+    #: (2026-08-27..09-07, 4,800 maintenance ticks): awakenings per tick ran 9.6% at 65 F,
+    #: 6.5% at 66, 3.6% at 67, 3.0% at 68 and 1.3% at 69 -- the deepen dose is tested at one
+    #: degree, and two is the ceiling the n-of-1 learner may ever earn.
+    DEEP_BIAS_MAX_BELOW_NEUTRAL_F = 2.0
 
     def set_setpoints(self, profile, keep_measured_neutral: bool = True) -> None:
         """Swap the active SetpointProfile for the night (e.g. an experiment arm applied on top
@@ -1570,6 +1574,12 @@ class SleepController:
                     "learned_neutral_f": float(profile.neutral_f), "kept_neutral_f": float(measured)}
             profile = _replace(profile, neutral_f=float(measured))
         cap = float(profile.neutral_f) - self.DEEP_BIAS_MIN_BELOW_NEUTRAL_F
+        floor_f = float(profile.neutral_f) - self.DEEP_BIAS_MAX_BELOW_NEUTRAL_F
+        if profile.deep_bias_f < floor_f:
+            ov = dict(getattr(self, "last_setpoint_override", None) or {})
+            ov.update({"learned_deep_bias_f": float(profile.deep_bias_f), "kept_deep_bias_f": floor_f})
+            self.last_setpoint_override = ov
+            profile = _replace(profile, deep_bias_f=floor_f)
         if profile.deep_bias_f > cap:
             # 2026-09-08: the learned deep bias read 72.5 F against a 69.0 F neutral. A value
             # that close to (or above) neutral is not a measurement of anything; fall back to
@@ -1580,6 +1590,21 @@ class SleepController:
             self.last_setpoint_override = ov
             profile = _replace(profile, deep_bias_f=fixed)
         self.thermal.profile = profile
+
+    #: A pre-emptive settle always cools at least this much, so it still acts...
+    PREEMPT_NUDGE_MIN_F = -0.5
+
+    def _preempt_nudge_f(self, cfg) -> float:
+        """The pre-emptive settle's cooling dose: the LEARNED settle nudge (tuned on this user's
+        own re-settle outcomes), bounded between the configured pre-empt dose (the coldest it
+        may go) and half a degree (so it still acts). The fixed -2 F used to override the
+        learner outright; on this user's nights the water it landed on (67 F) carried three
+        times the per-tick awakening rate of 69 F."""
+        coldest = float(getattr(cfg.tunables, "preempt_settle_nudge_f", -2.0))
+        learned = getattr(self.thermal, "settle_nudge_f", None)
+        if learned is None:
+            return coldest
+        return max(coldest, min(self.PREEMPT_NUDGE_MIN_F, float(learned)))
 
     def thermal_profile_summary(self) -> dict:
         p = getattr(self.thermal, "profile", None)
