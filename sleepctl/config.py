@@ -261,6 +261,11 @@ class Tunables:
     # The awake-in-bed HR reference when the stager never labels AWAKE: the median heart rate
     # over the first N minutes after bed entry (see SleepOnsetDetector._awake_baseline).
     onset_entry_ref_min: float = 5.0
+    # Bounded fallback: this many continuous minutes scored asleep (no AWAKE, lapses under the
+    # break tolerance) at a heart rate no higher than the awake-in-bed reference confirms onset
+    # on its own. 0 disables.
+    onset_stage_fallback_min: float = 30.0
+    onset_stage_fallback_hr_margin_bpm: float = 2.0  # the run's median HR must sit this far under the awake reference
     # ...and a run that survives purely on that tolerance must not confirm. At least this many
     # samples within the run have to carry a TRANSITION signal (see TRANSITION_SIGNALS), so
     # confirmation still rests on evidence of an actual descent into sleep, sampled across the

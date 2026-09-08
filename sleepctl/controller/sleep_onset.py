@@ -83,6 +83,11 @@ class SleepOnsetDetector:
         self.break_tolerance_min = float(getattr(t, "onset_break_tolerance_min", 3.0))
         self.min_transition_hits = int(getattr(t, "onset_min_transition_hits", 3))
         self.entry_ref_min = float(getattr(t, "onset_entry_ref_min", 5.0))
+        self.stage_fallback_min = float(getattr(t, "onset_stage_fallback_min", 30.0))
+        self.stage_fallback_hr_margin = float(getattr(t, "onset_stage_fallback_hr_margin_bpm", 2.0))
+        self._asleep_since: Optional[datetime] = None   # start of the continuous asleep-scored run
+        self._asleep_lapse: Optional[datetime] = None
+        self._asleep_hrs: List[float] = []
         self._entry_hrs: List[float] = []      # HR over the first minutes after bed entry
         # internal state
         self._run_start: Optional[datetime] = None
@@ -96,6 +101,9 @@ class SleepOnsetDetector:
         return self._confirmed.timestamp if self._confirmed else None
 
     def reset(self) -> None:
+        self._asleep_since = None
+        self._asleep_lapse = None
+        self._asleep_hrs = []
         self._run_start = None
         self._run_len = 0
         self._lapse_start = None
@@ -244,6 +252,46 @@ class SleepOnsetDetector:
         base = self._awake_baseline(recent or [])
         sig = self._signals(frame, base, recent or [])
         self._last_sig, self._last_base_hr = list(sig), base.get("hr")
+
+        # Stage-persistence FALLBACK, bounded and physiological: half an hour of uninterrupted
+        # asleep scoring at a heart rate no higher than the bed-entry level is sleep, whatever
+        # the per-tick transition signals are doing. 2026-09-07: the stager scored LIGHT from
+        # 21:42 and the heart rate sat below its entry level, yet the signal-based run did not
+        # persist until 23:44 -- two hours of INDUCTION on a sleeping user. This path confirms
+        # from the start of the run, so latency is still honest.
+        asleep_now = ("asleep_stage" in sig)
+        if asleep_now:
+            if self._asleep_since is None:
+                self._asleep_since = now
+                self._asleep_hrs = []
+            self._asleep_lapse = None
+            if frame.heart_rate is not None:
+                self._asleep_hrs.append(float(frame.heart_rate))
+        elif frame.stage is SleepStage.AWAKE:
+            self._asleep_since = None
+            self._asleep_lapse = None
+        elif self._asleep_since is not None:
+            if self._asleep_lapse is None:
+                self._asleep_lapse = now
+            elif (now - self._asleep_lapse).total_seconds() / 60.0 > self.break_tolerance_min:
+                self._asleep_since = None
+                self._asleep_lapse = None
+        if (self._asleep_since is not None and self.stage_fallback_min > 0
+                and (now - self._asleep_since).total_seconds() / 60.0 >= self.stage_fallback_min):
+            # The heart rate over the whole run must sit BELOW the awake reference. A flat rate
+            # at the reference is the 2026-08-06 awake-in-bed hour, and stays rejected.
+            hrs = getattr(self, "_asleep_hrs", [])
+            hr_ok = (len(hrs) >= 10 and base.get("hr") is not None
+                     and statistics.median(hrs) <= base["hr"] - self.stage_fallback_hr_margin)
+            if hr_ok:
+                latency = None
+                if bed_entry_time is not None:
+                    latency = max(0.0, (self._asleep_since - bed_entry_time).total_seconds() / 60.0)
+                self._confirmed = SleepOnsetEvent(
+                    timestamp=self._asleep_since, confidence=0.4,
+                    signals=["asleep_stage_sustained"] + [x for x in sig if x != "asleep_stage"],
+                    latency_min=latency)
+                return self._confirmed
         qualifies = (
             frame.stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
             and len(sig) >= self.min_signals
@@ -256,7 +304,10 @@ class SleepOnsetDetector:
 
         if qualifies:
             if self._run_start is None:
-                self._run_start = frame.timestamp or now
+                # The controller clock, not the frame's: the Pod frame timestamp lags ``now`` by
+                # 0-60 s (it refreshes once a minute while the daemon ticks twice), which made
+                # every lapse look up to a minute longer than it was.
+                self._run_start = now
             self._run_len += 1
             self._lapse_start = None          # the run is qualifying again; the lapse is over
             if any(x in self.TRANSITION_SIGNALS for x in sig):
@@ -286,7 +337,7 @@ class SleepOnsetDetector:
             # which the per-sample-noisy HR signals do constantly. Hold the run open, but only for
             # as long as the lapse stays short; a sustained one means the descent really did break.
             if self._lapse_start is None:
-                self._lapse_start = frame.timestamp or now
+                self._lapse_start = now
             if (now - self._lapse_start).total_seconds() / 60.0 > self.break_tolerance_min:
                 self._break_run()
         return None

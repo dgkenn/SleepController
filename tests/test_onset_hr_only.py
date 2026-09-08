@@ -75,3 +75,46 @@ def test_mark_confirmed_reports_like_a_native_confirmation():
     assert det.onset_time == T0 + timedelta(minutes=20)
     f = _hr_only(T0 + timedelta(hours=2), SleepStage.LIGHT, 66)
     assert det.evaluate(f, [], f.timestamp, bed_entry_time=T0).signals == ["restored"]
+
+
+def test_half_an_hour_scored_asleep_confirms_onset_even_without_transition_signals():
+    """2026-09-07: LIGHT from 21:42 at a heart rate under the entry level; the signal run
+    still had not persisted at 23:44. The fallback bounds that at 30 minutes."""
+    det = SleepOnsetDetector(AppConfig.default())
+    frames = []
+    for i in range(10):
+        frames.append(_hr_only(T0 + timedelta(seconds=30 * i), SleepStage.UNKNOWN, 72))
+    # 2 bpm under the entry level, dead flat: too small for hr_drop (3 bpm), no trend -- the
+    # signal path never qualifies, but 30 min of LIGHT at a lower rate is sleep.
+    for i in range(80):
+        frames.append(_hr_only(T0 + timedelta(minutes=5) + timedelta(seconds=30 * i), SleepStage.LIGHT, 70))
+    first = _run(det, frames)
+    assert first is not None
+    confirmed_at, ev = first
+    assert "asleep_stage_sustained" in ev.signals
+    assert abs((ev.timestamp - (T0 + timedelta(minutes=5))).total_seconds()) < 60
+    assert confirmed_at <= T0 + timedelta(minutes=36)
+
+
+def test_the_fallback_does_not_fire_while_the_heart_rate_sits_above_the_entry_level():
+    det = SleepOnsetDetector(AppConfig.default())
+    frames = []
+    for i in range(10):
+        frames.append(_hr_only(T0 + timedelta(seconds=30 * i), SleepStage.UNKNOWN, 66))
+    for i in range(80):   # scored LIGHT but 8 bpm ABOVE the bed-entry rate: not sleep
+        frames.append(_hr_only(T0 + timedelta(minutes=5) + timedelta(seconds=30 * i), SleepStage.LIGHT, 74))
+    assert _run(det, frames) is None
+
+
+def test_an_awake_label_restarts_the_fallback_clock():
+    det = SleepOnsetDetector(AppConfig.default())
+    frames = []
+    for i in range(10):
+        frames.append(_hr_only(T0 + timedelta(seconds=30 * i), SleepStage.UNKNOWN, 72))
+    t = T0 + timedelta(minutes=5)
+    for i in range(50):
+        frames.append(_hr_only(t + timedelta(seconds=30 * i), SleepStage.LIGHT, 70))
+    frames.append(_hr_only(t + timedelta(minutes=25), SleepStage.AWAKE, 70))
+    for i in range(20):
+        frames.append(_hr_only(t + timedelta(minutes=25.5) + timedelta(seconds=30 * i), SleepStage.LIGHT, 70))
+    assert _run(det, frames) is None   # 25 min, then 10 min: never 30 continuous

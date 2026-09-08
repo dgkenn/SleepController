@@ -148,3 +148,12 @@ def test_a_fresh_constraint_does_not_apply_the_reentry_rule():
     v = _hc().apply(SleepStage.DEEP, 0.6, T0 + timedelta(hours=2), AppConfig(),
                     sleep_onset_time=T0)
     assert v.stage is SleepStage.DEEP
+
+
+def test_a_pre_onset_relabel_keeps_the_sleep_evidence_above_the_onset_floor():
+    """2026-09-07: DEEP at 0.45 before onset became LIGHT at 0.27, under the detector's 0.4."""
+    v = _hc().apply(SleepStage.DEEP, 0.45, T0, AppConfig(), sleep_onset_time=None)
+    assert v.stage is SleepStage.LIGHT and v.reason == "before_sleep_onset"
+    assert v.confidence >= 0.4
+    v = _hc().apply(SleepStage.DEEP, 0.3, T0, AppConfig(), sleep_onset_time=None)
+    assert v.confidence < 0.4        # a label that was already under the floor stays under it

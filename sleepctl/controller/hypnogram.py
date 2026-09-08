@@ -152,6 +152,15 @@ class HypnogramConstraint:
             return HypnogramVerdict(stage, confidence)
         self.reclassified[reason] = self.reclassified.get(reason, 0) + 1
         conf = None if confidence is None else round(float(confidence) * RECLASSIFIED_CONFIDENCE, 4)
+        if conf is not None and reason in ("before_sleep_onset", "rem_too_early_after_onset",
+                                           "deep_too_early_after_onset"):
+            # These relabel the STAGE, not the fact of sleep: DEEP scored before onset is still
+            # sleep evidence. Scaling its confidence under the onset detector's floor made the
+            # detector discard exactly the ticks that should have confirmed onset (2026-09-07:
+            # 63 induction ticks at 0.27 = 0.45 x 0.6, none of them counted).
+            floor = float(getattr(t, "onset_min_stage_conf", 0.4))
+            if float(confidence) >= floor:
+                conf = max(conf, floor)
         return HypnogramVerdict(SleepStage.LIGHT, conf, reason)
 
     def summary(self) -> dict:
