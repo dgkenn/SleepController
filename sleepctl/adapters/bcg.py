@@ -124,6 +124,8 @@ class BridgeWearableSource(RealtimeWearableSource):
         return WearableSample(timestamp=datetime.now(), heart_rate=s.get("hr"),
                               hrv=s.get("hrv"), movement=s.get("movement"),
                               respiratory_rate=s.get("respiratory_rate"),
+                              respiratory_rate_conf=s.get("respiratory_rate_conf"),
+                              respiratory_rate_source=s.get("respiratory_rate_source"),
                               age_seconds=min(ages))
 
     def read_history(self, minutes: float = 45.0) -> dict:

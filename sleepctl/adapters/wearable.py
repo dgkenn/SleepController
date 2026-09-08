@@ -35,6 +35,8 @@ class WearableSample:
     hrv: Optional[float] = None
     movement: Optional[float] = None      # 0..1 restlessness/motion index (sub-second source)
     respiratory_rate: Optional[float] = None   # breaths/min (RSA-derived; None when unmeasurable)
+    respiratory_rate_conf: Optional[float] = None   # 0..1 confidence of the fused breathing rate
+    respiratory_rate_source: Optional[str] = None   # "rsa" | "acc" | "rsa+acc" | "...(disagree)"
     age_seconds: Optional[float] = None    # freshness of this sample
 
 
@@ -61,6 +63,9 @@ class SimulatedWearableSource(RealtimeWearableSource):
         return self._fixed
 
 
+RESP_MIN_CONF_FOR_FRAME = 0.5
+
+
 def fuse_sample(frame: SensorFrame, sample, max_age_s: float = 30.0) -> bool:
     """Overlay a fresh wearable ``sample`` onto ``frame`` in place (HR / movement / HRV +
     freshness). Returns True if the overlay happened. Shared by ``FusedPodSensorSource`` and the
@@ -79,7 +84,14 @@ def fuse_sample(frame: SensorFrame, sample, max_age_s: float = 30.0) -> bool:
     # Only overlay respiration when the wearable actually measured it -- a None must never
     # clobber a real Pod reading on an account where that channel does work.
     if getattr(sample, "respiratory_rate", None) is not None:
-        frame.respiratory_rate = sample.respiratory_rate
+        conf = getattr(sample, "respiratory_rate_conf", None)
+        # A contested breathing rate (the two estimators disagree) is withheld from the frame:
+        # the onset detector BREAKS its run on breathing irregularity and the arousal grader
+        # scores it, so a wrong rate does harm where a missing one only loses a signal.
+        if conf is None or conf >= RESP_MIN_CONF_FOR_FRAME:
+            frame.respiratory_rate = sample.respiratory_rate
+        frame.respiratory_rate_conf = conf
+        frame.respiratory_rate_source = getattr(sample, "respiratory_rate_source", None)
     prior = frame.data_age_seconds
     frame.data_age_seconds = age if prior is None else min(prior, age)
     return True

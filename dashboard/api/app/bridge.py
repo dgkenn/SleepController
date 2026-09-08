@@ -533,13 +533,13 @@ def write_cardiac_sample(conn: sqlite3.Connection, sample: dict) -> None:
     HR/HRV and the phone's movement can be merged per-field without either clobbering the other
     (see ``read_fused_sensor``)."""
     conn.execute(
-        """INSERT INTO live_cardiac (id, updated, hr, hrv, source, respiratory_rate)
-        VALUES (1,?,?,?,?,?)
+        """INSERT INTO live_cardiac (id, updated, hr, hrv, source, respiratory_rate, respiratory_conc)
+        VALUES (1,?,?,?,?,?,?)
         ON CONFLICT(id) DO UPDATE SET
          updated=excluded.updated, hr=excluded.hr, hrv=excluded.hrv, source=excluded.source,
-         respiratory_rate=excluded.respiratory_rate""",
+         respiratory_rate=excluded.respiratory_rate, respiratory_conc=excluded.respiratory_conc""",
         (_now(), sample.get("hr"), sample.get("hrv"), sample.get("source", "verity"),
-         sample.get("respiratory_rate")),
+         sample.get("respiratory_rate"), sample.get("respiratory_conc")),
     )
     conn.commit()
 
@@ -667,26 +667,76 @@ ACC_RESP_MIN_CONC = 0.35
 ACC_RESP_MAX_AGE_S = 120.0
 
 
+ACC_RESP_MIN_AGREEING = 2       # confident batch estimates that must agree inside the window
+ACC_RESP_AGREE_BRPM = 3.0
+
+
+def read_acc_respiration(conn: sqlite3.Connection, min_conc: float = ACC_RESP_MIN_CONC,
+                         max_age_s: float = ACC_RESP_MAX_AGE_S) -> dict | None:
+    """Accelerometer breathing rate over the last ``max_age_s``: the median of the confident
+    batch estimates, provided at least two of them agree within ``ACC_RESP_AGREE_BRPM``. One
+    confident-looking batch is not a rate; a run of them that agree is."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=max_age_s)).isoformat()
+        rows = conn.execute(
+            "SELECT resp_brpm, resp_conc FROM actigraphy WHERE resp_brpm IS NOT NULL "
+            "AND ts >= ? ORDER BY ts DESC LIMIT 90", (cutoff,)).fetchall()
+    except Exception:
+        return None
+    vals, concs = [], []
+    for r in rows:
+        try:
+            conc = float(r["resp_conc"]) if r["resp_conc"] is not None else 0.0
+            v = float(r["resp_brpm"])
+        except Exception:
+            continue
+        if conc >= min_conc and 4.0 <= v <= 40.0:
+            vals.append(v)
+            concs.append(conc)
+    if len(vals) < ACC_RESP_MIN_AGREEING:
+        return None
+    vals_s = sorted(vals)
+    med = vals_s[len(vals_s) // 2]
+    agreeing = sum(1 for v in vals if abs(v - med) <= ACC_RESP_AGREE_BRPM)
+    if agreeing < ACC_RESP_MIN_AGREEING:
+        return None
+    concs_s = sorted(concs)
+    return {"rate": med, "conc": concs_s[len(concs_s) // 2], "n": len(vals),
+            "agreeing": agreeing}
+
+
 def read_acc_respiration_sample(conn: sqlite3.Connection, min_conc: float = ACC_RESP_MIN_CONC,
                                 max_age_s: float = ACC_RESP_MAX_AGE_S) -> float | None:
-    """Latest accelerometer-derived breathing rate that is confident and fresh, else None."""
-    try:
-        row = conn.execute(
-            "SELECT ts, resp_brpm, resp_conc FROM actigraphy WHERE resp_brpm IS NOT NULL "
-            "ORDER BY ts DESC LIMIT 1").fetchone()
-    except Exception:
-        return None
-    if row is None:
-        return None
-    try:
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["ts"])).total_seconds()
-        conc = float(row["resp_conc"]) if row["resp_conc"] is not None else 0.0
-        val = float(row["resp_brpm"])
-    except Exception:
-        return None
-    if age > max_age_s or conc < min_conc or not (4.0 <= val <= 40.0):
-        return None
-    return val
+    """The accelerometer breathing rate alone (see ``read_acc_respiration``), or None."""
+    d = read_acc_respiration(conn, min_conc=min_conc, max_age_s=max_age_s)
+    return d["rate"] if d else None
+
+
+RESP_AGREE_BRPM = 2.5   # beat-interval and accelerometer rates this close are one measurement
+
+
+def fuse_respiration(rsa_rate, rsa_conc, acc: dict | None) -> tuple:
+    """``(rate, confidence, source)`` from the two independent breathing estimates.
+
+    Agreement between physically different sensors is the strongest evidence available and
+    earns high confidence; disagreement keeps the more concentrated peak at LOW confidence so
+    consumers that break on breathing irregularity do not act on a contested number; a single
+    estimate carries its own concentration as confidence."""
+    acc_rate = acc["rate"] if acc else None
+    acc_conc = float(acc["conc"]) if acc else 0.0
+    rsa_conc = float(rsa_conc) if rsa_conc is not None else 0.55
+    if rsa_rate is not None and acc_rate is not None:
+        if abs(float(rsa_rate) - float(acc_rate)) <= RESP_AGREE_BRPM:
+            return ((float(rsa_rate) + float(acc_rate)) / 2.0,
+                    min(0.95, 0.75 + 0.2 * max(rsa_conc, acc_conc)), "rsa+acc")
+        if acc_conc > rsa_conc:
+            return float(acc_rate), 0.4, "acc(disagree)"
+        return float(rsa_rate), 0.4, "rsa(disagree)"
+    if rsa_rate is not None:
+        return float(rsa_rate), min(0.85, rsa_conc), "rsa"
+    if acc_rate is not None:
+        return float(acc_rate), min(0.8, acc_conc), "acc"
+    return None, 0.0, None
 
 
 def read_actigraphy_sample(conn: sqlite3.Connection) -> dict | None:
@@ -808,16 +858,14 @@ def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
         return None
     # RSA-derived respiration rides the cardiac channel's freshness: it is computed from the
     # same RR window as HRV, so if the cardiac sample is stale the respiration is too.
-    resp, _resp_age = _fresh(card, "respiratory_rate", cardiac_max_age_s)
-    if resp is None:
-        # The accelerometer's breathing rate (chest/arm motion) stands in for the beat-interval
-        # one when that is absent -- the whole night, on a heart-rate-only link. Gated on its
-        # spectral concentration so a flat spectrum yields nothing rather than a number.
-        acc_resp = read_acc_respiration_sample(conn)
-        if acc_resp is not None:
-            resp = acc_resp
+    rsa, _resp_age = _fresh(card, "respiratory_rate", cardiac_max_age_s)
+    rsa_conc = card.get("respiratory_conc") if (card and rsa is not None) else None
+    # Two independent breathing estimates -- RSA from the beat intervals, and the arm's own
+    # motion -- fused with a confidence that the consumers gate on.
+    resp, resp_conf, resp_source = fuse_respiration(rsa, rsa_conc, read_acc_respiration(conn))
     return {
         "hr": hr, "hrv": hrv, "movement": mv, "respiratory_rate": resp,
+        "respiratory_rate_conf": resp_conf, "respiratory_rate_source": resp_source,
         "hr_age_seconds": hr_age, "hrv_age_seconds": hrv_age, "movement_age_seconds": mv_age,
         "hr_source": hr_source, "movement_source": mv_source,
     }

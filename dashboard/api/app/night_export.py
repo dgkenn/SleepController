@@ -438,6 +438,31 @@ def build_night_export(repo, night_date: str) -> dict:
                 "reason": (r["reason"] or "")[:90],
             })
         out["induction_trace"] = induction
+        # Breathing rate: how often it was available, from which sensor, at what confidence,
+        # and how the two estimators agreed when both spoke. The number to optimise.
+        resp_n = 0
+        by_src: dict = {}
+        confs: list = []
+        for r in drows:
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            src = pl.get("respiratory_rate_source")
+            if pl.get("respiratory_rate") is not None:
+                resp_n += 1
+            if src:
+                by_src[src] = by_src.get(src, 0) + 1
+            if pl.get("respiratory_rate_conf") is not None:
+                confs.append(float(pl["respiratory_rate_conf"]))
+        confs.sort()
+        out["respiration_summary"] = {
+            "ticks": len(drows), "ticks_with_rate": resp_n,
+            "by_source": by_src,
+            "median_confidence": (confs[len(confs) // 2] if confs else None),
+            "agreement_fraction": (round(by_src.get("rsa+acc", 0) / max(1, sum(by_src.values())), 3)
+                                   if by_src else None),
+        }
         # Why each maintenance tick did what it did, as a pattern histogram. The events above
         # say WHAT the pre-empt wanted; this says which layer (clamp, cap, guardrail, data
         # quality, stabilizer) had the last word -- the question 2026-09-07 could not answer.

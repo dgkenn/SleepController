@@ -23,7 +23,8 @@ def conn(tmp_path):
 def test_a_confident_fresh_acc_breathing_rate_is_used(conn):
     bridge.append_actigraphy(conn, {"pim": 0.4, "zcm": 0, "mad": 0.0, "std": 0.0, "pmax": 0.0,
                                     "n": 104, "fs": 52, "resp_brpm": 13.6, "resp_conc": 0.6})
-    assert bridge.read_acc_respiration_sample(conn) == 13.6
+    bridge.append_actigraphy(conn, {"pim": 0.4, "n": 104, "fs": 52, "resp_brpm": 13.8, "resp_conc": 0.6})
+    assert bridge.read_acc_respiration_sample(conn) in (13.6, 13.8)
 
 
 def test_a_flat_spectrum_or_a_nonsense_rate_yields_nothing(conn):
@@ -36,8 +37,10 @@ def test_a_flat_spectrum_or_a_nonsense_rate_yields_nothing(conn):
 def test_the_fused_sample_carries_the_acc_breathing_rate_when_the_cardiac_one_is_absent(conn):
     bridge.write_cardiac_sample(conn, {"hr": 62.0, "hrv": None, "source": "verity", "respiratory_rate": None})
     bridge.append_actigraphy(conn, {"pim": 0.4, "n": 104, "fs": 52, "resp_brpm": 12.9, "resp_conc": 0.7})
+    bridge.append_actigraphy(conn, {"pim": 0.4, "n": 104, "fs": 52, "resp_brpm": 13.1, "resp_conc": 0.7})
     s = bridge.read_fused_sensor(conn)
-    assert s is not None and s["respiratory_rate"] == 12.9
+    assert s is not None and 12.9 <= s["respiratory_rate"] <= 13.1
+    assert s["respiratory_rate_source"] == "acc" and s["respiratory_rate_conf"] >= 0.6
 
 
 def test_a_marker_gesture_records_the_stage_the_stager_held_at_that_instant(conn):

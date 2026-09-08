@@ -183,6 +183,9 @@ CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);
 # Idempotent column adds for tables that predate a column (CREATE TABLE IF NOT EXISTS won't add
 # columns to an existing table). Each entry: (table, column, type).
 _MIGRATIONS = [
+    # Spectral concentration of the RSA breathing estimate, so the fused breathing rate can
+    # weigh the beat-interval and accelerometer estimates against each other.
+    ("live_cardiac", "respiratory_conc", "REAL"),
     ("wake_log", "onset_warm_f", "REAL"),
     ("wake_log", "night_type", "TEXT"),
     ("wake_log", "onset_cold_settle_f", "REAL"),

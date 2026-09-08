@@ -1527,6 +1527,20 @@ def _windowed_respiration(conn, source: str = "verity",
     return est.breaths_per_min if est is not None else None
 
 
+def _windowed_respiration_estimate(conn, source: str = "verity", minutes: float = 2.0):
+    """The full RSA estimate (rate + spectral concentration) over the last ``minutes``, or None.
+    Same window and gates as ``_windowed_respiration``; the concentration is what lets the
+    fused breathing rate weigh this estimate against the accelerometer's."""
+    try:
+        from sleepctl.controller import respiration
+        pairs = bridge.recent_rr_intervals(conn, minutes=minutes)
+        if not pairs:
+            return None
+        return respiration.estimate([rr for _ts, rr in pairs])
+    except Exception:
+        return None
+
+
 def _windowed_rmssd(conn, source: str = "verity",
                     minutes: float = HRV_WINDOW_MINUTES) -> "float | None":
     """RMSSD over the last ``minutes`` of PERSISTED RR intervals, not just the current POST batch.
@@ -2206,10 +2220,13 @@ def ingest_hr(repo, payload: dict) -> dict:
     # None is a normal outcome (movement, weak RSA, dropout) and must stay None rather than
     # become a guess: a wrong rate would make those two signals fire on noise and manufacture
     # false sleep onsets, which is worse than having no respiration at all.
-    resp = _windowed_respiration(repo.conn, source)
+    resp_est = _windowed_respiration_estimate(repo.conn, source)
+    resp = resp_est.breaths_per_min if resp_est is not None else None
 
     bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source,
-                                            "respiratory_rate": resp})
+                                            "respiratory_rate": resp,
+                                            "respiratory_conc": (resp_est.concentration
+                                                                 if resp_est is not None else None)})
     # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
     # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
     # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.

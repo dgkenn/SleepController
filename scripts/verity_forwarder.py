@@ -183,6 +183,26 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
 
 
 _LINK_REPOST_S = 120.0  # re-assert "connected" this often while streaming
+#: A batch PIM at/above this inside the breathing window is gross movement: no rate that window.
+_RESP_MOVEMENT_GATE_PIM = 2.5
+
+
+def _best_respiration(mag_buf, axis_bufs, batch_pims, sample_hz: float):
+    """Breathing rate from whichever of |a|, x, y, z carries the most concentrated respiratory
+    peak, or (None, None) when the window holds gross movement or no axis passes the gates."""
+    if any(p >= _RESP_MOVEMENT_GATE_PIM for p in batch_pims):
+        return None, None
+    best, best_axis = None, None
+    for name, buf in (("mag", mag_buf), ("x", axis_bufs[0]), ("y", axis_bufs[1]), ("z", axis_bufs[2])):
+        if len(buf) < 16:
+            continue
+        try:
+            est = respiration.estimate_uniform(list(buf), sample_hz)
+        except Exception:
+            est = None
+        if est is not None and (best is None or est.concentration > best.concentration):
+            best, best_axis = est, name
+    return best, best_axis
 
 
 def _post_link(args, state: str, streams=None) -> None:
@@ -784,6 +804,13 @@ async def _pmd_session(client, args) -> bool:
     # is a far better signal than one confident one.
     resp_win = int(args.acc_rate * respiration.DEFAULT_WINDOW_S)
     acc_resp_buf: "deque[float]" = deque(maxlen=resp_win)
+    # Per-axis buffers for breathing. On an arm, breathing is a slow TILT that shows on one axis
+    # and largely cancels in the magnitude; estimating on x, y, z and |a| and keeping the most
+    # concentrated peak roughly doubles the fraction of windows with a usable rate.
+    acc_axis_buf = [deque(maxlen=resp_win) for _ in range(3)]
+    # Per-batch PIM over the breathing window: gross movement corrupts the spectrum, so a window
+    # containing a burst yields no rate rather than a wrong one.
+    acc_batch_pim: "deque[float]" = deque(maxlen=max(1, int(respiration.DEFAULT_WINDOW_S / max(args.batch_seconds, 0.5))))
     # Short, separate buffer for the deliberate MARKER GESTURE. It must not share the respiration
     # window: a 3 s shake inside a multi-minute buffer is diluted below every threshold that
     # would detect it.
@@ -805,6 +832,10 @@ async def _pmd_session(client, args) -> bool:
                 _mags = pmd.acc_magnitudes_g(samples)
                 acc_mags.extend(_mags)
                 acc_resp_buf.extend(_mags)
+                for _x, _y, _z in samples:
+                    acc_axis_buf[0].append(_x / 1000.0)
+                    acc_axis_buf[1].append(_y / 1000.0)
+                    acc_axis_buf[2].append(_z / 1000.0)
                 marker_buf.extend(_mags)
                 if len(acc_mags) > acc_cap:
                     del acc_mags[:len(acc_mags) - acc_cap]
@@ -1062,13 +1093,18 @@ async def _pmd_session(client, args) -> bool:
                             counts["gait_conc"] = gait.get("concentration")
                     except Exception:
                         pass
+                try:
+                    acc_batch_pim.append(float(counts.get("pim") or 0.0))
+                except Exception:
+                    pass
                 if len(acc_resp_buf) >= resp_win // 2:
                     try:
-                        est = respiration.estimate_uniform(list(acc_resp_buf),
-                                                           float(args.acc_rate))
+                        est, axis = _best_respiration(acc_resp_buf, acc_axis_buf, acc_batch_pim,
+                                                      float(args.acc_rate))
                         if est is not None:
                             counts["resp_brpm"] = round(est.breaths_per_min, 2)
                             counts["resp_conc"] = round(est.concentration, 3)
+                            counts["resp_axis"] = axis
                     except Exception:
                         pass    # telemetry extra must never break the forwarder
                 payload["acc"] = counts
