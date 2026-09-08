@@ -1204,3 +1204,105 @@ def test_the_sdk_mode_hint_is_not_shown_for_a_stale_stream_refusal(monkeypatch):
     joined = " ".join(logs).lower()
     assert "already-running" in joined            # the real cause IS named
     assert "sdk mode" not in joined               # the misleading remedy is not
+
+
+# ------------------------------------------------- HR = 0 is "no contact", not a reading
+def _run_hr_session(client, args, feed_frames, timeout=10):
+    """Run the generic-HR path against the fake client; return the DATA posts and the API replies
+    the session saw (so a test can assert what the forwarder did with a rejection)."""
+    import asyncio
+    import importlib
+
+    fwd = importlib.import_module("verity_forwarder")
+    posted: list[dict] = []
+    original_post = fwd._post
+
+    def _fake_post(url, payload, t=5.0):
+        if "link" in payload:
+            return {"ok": True}
+        posted.append(payload)
+        return {"ok": False, "error": "no usable hr/rr in batch"} if not payload.get("hr") else {"ok": True}
+
+    fwd._post = _fake_post
+
+    async def _drive():
+        for _ in range(400):
+            if HR_UUID in client.notify:
+                break
+            await asyncio.sleep(0.005)
+        for frame in feed_frames:
+            if HR_UUID not in client.notify:
+                break                # the session already ended on its own -- which is the point
+            client.feed_hr(frame)
+            await asyncio.sleep(0.02)
+        # Do NOT set is_connected False here: the test is whether the session ends ON ITS OWN.
+        await asyncio.sleep(0.3)
+        client.is_connected = False
+
+    async def _go():
+        driver = asyncio.ensure_future(_drive())
+        await fwd._hr_session(client, args)
+        ended_at = asyncio.get_event_loop().time()
+        await driver
+        return ended_at
+
+    try:
+        asyncio.run(asyncio.wait_for(_go(), timeout=timeout))
+    finally:
+        fwd._post = original_post
+    return posted
+
+
+def _hr_frame(bpm: int) -> bytearray:
+    return bytearray([0x00, bpm & 0xFF])     # flags: 8-bit HR, no RR
+
+
+def test_zero_heart_rate_does_not_keep_a_silent_session_alive():
+    """2026-09-07: connected at 05:29 on the generic HR path, and the band -- off the wrist --
+    notified HR = 0 for sixteen hours. 0 is not None, so every notification refreshed the stall
+    guard; the session never ended, the API rejected every batch, nothing was logged."""
+    import importlib
+    fwd = importlib.import_module("verity_forwarder")
+    client = _FakeBleClient()
+    args = _pmd_args(stall_seconds=0.08, hr_max_age=5.0)
+    logs: list[str] = []
+    original_log = fwd._log
+    fwd._log = lambda m: logs.append(m)
+    try:
+        posted = _run_hr_session(client, args, [_hr_frame(0)] * 8)
+    finally:
+        fwd._log = original_log
+    # Zero-HR frames produce no data batches at all...
+    assert not any(p.get("hr") for p in posted)
+    # ...and the stall guard fires because they did not count as freshness.
+    assert any("dropping the link to force a reconnect" in m for m in logs), logs
+
+
+def test_a_real_heart_rate_still_streams_and_refreshes_the_guard():
+    client = _FakeBleClient()
+    args = _pmd_args(stall_seconds=0.5, hr_max_age=5.0)
+    posted = _run_hr_session(client, args, [_hr_frame(62)] * 4)
+    assert posted and posted[0]["hr"] == 62.0
+
+
+def test_an_api_rejection_is_logged_instead_of_counted_as_success(monkeypatch):
+    import importlib
+    import types
+    fwd = importlib.import_module("verity_forwarder")
+    logs: list[str] = []
+    monkeypatch.setattr(fwd, "_log", lambda m: logs.append(m))
+    fwd._reset_repeat_log()
+
+    class _Resp:
+        def __init__(self, body): self._b = body
+        def read(self): return self._b
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    monkeypatch.setattr(fwd.urllib.request, "urlopen",
+                        lambda req, timeout=5.0: _Resp(b'{"ok": false, "error": "no usable hr/rr in batch"}'))
+    before = fwd._STATS["posts"]
+    resp = fwd._post("http://x/hr/ingest", {"source": "verity", "hr": 0.0})
+    assert resp["ok"] is False
+    assert fwd._STATS["posts"] == before          # a rejected batch is not a productive one
+    assert any("API rejected the batch" in m for m in logs), logs

@@ -164,14 +164,22 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (local URL)
         raw = resp.read()
-    # Counted AFTER the round-trip succeeds: this is the "did this session actually produce
-    # physiology" signal the recovery ladder escalates on, so an attempt that threw must not
-    # look like a productive one.
-    _STATS["posts"] += 1
     try:
-        return json.loads(raw.decode("utf-8"))
+        parsed = json.loads(raw.decode("utf-8"))
     except Exception:
-        return None
+        parsed = None
+    # Counted AFTER the round-trip succeeds AND the server accepted it: this is the "did this
+    # session actually produce physiology" signal the recovery ladder escalates on. An attempt
+    # that threw must not look productive, and neither must one the API answered with
+    # {"ok": false} -- sixteen hours of rejected HR=0 batches looked like a healthy session.
+    rejected = isinstance(parsed, dict) and parsed.get("ok") is False
+    if not rejected:
+        _STATS["posts"] += 1
+        _reset_repeat_log()
+    else:
+        _log_repeating("api:rejected",
+                       f"API rejected the batch ({parsed.get('error') or 'no reason given'})")
+    return parsed
 
 
 def _post_link(args, state: str, streams=None) -> None:
@@ -277,6 +285,18 @@ def _beat(root: Path) -> None:
             time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="ascii")
     except Exception:
         pass
+
+
+#: A heart-rate notification only counts as DATA inside this band. The generic 0x180D service
+#: keeps notifying HR = 0 when the band has no skin contact (sitting on the charger, on a desk),
+#: and 0 is not None -- so every such notification refreshed the stall guard, the session never
+#: ended, and the API rejected every batch as "no usable hr/rr" without the forwarder noticing.
+#: Measured 2026-09-07: connected 05:29, sixteen hours of nothing landing, no log line at all.
+_LIVE_HR_BPM = (25, 240)
+
+
+def _is_live_hr(hr) -> bool:
+    return hr is not None and _LIVE_HR_BPM[0] <= hr <= _LIVE_HR_BPM[1]
 
 
 class _Freshness:
@@ -518,7 +538,7 @@ async def _hr_session(client, args) -> None:
 
     def _on_hr(_handle, data: bytearray) -> None:
         hr, rr = _parse_hr_measurement(data)
-        if hr is not None:
+        if _is_live_hr(hr):          # HR = 0 is "no contact", not a reading -- see _LIVE_HR_BPM
             last_hr["v"] = hr
             last_hr["t"] = time.monotonic()
             fresh.note()
@@ -554,7 +574,6 @@ async def _hr_session(client, args) -> None:
             try:
                 resp = _post(args.url, payload)
                 last_flush["t"] = time.monotonic()
-                _reset_repeat_log()
                 if _note_worn_state(resp):
                     return          # ends the flusher -> disconnect -> backoff before rescan
             except Exception as exc:  # network blip -> drop this batch, keep streaming
@@ -748,7 +767,7 @@ async def _pmd_session(client, args) -> bool:
     def _on_hr(_handle, data: bytearray) -> None:  # generic 0x180D, only used if PPI is refused
         try:
             hr, rr = _parse_hr_measurement(data)
-            if hr is not None:
+            if _is_live_hr(hr):      # HR = 0 is "no contact", not a reading -- see _LIVE_HR_BPM
                 last_hr["v"] = hr
                 last_hr["t"] = time.monotonic()
                 fresh.note()
