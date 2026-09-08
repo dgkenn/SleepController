@@ -1105,7 +1105,34 @@ def _health_watchdog_loop() -> None:
                 repo.close()
         except Exception:
             pass  # never let the watchdog thread die on a transient DB/import hiccup
+        try:
+            _ensure_watchdog_code_current()
+        except Exception:
+            pass
         time.sleep(_HEALTH_WATCHDOG_INTERVAL_S)
+
+
+def _ensure_watchdog_code_current() -> None:
+    """Ask a watchdog that is running OLD code to restart itself onto the script on disk. The
+    watchdog's own change detection only exists in code the running process may not have (the
+    08-28 cadence change sat undeployed for eleven days for exactly that reason), so the check
+    lives here, in a process the self-update DOES restart. Same flag file the
+    ``/diag/action/restart-watchdog`` endpoint writes; ``app.watchdog_code`` holds the safety
+    guard and the rate limit."""
+    from app.watchdog_code import maybe_request_restart
+    from app.diagnostics import _repo_root
+    outcome = maybe_request_restart(_repo_root(), _run_dir())
+    if outcome == "requested":
+        print("watchdog-code: running watchdog is stale -- requested a watchdog self-restart", flush=True)
+        try:
+            repo = get_repo()
+            try:
+                repo.log_event("remote_action", "warn", "restart_watchdog_request",
+                               "watchdog is running stale code; requested a self-restart", {"target": "watchdog"})
+            finally:
+                repo.close()
+        except Exception:
+            pass
 
 
 def _start_health_watchdog() -> None:

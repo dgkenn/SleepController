@@ -1,0 +1,7 @@
+[Unit]
+Description=Reset the Bluetooth adapter at the Verity bridge's request
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/sleepctl/bridge.env
+ExecStart=/opt/sleepctl/deploy/pi-bridge/bt-reset.sh

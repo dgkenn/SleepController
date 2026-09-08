@@ -66,7 +66,7 @@ DOWN_TRIGGER_IDS = {"daemon_heartbeat", "api"}
 
 # Rendering/aggregation order (stable, readable; doesn't affect verdict logic).
 _CHECK_ORDER = [
-    "daemon_heartbeat", "watchdog_heartbeat", "api", "web", "runtime_state_fresh",
+    "daemon_heartbeat", "watchdog_heartbeat", "watchdog_code", "api", "web", "runtime_state_fresh",
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "wearable_reachable",
@@ -1060,6 +1060,32 @@ def _check_watchdog_heartbeat(run_dir: str, now: float) -> dict:
                   f"last heartbeat {age:.0f}s ago", None)
 
 
+
+def _check_watchdog_code(repo_root: str, run_dir: str, now: float) -> dict:
+    """Is the watchdog PROCESS running the watchdog SCRIPT that was deployed? A self-update
+    swaps the file, not the process, so a settings change (publish cadence, BT-reset handling)
+    can deploy and never take effect -- exactly why health snapshots stayed 10 min apart for
+    eleven days after the interval was cut to 3. See ``app.watchdog_code``."""
+    try:
+        from app.watchdog_code import assess
+        a = assess(repo_root, run_dir, now)
+    except Exception as exc:
+        return _check("watchdog_code", "Watchdog code currency", "info", f"could not assess: {exc!r}")
+    since = f" (process started {a['running_since']})" if a.get("running_since") else " (start time unknown)"
+    if a["stale"] is None:
+        return _check("watchdog_code", "Watchdog code currency", "info", a["reason"] + since)
+    if not a["stale"]:
+        return _check("watchdog_code", "Watchdog code currency", "ok", a["reason"] + since)
+    changed = f"; script on disk changed {a['script_changed']}" if a.get("script_changed") else ""
+    if a["safe_to_self_restart"]:
+        return _check("watchdog_code", "Watchdog code currency", "warn",
+                      a["reason"] + since + changed + " -- the API asks it to restart itself automatically (at most every 30 min)",
+                      "Wait for the next restart request; if this persists, POST /diag/action/restart-watchdog.")
+    return _check("watchdog_code", "Watchdog code currency", "warn",
+                  a["reason"] + since + changed
+                  + " -- this process predates the 2026-08-05 self-restart fix, so a restart request could strand the stack; not requested automatically",
+                  "On the box: end the SleepController scheduled task and start it again (or run scripts\\windows-always-on.ps1).")
+
 def _check_api() -> dict:
     # If this function is running at all, a request made it through the API process — so this
     # is definitionally "ok". It exists as an explicit check for symmetry/readability and so the
@@ -2043,6 +2069,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
         lambda: _check_wearable_reachable(repo, run_dir))
     add("daemon_heartbeat", "Control daemon heartbeat", lambda: _check_daemon_heartbeat(run_dir, now))
     add("watchdog_heartbeat", "Watchdog heartbeat", lambda: _check_watchdog_heartbeat(run_dir, now))
+    add("watchdog_code", "Watchdog code currency",
+        lambda: _check_watchdog_code(repo_root, run_dir, now))
     add("api", "API process", _check_api)
     add("web", "Web UI (port 3000)", _check_web)
     add("runtime_state_fresh", "Runtime state freshness",

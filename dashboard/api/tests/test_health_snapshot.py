@@ -241,3 +241,28 @@ def test_the_funnel_url_survives_the_scrub(repo, tmp_path):
     (run / "funnel.url").write_text("https://box.tailnet-abc.ts.net", encoding="utf-8")
     snap = health_snapshot.build_health_snapshot(repo, run_dir=str(run))
     assert snap["funnel_url"] == "https://box.tailnet-abc.ts.net"
+
+
+def test_wearable_block_is_published_without_biometrics(repo):
+    """The question asked most through this branch is "is the band streaming?". The block answers
+    per stage (link, HR, PPI, ACC, consumed) with ok flags and ages -- never the values."""
+    snap = health_snapshot.build_health_snapshot(repo)
+    w = snap["wearable"]
+    assert w["available"] is True
+    assert "verdict" in w and "streams" in w and "link" in w
+    for stage in ("hr_stage", "ppi_stage", "acc_stage"):
+        assert set(w[stage].keys()) == {"ok", "age_s"}
+    assert set(w["used"].keys()) >= {"ticking", "in_session", "checks"}
+    forbidden = {"bpm", "hrv_ms", "pim", "rmssd", "hr", "hrv"}
+    for kind, val in _walk_keys_and_strings(w):
+        if kind == "key":
+            assert val not in forbidden, f"physiology leaked into the health snapshot: {val}"
+
+
+def test_snapshot_survives_a_broken_wearable_pipeline(repo, monkeypatch):
+    from app import services
+    monkeypatch.setattr(services, "wearable_pipeline",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    snap = health_snapshot.build_health_snapshot(repo)
+    assert snap["wearable"]["available"] is False
+    assert "checks" in snap

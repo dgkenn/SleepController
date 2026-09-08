@@ -28,6 +28,12 @@ function Log($msg) {
 }
 
 Log "watchdog starting (root=$Root)"
+# Record WHICH code this process is running so the API can tell a stale watchdog (file updated,
+# process not) from a current one and ask it to restart -- see dashboard/api/app/watchdog_code.py.
+try {
+    $selfHash = (Get-FileHash -Path $PSCommandPath -Algorithm SHA256).Hash
+    Set-Content -Path (Join-Path $run "watchdog-code.hash") -Value $selfHash -Encoding ASCII
+} catch { Log "WARN: could not record the watchdog code hash: $_" }
 
 # --- restart-storm limiter + shared alert marker ---------------------------------------------
 # Any single component that keeps dying and getting restarted is a sign of a real problem

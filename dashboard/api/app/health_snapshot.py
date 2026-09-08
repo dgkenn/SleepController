@@ -155,6 +155,12 @@ def _copy_playbook_matches(matches) -> list:
 #: token (see verity_forwarder._redact).
 _LOG_TAILS = (
     ("verity", "verity.log", 40),
+    # The publisher's own log, so a snapshot that arrives late can explain WHY it was late. The
+    # watchdog has fired publish-health every 3 minutes since that interval was lowered, yet
+    # snapshots kept landing ~10 minutes apart -- and nothing published could say whether the
+    # runs were failing, colliding with the night-data push, or not being fired at all.
+    ("health_publish", "health-publish.log", 12),
+    ("watchdog", "watchdog.log", 12),
     ("verity_err", "verity.err", 10),
 )
 
@@ -262,8 +268,47 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "preflight": _preflight_block(repo, diag.get("checks")),
         "log_tails": _log_tails(run_dir),
         "funnel_url": _funnel_url(run_dir),
+        "wearable": _wearable_block(repo, run_dir),
     }
     return scrub(snapshot)
+
+
+def _wearable_block(repo, run_dir) -> dict:
+    """The armband pipeline verdict -- connected / streaming / consumed -- without biometrics.
+
+    This branch is the off-site operator's only window into the box, and the question asked most
+    often through it this month was "is the band streaming?". The checks answer it at a
+    15-minute granularity with one word; ``services.wearable_pipeline`` answers it per stage. The
+    values themselves (bpm, HRV, PIM) are physiology and stay out of this public snapshot: what
+    ships is each stage's freshness and ok flag, the verdict, and the consumer checks."""
+    try:
+        from app.services import wearable_pipeline
+        pl = wearable_pipeline(repo, run_dir=run_dir)
+    except Exception as exc:
+        return {"available": False, "error": repr(exc)}
+
+    def _stage(d):
+        d = d or {}
+        return {"ok": bool(d.get("ok")), "age_s": d.get("age_s")}
+
+    used = pl.get("used") or {}
+    return {
+        "available": True,
+        "verdict": pl.get("verdict"), "headline": pl.get("headline"), "remedy": pl.get("remedy"),
+        "streams": pl.get("streams") or [],
+        "link": {k: (pl.get("link") or {}).get(k) for k in ("state", "streams", "age_s", "shape")},
+        "hr_stage": _stage(pl.get("hr")), "ppi_stage": _stage(pl.get("ppi")),
+        "acc_stage": _stage(pl.get("acc")),
+        "battery_pct": (pl.get("battery") or {}).get("pct"),
+        "used": {
+            "ticking": used.get("ticking"), "in_session": used.get("in_session"),
+            "controller_state": used.get("controller_state"),
+            "stage_source": used.get("stage_source"),
+            "hr_source": used.get("hr_source"), "movement_source": used.get("movement_source"),
+            "activity_units": used.get("activity_units"),
+            "checks": used.get("checks") or [],
+        },
+    }
 
 
 def _preflight_block(repo, checks) -> dict:

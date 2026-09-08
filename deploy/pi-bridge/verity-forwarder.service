@@ -1,0 +1,29 @@
+# SleepController -- Verity BLE bridge on a Raspberry Pi (BlueZ).
+#
+# Runs the SAME scripts/verity_forwarder.py the Windows box ran, but on a Linux Bluetooth stack:
+# no WinRT GATT-service cache to defeat, `bluetoothctl remove` actually clears a stale bond, and
+# the process lives under systemd with a real restart policy instead of a Scheduled Task loop.
+#
+# Installed by deploy/pi-bridge/install.sh. Edit /etc/sleepctl/bridge.env, not this file.
+[Unit]
+Description=SleepController Verity BLE bridge
+After=bluetooth.target network-online.target
+Wants=bluetooth.target network-online.target
+
+[Service]
+Type=simple
+User=sleepctl
+EnvironmentFile=/etc/sleepctl/bridge.env
+WorkingDirectory=/opt/sleepctl
+ExecStart=/opt/sleepctl/.venv/bin/python /opt/sleepctl/scripts/verity_forwarder.py --url ${INGEST_URL} --address ${VERITY_ADDRESS}
+# The forwarder already retries connections forever with its own backoff; systemd only has to
+# bring the PROCESS back if it dies (bleak/D-Bus faults, OOM, an unhandled exception).
+Restart=always
+RestartSec=10
+# Bound the log: the forwarder throttles repeats, but journald is the rotation, not a .log file.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=verity-bridge
+
+[Install]
+WantedBy=multi-user.target

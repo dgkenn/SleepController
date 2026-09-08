@@ -1027,8 +1027,14 @@ async def _run_once(args, env) -> None:
     # EXPLICIT connect timeout. Bleak's default varies by backend and the WinRT path was taking
     # ~31s to give up, which then triggered the escalating session backoff -- so one blocked
     # connect cost five minutes of not even trying again. Fail fast, retry soon.
-    async with BleakClient(address, timeout=float(getattr(args, "connect_timeout", 20.0)),
-                           winrt={"use_cached_services": False}) as client:
+    # Backend-specific knobs only where they apply. `winrt=` is the Windows GATT-cache override
+    # (see above); on Linux/BlueZ -- the Pi bridge in deploy/pi-bridge -- there is no service
+    # cache to defeat, and keeping the kwarg out of the call makes that path independent of how
+    # any given bleak release treats unknown backend options.
+    client_kwargs = {"timeout": float(getattr(args, "connect_timeout", 20.0))}
+    if sys.platform == "win32":
+        client_kwargs["winrt"] = {"use_cached_services": False}
+    async with BleakClient(address, **client_kwargs) as client:
         _log("connected")
         # Only remembered once a connection actually OPENED, so we never cache a bad guess.
         # This is what makes the scan-miss fallback above work at all.
