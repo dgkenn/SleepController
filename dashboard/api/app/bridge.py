@@ -270,6 +270,20 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
              1 if counts.get("gait") else None, _num("cadence_hz"), _num("gait_conc"),
              1 if counts.get("marker") else None, _num("marker_hz")),
         )
+        if counts.get("marker"):
+            # Ground truth: the user declared "awake right now". Record what the stager said at
+            # that instant so wake detection can be measured against a declared fact.
+            try:
+                rt = read_runtime_state(conn)
+                stage = ((rt.get("frame") or {}).get("stage") or (rt.get("decision") or {}).get("stage")
+                         or rt.get("stage"))
+                conn.execute(
+                    "INSERT INTO events (ts, category, severity, code, message, data) VALUES (?,?,?,?,?,?)",
+                    (_now(), "sensor", "info", "marker_vs_stage",
+                     f"marker gesture while the stager said {stage or 'unknown'}",
+                     json.dumps({"stage_at_marker": stage, "runtime_stale": rt.get("stale")})))
+            except Exception:
+                pass
         now_mono = time.monotonic()
         if now_mono - _last_actigraphy_prune_monotonic >= _RR_PRUNE_INTERVAL_S:
             cutoff = (datetime.now(timezone.utc)
@@ -649,6 +663,32 @@ def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
     return d
 
 
+ACC_RESP_MIN_CONC = 0.35
+ACC_RESP_MAX_AGE_S = 120.0
+
+
+def read_acc_respiration_sample(conn: sqlite3.Connection, min_conc: float = ACC_RESP_MIN_CONC,
+                                max_age_s: float = ACC_RESP_MAX_AGE_S) -> float | None:
+    """Latest accelerometer-derived breathing rate that is confident and fresh, else None."""
+    try:
+        row = conn.execute(
+            "SELECT ts, resp_brpm, resp_conc FROM actigraphy WHERE resp_brpm IS NOT NULL "
+            "ORDER BY ts DESC LIMIT 1").fetchone()
+    except Exception:
+        return None
+    if row is None:
+        return None
+    try:
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["ts"])).total_seconds()
+        conc = float(row["resp_conc"]) if row["resp_conc"] is not None else 0.0
+        val = float(row["resp_brpm"])
+    except Exception:
+        return None
+    if age > max_age_s or conc < min_conc or not (4.0 <= val <= 40.0):
+        return None
+    return val
+
+
 def read_actigraphy_sample(conn: sqlite3.Connection) -> dict | None:
     """Latest actigraphy batch (the wearable's OWN accelerometer, via Polar PMD) with a computed
     ``age_seconds``, or None. Counterpart to ``read_cardiac_sample`` for the motion channel.
@@ -769,6 +809,13 @@ def read_fused_sensor(conn: sqlite3.Connection, cardiac_max_age_s: float = 30.0,
     # RSA-derived respiration rides the cardiac channel's freshness: it is computed from the
     # same RR window as HRV, so if the cardiac sample is stale the respiration is too.
     resp, _resp_age = _fresh(card, "respiratory_rate", cardiac_max_age_s)
+    if resp is None:
+        # The accelerometer's breathing rate (chest/arm motion) stands in for the beat-interval
+        # one when that is absent -- the whole night, on a heart-rate-only link. Gated on its
+        # spectral concentration so a flat spectrum yields nothing rather than a number.
+        acc_resp = read_acc_respiration_sample(conn)
+        if acc_resp is not None:
+            resp = acc_resp
     return {
         "hr": hr, "hrv": hrv, "movement": mv, "respiratory_rate": resp,
         "hr_age_seconds": hr_age, "hrv_age_seconds": hrv_age, "movement_age_seconds": mv_age,

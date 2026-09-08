@@ -456,6 +456,18 @@ class Tunables:
     level_reassert_tolerance: int = 5
 
     est_stage_actigraphy_wake_enabled: bool = True
+    # Restlessness ramp (accelerometer): bursts per 5 min at/above this multiple of the night's
+    # own baseline density, with at least this many bursts, is a pre-arousal signal.
+    precursor_ramp_ratio: float = 2.0
+    precursor_ramp_min_bursts: float = 2.0
+    precursor_w_ramp: float = 0.24
+    # Smart wake: a movement cluster with the heart rate this far above the sleep baseline is a
+    # surfacing moment the wake may use, whatever the stage label says.
+    wake_liftable_hr_rise_bpm: float = 5.0
+    # Accelerometer-derived breathing rate stands in for the beat-interval one when that is absent,
+    # if its spectral concentration is at least this and the sample is at most this old.
+    acc_resp_min_conc: float = 0.35
+    acc_resp_max_age_s: float = 120.0
     est_stage_actigraphy_wake_pim: float = 5.0
     est_stage_actigraphy_wake_window_s: float = 60.0
     # HARD clamp of the commanded target to the personal comfort band (from the comfort sweep /

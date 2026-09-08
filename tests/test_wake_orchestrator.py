@@ -214,3 +214,21 @@ def test_a_confident_deep_label_still_holds_the_wake():
     f.stage_confidence = 0.7
     a = o.evaluate(now, f, [], WAKE)
     assert a.should_wake is False
+
+
+def test_a_movement_cluster_with_the_heart_rate_up_is_a_surfacing_moment():
+    """In the wake window a turn with the heart rate 5 bpm over baseline is liftable even
+    when the heart-rate-only stager still says DEEP."""
+    o = WakeOrchestrator(WakeConfig(window_min=30))
+    now = WAKE - timedelta(minutes=20)
+    f = _f(SleepStage.DEEP, now, hr=64.0)
+    f.stage_confidence = 0.7
+    t0 = now.timestamp()
+    f.activity_history = [(t0 - k, 6.0 if k < 100 and k % 30 < 4 else 0.5) for k in range(0, 300, 2)]
+    f.activity_units = "counts"
+    a = o.evaluate(now, f, [], WAKE, hr_base=58.0)
+    assert a.should_wake is True
+    f.heart_rate = 59.0                 # no HR rise: a turn alone does not wake you
+    o2 = WakeOrchestrator(WakeConfig(window_min=30, thermal_dawn_min=20))
+    a = o2.evaluate(now, f, [], WAKE, hr_base=58.0)
+    assert a.should_wake is False

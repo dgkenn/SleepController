@@ -73,3 +73,25 @@ def test_to_dict_shape():
     frames = _series([{"heart_rate": 55, "hrv": 60, "movement": 0.05} for _ in range(6)])
     d = _det().detect(frames[-1], frames[:-1], frames[-1].timestamp, 55, 60).to_dict()
     assert set(d) == {"score", "should_preempt", "reasons", "signals"}
+
+
+def test_a_restlessness_ramp_in_the_dense_counts_is_a_precursor():
+    """Movement density rising against the night's own baseline leads the heart-rate creep."""
+    from sleepctl.controller.actigraphy_epochs import EPOCH_S
+    frames = _series([{"heart_rate": 56, "hrv": 60, "movement": 0.05, "bed_temp_f": 88,
+                       "respiratory_rate": 14} for _ in range(10)])
+    f = frames[-1]
+    now_t = f.timestamp.timestamp()
+    hist = []
+    t = now_t - 3000
+    while t <= now_t:
+        hist.append((t, 6.0 if any(abs((now_t - t) - b) < 1.0 for b in (10, 60, 120, 200, 270)) else 0.5))
+        t += 2.0
+    f.activity_history = hist
+    f.activity_units = "counts"
+    a = _det().detect(f, frames[:-1], f.timestamp, 56, 60)
+    assert "restlessness_ramp" in a.reasons
+    assert a.signals["ramp_density"] >= 4
+    f.activity_units = "index"          # the phone's scale is not counts: no ramp judgement
+    a = _det().detect(f, frames[:-1], f.timestamp, 56, 60)
+    assert "restlessness_ramp" not in a.reasons

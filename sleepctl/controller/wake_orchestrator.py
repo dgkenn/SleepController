@@ -32,6 +32,7 @@ from datetime import datetime, timedelta
 from typing import List, Optional
 
 from sleepctl.controller.sleep_cycle import SleepCyclePredictor
+from sleepctl.controller.actigraphy_epochs import cluster_score, counts_history
 from sleepctl.models import SensorFrame, SleepStage, ThermalIntent
 
 
@@ -63,6 +64,8 @@ class WakeConfig:
     thermal_dawn_min: int = 20      # warm "dawn" ramp (and light) begin this many min before
     p_wake_liftable: float = 0.45   # classifier P(wake) at/above which a moment is "liftable"
     deep_block_min_confidence: float = 0.5  # a DEEP label under this confidence does not hold the wake
+    liftable_hr_rise_bpm: float = 5.0       # movement cluster + HR this far over baseline = surfacing
+    burst_thresh: float = 5.0               # accelerometer burst unit (est_stage_actigraphy_wake_pim)
     p_wake_up: float = 0.85         # at/above this you're treated as surfacing
     last_resort_min: int = 6        # if still deep this close to the deadline, wake anyway...
     hard_buffer_s: int = 120        # ...unless within this buffer we MUST engage no matter what
@@ -177,6 +180,18 @@ class WakeOrchestrator:
         if frame.stage is SleepStage.AWAKE and (frame.movement or 0) >= 0.4:
             return True
         return p_wake is not None and p_wake >= self.cfg.p_wake_up
+
+    def _surfacing_by_motion(self, frame, now, hr_base) -> bool:
+        """A movement cluster with the heart rate up over the sleep baseline is a surfacing
+        moment -- a turn -- whatever the stage label says. Inside the wake window that is the
+        gentlest cue there is, and it does not wait on a light-sleep label the heart-rate-only
+        stager may never produce."""
+        hist = counts_history(frame)
+        if not hist or hr_base is None or frame.heart_rate is None:
+            return False
+        if frame.heart_rate < float(hr_base) + float(self.cfg.liftable_hr_rise_bpm):
+            return False
+        return cluster_score(hist, now.timestamp(), float(self.cfg.burst_thresh)) >= 0.5
 
     def _is_liftable(self, frame, p_wake, stale, p_liftable) -> bool:
         if frame.stage is SleepStage.DEEP:
@@ -311,6 +326,8 @@ class WakeOrchestrator:
 
         secs_to_deadline = (required_wake - now).total_seconds()
         liftable = self._is_liftable(frame, p_wake, data_stale, p_liftable)
+        if not liftable and self._surfacing_by_motion(frame, now, hr_base):
+            liftable = True
 
         if self._engaged_at is None:
             if now >= window_start and liftable:

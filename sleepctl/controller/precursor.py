@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
+from sleepctl.controller.actigraphy_epochs import counts_history, restlessness
 from sleepctl.models import SensorFrame, SleepStage
 
 
@@ -83,6 +84,10 @@ class PrecursorDetector:
         self.w_resp = getattr(t, "precursor_w_resp", 0.10)
         self.instability_move = getattr(t, "precursor_instability_move", 0.25)
         self.instability_gain = getattr(t, "precursor_instability_gain", 0.12)
+        self.ramp_ratio = getattr(t, "precursor_ramp_ratio", 2.0)
+        self.ramp_min_bursts = getattr(t, "precursor_ramp_min_bursts", 2.0)
+        self.w_ramp = getattr(t, "precursor_w_ramp", 0.24)
+        self.burst_thresh = getattr(t, "est_stage_actigraphy_wake_pim", 5.0)
         self.personalized = False     # set True once a learned precursor profile is applied
 
     def personalize(self, profile: Optional[dict]) -> None:
@@ -106,6 +111,12 @@ class PrecursorDetector:
         mv = feats.get("move_slope", {})
         if mv.get("predictive") and mv.get("threshold") is not None:
             self.move_rise_slope = max(0.005, min(0.2, float(mv["threshold"])))
+            self.personalized = True
+        # Restlessness ramp: once YOUR awakenings are shown to be preceded by a density ramp
+        # with a usable lead, trigger on a gentler ratio so the pre-empt gets that lead.
+        rl = profile.get("restlessness") or {}
+        if rl.get("predictive") and rl.get("ratio_threshold") is not None:
+            self.ramp_ratio = max(1.3, min(4.0, float(rl["ratio_threshold"])))
             self.personalized = True
 
     def detect(
@@ -150,6 +161,17 @@ class PrecursorDetector:
                 score += self.w_move
                 reasons.append("restlessness_building")
 
+        # Restlessness RAMP from the dense accelerometer counts: bursts per 5 min rising against
+        # the night's own baseline. Leads the heart-rate creep by minutes and does not depend on
+        # the per-tick movement index (which is one number per 30 s and misses clusters).
+        hist = counts_history(frame)
+        if hist:
+            rl = restlessness(hist, now.timestamp(), float(self.burst_thresh))
+            signals["ramp_density"] = rl["density"]
+            signals["ramp_ratio"] = rl["ratio"]
+            if rl["density"] >= self.ramp_min_bursts and rl["ratio"] >= self.ramp_ratio:
+                score += self.w_ramp
+                reasons.append("restlessness_ramp")
         bed_slope = _slope_per_min(window, "bed_temp_f")
         if bed_slope is not None:
             signals["bed_slope_f_min"] = round(bed_slope, 3)

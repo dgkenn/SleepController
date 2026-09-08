@@ -319,9 +319,14 @@ def awakening_precursor_profile(repo, lead_min: float = 6.0, nights: int = 30,
             predictive.append(key)
 
     confidence = max(0.0, min(1.0, (n_wakes - min_events) / 20.0)) if n_wakes >= min_events else 0.0
+    try:
+        restless = restlessness_lead_profile(repo, nights=nights, min_events=min_events)
+    except Exception:
+        restless = {"predictive": False, "n": 0, "reason": "unavailable"}
     return {
         "lead_min": lead_min, "n_awakenings": n_wakes,
         "features": features, "predictive_signals": predictive,
+        "restlessness": restless,
         "is_personalized": n_wakes >= min_events and bool(predictive),
         "confidence": round(confidence, 2),
         "rationale": (f"your awakenings are preceded by {', '.join(predictive)} (learned from "
@@ -329,3 +334,77 @@ def awakening_precursor_profile(repo, lead_min: float = 6.0, nights: int = 30,
                       else f"learning — {n_wakes}/{min_events} awakenings before a personalized "
                            f"precursor trajectory emerges"),
     }
+
+
+# ---------------------------------------------------------------- restlessness lead
+#: Ramp search window before each awakening, and the density definition it uses.
+_RAMP_LOOKBACK_MIN = 15.0
+_RAMP_BIN_MIN = 2.5
+
+
+def restlessness_lead_profile(repo, nights: int = 30, min_events: int = 5,
+                              burst_movement: float = _BURST_MOVEMENT) -> dict:
+    """How far ahead of YOUR awakenings the movement density starts to climb.
+
+    For each awakening, movement is binned over the preceding 15 minutes; the baseline density
+    is the same night's quiet-sleep rate. The ramp onset is the first bin from which every later
+    bin holds at least twice the baseline (and at least one burst). ``lead_min`` is the median
+    time from ramp onset to the awakening; ``ratio_threshold`` is the mid-point between the ramp
+    bins' density ratio and 1.0, the point the precursor should trigger at. Honest when events
+    are few. Uses the recorded per-tick movement index, so it works on nights already stored;
+    the live detector applies the same idea to the dense counts."""
+    conn = repo.conn
+    summaries = repo.recent_nights(nights) if hasattr(repo, "recent_nights") else []
+    dates = [getattr(s, "date", None) for s in summaries if getattr(s, "date", None)]
+    leads, ratios = [], []
+    n_wakes = 0
+    for d in dates:
+        rows = conn.execute(
+            "SELECT ts, movement, wake_event FROM raw_samples WHERE night_date = ? AND "
+            "controller_state IN ('maintenance','wake_recovery') ORDER BY ts", (d,)).fetchall()
+        series = []
+        for r in rows:
+            try:
+                series.append((datetime.fromisoformat(r["ts"]), r["movement"], r["wake_event"]))
+            except (TypeError, ValueError):
+                continue
+        if len(series) < 40:
+            continue
+        moves = [m for _, m, _ in series if m is not None]
+        if not moves:
+            continue
+        base_rate = sum(1 for m in moves if m >= burst_movement) / max(1, len(moves))
+        wake_times = [t for t, _, w in series if w == 1]
+        for tw in wake_times:
+            n_wakes += 1
+            bins = int(_RAMP_LOOKBACK_MIN / _RAMP_BIN_MIN)
+            dens = []
+            for b in range(bins, 0, -1):                       # oldest bin first
+                lo = tw - timedelta(minutes=b * _RAMP_BIN_MIN)
+                hi = lo + timedelta(minutes=_RAMP_BIN_MIN)
+                win = [m for t, m, _ in series if lo <= t < hi and m is not None]
+                dens.append((sum(1 for m in win if m >= burst_movement) / len(win)) if win else 0.0)
+            onset_bin = None
+            for i in range(len(dens)):
+                tail = dens[i:]
+                if tail and all(x >= max(2.0 * base_rate, 1e-9) and x > 0 for x in tail):
+                    onset_bin = i
+                    break
+            if onset_bin is not None:
+                leads.append((len(dens) - onset_bin) * _RAMP_BIN_MIN)
+                tail = dens[onset_bin:]
+                ratios.append((sum(tail) / len(tail)) / max(base_rate, 1e-3))
+    if not leads:
+        return {"predictive": False, "n": n_wakes, "n_with_ramp": 0,
+                "reason": ("no awakenings yet" if not n_wakes
+                           else "no movement ramp precedes your awakenings so far")}
+    leads.sort()
+    ratios.sort()
+    lead = leads[len(leads) // 2]
+    ratio = ratios[len(ratios) // 2]
+    frac = len(leads) / max(1, n_wakes)
+    predictive = bool(n_wakes >= min_events and frac >= 0.5 and lead >= 2.0 * _RAMP_BIN_MIN)
+    return {"predictive": predictive, "n": n_wakes, "n_with_ramp": len(leads),
+            "lead_min": round(lead, 1), "ratio_median": round(ratio, 2),
+            "ratio_threshold": round(max(1.3, (ratio + 1.0) / 2.0), 2),
+            "fraction_with_ramp": round(frac, 2)}

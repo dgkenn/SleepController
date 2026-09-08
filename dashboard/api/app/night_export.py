@@ -491,6 +491,26 @@ def build_night_export(repo, night_date: str) -> dict:
                 # DECLARED anchors rank above inferred ones -- they are the only evidence that
                 # can settle a disagreement between two inferences.
                 out["marker_anchors"] = bridge_mod.marker_anchors(conn, lo, hi)
+            # What the stager said at each DECLARED-awake instant: the only wake-detection
+            # score that rests on a fact rather than another inference.
+            rows = conn.execute(
+                "SELECT ts, data FROM events WHERE code = 'marker_vs_stage' AND ts >= ? AND ts <= ? "
+                "ORDER BY ts ASC", (lo, hi)).fetchall()
+            audit = []
+            for r in rows:
+                try:
+                    data = json.loads(r["data"]) if r["data"] else {}
+                except Exception:
+                    data = {}
+                st = data.get("stage_at_marker")
+                audit.append({"ts": r["ts"], "stage_at_marker": st, "scored_awake": st == "awake"})
+            out["marker_audit"] = {
+                "n": len(audit),
+                "n_scored_awake": sum(1 for a in audit if a["scored_awake"]),
+                "agreement": (round(sum(1 for a in audit if a["scored_awake"]) / len(audit), 2)
+                              if audit else None),
+                "markers": audit[:100],
+            }
     except Exception as exc:
         out["gait_anchors_error"] = repr(exc)
 

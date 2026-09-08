@@ -29,6 +29,7 @@ from enum import Enum
 from typing import List, Optional
 
 from sleepctl.controller.wake_detection import WakeDetector
+from sleepctl.controller.actigraphy_epochs import CLUSTER_AROUSAL, cluster_score, counts_history
 from sleepctl.models import SensorFrame, SleepStage, WakeEvent
 
 
@@ -63,6 +64,7 @@ class ArousalDetector:
         self.hr_surge = getattr(t, "arousal_hr_surge_bpm", 6.0)
         self.hrv_drop_frac = getattr(t, "arousal_hrv_drop_frac", 0.15)
         self.move_threshold = getattr(t, "arousal_movement", 0.4)
+        self.burst_thresh = getattr(t, "est_stage_actigraphy_wake_pim", 5.0)
         self.persistence = getattr(t, "arousal_persistence_samples", 3)
         # cfg is threaded through so the voter can read the wearable's actigraphy counts as an
         # INDEPENDENT signal -- see WakeDetector.STAGER_SIGNALS.
@@ -110,6 +112,14 @@ class ArousalDetector:
             score += min(0.35, 0.2 + 0.3 * (frame.movement - self.move_threshold))
             signals.append("movement")
         # Respiratory irregularity.
+        # A CLUSTER of small movements over the last two minutes (dense counts) is a
+        # micro-arousal even when no single tick crosses the movement threshold.
+        hist = counts_history(frame)
+        if hist:
+            cs = cluster_score(hist, now.timestamp(), float(self.burst_thresh))
+            if cs >= CLUSTER_AROUSAL and "movement" not in signals:
+                score += min(0.25, 0.1 + 0.15 * min(1.0, (cs - CLUSTER_AROUSAL) / 0.6))
+                signals.append("movement_cluster")
         rrs = [f.respiratory_rate for f in window if f.respiratory_rate is not None]
         if len(rrs) >= 4 and frame.respiratory_rate is not None:
             if statistics.pstdev(rrs) > 1.5:
