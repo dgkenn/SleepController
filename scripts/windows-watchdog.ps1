@@ -624,7 +624,17 @@ function Handle-BluetoothResetRequest {
     $script:btResetLastAt = Get-Date
     Log "CRITICAL: restarting the Bluetooth stack at the forwarder's request ($reason)"
     try {
-        Restart-Service -Name bthserv -Force -ErrorAction Stop
+        # Bounded: Restart-Service can block indefinitely while bthserv sits in "stopping", and
+        # this is the supervisor's own thread -- a hang here stops every publish and every
+        # restart on the box with no one able to see it. Run it in a job with a hard timeout.
+        $job = Start-Job -ScriptBlock { Restart-Service -Name bthserv -Force -ErrorAction Stop }
+        if (-not (Wait-Job -Job $job -Timeout 90)) {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+            throw "bthserv restart did not complete within 90 s"
+        }
+        Receive-Job -Job $job -ErrorAction Stop | Out-Null
+        Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         Log "bluetooth: bthserv restarted"
         # The forwarder's live BLE handles are now invalid; kill it so the relaunch below brings
         # up a process that rediscovers against the fresh stack.
