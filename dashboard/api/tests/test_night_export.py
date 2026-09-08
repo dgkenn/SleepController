@@ -205,3 +205,25 @@ def test_the_onset_trace_and_thermal_profile_are_exported(repo):
     assert len(out["onset_trace"]) == 4 and out["onset_trace"][0]["awake_hr_ref"] == 70.2
     assert out["thermal_profile"]["neutral_f"] == 71.5
     assert len(out["induction_trace"]) == 4 and out["induction_trace"][0]["stage"] == "light"
+
+
+def test_the_accelerometer_night_is_exported_at_30_second_resolution(repo):
+    from datetime import datetime, timedelta
+    from app import bridge, night_export
+    night = "2026-09-08"
+    now_local = datetime.now()
+    # a raw sample on each end so the export has a span to cut the accelerometer night from
+    _insert_sample(repo.conn, (now_local - timedelta(minutes=2)).isoformat(), night, controller_state="maintenance", heart_rate=60.0)
+    _insert_sample(repo.conn, (now_local + timedelta(minutes=2)).isoformat(), night, controller_state="maintenance", heart_rate=61.0)
+    for i in range(20):
+        bridge.append_actigraphy(repo.conn, {"pim": 6.0 if i == 7 else 0.3, "zcm": 2 if i == 7 else 0,
+                                             "n": 104, "fs": 52, "resp_brpm": 13.0 + (i % 2), "resp_conc": 0.7,
+                                             "marker": (i == 12)})
+    repo.conn.commit()
+    out = night_export.build_night_export(repo, night)
+    ep = out["actigraphy_epochs"]
+    assert ep and sum(e["n"] for e in ep) == 20
+    assert max(e["pim_max"] for e in ep) == 6.0
+    assert any(e["marker"] for e in ep)
+    assert all(e["resp_brpm"] is not None for e in ep)
+    assert out["marker_audit"]["n"] >= 0

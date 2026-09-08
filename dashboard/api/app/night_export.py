@@ -65,6 +65,51 @@ def _recent_night_dates(conn, limit: int) -> list:
 
 
 
+
+def _actigraphy_epochs(conn, lo_iso: str, hi_iso: str, epoch_s: float = 30.0,
+                       max_epochs: int = 2000) -> list:
+    """30-second aggregates of the dense accelerometer batches between two UTC instants:
+    max and mean PIM, zero-crossing sum, batch count, median breathing rate (confident batches
+    only), any gait, any marker. Epoch times are UTC epoch seconds."""
+    try:
+        rows = conn.execute(
+            "SELECT ts, pim, zcm, resp_brpm, resp_conc, gait, marker, fs FROM actigraphy "
+            "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC", (lo_iso, hi_iso)).fetchall()
+    except Exception:
+        return []
+    buckets: dict = {}
+    for r in rows:
+        try:
+            t = datetime.fromisoformat(str(r["ts"])).timestamp()
+        except Exception:
+            continue
+        k = int(t // epoch_s) * int(epoch_s)
+        b = buckets.setdefault(k, {"t": k, "n": 0, "pim_max": 0.0, "pim_sum": 0.0, "zcm": 0,
+                                   "resp": [], "gait": 0, "marker": 0, "fs": None})
+        b["n"] += 1
+        if r["pim"] is not None:
+            b["pim_max"] = max(b["pim_max"], float(r["pim"]))
+            b["pim_sum"] += float(r["pim"])
+        if r["zcm"] is not None:
+            b["zcm"] += int(r["zcm"])
+        if r["resp_brpm"] is not None and (r["resp_conc"] or 0) >= 0.35:
+            b["resp"].append(float(r["resp_brpm"]))
+        if r["gait"]:
+            b["gait"] = 1
+        if r["marker"]:
+            b["marker"] = 1
+        if r["fs"] is not None:
+            b["fs"] = r["fs"]
+    out = []
+    for k in sorted(buckets)[-max_epochs:]:
+        b = buckets[k]
+        resp = sorted(b["resp"])
+        out.append({"t": b["t"], "n": b["n"], "pim_max": round(b["pim_max"], 3),
+                    "pim_mean": round(b["pim_sum"] / b["n"], 3) if b["n"] else None,
+                    "zcm": b["zcm"], "resp_brpm": (resp[len(resp) // 2] if resp else None),
+                    "gait": b["gait"], "marker": b["marker"], "fs": b["fs"]})
+    return out
+
 def _normalize_reason(reason: str) -> str:
     """Collapse a decision reason to its pattern: numbers out, the data-quality suffix out."""
     r = re.sub(r"\[data_quality=[^\]]*\]", "", reason or "")
@@ -504,6 +549,9 @@ def build_night_export(repo, night_date: str) -> dict:
                     data = {}
                 st = data.get("stage_at_marker")
                 audit.append({"ts": r["ts"], "stage_at_marker": st, "scored_awake": st == "awake"})
+            # The accelerometer night at 30-second resolution: enough to audit wake detection,
+            # restlessness ramps, breathing and gait the next morning without the box.
+            out["actigraphy_epochs"] = _actigraphy_epochs(conn, lo, hi)
             out["marker_audit"] = {
                 "n": len(audit),
                 "n_scored_awake": sum(1 for a in audit if a["scored_awake"]),
