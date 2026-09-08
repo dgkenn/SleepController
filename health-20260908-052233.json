@@ -1,0 +1,426 @@
+{
+  "checks": [
+    {
+      "detail": "commit 438c53c on claude/confident-gates-rg7af0; web build is up to date",
+      "id": "version",
+      "remedy": null,
+      "status": "info",
+      "title": "Deployed version"
+    },
+    {
+      "detail": "up to date with origin/claude/confident-gates-rg7af0",
+      "id": "auto_update",
+      "remedy": null,
+      "status": "ok",
+      "title": "Auto-update currency"
+    },
+    {
+      "detail": "last self-update: update to 'claude/confident-gates-rg7af0' succeeded (validate=PASS) -- restart requested (at 2026-09-07T21:53:44.1681544-04:00) | last smoke test: SMOKE PASS",
+      "id": "self_update",
+      "remedy": null,
+      "status": "ok",
+      "title": "Self-update / deploy history"
+    },
+    {
+      "detail": "health: OK 20260908-051926 health-20260908-051926.json (3 min ago) | night-data: OK 20260908-052156 14 (1 min ago)",
+      "id": "publishers",
+      "remedy": null,
+      "status": "ok",
+      "title": "GitHub relay publishers"
+    },
+    {
+      "detail": "no accelerometer counts in the last 15 min -- the actigraphy wake detector (6/6 vs the stager's 2/6) is inactive; HR-only staging is in use",
+      "id": "actigraphy",
+      "remedy": "check the forwarder log for 'start ACC ... ok'; PMD ACC can be refused independently of PPI/HR",
+      "status": "info",
+      "title": "Wearable accelerometer"
+    },
+    {
+      "detail": "looping (heartbeat 3s ago)",
+      "id": "verity_forwarder",
+      "remedy": null,
+      "status": "ok",
+      "title": "Verity forwarder process"
+    },
+    {
+      "detail": "last sample 0.0h ago",
+      "id": "wearable_reachable",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wearable reachable"
+    },
+    {
+      "detail": "last heartbeat 1s ago",
+      "id": "daemon_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Control daemon heartbeat"
+    },
+    {
+      "detail": "last heartbeat 0s ago",
+      "id": "watchdog_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Watchdog heartbeat"
+    },
+    {
+      "detail": "running watchdog matches the script on disk (process started 2026-09-07 21:54:10)",
+      "id": "watchdog_code",
+      "remedy": null,
+      "status": "ok",
+      "title": "Watchdog code currency"
+    },
+    {
+      "detail": "this request was served, so the API is up",
+      "id": "api",
+      "remedy": null,
+      "status": "ok",
+      "title": "API process"
+    },
+    {
+      "detail": "something is listening on 127.0.0.1:3000",
+      "id": "web",
+      "remedy": null,
+      "status": "ok",
+      "title": "Web UI (port 3000)"
+    },
+    {
+      "detail": "last update 7s ago",
+      "id": "runtime_state_fresh",
+      "remedy": null,
+      "status": "ok",
+      "title": "Runtime state freshness"
+    },
+    {
+      "detail": "reservoir has water",
+      "id": "device_water",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water reservoir"
+    },
+    {
+      "detail": "device reports online",
+      "id": "device_online",
+      "remedy": null,
+      "status": "ok",
+      "title": "Device online"
+    },
+    {
+      "detail": "not priming / doesn't need priming",
+      "id": "priming",
+      "remedy": null,
+      "status": "ok",
+      "title": "Priming state"
+    },
+    {
+      "detail": "state=ok (at setpoint)",
+      "id": "thermal_response",
+      "remedy": null,
+      "status": "ok",
+      "title": "Thermal response"
+    },
+    {
+      "detail": "no water-loop/thermal-capacity issue detected.",
+      "id": "thermal_capacity",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water-loop / thermal capacity"
+    },
+    {
+      "detail": "no external-controller conflict detected.",
+      "id": "external_conflict",
+      "remedy": null,
+      "status": "ok",
+      "title": "External controller conflict"
+    },
+    {
+      "detail": "telemetry is updating normally.",
+      "id": "frozen_telemetry",
+      "remedy": null,
+      "status": "ok",
+      "title": "Frozen telemetry"
+    },
+    {
+      "detail": "live=True dry_run=False",
+      "id": "live_mode",
+      "remedy": null,
+      "status": "info",
+      "title": "Live / dry-run mode"
+    },
+    {
+      "detail": "phone not currently streaming (last sample unknown; 886 samples in last hr)",
+      "id": "phone_sensor",
+      "remedy": null,
+      "status": "info",
+      "title": "Phone sensor (iPhone)"
+    },
+    {
+      "detail": "no cloud/timeout errors in the last 10 log lines",
+      "id": "cloud_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep cloud errors"
+    },
+    {
+      "detail": "daemon.err and daemon-crash.log are empty",
+      "id": "recent_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Recent daemon errors"
+    },
+    {
+      "detail": "EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD are set",
+      "id": "eight_sleep_creds",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep credentials"
+    },
+    {
+      "detail": "streaming (last HR sample 1s ago)",
+      "id": "cardiac_sensor",
+      "remedy": null,
+      "status": "ok",
+      "title": "Cardiac sensor (Verity)"
+    },
+    {
+      "detail": "NO measured bed temperature in 5790 samples over the last 2 days -- the thermal loop is running fully OPEN-LOOP, so the commanded water is never checked against a measurement",
+      "id": "bed_temperature",
+      "remedy": "bed temp comes from the trends session timeseries (tempBedC), the same surface as presence -- which is also permanently unavailable on this account. Until it is readable, keep the cooling floor conservative rather than trusting the inversion",
+      "status": "warn",
+      "title": "Bed temperature feedback"
+    },
+    {
+      "detail": "no implausible level jumps in 5790 samples",
+      "id": "device_level_glitch",
+      "remedy": null,
+      "status": "ok",
+      "title": "Device level glitches"
+    },
+    {
+      "detail": "all 3 recent session night(s) reached MAINTENANCE -- awakening prevention and steering were able to run",
+      "id": "maintenance_reached",
+      "remedy": null,
+      "status": "ok",
+      "title": "Sleep maintenance reached"
+    },
+    {
+      "detail": "all 3 recent session(s) ended within 11h of starting",
+      "id": "session_span",
+      "remedy": null,
+      "status": "ok",
+      "title": "Session ended when you got up"
+    },
+    {
+      "detail": "2026-09-07: pre-emption engaged on 55/173 maintenance tick(s) (light_stage x44, anticipatory_recurring x41, hr_creep x25, recurring_wake_window x16)",
+      "id": "preemption_ran",
+      "remedy": null,
+      "status": "ok",
+      "title": "Awakening pre-emption"
+    },
+    {
+      "detail": "2026-09-07: 173/173 maintenance ticks (100%) sat at the WARM ceiling of the comfort band (69.5F)",
+      "id": "comfort_band",
+      "remedy": "if you are waking hot, lower warm_edge_f (currently 69.5F)",
+      "status": "warn",
+      "title": "Comfort-band pinning"
+    },
+    {
+      "detail": "2026-09-07: 8 maintenance tick(s) before pre-emption engaged, but no wake evidence in that window -- nothing to have acted on",
+      "id": "preemption_dead_zone",
+      "remedy": null,
+      "status": "ok",
+      "title": "Pre-emption dead zone"
+    },
+    {
+      "detail": "100% (read 3.5h ago) -- about 25.5h of streaming left (capped at the measured 25.5h full-charge runtime; the 0.7%/h seen between readings was not measured under streaming load)",
+      "id": "wearable_battery",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wearable battery"
+    },
+    {
+      "detail": "not enabled (opt-in personal-offset trial -- off by default)",
+      "id": "thermal_trial",
+      "remedy": null,
+      "status": "info",
+      "title": "Thermal dose-response trial"
+    },
+    {
+      "detail": "no alarm-write refusal recorded",
+      "id": "wake_alarm",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wake alarm (vibration)"
+    },
+    {
+      "detail": "available: thermal ramp, Pod vibration | unavailable: dawn light (Hue not configured), bright therapy lamp",
+      "id": "wake_cue",
+      "remedy": "a dawn light would add a second independent cue; vibration is currently the only one that does not depend on the bed",
+      "status": "info",
+      "title": "Wake cues available"
+    },
+    {
+      "detail": "no subsystem failures recorded",
+      "id": "degraded",
+      "remedy": null,
+      "status": "ok",
+      "title": "Silently skipped subsystems"
+    },
+    {
+      "detail": "2 of 3 missing \u2014 the controller is running on evidence priors: thermal self-test (bed's real heat/cool rates + lags \u2014 sizes the pre-cool lead, onset cascade and wake ramp; without it those use generic presets) | morning check-ins (1/5 \u2014 they are the ground truth the felt-recovery learners personalize against)  (have: comfort sweep)",
+      "id": "calibration",
+      "remedy": "in bed: POST /diag/action/self-test, then the comfort sweep from the dashboard; log a check-in each morning (`sleepctl checkin`). Fix the water loop first \u2014 both in-bed batteries need a loop that can move heat.",
+      "status": "info",
+      "title": "Personal calibration"
+    },
+    {
+      "detail": "14/20 prevention failures happened BEFORE the bed had moved (median arrival 7.3 min, median wake 10.2 min) \u2014 of those, 9 had NO measurable bed movement at all and 5 were beaten by the awakening \u2014 but the most recent of these was 8 days ago, so this is history rather than a live fault (window is 30 days)",
+      "id": "prevention_timing",
+      "remedy": null,
+      "status": "info",
+      "title": "Awakening pre-emption timing"
+    },
+    {
+      "detail": "no calendar configured",
+      "id": "calendar",
+      "remedy": null,
+      "status": "info",
+      "title": "Work calendar (ICS)"
+    },
+    {
+      "detail": "no upcoming shift configured",
+      "id": "shift",
+      "remedy": null,
+      "status": "info",
+      "title": "Shift plan"
+    },
+    {
+      "detail": "daemon.log=906B, daemon.err=0B, watchdog.log=1MB, api.log=307KB, web-build.log=7KB",
+      "id": "log_sizes",
+      "remedy": null,
+      "status": "ok",
+      "title": "Log file sizes"
+    }
+  ],
+  "funnel_url": "https://john-desktop-pavilion-hampton.tail712dd4.ts.net",
+  "generated_utc": "2026-09-08T05:22:32.424228+00:00",
+  "headline": "Bed temperature feedback: NO measured bed temperature in 5790 samples over the last 2 days -- the thermal loop is running fully OPEN-LOOP, so the commanded water is never checked against a measurement",
+  "log_tails": {
+    "health_publish": [
+      "2026-09-08 01:16:22  OK: pushed health-20260908-051619.json",
+      "2026-09-08 01:19:24  ==== health publish starting (root=C:\\Users\\jackk\\SleepController) ====",
+      "2026-09-08 01:19:24  building operational-health snapshot from C:\\Users\\jackk\\SleepController\\sleepctl.db -> C:\\Users\\jackk\\SleepController\\.run\\health-staging\\latest.json",
+      "2026-09-08 01:19:26  health_snapshot: C:\\Users\\jackk\\SleepController\\.run\\health-staging\\latest.json",
+      "2026-09-08 01:19:26  fetching origin in dedicated health clone",
+      "2026-09-08 01:19:27  checking out existing local health branch, syncing to origin/health",
+      "2026-09-08 01:19:27  staged health-20260908-051926.json (+ refreshed latest.json) in C:\\Users\\jackk\\SleepController\\.run\\health-repo",
+      "2026-09-08 01:19:27  pruned old snapshot health-20260901-122820.json",
+      "2026-09-08 01:19:27  pushing health to origin",
+      "2026-09-08 01:19:29  OK: pushed health-20260908-051926.json",
+      "2026-09-08 01:22:32  ==== health publish starting (root=C:\\Users\\jackk\\SleepController) ====",
+      "2026-09-08 01:22:32  building operational-health snapshot from C:\\Users\\jackk\\SleepController\\sleepctl.db -> C:\\Users\\jackk\\SleepController\\.run\\health-staging\\latest.json"
+    ],
+    "verity": [
+      "2026-09-07 21:54:18  Polar Verity forwarder starting (source=verity, mode=auto)",
+      "2026-09-07 21:54:18  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-07 21:54:38  found 'Polar Sense 16961D33' at 24:AC:AC:16:96:1D",
+      "2026-09-07 21:54:38  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-07 21:54:42  connected",
+      "2026-09-07 21:54:42  battery: 100%",
+      "2026-09-07 21:54:45  PMD: start PPI ok",
+      "2026-09-07 21:54:45  PMD: start ACC @52Hz/16bit/8G ok",
+      "2026-09-07 21:54:45  PMD: streaming ACC@52Hz + PPI; forwarding to http://localhost:8000/hr/ingest?\u0001<redacted>",
+      "2026-09-07 21:54:47  API rejected the batch (no usable hr/rr in batch)",
+      "2026-09-07 21:54:47  PMD: PPI warm-up -- Polar documents ~25s to the first batch and HR updates only every ~5s; silence until then is normal",
+      "2026-09-07 21:54:55  API rejected the batch (no usable hr/rr in batch)",
+      "2026-09-07 21:54:59  API rejected the batch (no usable hr/rr in batch)",
+      "2026-09-07 21:55:07  API rejected the batch (no usable hr/rr in batch)",
+      "2026-09-07 21:59:57  PMD: no sensor data for 121s while connected -- dropping the link to force a reconnect",
+      "2026-09-07 21:59:58  PMD: 2 blocked/implausible PPI, 0 malformed frames this session",
+      "2026-09-07 21:59:58  falling back to the generic HR service",
+      "2026-09-07 22:00:00  API rejected the batch (no usable hr/rr in batch)",
+      "2026-09-07 22:00:00  subscribing to HR notifications; forwarding to http://localhost:8000/hr/ingest?\u0001<redacted>"
+    ],
+    "watchdog": [
+      "2026-09-07 21:54:16  preparing database + login user",
+      "2026-09-07 21:54:16  db: db ready",
+      "2026-09-07 21:54:16  supervising; iPhone URL (same WiFi): http://192.168.1.163:3000  login=admin  live=1 dry_run=0",
+      "2026-09-07 21:54:16  auto-update: deploy branch = claude/confident-gates-rg7af0 (from current checkout)",
+      "2026-09-07 21:54:16  CRITICAL: restarting the Bluetooth stack at the forwarder's request (barren_sessions=5)",
+      "2026-09-07 21:54:17  bluetooth: bthserv restarted",
+      "2026-09-07 21:54:17  launched Polar Verity forwarder (verity_forwarder.py)",
+      "2026-09-07 21:54:18  api not listening; starting (restart #1 in window)",
+      "2026-09-07 21:54:21  web not listening; starting (restart #1 in window)",
+      "2026-09-07 21:55:13  smoke test: SMOKE PASS",
+      "2026-09-07 21:55:29  daemon heartbeat 103s stale; restarting (restart #1 in window)",
+      "2026-09-07 21:59:24  daily-backup: recent-backup-exists"
+    ]
+  },
+  "playbook_matches": [
+    {
+      "id": "calendar_ics_unreachable"
+    }
+  ],
+  "preflight": {
+    "available": true,
+    "blocking": [],
+    "degraded": [],
+    "verdict": "GO"
+  },
+  "primary_remedy": "bed temp comes from the trends session timeseries (tempBedC), the same surface as presence -- which is also permanently unavailable on this account. Until it is readable, keep the cooling floor conservative rather than trusting the inversion",
+  "schema": "sleepctl.health/v1",
+  "verdict": "DEGRADED",
+  "version": {
+    "branch": "claude/confident-gates-rg7af0",
+    "sha": "438c53c"
+  },
+  "wearable": {
+    "acc_stage": {
+      "age_s": 12275.2,
+      "ok": false
+    },
+    "available": true,
+    "battery_pct": 100,
+    "headline": "Streaming HR -- no PPI / ACC",
+    "hr_stage": {
+      "age_s": 3.2,
+      "ok": true
+    },
+    "link": {
+      "age_s": null,
+      "shape": null,
+      "state": null,
+      "streams": []
+    },
+    "ppi_stage": {
+      "age_s": 12279.2,
+      "ok": false
+    },
+    "remedy": "a power-cycle usually brings the missing stream back (the PMD service is re-discovered on a fresh connect)",
+    "streams": [
+      "HR"
+    ],
+    "used": {
+      "activity_units": null,
+      "checks": [
+        {
+          "detail": "stager received 665 dense HR samples",
+          "id": "stager_hr",
+          "ok": true
+        },
+        {
+          "detail": "controller HR source: verity",
+          "id": "fusion_hr",
+          "ok": true
+        }
+      ],
+      "controller_state": "maintenance",
+      "hr_source": "verity",
+      "in_session": true,
+      "movement_source": null,
+      "stage_source": "model",
+      "ticking": true
+    },
+    "verdict": "streaming_partial"
+  }
+}

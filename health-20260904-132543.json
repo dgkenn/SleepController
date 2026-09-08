@@ -1,0 +1,386 @@
+{
+  "checks": [
+    {
+      "detail": "commit fb02d3a on claude/confident-gates-rg7af0; web build is up to date",
+      "id": "version",
+      "remedy": null,
+      "status": "info",
+      "title": "Deployed version"
+    },
+    {
+      "detail": "up to date with origin/claude/confident-gates-rg7af0",
+      "id": "auto_update",
+      "remedy": null,
+      "status": "ok",
+      "title": "Auto-update currency"
+    },
+    {
+      "detail": "last self-update: update to 'claude/confident-gates-rg7af0' succeeded (validate=PASS) -- restart requested (at 2026-09-01T22:17:32.0037515-04:00) | last smoke test: SMOKE PASS",
+      "id": "self_update",
+      "remedy": null,
+      "status": "ok",
+      "title": "Self-update / deploy history"
+    },
+    {
+      "detail": "health: OK 20260904-131535 health-20260904-131535.json (10 min ago) | night-data: OK 20260904-132101 14 (5 min ago)",
+      "id": "publishers",
+      "remedy": null,
+      "status": "ok",
+      "title": "GitHub relay publishers"
+    },
+    {
+      "detail": "no accelerometer counts in the last 15 min -- the actigraphy wake detector (6/6 vs the stager's 2/6) is inactive; HR-only staging is in use",
+      "id": "actigraphy",
+      "remedy": "check the forwarder log for 'start ACC ... ok'; PMD ACC can be refused independently of PPI/HR",
+      "status": "info",
+      "title": "Wearable accelerometer"
+    },
+    {
+      "detail": "looping (heartbeat 17s ago)",
+      "id": "verity_forwarder",
+      "remedy": null,
+      "status": "ok",
+      "title": "Verity forwarder process"
+    },
+    {
+      "detail": "no wearable data for 53h -- that is two nights with no stage, heart rate or movement; the forwarder has failed to connect 2912 times in a row",
+      "id": "wearable_reachable",
+      "remedy": "power-cycle the Verity (hold the button until it re-advertises) and check it is not held by the Polar app -- a band connected elsewhere stops advertising",
+      "status": "fail",
+      "title": "Wearable reachable"
+    },
+    {
+      "detail": "last heartbeat 0s ago",
+      "id": "daemon_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Control daemon heartbeat"
+    },
+    {
+      "detail": "last heartbeat 0s ago",
+      "id": "watchdog_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Watchdog heartbeat"
+    },
+    {
+      "detail": "this request was served, so the API is up",
+      "id": "api",
+      "remedy": null,
+      "status": "ok",
+      "title": "API process"
+    },
+    {
+      "detail": "something is listening on 127.0.0.1:3000",
+      "id": "web",
+      "remedy": null,
+      "status": "ok",
+      "title": "Web UI (port 3000)"
+    },
+    {
+      "detail": "last update 7s ago",
+      "id": "runtime_state_fresh",
+      "remedy": null,
+      "status": "ok",
+      "title": "Runtime state freshness"
+    },
+    {
+      "detail": "reservoir has water",
+      "id": "device_water",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water reservoir"
+    },
+    {
+      "detail": "device reports online",
+      "id": "device_online",
+      "remedy": null,
+      "status": "ok",
+      "title": "Device online"
+    },
+    {
+      "detail": "not priming / doesn't need priming",
+      "id": "priming",
+      "remedy": null,
+      "status": "ok",
+      "title": "Priming state"
+    },
+    {
+      "detail": "state=ok (at setpoint)",
+      "id": "thermal_response",
+      "remedy": null,
+      "status": "ok",
+      "title": "Thermal response"
+    },
+    {
+      "detail": "no water-loop/thermal-capacity issue detected.",
+      "id": "thermal_capacity",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water-loop / thermal capacity"
+    },
+    {
+      "detail": "external_setpoint_conflict: the device's own schedule is active (activity='temperatureControl', target_level=-3) and disagrees with our commanded -54.",
+      "id": "external_conflict",
+      "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~-3). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+      "status": "warn",
+      "title": "External controller conflict"
+    },
+    {
+      "detail": "telemetry is updating normally.",
+      "id": "frozen_telemetry",
+      "remedy": null,
+      "status": "ok",
+      "title": "Frozen telemetry"
+    },
+    {
+      "detail": "live=True dry_run=False",
+      "id": "live_mode",
+      "remedy": null,
+      "status": "info",
+      "title": "Live / dry-run mode"
+    },
+    {
+      "detail": "no phone sensor data received yet (Sensor Logger not streaming)",
+      "id": "phone_sensor",
+      "remedy": "point Sensor Logger at /bcg/ingest \u2014 see deploy/IPHONE_SENSOR.md",
+      "status": "info",
+      "title": "Phone sensor (iPhone)"
+    },
+    {
+      "detail": "no cloud/timeout errors in the last 13 log lines",
+      "id": "cloud_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep cloud errors"
+    },
+    {
+      "detail": "daemon.err and daemon-crash.log are empty",
+      "id": "recent_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Recent daemon errors"
+    },
+    {
+      "detail": "EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD are set",
+      "id": "eight_sleep_creds",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep credentials"
+    },
+    {
+      "detail": "not currently streaming (last sample 189531s ago)",
+      "id": "cardiac_sensor",
+      "remedy": null,
+      "status": "info",
+      "title": "Cardiac sensor (Verity)"
+    },
+    {
+      "detail": "NO measured bed temperature in 6770 samples over the last 2 days -- the thermal loop is running fully OPEN-LOOP, so the commanded water is never checked against a measurement",
+      "id": "bed_temperature",
+      "remedy": "bed temp comes from the trends session timeseries (tempBedC), the same surface as presence -- which is also permanently unavailable on this account. Until it is readable, keep the cooling floor conservative rather than trusting the inversion",
+      "status": "warn",
+      "title": "Bed temperature feedback"
+    },
+    {
+      "detail": "6 device-level jump(s) larger than 20 levels between consecutive samples -- 2 one-sample spike(s) that reverted and 2 sustained step(s). A sustained step is not something the bed can slew to, so something else wrote it. Worst: 10 -> -100 at 2026-09-03T18:45:21",
+      "id": "device_level_glitch",
+      "remedy": "check for another controller (the Eight Sleep app's own schedule) writing to the pod; treat these samples as suspect in any range/exposure analysis",
+      "status": "warn",
+      "title": "Device level glitches"
+    },
+    {
+      "detail": "all 5 recent session night(s) reached MAINTENANCE -- awakening prevention and steering were able to run",
+      "id": "maintenance_reached",
+      "remedy": null,
+      "status": "ok",
+      "title": "Sleep maintenance reached"
+    },
+    {
+      "detail": "1 of 5 recent session(s) ran longer than 11h -- 2026-08-29 13.5h (last tick 05:18). The bed was being conditioned for nobody, and every statistic for 2026-08-29 includes waking daytime physiology",
+      "id": "session_span",
+      "remedy": "check the bed-exit detector (sleepctl/controller/bed_exit.py), the wake-window close (wake_window_close_min) and session_abandon_min",
+      "status": "warn",
+      "title": "Session ended when you got up"
+    },
+    {
+      "detail": "2026-09-01: pre-emption engaged on 1053/775 maintenance tick(s) (hr_creep x1801, recurring_wake_window x909, circadian_nadir x904, back_half_of_night x903)",
+      "id": "preemption_ran",
+      "remedy": null,
+      "status": "ok",
+      "title": "Awakening pre-emption"
+    },
+    {
+      "detail": "2026-09-03: no in-maintenance commands to judge",
+      "id": "comfort_band",
+      "remedy": null,
+      "status": "info",
+      "title": "Comfort-band pinning"
+    },
+    {
+      "detail": "2026-09-03: pre-emption was available from the first maintenance tick",
+      "id": "preemption_dead_zone",
+      "remedy": null,
+      "status": "ok",
+      "title": "Pre-emption dead zone"
+    },
+    {
+      "detail": "32% (read 59.3h ago) -- about 8.2h of streaming left (scaled from the measured 25.5h full-charge runtime) -- unlikely to last a full night",
+      "id": "wearable_battery",
+      "remedy": "Charge the band BEFORE bed, powered OFF (on the charger while running it may not gain net charge). It died mid-sleep at 00:01 on 2026-08-06 after 25.5h of continuous streaming.",
+      "status": "warn",
+      "title": "Wearable battery"
+    },
+    {
+      "detail": "not enabled (opt-in personal-offset trial -- off by default)",
+      "id": "thermal_trial",
+      "remedy": null,
+      "status": "info",
+      "title": "Thermal dose-response trial"
+    },
+    {
+      "detail": "no alarm-write refusal recorded",
+      "id": "wake_alarm",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wake alarm (vibration)"
+    },
+    {
+      "detail": "available: thermal ramp, Pod vibration | unavailable: dawn light (Hue not configured), bright therapy lamp",
+      "id": "wake_cue",
+      "remedy": "a dawn light would add a second independent cue; vibration is currently the only one that does not depend on the bed",
+      "status": "info",
+      "title": "Wake cues available"
+    },
+    {
+      "detail": "no subsystem failures recorded",
+      "id": "degraded",
+      "remedy": null,
+      "status": "ok",
+      "title": "Silently skipped subsystems"
+    },
+    {
+      "detail": "2 of 3 missing \u2014 the controller is running on evidence priors: thermal self-test (bed's real heat/cool rates + lags \u2014 sizes the pre-cool lead, onset cascade and wake ramp; without it those use generic presets) | morning check-ins (1/5 \u2014 they are the ground truth the felt-recovery learners personalize against)  (have: comfort sweep)",
+      "id": "calibration",
+      "remedy": "in bed: POST /diag/action/self-test, then the comfort sweep from the dashboard; log a check-in each morning (`sleepctl checkin`). Fix the water loop first \u2014 both in-bed batteries need a loop that can move heat.",
+      "status": "info",
+      "title": "Personal calibration"
+    },
+    {
+      "detail": "17/23 prevention failures happened BEFORE the bed had moved (median arrival 10.7 min, median wake 10.0 min) \u2014 of those, 12 had NO measurable bed movement at all and 5 were beaten by the awakening",
+      "id": "prevention_timing",
+      "remedy": "lead is NOT the constraint: it is already 28.5 min and the bed arrives in 10.7 min, so there was ample slack. Adding lead cannot help. Look instead at whether the pre-cool FIRES late (awakening prediction) or the bed is being fought/stalled (external schedule conflict, thermal response) \u2014 and note this check assumes cooling PREVENTS awakenings, which is worth re-checking if cold is itself waking you",
+      "status": "warn",
+      "title": "Awakening pre-emption timing"
+    },
+    {
+      "detail": "no calendar configured",
+      "id": "calendar",
+      "remedy": null,
+      "status": "info",
+      "title": "Work calendar (ICS)"
+    },
+    {
+      "detail": "no upcoming shift configured",
+      "id": "shift",
+      "remedy": null,
+      "status": "info",
+      "title": "Shift plan"
+    },
+    {
+      "detail": "daemon.log=2KB, daemon.err=0B, watchdog.log=1MB, api.log=587KB, web-build.log=3KB",
+      "id": "log_sizes",
+      "remedy": null,
+      "status": "ok",
+      "title": "Log file sizes"
+    }
+  ],
+  "funnel_url": null,
+  "generated_utc": "2026-09-04T13:25:39.750479+00:00",
+  "headline": "Wearable reachable: no wearable data for 53h -- that is two nights with no stage, heart rate or movement; the forwarder has failed to connect 2912 times in a row",
+  "log_tails": {
+    "verity": [
+      "2026-09-04 09:17:21  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2905)",
+      "2026-09-04 09:17:46  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:18:06  no match among 5 advertising device(s): ?@D8:0F:99:2D:8A:10, ?@28:39:DE:20:18:C4, TY@D8:1F:12:19:D1:8B, ?@A4:30:7A:D7:42:A4, ?@6A:7C:9D:DE:84:16",
+      "2026-09-04 09:18:06  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:18:06  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:18:26  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2906)",
+      "2026-09-04 09:18:51  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:19:11  no match among 5 advertising device(s): ?@28:39:DE:20:18:C4, ?@D8:0F:99:2D:8A:10, TY@D8:1F:12:19:D1:8B, ?@A4:30:7A:D7:42:A4, ?@D5:BE:5F:2A:A4:D2",
+      "2026-09-04 09:19:11  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:19:11  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:19:31  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2907)",
+      "2026-09-04 09:19:56  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:20:16  no match among 7 advertising device(s): ?@28:39:DE:20:18:C4, ?@D8:0F:99:2D:8A:10, ?@A4:30:7A:D7:42:A4, TY@D8:1F:12:19:D1:8B, ?@D5:BE:5F:2A:A4:D2, ?@2A:6F:E1:11:86:34, ?@6A:7C:9D:DE:84:16",
+      "2026-09-04 09:20:16  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:20:16  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:20:37  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2908)",
+      "2026-09-04 09:21:02  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:21:22  no match among 6 advertising device(s): ?@A4:30:7A:D7:42:A4, TY@D8:1F:12:19:D1:8B, ?@D8:0F:99:2D:8A:10, ?@2A:6F:E1:11:86:34, ?@6A:7C:9D:DE:84:16, ?@D5:BE:5F:2A:A4:D2",
+      "2026-09-04 09:21:22  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:21:22  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:21:42  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2909)",
+      "2026-09-04 09:22:07  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:22:27  no match among 5 advertising device(s): ?@A4:30:7A:D7:42:A4, ?@2A:6F:E1:11:86:34, TY@D8:1F:12:19:D1:8B, ?@D8:0F:99:2D:8A:10, ?@6A:7C:9D:DE:84:16",
+      "2026-09-04 09:22:27  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:22:27  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:22:47  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2910)",
+      "2026-09-04 09:23:12  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:23:32  no match among 5 advertising device(s): TY@D8:1F:12:19:D1:8B, ?@2A:6F:E1:11:86:34, ?@D8:0F:99:2D:8A:10, ?@A4:30:7A:D7:42:A4, GVH5075_702A@A4:C1:38:C5:70:2A",
+      "2026-09-04 09:23:32  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:23:32  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:23:52  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2911)",
+      "2026-09-04 09:24:17  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:24:37  no match among 6 advertising device(s): ?@A4:30:7A:D7:42:A4, TY@D8:1F:12:19:D1:8B, ?@D8:0F:99:2D:8A:10, ?@2A:6F:E1:11:86:34, ?@DE:29:89:54:5C:57, ?@6A:7C:9D:DE:84:16",
+      "2026-09-04 09:24:37  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:24:37  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-04 09:24:57  session error (BleakDeviceNotFoundError: Device with address 24:AC:AC:16:96:1D was not found.); reconnecting in 25s (consecutive failures: 2912)",
+      "2026-09-04 09:25:22  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-04 09:25:42  no match among 5 advertising device(s): ?@A4:30:7A:D7:42:A4, ?@2A:6F:E1:11:86:34, ?@D8:0F:99:2D:8A:10, Computer Room Lamp@D5:BE:5F:2A:A4:D2, TY@D8:1F:12:19:D1:8B",
+      "2026-09-04 09:25:42  scan found nothing; trying the last known address 24:AC:AC:16:96:1D directly (a band connected to another app stops advertising but stays connectable)",
+      "2026-09-04 09:25:42  connecting to 24:AC:AC:16:96:1D ..."
+    ]
+  },
+  "playbook_matches": [
+    {
+      "id": "calendar_ics_unreachable"
+    },
+    {
+      "id": "external_schedule_conflict"
+    }
+  ],
+  "preflight": {
+    "available": true,
+    "blocking": [
+      {
+        "detail": "no wearable physiology \u2014 not currently streaming (last sample 189531s ago)",
+        "id": "cardiac_sensor",
+        "remedy": "run scripts/verity-setup.ps1",
+        "title": "Cardiac sensor (Verity)"
+      }
+    ],
+    "degraded": [
+      {
+        "detail": "something else is also commanding the Pod \u2014 external_setpoint_conflict: the device's own schedule is active (activity='temperatureControl', target_level=-3) and disagrees with our commanded -54.",
+        "id": "external_conflict",
+        "remedy": "The Eight Sleep app's own schedule (or another controller) is fighting the setpoint (holding ~-3). Turn off the schedule/Autopilot in the Eight Sleep app so this controller has sole control.",
+        "title": "External controller conflict"
+      },
+      {
+        "detail": "awakening pre-emption is arriving too late to work \u2014 17/23 prevention failures happened BEFORE the bed had moved (median arrival 10.7 min, median wake 10.0 min) \u2014 of those, 12 had NO measurable bed movement at all and 5 were beaten by the awakening",
+        "id": "prevention_timing",
+        "remedy": "lead is NOT the constraint: it is already 28.5 min and the bed arrives in 10.7 min, so there was ample slack. Adding lead cannot help. Look instead at whether the pre-cool FIRES late (awakening prediction) or the bed is being fought/stalled (external schedule conflict, thermal response) \u2014 and note this check assumes cooling PREVENTS awakenings, which is worth re-checking if cold is itself waking you",
+        "title": "Awakening pre-emption timing"
+      }
+    ],
+    "verdict": "NO_GO"
+  },
+  "primary_remedy": "power-cycle the Verity (hold the button until it re-advertises) and check it is not held by the Polar app -- a band connected elsewhere stops advertising",
+  "schema": "sleepctl.health/v1",
+  "verdict": "DEGRADED",
+  "version": {
+    "branch": "claude/confident-gates-rg7af0",
+    "sha": "fb02d3a"
+  }
+}
