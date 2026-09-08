@@ -269,8 +269,41 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "log_tails": _log_tails(run_dir),
         "funnel_url": _funnel_url(run_dir),
         "wearable": _wearable_block(repo, run_dir),
+        "controller": _controller_block(repo),
     }
     return scrub(snapshot)
+
+
+def _controller_block(repo) -> dict:
+    """The thermal anchors in force: the learned setpoint profile, the comfort band, and the
+    profile the last decision was actually computed from. Operational numbers only (no
+    physiology). The 2026-09-07 night ran every intent against a neutral nobody could see."""
+    out: dict = {"available": True}
+    try:
+        sp = repo.latest_setpoints()
+        out["learned_setpoints"] = ({
+            "neutral_f": sp.neutral_f, "deep_bias_f": sp.deep_bias_f,
+            "rem_warm_offset_f": sp.rem_warm_offset_f, "wake_ramp_f": sp.wake_ramp_f,
+            "source": sp.source, "version": sp.version,
+        } if sp is not None else None)
+    except Exception as exc:
+        out["learned_setpoints"] = {"error": repr(exc)}
+    try:
+        prof = repo.get_comfort_profile() or {}
+        out["comfort_band"] = {k: prof.get(k) for k in ("cool_edge_f", "neutral_f", "warm_edge_f", "source")}
+    except Exception as exc:
+        out["comfort_band"] = {"error": repr(exc)}
+    try:
+        import json as _json
+        row = repo.conn.execute(
+            "SELECT ts, log_payload FROM decisions ORDER BY id DESC LIMIT 1").fetchone()
+        pl = _json.loads(row[1]) if row and row[1] else {}
+        out["in_force"] = {"decision_ts": row[0] if row else None,
+                           "thermal_profile": pl.get("thermal_profile"),
+                           "onset": pl.get("onset")}
+    except Exception as exc:
+        out["in_force"] = {"error": repr(exc)}
+    return out
 
 
 def _wearable_block(repo, run_dir) -> dict:

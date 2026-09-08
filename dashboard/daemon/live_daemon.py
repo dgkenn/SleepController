@@ -600,7 +600,8 @@ class LiveDashboardDaemon:
             context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
             prof, info = apply_trial_arm(
                 self.repo, self.cfg, datetime.now().date().isoformat(), context, base)
-            self.cycle.controller.set_setpoints(prof)
+            # The dose trial shifts neutral on purpose; every other caller keeps the measured one.
+            self.cycle.controller.set_setpoints(prof, keep_measured_neutral=False)
             self.thermal_trial_arm = info
             self._log(f"thermal dose-trial: offset {info.get('offset_f'):+.2f}F "
                       f"(eligible={info.get('eligible')})")

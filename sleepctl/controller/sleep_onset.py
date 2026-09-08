@@ -103,6 +103,20 @@ class SleepOnsetDetector:
         self._confirmed = None
         self._entry_hrs = []
 
+    def status(self) -> dict:
+        """The detector's working state for the per-tick decision log: what it saw this tick,
+        how long the current qualifying run is, and the awake reference it measured against."""
+        return {
+            "signals": list(getattr(self, "_last_sig", []) or []),
+            "run_len": self._run_len,
+            "run_start": self._run_start.isoformat() if self._run_start else None,
+            "transition_hits": self._transition_hits,
+            "awake_hr_ref": (round(float(self._last_base_hr), 1)
+                             if getattr(self, "_last_base_hr", None) is not None else None),
+            "entry_ref_n": len(self._entry_hrs),
+            "confirmed": self._confirmed is not None,
+        }
+
     def mark_confirmed(self, ts: datetime, latency_min: Optional[float] = None) -> None:
         """Adopt an onset established by a PREVIOUS process (a daemon restart mid-night). The
         detector then reports it exactly as if it had confirmed it itself."""
@@ -229,6 +243,7 @@ class SleepOnsetDetector:
 
         base = self._awake_baseline(recent or [])
         sig = self._signals(frame, base, recent or [])
+        self._last_sig, self._last_base_hr = list(sig), base.get("hr")
         qualifies = (
             frame.stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
             and len(sig) >= self.min_signals

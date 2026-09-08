@@ -266,3 +266,19 @@ def test_snapshot_survives_a_broken_wearable_pipeline(repo, monkeypatch):
     snap = health_snapshot.build_health_snapshot(repo)
     assert snap["wearable"]["available"] is False
     assert "checks" in snap
+
+
+def test_the_controller_block_publishes_the_thermal_anchors_in_force(repo):
+    from sleepctl.models import SetpointProfile
+    repo.save_setpoints(SetpointProfile(neutral_f=71.5, deep_bias_f=70.5, rem_warm_offset_f=1.5,
+                                        wake_ramp_f=74.0, composite_bed_weight=0.75, source="ml"))
+    repo.conn.execute(
+        "INSERT INTO decisions (ts, night_date, state, action, reason, log_payload) VALUES (?,?,?,?,?,?)",
+        ("2026-09-08T00:00:00", "2026-09-07", "maintenance", "hold", "x",
+         json.dumps({"thermal_profile": {"neutral_f": 69.0, "neutral_is_measured": True}})))
+    repo.conn.commit()
+    snap = health_snapshot.build_health_snapshot(repo)
+    c = snap["controller"]
+    assert c["learned_setpoints"]["neutral_f"] == 71.5
+    assert c["in_force"]["thermal_profile"]["neutral_f"] == 69.0
+    assert "comfort_band" in c

@@ -56,6 +56,7 @@ class ThermalController:
         # True once a MEASURED personal neutral is adopted (see set_measured_neutral): the
         # population hot-sleeper prior must not then be stacked on top of it.
         self.neutral_is_measured: bool = False
+        self.measured_neutral_f: Optional[float] = None
         # Signed maintenance "settle" nudge (°F vs neutral) used by SETTLE_COOL; <0 cools, >0
         # warms. Learnable per phenotype (Raymann warming vs Fronczek cooling — see config).
         self.settle_nudge_f: float = cfg.tunables.maintenance_settle_nudge_f
@@ -92,6 +93,7 @@ class ThermalController:
         Keeps the profile and the flag in one place so they cannot drift apart."""
         self.profile.neutral_f = float(neutral_f)
         self.neutral_is_measured = True
+        self.measured_neutral_f = float(neutral_f)
 
     def set_ambient_bias(self, bias_f: float) -> None:
         """Set the forecast-driven feed-forward bias, clamped to the configured cap."""

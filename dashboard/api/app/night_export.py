@@ -351,6 +351,25 @@ def build_night_export(repo, night_date: str) -> dict:
         }
         in_maint = [r for r in drows if str(r["state"]) in ("maintenance", "wake_recovery")]
         out["preemption_events"] = ticks
+        # The onset detector's working state on every induction tick until it confirmed, and
+        # the setpoint profile the thermal targets were anchored to. 2026-09-07 needed both.
+        onset_trace, profile_seen = [], None
+        for r in drows:
+            try:
+                pl = json.loads(r["log_payload"]) if r["log_payload"] else {}
+            except Exception:
+                continue
+            if profile_seen is None and pl.get("thermal_profile"):
+                profile_seen = pl.get("thermal_profile")
+            o = pl.get("onset")
+            if o and len(onset_trace) < 400:
+                onset_trace.append({"ts": r["ts"], "stage": pl.get("stage"),
+                                    "conf": pl.get("stage_confidence"), "signals": o.get("signals"),
+                                    "run_len": o.get("run_len"), "hits": o.get("transition_hits"),
+                                    "awake_hr_ref": o.get("awake_hr_ref"),
+                                    "entry_ref_n": o.get("entry_ref_n")})
+        out["onset_trace"] = onset_trace
+        out["thermal_profile"] = profile_seen
         # Why each maintenance tick did what it did, as a pattern histogram. The events above
         # say WHAT the pre-empt wanted; this says which layer (clamp, cap, guardrail, data
         # quality, stabilizer) had the last word -- the question 2026-09-07 could not answer.

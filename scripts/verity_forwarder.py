@@ -182,6 +182,9 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
     return parsed
 
 
+_LINK_REPOST_S = 120.0  # re-assert "connected" this often while streaming
+
+
 def _post_link(args, state: str, streams=None) -> None:
     """Tell the API the LINK changed, so the person wearing the band can be told too.
 
@@ -547,9 +550,15 @@ async def _hr_session(client, args) -> None:
             fresh.note()
 
     async def _flusher(client) -> None:
+        t0 = time.monotonic()
+        link_epoch = 0
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
             _beat(_repo_root())
+            epoch = int((time.monotonic() - t0) // _LINK_REPOST_S)
+            if epoch != link_epoch:          # see the PMD loop: a connect-time post can be lost
+                link_epoch = epoch
+                _post_link(args, "connected", ["HR/RR (generic 0x180D)"])
             # Layer 1a: never forward a stale reading. Without this the last value seen was
             # re-sent every batch forever once notifications stopped.
             hr = last_hr["v"]
@@ -759,6 +768,12 @@ async def _pmd_session(client, args) -> bool:
                         batch_rr.append(float(s["ppi_ms"]))
                     else:
                         stats["blocked"] += 1
+            else:
+                # A frame of a type we did not start is not silence -- it must be visible, or a
+                # firmware that answers a start with a new frame type reads as "no sensor data".
+                frames[f"type_{mtype}"] = frames.get(f"type_{mtype}", 0) + 1
+                if frames[f"type_{mtype}"] == 1:
+                    _log(f"PMD: data frame of unexpected measurement type {mtype} (ignored)")
         except Exception as exc:  # malformed frame -> log sparsely, never break the stream
             stats["bad_frames"] += 1
             if stats["bad_frames"] <= 5 or stats["bad_frames"] % 100 == 0:
@@ -866,9 +881,17 @@ async def _pmd_session(client, args) -> bool:
 
         t0 = time.monotonic()
         warned: set = set()
+        link_epoch = 0
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
             _beat(_repo_root())
+            # Re-assert the link state periodically. The one-shot post at connect time is lost
+            # when the API is mid-restart (2026-09-07 21:54: forwarder connected 24 s after a
+            # deploy took the API down), and the UI then showed "no link" all night.
+            epoch = int((time.monotonic() - t0) // _LINK_REPOST_S)
+            if epoch != link_epoch:
+                link_epoch = epoch
+                _post_link(args, "connected", sources)
             hr = last_hr["v"]
             # Layer 1a: a reading older than hr_max_age is not current physiology -- do not
             # forward it. Otherwise a frozen value is re-POSTed every batch as though live.
@@ -990,6 +1013,7 @@ async def _pmd_session(client, args) -> bool:
             await client.stop_notify(pmd.PMD_CONTROL_UUID)
         except Exception:
             pass
+        _log("PMD: frames this session " + " ".join(f"{k}={v}" for k, v in frames.items()))
         if stats["blocked"] or stats["bad_frames"]:
             _log(f"PMD: {stats['blocked']} blocked/implausible PPI, "
                  f"{stats['bad_frames']} malformed frames this session")
@@ -1036,6 +1060,13 @@ async def _run_once(args, env) -> None:
         client_kwargs["winrt"] = {"use_cached_services": False}
     async with BleakClient(address, **client_kwargs) as client:
         _log("connected")
+        try:
+            # The negotiated MTU decides whether high-rate PMD notifications (ACC at 52 Hz is
+            # ~200-byte frames) can be delivered at all. Logged once per link so a silent data
+            # channel can be told apart from a refused one.
+            _log(f"link: mtu={getattr(client, 'mtu_size', None)}")
+        except Exception:
+            pass
         # Only remembered once a connection actually OPENED, so we never cache a bad guess.
         # This is what makes the scan-miss fallback above work at all.
         _remember_address(address)

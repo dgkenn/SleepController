@@ -1538,11 +1538,54 @@ class SleepController:
         from dataclasses import replace
         self.thermal.profile = replace(self.thermal.profile, wake_ramp_f=float(wake_f))
 
-    def set_setpoints(self, profile) -> None:
+    #: A deep-bias anchor must sit at least this far BELOW neutral, or "deepen" warms.
+    DEEP_BIAS_MIN_BELOW_NEUTRAL_F = 0.5
+
+    def set_setpoints(self, profile, keep_measured_neutral: bool = True) -> None:
         """Swap the active SetpointProfile for the night (e.g. an experiment arm applied on top
-        of the learned setpoint). No-op on None so callers can pass through safely."""
-        if profile is not None:
-            self.thermal.profile = profile
+        of the learned setpoint). No-op on None so callers can pass through safely.
+
+        The MEASURED neutral wins. The daemon adopts the comfort sweep's neutral first and then
+        applies the learned setpoint profile, which carries its own ``neutral_f`` -- one the
+        policy learners have been nudging for weeks against the OLD, superseded band. Applied
+        whole, it silently replaced 69.0 F with a warmer learned value, and on 2026-09-07 every
+        maintenance intent resolved at or above the 69.5 F comfort ceiling: settle-cool landed
+        on 69.5 unclamped, deep-bias and REM targets were clamped down to it, and 482 ticks
+        never moved the water. A learned profile may still shape the offsets around neutral;
+        it may not move the anchor a measurement set. ``keep_measured_neutral=False`` is for the
+        one caller that shifts neutral on purpose (the thermal dose trial).
+
+        The deep-bias anchor is bounded below neutral for the same reason: a "deepen" that
+        resolves warmer than neutral is not a deepen."""
+        if profile is None:
+            return
+        from dataclasses import replace as _replace
+        measured = getattr(self.thermal, "measured_neutral_f", None)
+        if keep_measured_neutral and measured is not None and self.thermal.neutral_is_measured:
+            if abs(float(profile.neutral_f) - float(measured)) > 1e-9:
+                self.last_setpoint_override = {
+                    "learned_neutral_f": float(profile.neutral_f), "kept_neutral_f": float(measured)}
+            profile = _replace(profile, neutral_f=float(measured))
+        cap = float(profile.neutral_f) - self.DEEP_BIAS_MIN_BELOW_NEUTRAL_F
+        if profile.deep_bias_f > cap:
+            profile = _replace(profile, deep_bias_f=cap)
+        self.thermal.profile = profile
+
+    def thermal_profile_summary(self) -> dict:
+        p = getattr(self.thermal, "profile", None)
+        if p is None:
+            return {}
+        return {
+            "neutral_f": round(float(p.neutral_f), 2),
+            "deep_bias_f": round(float(p.deep_bias_f), 2),
+            "rem_warm_offset_f": round(float(p.rem_warm_offset_f), 2),
+            "wake_ramp_f": round(float(p.wake_ramp_f), 2),
+            "source": getattr(p, "source", None), "version": getattr(p, "version", None),
+            "neutral_is_measured": bool(getattr(self.thermal, "neutral_is_measured", False)),
+            "settle_nudge_f": round(float(getattr(self.thermal, "settle_nudge_f", 0.0) or 0.0), 2),
+            "ambient_bias_f": round(float(getattr(self.thermal, "ambient_bias_f", 0.0) or 0.0), 2),
+            "override": getattr(self, "last_setpoint_override", None),
+        }
 
     def set_wake_profile(self, profile=None, lead_profile=None) -> None:
         """Attach the learned per-user awakening phenotype + cooling lead-times to the
@@ -1619,6 +1662,14 @@ class SleepController:
             #   "model"     => the learned wearable stager (HR -> stage; PhysioNet-trained)
             #   "heuristic" => the interpretable HR/HRV/movement fallback
             "stage_source": self._stage_source if self._stage_estimated else "sensor",
+            # The setpoint profile the thermal targets were computed from THIS tick, and the
+            # onset detector's working state while onset is still pending. Both are the
+            # questions the 2026-09-07 night could not answer from its own record: which neutral
+            # every intent was anchored to, and why a 2-hour induction never qualified.
+            "thermal_profile": self.thermal_profile_summary(),
+            "onset": (self.onset_detector.status()
+                      if (self._sleep_onset_time is None and self.sm.state in (
+                          ControllerState.INDUCTION, ControllerState.CALIBRATION)) else None),
             # WHAT THE WEARABLE ACTUALLY FED THIS TICK. "Streaming" at the ingest end says nothing
             # about whether the controller consumed it: the dense series only reaches the stager
             # through the daemon's read_history hook, and the accelerometer only counts when its

@@ -365,6 +365,8 @@ class Tunables:
     deep_earliest_min: float = 8.0
     # Sleep resumes through LIGHT and descends from there; it does not resume in REM.
     reentry_light_min: float = 5.0
+    # A DEEP bout begins only after this many continuous minutes of LIGHT (see hypnogram.py).
+    deep_reentry_light_min: float = 3.0
     # Learned wearable stager (sleepctl/ml/sleep_staging, trained on PhysioNet sleep-accel). Preferred
     # over the heuristic above when its weights are bundled and enough HR history exists; falls back
     # to the heuristic otherwise. Confidence capped below a real Pod stage (staging from a wrist HR

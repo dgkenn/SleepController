@@ -187,3 +187,20 @@ def test_preempting_ticks_carry_their_reason_and_the_night_carries_a_reason_hist
     hist = out["decision_reasons"]["maintenance"]
     assert any(h["reason"].endswith("clamped to band (was #F)") and h["n"] == 3 for h in hist), hist
     assert out["trial_arms"]["efficacy"]["arm"] == "active"
+
+
+def test_the_onset_trace_and_thermal_profile_are_exported(repo):
+    from app import night_export
+    night = "2026-09-07"
+    for i in range(4):
+        pl = {"stage": "light", "stage_confidence": 0.6,
+              "thermal_profile": {"neutral_f": 71.5, "neutral_is_measured": False},
+              "onset": {"signals": ["asleep_stage"], "run_len": i, "transition_hits": 0,
+                        "awake_hr_ref": 70.2, "entry_ref_n": 8, "confirmed": False}}
+        repo.conn.execute(
+            "INSERT INTO decisions (ts, night_date, state, action, reason, log_payload) VALUES (?,?,?,?,?,?)",
+            (f"2026-09-07T21:{42+i}:00", night, "induction", "hold", "x", json.dumps(pl)))
+    repo.conn.commit()
+    out = night_export.build_night_export(repo, night)
+    assert len(out["onset_trace"]) == 4 and out["onset_trace"][0]["awake_hr_ref"] == 70.2
+    assert out["thermal_profile"]["neutral_f"] == 71.5

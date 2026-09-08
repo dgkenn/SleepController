@@ -74,12 +74,16 @@ class HypnogramConstraint:
     def __init__(self) -> None:
         self._last_awake_at: Optional[datetime] = None
         self._seen_light_since_awake_at: Optional[datetime] = None
+        self._last_adopted: Optional[SleepStage] = None
+        self._light_run_start: Optional[datetime] = None
         self.reclassified: dict = {}
         self.last_reason: Optional[str] = None
 
     def reset(self) -> None:
         self._last_awake_at = None
         self._seen_light_since_awake_at = None
+        self._last_adopted = None
+        self._light_run_start = None
         self.reclassified = {}
         self.last_reason = None
 
@@ -90,6 +94,14 @@ class HypnogramConstraint:
             self._seen_light_since_awake_at = None
         elif stage is SleepStage.LIGHT and self._seen_light_since_awake_at is None:
             self._seen_light_since_awake_at = now
+        # Continuous LIGHT run, for the deep re-entry rule below.
+        if stage is SleepStage.LIGHT:
+            if self._light_run_start is None:
+                self._light_run_start = now
+        elif stage is not SleepStage.UNKNOWN:
+            self._light_run_start = None
+        if stage is not SleepStage.UNKNOWN:
+            self._last_adopted = stage
 
     def apply(self, stage: SleepStage, confidence: Optional[float], now: datetime, cfg,
               sleep_onset_time: Optional[datetime] = None) -> HypnogramVerdict:
@@ -113,6 +125,19 @@ class HypnogramConstraint:
             if since_onset < floor:
                 reason = ("rem_too_early_after_onset" if stage is SleepStage.REM
                           else "deep_too_early_after_onset")
+        if reason is None and stage is SleepStage.DEEP and self._last_adopted is not None \
+                and self._last_adopted is not SleepStage.DEEP:
+            # Deep sleep is entered THROUGH light sleep, and a real descent takes minutes. A DEEP
+            # label one minute after the previous deep bout ended is the same physiology scored
+            # twice across the boundary, not a new bout. Measured 2026-09-08 04:01-04:32 (wake
+            # window, heart-rate-only staging): deep/light flipped every 1-5 minutes, the DEEP
+            # labels riding on single low-HR ticks -- and the wake orchestrator holds the gentle
+            # wake "through deep". The 2-tick hysteresis (1 minute) does not cover this.
+            need = float(getattr(t, "deep_reentry_light_min", 3.0))
+            if self._light_run_start is None:
+                reason = "deep_reentry_without_light"
+            elif (now - self._light_run_start).total_seconds() / 60.0 < need:
+                reason = "deep_reentry_too_soon"
         if reason is None and self._last_awake_at is not None:
             # Sleep resumes through light sleep. Either we have not seen light since the
             # awakening at all, or we have not been back in it long enough to have descended.

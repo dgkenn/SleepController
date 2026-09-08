@@ -195,3 +195,22 @@ def test_gym_go_moves_the_deadline_earlier():
     sleep_in = GymDecision(recommend="sleep_in", go_score=0.2, confidence=0.7, headline="rest")
     assert wake_target_from_decision(go, WAKE, 75) == WAKE - timedelta(minutes=75)
     assert wake_target_from_decision(sleep_in, WAKE, 75) == WAKE
+
+
+def test_a_low_confidence_deep_label_does_not_hold_the_wake():
+    """2026-09-08 04:14: DEEP at 0.45 on a single 61 bpm tick inside the wake window."""
+    o = WakeOrchestrator(WakeConfig(window_min=30))
+    now = WAKE - timedelta(minutes=20)
+    f = _f(SleepStage.DEEP, now)
+    f.stage_confidence = 0.45
+    a = o.evaluate(now, f, [], WAKE)
+    assert a.should_wake is True
+
+
+def test_a_confident_deep_label_still_holds_the_wake():
+    o = WakeOrchestrator(WakeConfig(window_min=30, thermal_dawn_min=20))
+    now = WAKE - timedelta(minutes=15)
+    f = _f(SleepStage.DEEP, now)
+    f.stage_confidence = 0.7
+    a = o.evaluate(now, f, [], WAKE)
+    assert a.should_wake is False

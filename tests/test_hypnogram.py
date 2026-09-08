@@ -116,3 +116,35 @@ def test_too_little_sleep_to_judge_is_not_called_implausible():
     exactly when it has the most night left to act on."""
     ok, why = architecture_plausible(deep_min=0.0, rem_min=30.0, light_min=10.0)
     assert ok is True and why is None
+
+
+def test_deep_does_not_flip_back_one_minute_after_a_light_bout_began():
+    """2026-09-08 04:14-04:24: deep/light every 1-5 minutes on single low-HR ticks."""
+    hc = _hc()
+    cfg = AppConfig()
+    onset = T0 - timedelta(hours=6)
+    t = T0
+    hc.observe(SleepStage.DEEP, t)                       # a real deep bout, then it ends
+    t += timedelta(minutes=1)
+    v = hc.apply(SleepStage.LIGHT, 0.6, t, cfg, sleep_onset_time=onset); hc.observe(v.stage, t)
+    t += timedelta(minutes=1)
+    v = hc.apply(SleepStage.DEEP, 0.45, t, cfg, sleep_onset_time=onset)
+    assert v.stage is SleepStage.LIGHT and v.reason == "deep_reentry_too_soon"
+    hc.observe(v.stage, t)
+    t += timedelta(minutes=3)
+    v = hc.apply(SleepStage.DEEP, 0.6, t, cfg, sleep_onset_time=onset)
+    assert v.stage is SleepStage.DEEP, "after 3+ min of light a new deep bout is allowed"
+
+
+def test_a_continuing_deep_bout_is_never_interrupted_by_the_reentry_rule():
+    hc = _hc()
+    onset = T0 - timedelta(hours=2)
+    hc.observe(SleepStage.DEEP, T0)
+    v = hc.apply(SleepStage.DEEP, 0.6, T0 + timedelta(minutes=1), AppConfig(), sleep_onset_time=onset)
+    assert v.stage is SleepStage.DEEP and v.reason is None
+
+
+def test_a_fresh_constraint_does_not_apply_the_reentry_rule():
+    v = _hc().apply(SleepStage.DEEP, 0.6, T0 + timedelta(hours=2), AppConfig(),
+                    sleep_onset_time=T0)
+    assert v.stage is SleepStage.DEEP

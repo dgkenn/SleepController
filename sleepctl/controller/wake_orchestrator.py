@@ -62,6 +62,7 @@ class WakeConfig:
     window_min: int = 30            # smart window opens this many min before the deadline
     thermal_dawn_min: int = 20      # warm "dawn" ramp (and light) begin this many min before
     p_wake_liftable: float = 0.45   # classifier P(wake) at/above which a moment is "liftable"
+    deep_block_min_confidence: float = 0.5  # a DEEP label under this confidence does not hold the wake
     p_wake_up: float = 0.85         # at/above this you're treated as surfacing
     last_resort_min: int = 6        # if still deep this close to the deadline, wake anyway...
     hard_buffer_s: int = 120        # ...unless within this buffer we MUST engage no matter what
@@ -179,7 +180,14 @@ class WakeOrchestrator:
 
     def _is_liftable(self, frame, p_wake, stale, p_liftable) -> bool:
         if frame.stage is SleepStage.DEEP:
-            return False
+            # A confident DEEP holds the gentle wake. A low-confidence one does not: on
+            # 2026-09-08 04:01-04:32 the heart-rate-only stager scored DEEP at 0.43-0.45 on
+            # single low-HR ticks (55-64 bpm between 70-86 bpm ticks) inside the wake window,
+            # and "holding through deep" would have held the cue on measurement noise.
+            conf = frame.stage_confidence
+            if conf is None or conf >= self.cfg.deep_block_min_confidence:
+                return False
+            return True  # judged like LIGHT: the label is not trustworthy enough to hold on
         if stale or p_wake is None:
             return frame.stage in (SleepStage.LIGHT, SleepStage.AWAKE)
         return frame.stage in (SleepStage.LIGHT, SleepStage.AWAKE) or p_wake >= p_liftable
