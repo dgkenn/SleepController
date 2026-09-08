@@ -15,6 +15,7 @@ import SafetyGuardrailCard from '@/components/SafetyGuardrailCard';
 import GymCard from '@/components/GymCard';
 import HueCard from '@/components/HueCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
+import ArmbandCard from '@/components/ArmbandCard';
 import Disclosure from '@/components/Disclosure';
 import BigButton from '@/components/BigButton';
 import EmergencyStop from '@/components/EmergencyStop';
@@ -263,6 +264,9 @@ function TonightContent() {
         </div>
 
         <div className="px-4 space-y-5">
+          {/* Mode Toggle */}          {/* Connected / streaming / consumed -- the first thing to check before bed */}
+          <ArmbandCard />
+
           {/* Mode Toggle */}
           <div>
             <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Mode</p>

@@ -1586,6 +1586,17 @@ class SleepController:
             #   "model"     => the learned wearable stager (HR -> stage; PhysioNet-trained)
             #   "heuristic" => the interpretable HR/HRV/movement fallback
             "stage_source": self._stage_source if self._stage_estimated else "sensor",
+            # WHAT THE WEARABLE ACTUALLY FED THIS TICK. "Streaming" at the ingest end says nothing
+            # about whether the controller consumed it: the dense series only reaches the stager
+            # through the daemon's read_history hook, and the accelerometer only counts when its
+            # units are "counts". Recording the inputs per tick is what lets a pipeline view say
+            # "landed but unused" instead of "fine".
+            "wearable_inputs": {
+                "hr_history_n": len(frame.hr_history or []) if getattr(frame, "hr_history", None) else 0,
+                "activity_history_n": (len(frame.activity_history or [])
+                                       if getattr(frame, "activity_history", None) else 0),
+                "activity_units": getattr(frame, "activity_units", None),
+            },
             # How many estimated-stage flips the hysteresis has absorbed so far this session --
             # the churn stays measurable instead of being silently smoothed away.
             "stage_flips_suppressed": self._stage_hold_suppressed,

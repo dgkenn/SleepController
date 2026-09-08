@@ -6,6 +6,7 @@ import BottomNav from '@/components/BottomNav';
 import StateBadge from '@/components/StateBadge';
 import StatusHero from '@/components/StatusHero';
 import HealthBanner from '@/components/HealthBanner';
+import ArmbandCard from '@/components/ArmbandCard';
 import RecommendationCard from '@/components/RecommendationCard';
 import AlertBanner from '@/components/AlertBanner';
 import EmergencyStop from '@/components/EmergencyStop';
@@ -77,6 +78,9 @@ function HomeContent() {
               SSE transport like the Live/Polling dot above). Above everything else: a half-asleep
               user should see "is it working" before any coaching content. */}
           <HealthBanner />
+
+          {/* Connected / streaming / consumed -- three facts, not one word */}
+          <ArmbandCard />
 
           {/* Alerts */}
           {currentAlerts.length > 0 && (

@@ -1386,3 +1386,26 @@ export const diagnosticsApi = {
   events: (limit = 100) =>
     apiFetch<DiagEvent[]>(`/api/diagnostics/events?limit=${limit}`),
 };
+
+// ---- wearable pipeline: connected / streaming / consumed, as three separate facts -----------
+export type WearableVerdict =
+  | 'streaming_full' | 'streaming_partial' | 'streaming_unused'
+  | 'connected_silent' | 'refusing' | 'absent' | 'not_connected' | 'unknown';
+
+export interface WearablePipeline {
+  verdict: WearableVerdict;
+  headline: string;
+  remedy?: string | null;
+  streams: string[];
+  link?: { state?: string | null; streams?: string[]; age_s?: number | null; shape?: string | null };
+  hr?: { ok: boolean; age_s?: number | null; bpm?: number | null; hrv_ms?: number | null };
+  ppi?: { ok: boolean; age_s?: number | null; intervals_5min?: number };
+  acc?: { ok: boolean; age_s?: number | null; pim?: number | null; fs?: number | null };
+  battery?: { pct?: number | null; age_h?: number | null };
+  used?: {
+    ticking?: boolean; in_session?: boolean; controller_state?: string | null;
+    stage_source?: string | null; hr_source?: string | null; movement_source?: string | null;
+    hr_history_n?: number; activity_history_n?: number; activity_units?: string | null;
+    checks?: { id: string; ok: boolean; detail: string }[];
+  };
+}

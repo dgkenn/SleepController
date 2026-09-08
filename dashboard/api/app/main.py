@@ -985,6 +985,16 @@ def predictive_preemption(repo=Depends(repo_dep), user: str = AuthDep):
     return services.preemption_status(repo)
 
 
+@app.get("/wearable/pipeline")
+def wearable_pipeline(repo=Depends(repo_dep), user: str = AuthDep):
+    """Is the armband connected, streaming, and actually consumed downstream? Never 500s."""
+    try:
+        return services.wearable_pipeline(repo, run_dir=_run_dir())
+    except Exception as exc:
+        return JSONResponse({"verdict": "unknown", "headline": f"pipeline check failed: {exc!r}",
+                             "streams": [], "used": {"checks": []}})
+
+
 @app.get("/morning/readiness")
 def morning_readiness(repo=Depends(repo_dep), user: str = AuthDep):
     return services.morning_readiness_summary(repo)

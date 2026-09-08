@@ -7,7 +7,7 @@ All read through the sleepctl ``Repository`` + the dashboard tables, reusing eng
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sleepctl.benchmarks import NightMode, perfect_sleep_index
 from sleepctl.config import AppConfig
@@ -1833,6 +1833,179 @@ def _push_wearable_link(repo, kind: str, title: str, body: str, now: datetime) -
                                    tag=f"sleepctl-wearable-{kind}")
     except Exception:
         pass
+
+
+# --------------------------------------------------------------------- wearable pipeline
+#: Freshness thresholds per stage, in seconds. HR arrives every ~2 s and PPI in ~5 s batches;
+#: ACC batches land every few seconds; two minutes is "this stream is alive" with margin, and it
+#: matches the forwarder's own stall guard.
+_PIPE_FRESH_S = 120.0
+
+
+def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
+    """Is the armband connected, is it streaming, and is what it streams being USED?
+
+    Three different questions that were being answered with one word. The health page said
+    "streaming" when a socket was open; on 2026-09-07 a socket was open for sixteen hours while
+    every batch was rejected and nothing downstream saw a sample. This walks the actual path:
+
+        link  -> hr (live_cardiac) -> ppi (rr_intervals) -> acc (actigraphy) -> the controller's
+        last decision, which records what the stager and the wake detector were given.
+
+    Each stage carries its own age and an ``ok``. The verdict is the first thing that is wrong,
+    in pipeline order, so the card can say WHERE it stops rather than merely THAT it stopped.
+    """
+    from app import bridge
+    now = datetime.now(timezone.utc)
+
+    def _age(iso):
+        """Seconds since ``iso``. Aware strings are compared as-is; a NAIVE string is the
+        engine's local-time convention (decisions.ts, raw_samples.ts -- see storage/schema.py)
+        and is resolved against the box's own clock rather than misread as UTC."""
+        try:
+            t = datetime.fromisoformat(str(iso))
+            if t.tzinfo is None:
+                t = t.astimezone()
+            return max(0.0, (now - t).total_seconds())
+        except Exception:
+            return None
+
+    # ---- link (what the forwarder last told us, and what its log says now) ----------------
+    link = _kv_get_json(repo, _WEARABLE_LINK_KEY) or {}
+    link_age = _age(link.get("ts")) if link else None
+    shape = detail = None
+    if run_dir:
+        try:
+            from app.diagnostics import _verity_link_shape
+            shape, detail = _verity_link_shape(run_dir)
+        except Exception:
+            shape = detail = None
+
+    # ---- hr -------------------------------------------------------------------------------
+    card = bridge.read_cardiac_sample(repo.conn) or {}
+    hr_age = card.get("age_seconds")
+    hr_ok = hr_age is not None and hr_age < _PIPE_FRESH_S
+
+    # ---- ppi / rr -------------------------------------------------------------------------
+    rr_age = None
+    rr_recent = 0
+    try:
+        row = repo.conn.execute("SELECT ts FROM rr_intervals ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            rr_age = _age(row[0])
+        cutoff = (now - timedelta(minutes=5)).isoformat()
+        rr_recent = int(repo.conn.execute(
+            "SELECT COALESCE(SUM(n), 0) FROM rr_intervals WHERE ts >= ?", (cutoff,)).fetchone()[0] or 0)
+    except Exception:
+        pass
+    rr_ok = rr_age is not None and rr_age < _PIPE_FRESH_S
+
+    # ---- acc ------------------------------------------------------------------------------
+    acti = bridge.read_actigraphy_sample(repo.conn) or {}
+    acc_age = acti.get("age_seconds")
+    acc_ok = acc_age is not None and acc_age < _PIPE_FRESH_S
+
+    # ---- battery --------------------------------------------------------------------------
+    batt = wearable_battery(repo) or {}
+
+    # ---- used: the controller's own account of its last tick --------------------------------
+    used: dict = {"decision_age_s": None, "controller_state": None, "stage_source": None,
+                  "hr_source": None, "movement_source": None,
+                  "hr_history_n": 0, "activity_history_n": 0, "activity_units": None}
+    try:
+        row = repo.conn.execute(
+            "SELECT ts, state, log_payload FROM decisions ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            used["decision_age_s"] = _age(row[0])
+            used["controller_state"] = row[1]
+            import json as _json     # services.py has no module-level json import; the bare
+            pl = _json.loads(row[2]) if row[2] else {}   # name raised NameError into the except
+            used["stage_source"] = pl.get("stage_source")
+            wi = pl.get("wearable_inputs") or {}
+            used["hr_history_n"] = int(wi.get("hr_history_n") or 0)
+            used["activity_history_n"] = int(wi.get("activity_history_n") or 0)
+            used["activity_units"] = wi.get("activity_units")
+    except Exception:
+        pass
+    try:
+        fused = bridge.read_fused_sensor(repo.conn) or {}
+        used["hr_source"] = fused.get("hr_source")
+        used["movement_source"] = fused.get("movement_source")
+    except Exception:
+        pass
+    ticking = used["decision_age_s"] is not None and used["decision_age_s"] < 180.0
+    in_session = str(used["controller_state"] or "").lower() not in ("", "idle", "none")
+
+    # What SHOULD be true if each live stream were consumed. Only judged while the controller is
+    # ticking inside a session -- an idle daytime tick legitimately uses nothing.
+    checks = []
+    if ticking and in_session:
+        if hr_ok:
+            checks.append(("stager_hr", used["hr_history_n"] > 0,
+                           f"stager received {used['hr_history_n']} dense HR samples"
+                           if used["hr_history_n"] else "HR is landing but the stager got none"))
+            checks.append(("fusion_hr", used["hr_source"] in ("cardiac", "verity", "wearable"),
+                           f"controller HR source: {used['hr_source']}"))
+        if acc_ok:
+            checks.append(("wake_detector_acc", used["activity_units"] == "counts",
+                           "accelerometer counts reach the wake detector"
+                           if used["activity_units"] == "counts"
+                           else f"ACC is landing but the controller has units={used['activity_units']!r}"
+                                " -- the actigraphy wake detector is OFF"))
+        if rr_ok:
+            checks.append(("hrv", card.get("hrv") is not None,
+                           "beat-to-beat intervals produce HRV" if card.get("hrv") is not None
+                           else "PPI is landing but no HRV is being computed"))
+    used["checks"] = [{"id": i, "ok": bool(ok), "detail": d} for i, ok, d in checks]
+    used["ticking"] = ticking
+    used["in_session"] = in_session
+
+    # ---- verdict, in pipeline order ---------------------------------------------------------
+    streams = [n for n, ok in (("HR", hr_ok), ("PPI", rr_ok), ("ACC", acc_ok)) if ok]
+    if hr_ok or rr_ok or acc_ok:
+        if hr_ok and rr_ok and acc_ok:
+            verdict, headline = "streaming_full", "Streaming heart rate, intervals and movement"
+        else:
+            missing = [n for n in ("HR", "PPI", "ACC") if n not in streams]
+            verdict = "streaming_partial"
+            headline = f"Streaming {' + '.join(streams)} -- no {' / '.join(missing)}"
+        bad = [c for c in used["checks"] if not c["ok"]]
+        if bad:
+            verdict, headline = "streaming_unused", bad[0]["detail"]
+    elif shape == "refusing":
+        verdict, headline = "refusing", "Band found, but every connection times out -- something else is holding it"
+    elif link.get("state") == "connected" and link_age is not None and link_age < 3600:
+        verdict, headline = "connected_silent", "Linked, but no data is arriving"
+    elif shape == "absent":
+        verdict, headline = "absent", "Band not advertising -- off, flat, or out of range"
+    else:
+        verdict, headline = "not_connected", "Not connected"
+
+    remedy = {
+        "refusing": "close the Polar app (or turn the phone's Bluetooth off), then hold the band's button until it re-advertises",
+        "connected_silent": "hold the band's button until it re-advertises; check it is on the wrist with skin contact",
+        "absent": "power the band on (hold the button); if it is on the charger, it stays disconnected by design",
+        "not_connected": "power the band on and keep it within range of the box",
+        "streaming_partial": "a power-cycle usually brings the missing stream back (the PMD service is re-discovered on a fresh connect)",
+        "streaming_unused": "see the failing check -- the data is arriving but the controller is not consuming it",
+    }.get(verdict)
+
+    return {
+        "verdict": verdict, "headline": headline, "remedy": remedy,
+        "streams": streams,
+        "link": {"state": link.get("state"), "streams": link.get("streams") or [],
+                 "age_s": None if link_age is None else round(link_age, 1),
+                 "shape": shape, "shape_detail": detail},
+        "hr": {"ok": hr_ok, "age_s": None if hr_age is None else round(hr_age, 1),
+               "bpm": card.get("hr"), "hrv_ms": card.get("hrv")},
+        "ppi": {"ok": rr_ok, "age_s": None if rr_age is None else round(rr_age, 1),
+                "intervals_5min": rr_recent},
+        "acc": {"ok": acc_ok, "age_s": None if acc_age is None else round(acc_age, 1),
+                "pim": acti.get("pim"), "fs": acti.get("fs"), "n": acti.get("n")},
+        "battery": {"pct": batt.get("pct"), "age_h": batt.get("age_h")},
+        "used": used,
+        "generated_utc": now.isoformat(),
+    }
 
 
 #: Battery readings kept for the discharge-rate estimate. The band reports once per connection,
