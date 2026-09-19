@@ -254,6 +254,7 @@ export interface SettingsResponse {
     max_step_f: number;
     hrv_target_ms: number;
     wake_events_max: number;
+    pod_guard?: boolean;
   };
 }
 

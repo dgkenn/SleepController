@@ -31,19 +31,26 @@ const FIELDS: FieldConfig[] = [
 function SettingsContent() {
   const { data, mutate } = useSWR<SettingsResponse>('/api/settings', fetcher);
   const [values, setValues] = useState<Record<string, number>>({});
+  // Exclusive control: the daemon overwrites any level the Eight Sleep app (or its schedule)
+  // sets. Default ON; stored as the boolean setting `pod_guard`.
+  const [podGuard, setPodGuard] = useState<boolean>(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState('');
 
   useEffect(() => {
     if (data) {
       const merged: Record<string, number> = {};
-      const defaults = data.defaults as Record<string, number>;
+      const defaults = data.defaults as unknown as Record<string, number>;
       const stored = data.stored as Record<string, number>;
       for (const f of FIELDS) {
         merged[f.key] =
           (stored[f.key] as number) ?? (defaults[f.key] as number) ?? 0;
       }
       setValues(merged);
+      const storedGuard = (data.stored as Record<string, unknown>)['pod_guard'];
+      setPodGuard(
+        typeof storedGuard === 'boolean' ? storedGuard : (data.defaults.pod_guard ?? true),
+      );
     }
   }, [data]);
 
@@ -55,7 +62,7 @@ function SettingsContent() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.saveSettings(values);
+      await api.saveSettings({ ...values, pod_guard: podGuard });
       await mutate();
       showToast('Settings saved');
     } catch {
@@ -67,7 +74,7 @@ function SettingsContent() {
 
   const handleReset = () => {
     if (!data) return;
-    const defaults = data.defaults as Record<string, number>;
+    const defaults = data.defaults as unknown as Record<string, number>;
     const reset: Record<string, number> = {};
     for (const f of FIELDS) {
       reset[f.key] = defaults[f.key] ?? 0;
@@ -93,6 +100,27 @@ function SettingsContent() {
         <div className="px-4 space-y-4">
           {/* Web Push: buzz the phone the moment a critical controller/bed issue appears */}
           <PushEnableCard />
+
+          {/* Exclusive control of the bed (pod guard) */}
+          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Exclusive control</p>
+            <label className="flex items-center justify-between gap-4 min-h-[44px]">
+              <span className="text-sm text-gray-300">
+                Block the Eight Sleep app from changing the bed
+              </span>
+              <input
+                type="checkbox"
+                checked={podGuard}
+                onChange={(e) => setPodGuard(e.target.checked)}
+                className="w-6 h-6 accent-brand shrink-0"
+              />
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              When on, any level the app or its schedule sets is written back to this
+              controller&apos;s level within about a minute, all night. Overrides are counted on
+              the Diagnostics page under &quot;External controller conflict&quot;. Default on.
+            </p>
+          </div>
 
           {/* Settings fields */}
           <div className="bg-surface-card rounded-2xl p-4 border border-surface-border space-y-4">
@@ -124,7 +152,7 @@ function SettingsContent() {
                   />
                   {data && (
                     <span className="text-xs text-gray-600 w-16 text-right">
-                      default: {(data.defaults as Record<string, number>)[field.key]}
+                      default: {(data.defaults as unknown as Record<string, number>)[field.key]}
                     </span>
                   )}
                 </div>

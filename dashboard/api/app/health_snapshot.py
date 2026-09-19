@@ -319,6 +319,13 @@ def _controller_block(repo) -> dict:
     except Exception as exc:
         out["staging_personalization"] = {"error": repr(exc)}
     try:
+        from app import bridge as _bridge
+        rt = _bridge.read_runtime_state(repo.conn, 180) or {}
+        pg = (rt.get("extra") or {}).get("pod_guard")
+        out["pod_guard"] = pg if isinstance(pg, dict) else None
+    except Exception as exc:
+        out["pod_guard"] = {"error": repr(exc)}
+    try:
         import json as _json
         row = repo.conn.execute(
             "SELECT ts, log_payload FROM decisions ORDER BY id DESC LIMIT 1").fetchone()

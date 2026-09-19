@@ -950,6 +950,9 @@ def _config_defaults() -> dict:
         "wake_vibration_power": t.wake_vibration_power,
         "max_step_f": t.max_step_f, "hrv_target_ms": b.hrv_target_ms,
         "wake_events_max": b.wake_events_max,
+        # Exclusive control: the daemon re-asserts its level whenever the Eight Sleep app (or
+        # its schedule) writes over it. ON by default; the Settings page toggles it.
+        "pod_guard": True,
     }
 
 

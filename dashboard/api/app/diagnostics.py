@@ -1481,11 +1481,30 @@ def _check_external_conflict(repo, extra: dict, history: list | None = None) -> 
     reason = result.get("reason") or "no external-controller conflict detected."
     remedy = result.get("remedy") or None
     detail = f"{status}: {reason}"
+    # The pod guard (Settings > Exclusive control): the daemon writes our level back whenever
+    # the device's accepted target disagrees with it. Its count is the direct measure of how
+    # often something else is touching the bed -- and whether it is being held off.
+    guard = extra.get("pod_guard") if isinstance(extra.get("pod_guard"), dict) else None
+    if guard is not None:
+        n = int(guard.get("reasserts_24h") or 0)
+        if not guard.get("enabled", True):
+            detail += " | exclusive control is OFF (Settings) -- external writes are not overridden"
+        elif n:
+            detail += (f" | exclusive control overrode {n} external write(s) to the bed in the "
+                       f"last 24 h (last: device held {guard.get('last_observed_level')} against "
+                       f"our {guard.get('last_commanded_level')})")
+        else:
+            detail += " | exclusive control is on; no external writes overridden in 24 h"
     if status == "external_setpoint_conflict":
         return _check("external_conflict", "External controller conflict", "warn", detail, remedy)
+    if guard is not None and guard.get("enabled", True) and int(guard.get("reasserts_24h") or 0) >= 3:
+        return _check("external_conflict", "External controller conflict", "warn", detail,
+                      "the guard is holding the level, but something keeps writing to the bed: "
+                      "turn the schedule / Autopilot off in the Eight Sleep app, or leave the "
+                      "guard on and accept the ~1 min excursions")
     if status == "insufficient_data":
-        return _check("external_conflict", "External controller conflict", "info", reason, None)
-    return _check("external_conflict", "External controller conflict", "ok", reason, None)
+        return _check("external_conflict", "External controller conflict", "info", detail, None)
+    return _check("external_conflict", "External controller conflict", "ok", detail, None)
 
 
 def _check_frozen_telemetry(repo, history: list | None = None) -> dict:

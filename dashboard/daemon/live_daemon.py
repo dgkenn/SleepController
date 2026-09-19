@@ -681,6 +681,111 @@ class LiveDashboardDaemon:
     async def _set_level(self, level: int) -> None:
         if not self.dry_run:
             await self.client.set_heating_level(level)
+        # What WE last asked the bed for, and when. The pod guard below compares the device's
+        # accepted target against this to catch the Eight Sleep app (or its schedule) writing
+        # over it, and re-asserts it.
+        self._last_commanded_level = int(level)
+        self._last_command_at = datetime.now()
+
+    # ------------------------------------------------------------------ pod guard
+    #: Levels of disagreement between the device's accepted target and ours before it counts.
+    _GUARD_DELTA = 3
+    #: Seconds after our own command during which a disagreement is the bed still accepting it.
+    _GUARD_SETTLE_S = 90.0
+    #: Consecutive disagreeing reads before re-asserting (two ticks: one bad read is not a fight).
+    _GUARD_STREAK = 2
+    #: Minimum spacing between re-asserts.
+    _GUARD_REASSERT_EVERY_S = 120.0
+    _GUARD_KV_KEY = "pod_guard"
+
+    def _pod_guard_enabled(self) -> bool:
+        """The Settings toggle ("block the Eight Sleep app"), default ON. Read at most once a
+        minute; a missing or unparsable row means the default."""
+        now = datetime.now()
+        cached = getattr(self, "_guard_enabled_cache", None)
+        if cached and (now - cached[1]).total_seconds() < 60.0:
+            return cached[0]
+        enabled = True
+        try:
+            row = self.repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key=?", (self._GUARD_KV_KEY,)).fetchone()
+            if row and row[0] not in (None, ""):
+                enabled = bool(json.loads(row[0]))
+        except Exception:
+            enabled = True
+        self._guard_enabled_cache = (enabled, now)
+        return enabled
+
+    def _pod_guard_summary(self) -> dict:
+        cutoff = datetime.now() - timedelta(hours=24)
+        recent = [t for t in getattr(self, "_guard_reassert_log", []) if t["at"] >= cutoff]
+        self._guard_reassert_log = recent
+        last = recent[-1] if recent else None
+        return {"enabled": self._pod_guard_enabled(),
+                "reasserts_24h": len(recent),
+                "last_at": last["at"].isoformat() if last else None,
+                "last_observed_level": last["observed"] if last else None,
+                "last_commanded_level": last["commanded"] if last else None,
+                "commanded_level": getattr(self, "_last_commanded_level", None)}
+
+    async def _guard_pod(self, frame, now) -> bool:
+        """Re-assert our level when something else has written over it. Returns True if it did.
+
+        The Eight Sleep app's schedule / Autopilot / a hand on the phone can set the bed's
+        target out from under this controller, and on a free account the schedule cannot be
+        disabled through the API (403). The only defence that always works is to notice the
+        device's ACCEPTED target disagreeing with ours and write ours back -- within about a
+        minute, every time, for as long as the Settings toggle is on."""
+        try:
+            if self.dry_run or not self._pod_guard_enabled():
+                return False
+            if not self.power_on or self.paused or self.away:
+                return False
+            if getattr(self, "comfort", None) is not None and not self.comfort.done:
+                return False
+            cmd = getattr(self, "_last_commanded_level", None)
+            accepted = getattr(frame, "target_level", None) if frame is not None else None
+            if cmd is None or accepted is None:
+                return False
+            if abs(int(accepted) - int(cmd)) < self._GUARD_DELTA:
+                self._guard_streak = 0
+                return False
+            last_cmd = getattr(self, "_last_command_at", None)
+            if last_cmd is not None and (now - last_cmd).total_seconds() < self._GUARD_SETTLE_S:
+                return False          # the bed may simply not have accepted ours yet
+            self._guard_streak = getattr(self, "_guard_streak", 0) + 1
+            if self._guard_streak < self._GUARD_STREAK:
+                return False
+            last_re = getattr(self, "_guard_last_reassert", None)
+            if last_re is not None and (now - last_re).total_seconds() < self._GUARD_REASSERT_EVERY_S:
+                return False
+            self._guard_last_reassert = now
+            self._guard_streak = 0
+            observed = int(accepted)
+            await self._set_level(int(cmd))
+            log = getattr(self, "_guard_reassert_log", [])
+            log.append({"at": now, "observed": observed, "commanded": int(cmd)})
+            self._guard_reassert_log = log[-200:]
+            self._log(f"pod guard: the bed's target read {observed} against our {int(cmd)} -- "
+                      f"something else wrote it; re-asserting ours")
+            self._emit_event("device", "warn", "external_override_reasserted",
+                             f"external write to the bed ({observed}) overridden back to {int(cmd)}",
+                             {"observed_level": observed, "commanded_level": int(cmd)})
+            # If the device says its own schedule is driving, try once more to switch it off
+            # (works for Autopilot; the bedtime schedule is paywalled but it costs nothing to ask).
+            try:
+                sched = (self._safe_device_status().get("external_schedule") or {})
+                last_try = getattr(self, "_guard_schedule_try_at", None)
+                if (sched.get("activity") == "schedule" and hasattr(self.client, "set_schedule_enabled")
+                        and (last_try is None or (now - last_try).total_seconds() > 3600.0)):
+                    self._guard_schedule_try_at = now
+                    await self.client.set_schedule_enabled(False)
+            except Exception:
+                pass
+            return True
+        except Exception as exc:
+            self._skip("pod guard", exc)
+            return False
 
     async def _apply_commands(self) -> bool:
         """Drain the dashboard command queue, applying each to the REAL device. Returns
@@ -1161,6 +1266,7 @@ class LiveDashboardDaemon:
                       # _apply_induce_deadline_awareness); None outside that situation.
                       "induce_note": self._induce_note,
                       "thermal_health": self.thermal.status().to_dict(),
+                      "pod_guard": self._pod_guard_summary(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
                       "data_quality": self.cycle.controller.data_quality_summary(),
@@ -1666,6 +1772,8 @@ class LiveDashboardDaemon:
                 level = self.cycle.pending_level(decision, frame, now)
                 if level is not None:
                     await self._set_level(level)
+                else:
+                    await self._guard_pod(frame, now)
                 alarm = self.cycle.pending_alarm()
                 if alarm is not None and not self.dry_run:
                     # Confirm-on-success: if this raises (cloud 5xx, token refresh, or the Pod
