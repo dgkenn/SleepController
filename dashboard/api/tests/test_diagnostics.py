@@ -1745,3 +1745,75 @@ def test_remote_access_needs_login_is_a_warning_with_the_human_remedy(run_dir):
 def test_remote_access_is_part_of_the_battery(repo, run_dir):
     ids = {c["id"] for c in diagnostics.run_diagnostics(repo, run_dir=run_dir)["checks"]}
     assert "remote_access" in ids
+
+
+# ---------------------------------------------------------------------------------------
+# 2026-09-18 21:15: a -100 read from 10:57 on 09-16 was still "a sustained step in the last 2
+# days". The cutoff was built with a space separator and the string compare let the whole
+# cutoff day through; and raw_samples carries two rows per tick, so a one-tick bad read can
+# span two samples.
+# ---------------------------------------------------------------------------------------
+
+def test_the_two_day_window_excludes_the_cutoff_days_morning():
+    from datetime import datetime as _dt, timedelta as _td
+    from app.diagnostics import _check_device_level_glitches
+    import sqlite3
+
+    class R:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.execute("CREATE TABLE raw_samples (id INTEGER PRIMARY KEY, ts TEXT, "
+                              "commanded_level INTEGER)")
+            old = (_dt.now() - _td(days=2, hours=6)).isoformat()   # before the cutoff
+            for lv in (-52, -100, -51, -51):
+                self.conn.execute("INSERT INTO raw_samples (ts, commanded_level) VALUES (?,?)",
+                                  (old, lv))
+            new = _dt.now().isoformat()
+            for lv in (-50, -50, -49, -49):
+                self.conn.execute("INSERT INTO raw_samples (ts, commanded_level) VALUES (?,?)",
+                                  (new, lv))
+
+    c = _check_device_level_glitches(R())
+    assert c["status"] == "ok", c
+
+
+def test_the_2026_09_16_read_is_a_spike_not_a_step():
+    from app.diagnostics import _check_device_level_glitches
+    c = _check_device_level_glitches(_LevelRepo([-53, -53, -52, -100, -51, -51, -50, -50]))
+    assert c["status"] == "info"
+    assert "spike" in c["detail"] and "sustained" not in c["detail"]
+
+
+def test_a_duplicated_bad_read_is_still_one_spike():
+    from app.diagnostics import _check_device_level_glitches
+    c = _check_device_level_glitches(_LevelRepo([-53, -53, -100, -100, -52, -52, -51]))
+    assert c["status"] == "info"
+    assert "1 one-sample spike" in c["detail"]
+
+
+def test_bed_temperature_never_measured_over_weeks_is_a_limitation_not_a_fault():
+    from datetime import datetime as _dt, timedelta as _td
+    from app.diagnostics import _check_bed_temperature
+    import sqlite3
+
+    class R:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.execute("CREATE TABLE raw_samples (ts TEXT, bed_temp_f REAL)")
+            for d in range(0, 20):
+                self.conn.execute("INSERT INTO raw_samples VALUES (?, NULL)",
+                                  ((_dt.now() - _td(days=d)).isoformat(),))
+
+    c = _check_bed_temperature(R(), {})
+    assert c["status"] == "info"
+    assert "open-loop by design" in c["detail"]
+
+
+def test_a_remote_access_warning_does_not_degrade_the_verdict():
+    from app.diagnostics import _aggregate, _check
+    checks = [_check("daemon_heartbeat", "Daemon", "ok", "fine"),
+              _check("remote_access", "Remote access", "warn", "tailscale NoState", "log in")]
+    verdict, _headline, _remedy = _aggregate(checks)
+    assert verdict == "HEALTHY"
+    checks.append(_check("device_water", "Water", "warn", "low"))
+    assert _aggregate(checks)[0] == "DEGRADED"

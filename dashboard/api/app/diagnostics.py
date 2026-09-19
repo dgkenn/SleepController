@@ -64,6 +64,8 @@ CLOUD_ERROR_PATTERNS = (
 # narrow on purpose — everything else (no water, thermal stalled, missing creds, ...) is a
 # real problem worth flagging but the daemon+API are still up and reachable, so DEGRADED.
 DOWN_TRIGGER_IDS = {"daemon_heartbeat", "api"}
+# Checks whose WARN is informational for the verdict: reported, never DEGRADED on their own.
+NON_VERDICT_IDS = {"remote_access"}
 
 # Rendering/aggregation order (stable, readable; doesn't affect verdict logic).
 _CHECK_ORDER = [
@@ -843,6 +845,10 @@ def _check_comfort_band_pinning(repo) -> dict:
                   f"{lo:.1f}-{hi:.1f}F band without pinning to an edge", None)
 
 
+#: Samples an excursion may last and still be a spike (a bad read) rather than a setpoint step.
+SPIKE_MAX_SAMPLES = 3
+
+
 def _check_device_level_glitches(repo) -> dict:
     """Device-reported heating levels that the bed could not physically have reached.
 
@@ -858,7 +864,11 @@ def _check_device_level_glitches(repo) -> dict:
     excursion that never happened.
     """
     try:
-        cutoff = (datetime.now() - timedelta(days=2)).isoformat(" ", "seconds")
+        # "T" separator, to match how raw_samples.ts is written. With a space separator the
+        # string compare put EVERY sample from the cutoff day inside the window ("2026-09-16T..."
+        # sorts after "2026-09-16 21:15"), which is how a -100 read from 10:57 on 2026-09-16 was
+        # still being reported as a 2-day-window glitch at 21:15 on 2026-09-18.
+        cutoff = (datetime.now() - timedelta(days=2)).isoformat("T", "seconds")
         rows = repo.conn.execute(
             "SELECT ts, commanded_level FROM raw_samples WHERE ts >= ? "
             "AND commanded_level IS NOT NULL ORDER BY id", (cutoff,)).fetchall()
@@ -895,11 +905,17 @@ def _check_device_level_glitches(repo) -> dict:
     i = 1
     while i < len(levels):
         if abs(levels[i] - levels[i - 1]) >= IMPLAUSIBLE_LEVEL_JUMP:
-            returned = (i + 1 < len(levels)
-                        and abs(levels[i + 1] - levels[i - 1]) < IMPLAUSIBLE_LEVEL_JUMP)
-            if returned:
+            # Look a few samples ahead for the series coming back to where it was: raw_samples
+            # carries two rows per tick, so a one-tick bad read can occupy two samples.
+            base = levels[i - 1]
+            back = None
+            for j in range(i + 1, min(i + 1 + SPIKE_MAX_SAMPLES, len(levels))):
+                if abs(levels[j] - base) < IMPLAUSIBLE_LEVEL_JUMP:
+                    back = j
+                    break
+            if back is not None:
                 spikes += 1
-                i += 2          # skip the return edge; it is the same excursion
+                i = back + 1    # skip the return edge; it is the same excursion
                 continue
             steps += 1
         i += 1
@@ -993,6 +1009,11 @@ def _check_maintenance_acted(repo) -> dict:
                   f"{night}: {n} maintenance ticks, {moved} moved the water, commanded "
                   f"{min(temps):.1f}-{max(temps):.1f}F (intents: {intents_txt})", None)
 
+#: Days of samples with NO bed temperature ever before it is reported as a standing account
+#: limitation (info) rather than a feedback fault (warn).
+BED_TEMP_PERMANENT_AFTER_DAYS = 7.0
+
+
 def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
     """Is the controller getting a MEASURED bed temperature at all?
 
@@ -1022,7 +1043,11 @@ def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
         # bare `ts >= datetime('now','-2 days')` compares the two conventions and shifts the
         # window by the machine's whole UTC offset -- the exact class of bug that docstring warns
         # about, and which already cost this project a capacity detector that never fired.
-        cutoff = (datetime.now() - timedelta(days=2)).isoformat(" ", "seconds")
+        # "T" separator, to match how raw_samples.ts is written. With a space separator the
+        # string compare put EVERY sample from the cutoff day inside the window ("2026-09-16T..."
+        # sorts after "2026-09-16 21:15"), which is how a -100 read from 10:57 on 2026-09-16 was
+        # still being reported as a 2-day-window glitch at 21:15 on 2026-09-18.
+        cutoff = (datetime.now() - timedelta(days=2)).isoformat("T", "seconds")
         row = repo.conn.execute(
             "SELECT COUNT(*), COUNT(bed_temp_f), MAX(ts) FROM raw_samples WHERE ts >= ?",
             (cutoff,)).fetchone()
@@ -1036,6 +1061,29 @@ def _check_bed_temperature(repo, extra: dict | None = None) -> dict:
     if measured == 0:
         why = (extra or {}).get("bed_temp_reason")
         because = f" -- reason: {why}" if why else ""
+        # NEVER measured, over weeks of samples, is an account limitation rather than a fault
+        # that appeared: the trends timeseries that carries tempBedC is the same surface as
+        # presence, unavailable here since day one. A permanent fact belongs on the page as
+        # information; carried as a WARN it kept the report DEGRADED every day for a month and
+        # taught the reader to skim past the warnings that change.
+        try:
+            ever = repo.conn.execute(
+                "SELECT COUNT(bed_temp_f), MIN(ts), MAX(ts) FROM raw_samples").fetchone()
+            span_days = ((datetime.fromisoformat(str(ever[2])) -
+                          datetime.fromisoformat(str(ever[1]))).total_seconds() / 86400.0
+                         if ever and ever[1] and ever[2] else 0.0)
+            permanent = (ever[0] or 0) == 0 and span_days >= BED_TEMP_PERMANENT_AFTER_DAYS
+        except Exception:
+            permanent = False
+        if permanent:
+            return _check(
+                "bed_temperature", "Bed temperature feedback", "info",
+                f"no measured bed temperature on this account in {span_days:.0f} days of "
+                f"samples -- the thermal loop runs open-loop by design here (tempBedC is on "
+                f"the same paywalled surface as presence){because}",
+                "nothing to do on the box: the cooling floor is kept conservative and the "
+                "commanded water is trusted; an independent bed sensor can close the loop "
+                "via /bedtemp/ingest")
         return _check(
             "bed_temperature", "Bed temperature feedback", "warn",
             f"NO measured bed temperature in {total} samples over the last 2 days -- the "
@@ -1679,7 +1727,9 @@ def _aggregate(checks: list[dict]) -> tuple[str, str, str | None]:
 
     down_fails = [c for c in ordered if c["id"] in DOWN_TRIGGER_IDS and c["status"] == "fail"]
     other_fails = [c for c in ordered if c["id"] not in DOWN_TRIGGER_IDS and c["status"] == "fail"]
-    warns = [c for c in ordered if c["status"] == "warn"]
+    # Checks that are shown but never decide the verdict: remote access is how the operator
+    # LOOKS at the system, not part of it, and the bed is steered identically with it down.
+    warns = [c for c in ordered if c["status"] == "warn" and c["id"] not in NON_VERDICT_IDS]
 
     if down_fails:
         top = down_fails[0]

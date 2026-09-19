@@ -921,12 +921,23 @@ function Ensure-Tailscale {
         Write-TailscaleState "$bs (remote UI down until someone runs 'tailscale login' on the box; sleep control unaffected)"
         return
     }
-    # Stopped / NoState / Unknown: `tailscale up` may help; try it, but no more than every 10 min.
+    # Stopped / NoState / Unknown: the tailscaled Windows service may simply not be running
+    # (NoState is what the CLI reports when it cannot reach a daemon with state). This watchdog
+    # runs elevated, so it can start the service; then `tailscale up`, bounded so a backend that
+    # wants a browser login cannot block the supervise loop. No more than every 10 min.
     Write-TailscaleState "$bs (backend not running)"
     if ((Get-Date) -lt $script:tailscaleNextAction) { return }
     $script:tailscaleNextAction = (Get-Date).AddMinutes(10)
+    try {
+        $svc = Get-Service -Name "Tailscale" -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -ne "Running") {
+            Log "tailscale: service '$($svc.Name)' is $($svc.Status); starting it"
+            Start-Service -Name $svc.Name -ErrorAction Stop
+            Start-Sleep -Seconds 5
+        }
+    } catch { Log "WARN: could not start the Tailscale service: $_" }
     Log "tailscale: backend state '$bs'; running 'tailscale up' (next attempt in 10 min at the earliest)"
-    try { & tailscale up *> $null } catch { Log "WARN: 'tailscale up' failed: $_" }
+    try { & tailscale up --timeout 20s *> $null } catch { Log "WARN: 'tailscale up' failed: $_" }
     try { & tailscale funnel --bg 3000 *> $null } catch { Log "WARN: 'tailscale funnel --bg 3000' failed: $_" }
 }
 
