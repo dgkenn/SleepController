@@ -1811,6 +1811,8 @@ def _record_wearable_link(repo, state: str, streams: list, source: str = "verity
     except Exception:
         pass
 
+    if state in ("charging", "off_arm"):
+        return          # logged above; the daemon reads it to end the session, nothing to page
     if state == "connected":
         title = "Armband connected"
         names = [str(x) for x in streams]
@@ -2082,6 +2084,10 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
         bad = [c for c in used["checks"] if not c["ok"]]
         if bad:
             verdict, headline = "streaming_unused", bad[0]["detail"]
+    elif link.get("state") in ("charging", "off_arm") and link_age is not None and link_age < 1200:
+        verdict = "off_arm"
+        headline = ("Band on its charger" if link.get("state") == "charging"
+                    else "Band off the arm (not worn)")
     elif shape == "refusing":
         verdict, headline = "refusing", "Band found, but every connection times out -- something else is holding it"
     elif link.get("state") == "connected" and link_age is not None and link_age < 3600:
@@ -2098,6 +2104,7 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
         "not_connected": "power the band on and keep it within range of the box",
         "streaming_partial": "a power-cycle usually brings the missing stream back (the PMD service is re-discovered on a fresh connect)",
         "streaming_unused": "see the failing check -- the data is arriving but the controller is not consuming it",
+        "off_arm": "put the band on before bed; the forwarder reconnects on its own once it is worn",
     }.get(verdict)
 
     return {
@@ -2234,7 +2241,7 @@ def ingest_hr(repo, payload: dict) -> dict:
     # This is how the person wearing the band gets told it is working -- see
     # ``_record_wearable_link`` for why that needed to exist.
     link = payload.get("link")
-    if link in ("connected", "lost"):
+    if link in ("connected", "lost", "charging", "off_arm"):
         _record_wearable_link(repo, link, payload.get("streams") or [], source)
         if not payload.get("hr") and not rr:
             return {"ok": True, "link": link, "ingested": 0}
@@ -2270,7 +2277,13 @@ def ingest_hr(repo, payload: dict) -> dict:
     if hr is not None and not (25.0 <= hr <= 240.0):
         hr = None
 
+    acc = payload.get("acc")
     if hr is None and hrv is None:
+        # Accelerometer-only batches are real data: PPI takes ~25 s to warm up after a connect
+        # and the ACC frames from those seconds were being thrown away as "no usable hr/rr".
+        if isinstance(acc, dict):
+            bridge.append_actigraphy(repo.conn, acc, source)
+            return {"ok": True, "acc_only": True, "source": source, "ingested": 1}
         return {"ok": False, "error": "no usable hr/rr in batch", "ingested": 0}
 
     # Persist the RAW beat-to-beat intervals, not just the derived RMSSD scalar. Every other HRV
@@ -2315,7 +2328,6 @@ def ingest_hr(repo, payload: dict) -> dict:
     # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
     # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
     # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.
-    acc = payload.get("acc")
     if isinstance(acc, dict):
         bridge.append_actigraphy(repo.conn, acc, source)
 

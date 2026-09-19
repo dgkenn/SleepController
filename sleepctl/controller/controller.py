@@ -471,6 +471,9 @@ class SleepController:
             # Never contradict the Pod: this fills in for UNKNOWN presence only.
             if frame.presence is not None:
                 return False
+            if getattr(frame, "wearable_off_arm", None):
+                self.last_bed_entry_block = "wearable reports it is off the arm"
+                return False
             need = int(getattr(t, "wearable_bed_entry_min_ticks", 5))
             lo = float(getattr(t, "wearable_bed_entry_hr_lo", 30.0))
             hi = float(getattr(t, "wearable_bed_entry_hr_hi", 120.0))
@@ -602,6 +605,17 @@ class SleepController:
                     and frame.stage not in (SleepStage.AWAKE, SleepStage.UNKNOWN)):
                 self.bed_exit_detector.observe_sleeping(frame.heart_rate)
             bed_exit = self.bed_exit_detector.assess(frame, recent, cfg, now)
+            # The band saying it is on its charger / off the arm outranks any inference from
+            # the physiology it is no longer measuring. 2026-09-19 05:07 the band reported
+            # "in charger"; the session stayed in MAINTENANCE, steering blind, for an hour.
+            if getattr(frame, "wearable_off_arm", None) and not bed_exit.out_of_bed:
+                try:
+                    bed_exit.out_of_bed = True
+                    bed_exit.reasons = list(getattr(bed_exit, "reasons", []) or []) + [
+                        "wearable reports it is off the arm (charger / not worn)"]
+                    bed_exit.confidence = max(float(getattr(bed_exit, "confidence", 0.0) or 0.0), 0.9)
+                except Exception:
+                    pass
             self.last_bed_exit = bed_exit
             if (bed_exit.out_of_bed
                     and bool(getattr(cfg.tunables, "bed_exit_ends_session", True))

@@ -993,7 +993,20 @@ class LiveDashboardDaemon:
                         frame.rr_history = hist["rr"]   # beat intervals for per-epoch HRV
             except Exception as exc:
                 self._skip("dense sensor history", exc)
+        # The band's own word that it is off the arm (charger / not worn), fresh. This is what
+        # ends a session the moment the band goes on its charger instead of an hour later.
+        if frame is not None:
+            try:
+                off = bridge.read_wearable_off_arm(self.repo.conn)
+                if off and float(off.get("age_s") or 0.0) >= self._OFF_ARM_MIN_AGE_S:
+                    frame.wearable_off_arm = True
+            except Exception as exc:
+                self._skip("wearable off-arm state", exc)
         return frame
+
+    #: Seconds a charging / off-arm report must have stood before it ends a session -- one
+    #: control tick, so a single spurious report cannot end a night.
+    _OFF_ARM_MIN_AGE_S = 45.0
 
     def _recover_bed_entry(self):
         """Earliest sample of the CURRENT night at which a session was already running.

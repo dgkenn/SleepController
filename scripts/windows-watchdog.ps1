@@ -725,6 +725,31 @@ function Ensure-Verity {
             (Get-Content -Path $hashMarker -Raw -ErrorAction SilentlyContinue).Trim()
         } else { $null }
         if ($lastHash -and $lastHash -ne $currentHash) {
+            # Not while it is streaming the PMD channels: a deploy mid-night cost a reconnect
+            # and, on 2026-08-28, the accelerometer for the rest of the night. The forwarder
+            # keeps .run\verity.streams current; if it names ACC/PPI and is fresh, the new code
+            # waits for the session to end (bounded at 10 h so a change can never be stranded).
+            $streamsFile = Join-Path $run "verity.streams"
+            $deferring = $false
+            if (Test-Path $streamsFile) {
+                try {
+                    $streamsTxt = (Get-Content -Path $streamsFile -Raw -ErrorAction Stop)
+                    $streamsAge = (New-TimeSpan -Start (Get-Item $streamsFile).LastWriteTime -End (Get-Date)).TotalMinutes
+                    if ($streamsTxt -match 'ACC|PPI' -and $streamsAge -lt 3) { $deferring = $true }
+                } catch {}
+            }
+            if ($deferring) {
+                if ($script:verityDeferSince -eq $null) { $script:verityDeferSince = Get-Date }
+                if (((Get-Date) - $script:verityDeferSince).TotalHours -lt 10) {
+                    if ($script:verityDeferLogged -eq $null -or ((Get-Date) - $script:verityDeferLogged).TotalMinutes -ge 30) {
+                        Log "verity_forwarder.py changed, but the running forwarder is streaming ACC/PPI -- deferring the restart until the session ends"
+                        $script:verityDeferLogged = Get-Date
+                    }
+                    return
+                }
+            } else {
+                $script:verityDeferSince = $null
+            }
             Log "verity_forwarder.py changed since the running forwarder was launched -- killing the stale process"
             try {
                 Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |

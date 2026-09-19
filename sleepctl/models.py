@@ -117,6 +117,10 @@ class SensorFrame:
     # know about them is unaffected, and they are excluded from the NaN sanitizer below (lists).
     hr_history: Optional[list] = None
     activity_history: Optional[list] = None
+    # The wearable itself reports it is OFF THE ARM: on its charger (Polar PMD error 13) or
+    # released by the ingest's not-worn verdict. Positive evidence the sleeper is not wearing
+    # it, which on a Pod that never reports presence is the crispest bed-exit signal there is.
+    wearable_off_arm: Optional[bool] = None
 
     def __post_init__(self) -> None:
         # Sanitize at the boundary: a bad sensor reading (NaN/Inf) must never enter the engine —

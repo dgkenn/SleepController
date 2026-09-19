@@ -256,6 +256,15 @@ def _post_link(args, state: str, streams=None) -> None:
         _post(args.url, payload)
     except Exception:
         pass
+    # ...and a marker the watchdog reads before restarting this process on a code change: a
+    # session streaming the PMD channels is not interrupted for a deploy (see Ensure-Verity).
+    try:
+        marker = _repo_root() / ".run" / "verity.streams"
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(",".join(streams) if (state == "connected" and streams) else "",
+                          encoding="ascii")
+    except Exception:
+        pass
 
 
 #: Consecutive not-worn batches before we RELEASE the band. At the default ~2 s batch cadence
@@ -514,6 +523,7 @@ def _note_worn_state(resp) -> bool:
     _log(f"not worn for {_RELEASE['run']} consecutive batches -- releasing the band so it can "
          f"idle/charge; reconnecting in {_NOT_WORN_BACKOFF_S / 60:.0f} min")
     _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
+    _RELEASE["off_arm"] = "off_arm"
     _RELEASE["run"] = 0
     return True
 
@@ -880,6 +890,7 @@ async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str
         # doing so is what kept the Verity awake on its charger until the battery died mid-night.
         if resp.get("error_code") == pmd.ERROR_DEVICE_IN_CHARGER:
             _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
+            _RELEASE["off_arm"] = "charging"
             _log(f"device reports it is IN THE CHARGER -- releasing it for "
                  f"{_NOT_WORN_BACKOFF_S / 60:.0f} min so it can actually charge")
         return None
@@ -1431,7 +1442,7 @@ async def _run_once(args, env) -> None:
                      "the generic heart-rate service as the second receiver")
                 await _hr_session(client, args)
                 _log("disconnected")
-                _post_link(args, "lost")
+                _post_link(args, _RELEASE.pop("off_arm", None) or "lost")
                 return
         if args.mode in ("pmd", "auto"):
             ok = False
@@ -1441,7 +1452,16 @@ async def _run_once(args, env) -> None:
                 _log(f"PMD session error ({type(exc).__name__}: {exc or '<no message>'})")
             if ok:
                 _log("disconnected")
-                _post_link(args, "lost")
+                _post_link(args, _RELEASE.pop("off_arm", None) or "lost")
+                return
+            if _RELEASE.get("off_arm"):
+                # The band said it is on its charger / not worn. Falling back to the generic
+                # heart-rate service here is what kept a session alive for an hour after the
+                # sleeper got up (2026-09-19 05:07); tell the API and let go instead.
+                why = _RELEASE.pop("off_arm")
+                _log(f"band is {why.replace('_', ' ')} -- ending the session rather than "
+                     "falling back to heart rate")
+                _post_link(args, why)
                 return
             if args.mode == "pmd":
                 _log(f"PMD unavailable on this device; retrying in {args.retry_seconds}s")
@@ -1457,7 +1477,7 @@ async def _run_once(args, env) -> None:
                  + (f" for up to {limit / 60:.0f} min, then retrying PMD" if limit else ""))
         await _hr_session(client, args)
     _log("disconnected")
-    _post_link(args, "lost")
+    _post_link(args, _RELEASE.pop("off_arm", None) or "lost")
 
 
 async def _main_async(args, env) -> None:

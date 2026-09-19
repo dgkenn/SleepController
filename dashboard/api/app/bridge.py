@@ -651,6 +651,30 @@ def read_bed_temp_sample(conn: sqlite3.Connection, max_age_s: float = 600.0) -> 
     return d
 
 
+#: A charging / off-arm report older than this is stale: the forwarder re-asserts a live link
+#: every 2 min, so a band back on the arm and connected overwrites it within minutes, and one
+#: not connected at all is simply unknown -- which must never block a night from starting.
+WEARABLE_OFF_ARM_MAX_AGE_S = 20 * 60.0
+
+
+def read_wearable_off_arm(conn: sqlite3.Connection, max_age_s: float = WEARABLE_OFF_ARM_MAX_AGE_S) -> dict | None:
+    """``{"state": "charging"|"off_arm", "age_s": ...}`` when the band's most recent link report
+    says it is off the arm and that report is fresh, else None. Never raises."""
+    try:
+        row = conn.execute("SELECT value FROM settings_kv WHERE key = 'wearable_link'").fetchone()
+        if row is None:
+            return None
+        rec = json.loads(row[0] if not isinstance(row, sqlite3.Row) else row["value"])
+        if rec.get("state") not in ("charging", "off_arm"):
+            return None
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(str(rec.get("ts")))).total_seconds()
+        if age < 0 or age > max_age_s:
+            return None
+        return {"state": rec["state"], "age_s": round(age, 1)}
+    except Exception:
+        return None
+
+
 def read_cardiac_sample(conn: sqlite3.Connection) -> dict | None:
     """Latest dedicated-cardiac-sensor sample with a computed ``age_seconds``, or None.
 

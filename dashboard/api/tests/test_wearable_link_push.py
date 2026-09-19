@@ -176,3 +176,43 @@ def test_the_streams_endpoint_answers_with_the_ingest_token(auth_client):
     assert r.status_code == 200, r.text
     body = r.json()
     assert set(body) >= {"hr", "ppi", "acc", "pmd_holder", "receivers"}
+
+
+# ---------------------------------------------------------------- charger / off arm
+def test_a_charging_report_is_recorded_read_by_the_daemon_and_never_paged(repo, pushes):
+    from app import bridge
+    r = services.ingest_hr(repo, {"source": "verity", "link": "charging"})
+    assert r["ok"] is True and r["link"] == "charging"
+    off = bridge.read_wearable_off_arm(repo.conn)
+    assert off and off["state"] == "charging" and off["age_s"] < 5
+    assert pushes == []
+    pl = services.wearable_pipeline(repo)
+    assert pl["verdict"] == "off_arm" and "charger" in pl["headline"]
+
+
+def test_a_stale_off_arm_report_is_ignored(repo, pushes):
+    from app import bridge
+    services._kv_set_json(repo, services._WEARABLE_LINK_KEY,
+                          {"state": "charging", "streams": [], "source": "verity",
+                           "ts": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()})
+    assert bridge.read_wearable_off_arm(repo.conn) is None
+
+
+def test_reconnecting_clears_the_off_arm_state(repo, pushes):
+    from app import bridge
+    services.ingest_hr(repo, {"source": "verity", "link": "off_arm"})
+    assert bridge.read_wearable_off_arm(repo.conn)["state"] == "off_arm"
+    _link(repo, "connected", ["ACC@52Hz", "PPI"])
+    assert bridge.read_wearable_off_arm(repo.conn) is None
+
+
+def test_an_accelerometer_only_batch_is_stored_not_rejected(repo, pushes):
+    """PPI warms up ~25 s after connect; the ACC frames from those seconds were thrown away."""
+    from app import bridge
+    r = services.ingest_hr(repo, {"source": "verity",
+                                  "acc": {"pim": 2.0, "zcm": 1.0, "mad": 0.1, "std": 0.2,
+                                          "pmax": 0.4, "n": 104, "fs": 52}})
+    assert r["ok"] is True and r.get("acc_only") is True
+    assert bridge.recent_actigraphy(repo.conn, minutes=5.0)
+    r = services.ingest_hr(repo, {"source": "verity"})
+    assert r["ok"] is False
