@@ -245,8 +245,16 @@ class BedExitDetector:
         t = getattr(cfg, "tunables", cfg)
         need = max(3, int(float(getattr(t, "bed_exit_window_min", 10.0))))
         window = list(recent or [])[-(need - 1):] + [frame]
-        if len(window) < need:
-            return None
+        # Not enough history is not enough EVIDENCE. The band connecting is the moment the
+        # frames start carrying a heart rate, and 2026-09-18 opened a night 2.5 minutes after
+        # that: the window was mostly older frames with no heart rate at all, so the "median
+        # of what we have" was judged on a handful of readings from someone still up and
+        # about. Entry waits until enough WORN readings exist to judge, whatever the window.
+        hrs = [float(f.heart_rate) for f in window
+               if getattr(f, "heart_rate", None) is not None]
+        min_worn = max(3, int(getattr(t, "bed_entry_min_worn_ticks", 5)))
+        if len(hrs) < min_worn:
+            return f"not enough worn history yet ({len(hrs)}/{min_worn} readings)"
         moves = [float(f.movement) for f in window
                  if getattr(f, "movement", None) is not None]
         if moves:
@@ -254,11 +262,16 @@ class BedExitDetector:
             active = sum(1 for m in moves if m >= thresh) / len(moves)
             if active >= float(getattr(t, "bed_entry_max_active_fraction", 0.4)):
                 return f"still moving ({active:.0%} of window active)"
-        hrs = [float(f.heart_rate) for f in window
-               if getattr(f, "heart_rate", None) is not None]
-        if hrs:
-            median_hr = statistics.median(hrs)
-            ceiling = float(getattr(t, "bed_entry_hr_ceiling", 95.0))
-            if median_hr >= ceiling:
-                return f"heart rate {median_hr:.0f} bpm is not someone lying down"
+        median_hr = statistics.median(hrs)
+        ceiling = float(getattr(t, "bed_entry_hr_ceiling", 95.0))
+        if median_hr >= ceiling:
+            return f"heart rate {median_hr:.0f} bpm is not someone lying down"
+        # Lying still has a narrow heart-rate band; moving about does not. Without an
+        # accelerometer (the only way this account has run since 2026-09-07) the spread of the
+        # window is the one movement proxy left, and 80-120 bpm across five ticks is a person
+        # walking, whatever the median says.
+        spread = max(hrs) - min(hrs)
+        max_spread = float(getattr(t, "bed_entry_max_hr_spread", 25.0))
+        if spread > max_spread:
+            return f"heart rate swinging {spread:.0f} bpm across the window is not someone lying still"
         return None

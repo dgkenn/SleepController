@@ -65,6 +65,19 @@ function Clear-AlertIfNoneStorming {
         Log "all components healthy; cleared watchdog.alert"
     }
 }
+# A restart-storm alert describes in-memory state that this restart has just discarded, so at
+# startup it is stale by construction: a component that storms again will re-raise it within
+# five minutes, and one that does not (tailscale after 2026-09-18, which no longer storms at
+# all) would otherwise hold the health report on DEGRADED indefinitely.
+try {
+    if (Test-Path $script:alertFile) {
+        $stale = (Get-Content -Path $script:alertFile -Raw -ErrorAction Stop)
+        if ($stale -match 'RESTART STORM') {
+            Remove-Item -Path $script:alertFile -Force -ErrorAction SilentlyContinue
+            Log "cleared a restart-storm alert left by the previous watchdog run ($($stale.Trim()))"
+        }
+    }
+} catch {}
 # Call once per restart DECISION for $component (i.e. right before you would otherwise restart
 # it). Returns $true if the restart is allowed to proceed, $false if it's being held due to a
 # storm. Handles cooldown expiry (one retry) and recording the attempt into the trailing window.
@@ -830,14 +843,33 @@ function Ensure-Daemon {
 # can't hot-loop `tailscale up` forever -- it holds + raises CRITICAL exactly like any other
 # repeatedly-failing component. No-op (cleanly) if tailscale isn't installed.
 $script:tailscaleCmd = (Get-Command tailscale -ErrorAction SilentlyContinue)
-function Tailscale-Healthy {
-    if (-not $script:tailscaleCmd) { return $true }   # not installed -- nothing to supervise
+$script:tailscaleStateFile = Join-Path $run "tailscale.state"
+$script:tailscaleNextAction = Get-Date          # rate limit for `tailscale up` / `funnel`
+$script:tailscaleLastLogged = ""                 # last state line logged (log on change only)
+$script:tailscaleLoggedAt = Get-Date "2000-01-01"
+function Write-TailscaleState([string]$state) {
+    # Published through the health relay's remote_access check (diagnostics.py), so an off-box
+    # operator sees WHY the remote UI is down instead of a restart-storm alert about it.
+    try { Set-Content -Path $script:tailscaleStateFile -Value $state -Encoding ASCII } catch {}
+    $now = Get-Date
+    if ($state -ne $script:tailscaleLastLogged -or ($now - $script:tailscaleLoggedAt).TotalMinutes -ge 60) {
+        Log "tailscale: $state"
+        $script:tailscaleLastLogged = $state
+        $script:tailscaleLoggedAt = $now
+    }
+}
+function Tailscale-BackendState {
+    # "Running" | "NeedsLogin" | "NeedsMachineAuth" | "Stopped" | "NoState" | "Unknown"
     try {
         $statusJson = & tailscale status --json 2>$null
-        if ($LASTEXITCODE -ne 0 -or -not $statusJson) { return $false }
+        if ($LASTEXITCODE -ne 0 -or -not $statusJson) { return "Unknown" }
         $status = ($statusJson | Out-String) | ConvertFrom-Json -ErrorAction Stop
-        if ($status.BackendState -ne "Running") { return $false }
-    } catch { return $false }
+        $bs = [string]$status.BackendState
+        if (-not $bs) { return "Unknown" }
+        return $bs
+    } catch { return "Unknown" }
+}
+function Tailscale-FunnelUp {
     try {
         $funnelOut = (& tailscale funnel status 2>&1 | Out-String)
         if ($LASTEXITCODE -ne 0) { return $false }
@@ -853,14 +885,47 @@ function Tailscale-Healthy {
                 Set-Content -Path (Join-Path $run "funnel.url") -Value $m.Value -Encoding ASCII
             }
         } catch {}
+        return $true
     } catch { return $false }
-    return $true
 }
+function Tailscale-Healthy {
+    if (-not $script:tailscaleCmd) { return $true }   # not installed -- nothing to supervise
+    if ((Tailscale-BackendState) -ne "Running") { return $false }
+    return (Tailscale-FunnelUp)
+}
+# Remote access is not sleep control. The daemon steers the bed whether or not the funnel is
+# up, so this never storms, never raises watchdog.alert, and never hot-loops `tailscale up`:
+# on 2026-09-18 that loop ran every 16 s against a backend that was NOT LOGGED IN (which
+# `tailscale up` cannot fix without a browser), tripped the restart-storm hold twice in ten
+# minutes and put the whole health report on DEGRADED for an evening's sleep it had no bearing
+# on. Now: read the backend's own state, act only where an action can help, at most once per
+# 10 minutes, and record the state for the health relay (remote_access check).
 function Ensure-Tailscale {
     if (-not $script:tailscaleCmd) { return }
-    if (Tailscale-Healthy) { Clear-StormState "tailscale"; return }
-    if (-not (Test-CanRestart "tailscale")) { return }   # storming -- held; CRITICAL logged by Test-CanRestart
-    Log ("tailscale/funnel unhealthy; attempting self-heal (attempt #{0} in window)" -f $script:restartHistory["tailscale"].Count)
+    $bs = Tailscale-BackendState
+    if ($bs -eq "Running") {
+        if (Tailscale-FunnelUp) {
+            Write-TailscaleState "Running (funnel up)"
+            Clear-StormState "tailscale"
+            return
+        }
+        Write-TailscaleState "NoFunnel (backend running, no https funnel on 3000)"
+        if ((Get-Date) -lt $script:tailscaleNextAction) { return }
+        $script:tailscaleNextAction = (Get-Date).AddMinutes(10)
+        Log "tailscale: re-enabling the funnel on port 3000"
+        try { & tailscale funnel --bg 3000 *> $null } catch { Log "WARN: 'tailscale funnel --bg 3000' failed: $_" }
+        return
+    }
+    if ($bs -eq "NeedsLogin" -or $bs -eq "NeedsMachineAuth") {
+        # Only a person can fix this (browser login / admin approval). Say so, do nothing.
+        Write-TailscaleState "$bs (remote UI down until someone runs 'tailscale login' on the box; sleep control unaffected)"
+        return
+    }
+    # Stopped / NoState / Unknown: `tailscale up` may help; try it, but no more than every 10 min.
+    Write-TailscaleState "$bs (backend not running)"
+    if ((Get-Date) -lt $script:tailscaleNextAction) { return }
+    $script:tailscaleNextAction = (Get-Date).AddMinutes(10)
+    Log "tailscale: backend state '$bs'; running 'tailscale up' (next attempt in 10 min at the earliest)"
     try { & tailscale up *> $null } catch { Log "WARN: 'tailscale up' failed: $_" }
     try { & tailscale funnel --bg 3000 *> $null } catch { Log "WARN: 'tailscale funnel --bg 3000' failed: $_" }
 }

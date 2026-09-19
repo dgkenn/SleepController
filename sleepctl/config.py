@@ -353,6 +353,8 @@ class Tunables:
     # that let a morning of walking around open a brand-new "night" every day.
     bed_entry_max_active_fraction: float = 0.4
     bed_entry_hr_ceiling: float = 95.0
+    bed_entry_max_hr_spread: float = 25.0     # max-min HR across the entry window; wider = moving about
+    bed_entry_min_worn_ticks: int = 5         # HR-carrying ticks needed before entry can be judged
 
     # --- HYPNOGRAM PLAUSIBILITY (sleepctl/controller/hypnogram.py) -----------------------
     # Stage hysteresis damps flapping BETWEEN sleep stages but exempts every transition through

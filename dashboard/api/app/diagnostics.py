@@ -75,7 +75,8 @@ _CHECK_ORDER = [
     "wake_alarm", "wake_cue", "degraded", "calibration", "prevention_timing", "session_span",
     "maintenance_acted",
     "verity_forwarder",
-    "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "log_sizes",
+    "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "remote_access",
+    "log_sizes",
     "calendar", "shift",
 ]
 
@@ -445,6 +446,28 @@ def _check_actigraphy(repo) -> dict:
                   f"(newest {age_s:.0f}s ago) -- the actigraphy wake detector is live", None)
 
 
+#: A non-idle sample newer than this means the session is still running, and a night in
+#: progress is not judged by the "did it reach MAINTENANCE" / "did pre-emption run" checks.
+_SESSION_LIVE_WITHIN_MIN = 45.0
+
+
+def _session_in_progress(repo) -> str | None:
+    """night_date of a session whose newest non-idle sample is recent, else None. Never raises."""
+    try:
+        row = repo.conn.execute(
+            "SELECT night_date, MAX(ts) FROM raw_samples WHERE controller_state IS NOT NULL "
+            "AND controller_state NOT IN ('idle', 'None') AND night_date IS NOT NULL").fetchone()
+        if not row or not row[0] or not row[1]:
+            return None
+        last = datetime.fromisoformat(str(row[1]))
+        if last.tzinfo is not None:
+            last = last.astimezone().replace(tzinfo=None)   # raw_samples.ts is naive local
+        age_min = (datetime.now() - last).total_seconds() / 60.0
+        return str(row[0]) if 0 <= age_min <= _SESSION_LIVE_WITHIN_MIN else None
+    except Exception:
+        return None
+
+
 def _check_maintenance_reached(repo) -> dict:
     """Did the controller actually reach MAINTENANCE on recent nights?
 
@@ -484,6 +507,17 @@ def _check_maintenance_reached(repo) -> dict:
         return _check("maintenance_reached", "Sleep maintenance reached", "info",
                       f"{len(by_night)} night(s) recorded but none started a session", None)
     reached = [d for d, st in ran.items() if st.get("maintenance")]
+    # A session STILL RUNNING has not failed to reach anything yet. At 20:27 on 2026-09-18 this
+    # check warned "NONE of 1 recent session night(s) reached MAINTENANCE" about a night whose
+    # session had begun at 20:06 -- the sleeper was not yet asleep -- and that warning sat in the
+    # published report beside the real ones. A night is judged once its session has ended.
+    live = _session_in_progress(repo)
+    if live and live not in reached:
+        ran.pop(live, None)
+        if not ran:
+            return _check("maintenance_reached", "Sleep maintenance reached", "info",
+                          f"{live}: session in progress (still in induction) -- judged once it "
+                          f"ends; no completed session night in the last 7 days", None)
     missed = sorted(d for d in ran if d not in reached)
     if not reached:
         return _check(
@@ -615,6 +649,10 @@ def _check_preemption_ran(repo) -> dict:
         for r in (p.get("precursor_reasons") or []) + (p.get("risk_reasons") or []):
             reasons[r] = reasons.get(r, 0) + 1
     if not maint:
+        if _session_in_progress(repo) == night:
+            return _check("preemption_ran", "Awakening pre-emption", "info",
+                          f"{night}: session in progress and not yet in MAINTENANCE -- "
+                          f"pre-emption is judged once the night ends", None)
         return _check("preemption_ran", "Awakening pre-emption", "warn",
                       f"{night}: the controller never entered MAINTENANCE, so pre-emption had "
                       f"no opportunity to run", "see the maintenance_reached check")
@@ -1047,6 +1085,45 @@ def _check_verity_forwarder(run_dir: str, now: float) -> dict:
                   f"heartbeat {int(age / 60)} min stale — the bridge is not looping",
                   "check .run\\verity.log and that SLEEPCTL_VERITY=1; the watchdog should be "
                   "killing and relaunching it")
+
+
+def _check_remote_access(run_dir: str) -> dict:
+    """Is the Tailscale funnel (remote UI / live /diag) up, and if not, why?
+
+    Remote access is NOT sleep control: the bed is steered by the daemon whether or not the
+    funnel exists. So a broken funnel is a WARN with the remedy, never a FAIL -- and never
+    something the watchdog storms over. On 2026-09-18 the watchdog ran `tailscale up` every
+    16 seconds against a backend that was not logged in, tripped its own restart-storm hold
+    twice in ten minutes, and raised a CRITICAL alert that put the whole report on DEGRADED
+    for a component that has no bearing on tonight's sleep. The watchdog now records the
+    backend's own state here instead of retrying blindly (see Ensure-Tailscale).
+    """
+    path = os.path.join(run_dir, "tailscale.state")
+    if not os.path.exists(path):
+        return _check("remote_access", "Remote access (Tailscale funnel)", "info",
+                      "no tailscale state recorded yet (watchdog older than this check, or "
+                      "tailscale not installed)", None)
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            text = fh.read().strip()[:400]
+    except Exception as exc:
+        return _check("remote_access", "Remote access (Tailscale funnel)", "info",
+                      f"tailscale.state unreadable ({exc!r})", None)
+    state = text.split()[0] if text else ""
+    if state.lower() == "running":
+        return _check("remote_access", "Remote access (Tailscale funnel)", "ok",
+                      f"tailscale {text}", None)
+    remedy = None
+    if state.lower() in ("needslogin", "needsmachineauth"):
+        remedy = ("the tailscale backend on the box needs a login: run `tailscale login` (or "
+                  "`tailscale up`) in a shell there and approve in the browser; nothing about "
+                  "sleep control depends on it")
+    elif state.lower() == "stopped":
+        remedy = "run `tailscale up` on the box; the watchdog retries this at most every 10 min"
+    elif state.lower() == "nofunnel":
+        remedy = "run `tailscale funnel --bg 3000` on the box; the watchdog retries every 10 min"
+    return _check("remote_access", "Remote access (Tailscale funnel)", "warn",
+                  f"remote UI unreachable: tailscale {text or 'state unknown'}", remedy)
 
 
 def _check_publishers(run_dir: str) -> dict:
@@ -2142,6 +2219,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
     add("self_update", "Self-update / deploy history", lambda: _check_self_update(run_dir))
     add("publishers", "GitHub relay publishers", lambda: _check_publishers(run_dir))
+    add("remote_access", "Remote access (Tailscale funnel)",
+        lambda: _check_remote_access(run_dir))
     add("actigraphy", "Wearable accelerometer", lambda: _check_actigraphy(repo))
     add("verity_forwarder", "Verity forwarder process",
         lambda: _check_verity_forwarder(run_dir, now))

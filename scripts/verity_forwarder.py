@@ -351,6 +351,17 @@ _PRESENT_BACKOFF_S = 25.0
 
 #: Consecutive barren sessions before each rung of the ladder.
 _ALT_TRANSPORT_AFTER = 2     # the Verity exposes two independent streams -- try the other one
+#: An HR-only session that exists ONLY because the transport alternation above led with the
+#: generic service is a fallback, not a choice. Left alone it lasts until the band disconnects --
+#: which on 2026-09-18 was the whole night: six "device not found" attempts while the band was
+#: still off the arm counted as barren sessions, the seventh attempt connected in "hr" mode, and
+#: the accelerometer + PPI were never asked for again. After this long of clean HR streaming the
+#: link is dropped on purpose so the next session can lead with PMD again.
+_FORCED_HR_RETRY_PMD_S = 20 * 60.0
+#: ...but only this many times per run without PMD ever producing a frame. A band whose PMD
+#: channel is genuinely dead (another central holds it) would otherwise cost a reconnect every
+#: 20 minutes all night; after this many fruitless retries the HR-only session is left to run.
+_MAX_PMD_RETRIES = 2
 _REDISCOVER_AFTER = 3        # stop trusting a pinned/cached address; full rescan
 _ADAPTER_RESET_AFTER = 5     # ask the watchdog to restart the Bluetooth stack
 
@@ -656,13 +667,23 @@ async def _hr_session(client, args) -> None:
     async def _flusher(client) -> None:
         t0 = time.monotonic()
         link_epoch = 0
+        max_s = getattr(args, "hr_session_max_s", None)
+        posts0 = int(_STATS.get("posts", 0) or 0)
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
             _beat(_repo_root())
-            epoch = int((time.monotonic() - t0) // _LINK_REPOST_S)
+            elapsed = time.monotonic() - t0
+            epoch = int(elapsed // _LINK_REPOST_S)
             if epoch != link_epoch:          # see the PMD loop: a connect-time post can be lost
                 link_epoch = epoch
                 _post_link(args, "connected", ["HR/RR (generic 0x180D)"])
+            # A fallback HR-only session is dropped on purpose after a while so the next one can
+            # lead with PMD again (see _FORCED_HR_RETRY_PMD_S). Only once the session has been
+            # productive: an unproductive one ends by the stall guard below anyway.
+            if max_s is not None and elapsed >= float(max_s) and _STATS["posts"] > posts0:
+                _log(f"HR-only session was a fallback after barren attempts; dropping the link "
+                     f"after {elapsed / 60:.0f} min to try the accelerometer/PPI again")
+                return
             # Layer 1a: never forward a stale reading. Without this the last value seen was
             # re-sent every batch forever once notifications stopped.
             hr = last_hr["v"]
@@ -1227,6 +1248,7 @@ async def _run_once(args, env) -> None:
         return
 
     _STATS["via_last_resort"] = False
+    _STATS["session_opened"] = False
     address = await _discover(BleakScanner, args.address)
     if not address:
         _log("no Polar/HR sensor found this scan; will retry")
@@ -1258,6 +1280,7 @@ async def _run_once(args, env) -> None:
         client_kwargs["winrt"] = {"use_cached_services": False}
     async with BleakClient(address, **client_kwargs) as client:
         _log("connected")
+        _STATS["session_opened"] = True
         if _STATS.get("via_last_resort"):
             # A free Verity Sense advertises continuously. One that accepts a direct connection
             # while NOT advertising already has another central on it (a phone with Polar Flow,
@@ -1315,11 +1338,26 @@ async def _main_async(args, env) -> None:
     _STATS["acc_rung"] = min(_load_acc_rung(_repo_root()), len(ladder) - 1)
     if _STATS["acc_rung"]:
         _log(f"PMD: resuming at accelerometer rung {_STATS['acc_rung']}/{len(ladder) - 1}")
+    # Sessions that OPENED a connection and produced nothing. Only these say anything about the
+    # transport; "device not found" says the band is away, not that PMD is wedged, and letting
+    # it drive the alternation is how 2026-09-18 ran HR-only all night (see _FORCED_HR_RETRY_PMD_S).
+    opened_barren = 0
+    pmd_retries = 0
     while True:
         try:
             _beat(_repo_root())
+            _STATS["session_opened"] = False
             # Escalate through qualitatively different recoveries, not just a longer wait.
-            args.mode = _effective_mode(preferred_mode, barren)
+            args.mode = _effective_mode(preferred_mode, opened_barren)
+            args.hr_session_max_s = None
+            if args.mode == "hr" and preferred_mode != "hr":
+                if pmd_retries < _MAX_PMD_RETRIES:
+                    args.hr_session_max_s = _FORCED_HR_RETRY_PMD_S
+                    pmd_retries += 1       # one more deliberate reconnect spent on PMD
+                _log(f"leading with the generic HR service this session ({opened_barren} "
+                     f"connected-but-silent session(s) in a row)"
+                     + (f"; will retry PMD after {_FORCED_HR_RETRY_PMD_S / 60:.0f} min of streaming"
+                        if args.hr_session_max_s else "; staying HR-only for this session"))
             if barren >= _REDISCOVER_AFTER:
                 # Stop trusting a pinned/cached address. A stale address (band re-paired, or the
                 # OS handing back a cached entry for a device now in a different mode) makes
@@ -1345,18 +1383,25 @@ async def _main_async(args, env) -> None:
                         f" after {streamed / 3600:.1f}h of clean streaming"))
                 _STATS["acc_rung"] = nxt
                 _save_acc_rung(_repo_root(), nxt)
+            if streamed > 0.0:
+                pmd_retries = 0            # PMD produced frames: the retry budget is fresh
             if _STATS["posts"] > before:
                 if barren:
                     _log(f"recovered after {barren} barren session(s)")
                 barren = 0
+                opened_barren = 0
             else:
                 barren += 1
+                if _STATS.get("session_opened"):
+                    opened_barren += 1
                 _log(f"session produced no data (barren streak: {barren}, "
-                     f"next transport: {_effective_mode(preferred_mode, barren)})")
+                     f"next transport: {_effective_mode(preferred_mode, opened_barren)})")
             fails = 0
         except Exception as exc:
             fails += 1
             barren += 1
+            if _STATS.get("session_opened"):
+                opened_barren += 1
             delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
             # If we saw the band this cycle, it is present and something transient is in the way.
             if (time.monotonic() - float(_STATS.get("last_seen_at") or 0.0)) < 120.0:

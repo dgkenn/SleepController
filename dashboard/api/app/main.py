@@ -471,6 +471,14 @@ class HRBody(BaseModel):
     # crossed this boundary, so "no battery reading yet" was permanent. That check is the whole
     # safety net against the 2026-08-06 failure where the band died flat at 00:01 mid-sleep.
     battery_pct: float | None = None
+    # Wearable LINK state ("connected" / "lost") plus the stream names, posted by the forwarder
+    # when the BLE link opens or closes and re-asserted every couple of minutes. Same trap as
+    # battery_pct: without these fields the endpoint's exclude_none dump dropped them and every
+    # link post was answered "no usable hr/rr in batch" -- 2026-09-18 logged that rejection every
+    # two minutes all evening while the band streamed perfectly, and the health relay showed the
+    # link as unknown for the whole night.
+    link: str | None = None
+    streams: list[str] | None = Field(default=None, max_length=8)
 
 
 @app.post("/hr/ingest")

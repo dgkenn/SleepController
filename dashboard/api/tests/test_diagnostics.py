@@ -1640,3 +1640,108 @@ def test_a_short_maintenance_is_not_judged():
     from app.diagnostics import _check_maintenance_acted
     c = _check_maintenance_acted(_DecisionsRepo([(69.0, "hold", "x", "settle_cool")] * 20))
     assert c["status"] == "info"
+
+
+# ---------------------------------------------------------------------------------------
+# 2026-09-18 20:27: the report warned "NONE of 1 recent session night(s) reached MAINTENANCE"
+# about a session that had begun at 20:06 -- the sleeper was not yet asleep. A night in progress
+# is not judged; and a link post must survive the API boundary (the battery_pct trap, again).
+# ---------------------------------------------------------------------------------------
+
+class _LiveStateRepo:
+    def __init__(self, nights, live_night=None, live_age_min=5.0):
+        """nights: {night_date: {controller_state: count}}; live_night gets one fresh non-idle row."""
+        import sqlite3
+        from datetime import datetime as _dt, timedelta as _td
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute("CREATE TABLE raw_samples (night_date TEXT, controller_state TEXT, ts TEXT)")
+        old = (_dt.now() - _td(hours=20)).isoformat()
+        for night, states in nights.items():
+            for st, n in states.items():
+                self.conn.executemany("INSERT INTO raw_samples VALUES (?, ?, ?)",
+                                      [(night, st, old)] * n)
+        if live_night:
+            fresh = (_dt.now() - _td(minutes=live_age_min)).isoformat()
+            self.conn.execute("INSERT INTO raw_samples VALUES (?, 'induction', ?)", (live_night, fresh))
+
+
+def test_a_session_still_in_induction_is_not_judged_as_unprotected():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(
+        _LiveStateRepo({_today(): {"idle": 500, "induction": 40}}, live_night=_today()))
+    assert c["status"] == "info", c
+    assert "in progress" in c["detail"]
+
+
+def test_a_live_night_does_not_hide_a_completed_unprotected_one():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(_LiveStateRepo(
+        {_today(): {"induction": 40}, _today(1): {"idle": 100, "induction": 300}},
+        live_night=_today()))
+    assert c["status"] == "warn"
+    assert _today(1) in c["detail"] and _today() not in c["detail"]
+
+
+def test_a_session_whose_last_sample_is_hours_old_is_judged():
+    from app.diagnostics import _check_maintenance_reached
+    c = _check_maintenance_reached(
+        _LiveStateRepo({_today(): {"idle": 500, "induction": 40}}, live_night=_today(),
+                       live_age_min=180.0))
+    assert c["status"] == "warn"
+
+
+def test_preemption_is_not_blamed_while_the_night_is_still_in_induction():
+    from app.diagnostics import _check_preemption_ran
+    from datetime import datetime as _dt, timedelta as _td
+    r = _DecisionRepo([("induction", None)] * 30, night=_today())
+    r.conn.execute("CREATE TABLE raw_samples (night_date TEXT, controller_state TEXT, ts TEXT)")
+    r.conn.execute("INSERT INTO raw_samples VALUES (?, 'induction', ?)",
+                   (_today(), (_dt.now() - _td(minutes=3)).isoformat()))
+    c = _check_preemption_ran(r)
+    assert c["status"] == "info"
+    assert "in progress" in c["detail"]
+
+
+def test_a_link_post_crosses_the_api_boundary(auth_client):
+    """Same trap as battery_pct: a field HRBody does not declare is dropped by exclude_none, and
+    the forwarder's link post was then rejected as 'no usable hr/rr' every two minutes."""
+    from app import services
+    from app.db import get_repo
+
+    r = auth_client.post("/hr/ingest", json={"source": "verity", "link": "connected",
+                                             "streams": ["ACC@52Hz", "PPI"]})
+    assert r.status_code == 200, r.text
+    assert r.json().get("ok") is True and r.json().get("link") == "connected"
+    repo = get_repo()
+    try:
+        link = services._kv_get_json(repo, services._WEARABLE_LINK_KEY) or {}
+    finally:
+        repo.close()
+    assert link.get("state") == "connected"
+    assert "PPI" in link.get("streams", [])
+
+
+# ------------------------------------------------------------------ remote_access (tailscale)
+def test_remote_access_is_info_before_the_watchdog_has_recorded_anything(run_dir):
+    c = diagnostics._check_remote_access(run_dir)
+    assert c["status"] == "info"
+
+
+def test_remote_access_running_is_ok(run_dir):
+    with open(os.path.join(run_dir, "tailscale.state"), "w") as fh:
+        fh.write("Running (funnel up)\n")
+    c = diagnostics._check_remote_access(run_dir)
+    assert c["status"] == "ok"
+
+
+def test_remote_access_needs_login_is_a_warning_with_the_human_remedy(run_dir):
+    with open(os.path.join(run_dir, "tailscale.state"), "w") as fh:
+        fh.write("NeedsLogin (remote UI down until someone runs 'tailscale login' on the box)\n")
+    c = diagnostics._check_remote_access(run_dir)
+    assert c["status"] == "warn"
+    assert "tailscale login" in (c["remedy"] or "")
+
+
+def test_remote_access_is_part_of_the_battery(repo, run_dir):
+    ids = {c["id"] for c in diagnostics.run_diagnostics(repo, run_dir=run_dir)["checks"]}
+    assert "remote_access" in ids
