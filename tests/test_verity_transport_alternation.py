@@ -151,3 +151,42 @@ def test_the_pmd_retry_budget_is_spent_then_refilled_by_a_productive_stall(monke
     # a stall after 30 s of frames does not
     monkeypatch.setitem(vf._STATS, "pmd_retries", vf._MAX_PMD_RETRIES)
     assert vf._grant_pmd_retry({"streamed_s": 30.0}) is None
+
+
+# ---------------------------------------------------------------- receiver roles
+def test_the_streams_url_sits_next_to_the_ingest_url():
+    assert vf._streams_url("http://box:8000/hr/ingest?token=abc") == "http://box:8000/hr/streams?token=abc"
+
+
+def test_a_receiver_defers_to_another_that_is_delivering_pmd():
+    st = {"pmd_holder": "verity", "acc": {"age_s": 4.0, "source": "verity"},
+          "ppi": {"age_s": 6.0, "source": "verity"}}
+    assert vf._pmd_held_elsewhere(st, "verity-pi") == "verity"
+    assert vf._pmd_held_elsewhere(st, "verity") is None          # that is me
+
+
+def test_a_stale_pmd_holder_does_not_keep_the_standby_down():
+    st = {"pmd_holder": "verity", "acc": {"age_s": 400.0, "source": "verity"},
+          "ppi": {"age_s": 400.0, "source": "verity"}}
+    assert vf._pmd_held_elsewhere(st, "verity-pi") is None
+    assert vf._pmd_held_elsewhere(None, "verity-pi") is None      # API unreachable: act alone
+    assert vf._pmd_held_elsewhere({"pmd_holder": None}, "verity-pi") is None
+
+
+def test_the_adapter_reset_comes_sooner_after_a_mid_night_drop(monkeypatch):
+    """2026-09-18 23:08: link dropped after 2 h of streaming; six 'not found' attempts and
+    11 minutes before the adapter reset that fixed it."""
+    import time as _t
+    requests = []
+    monkeypatch.setattr(vf, "_request_adapter_reset", lambda root, n: requests.append(n))
+    monkeypatch.setitem(vf._STATS, "last_data_at", _t.monotonic())      # streaming a moment ago
+    _drive(monkeypatch, [_not_found] * 3)
+    assert requests and min(requests) == vf._ADAPTER_RESET_AFTER_RECENT
+
+
+def test_the_adapter_reset_waits_when_the_band_has_been_away(monkeypatch):
+    requests = []
+    monkeypatch.setattr(vf, "_request_adapter_reset", lambda root, n: requests.append(n))
+    monkeypatch.setitem(vf._STATS, "last_data_at", 0.0)
+    _drive(monkeypatch, [_not_found] * 3)
+    assert not requests

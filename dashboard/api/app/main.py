@@ -496,6 +496,18 @@ def hr_ingest(body: HRBody, request: Request, token: str | None = None,
     return services.ingest_hr(repo, payload)
 
 
+@app.get("/hr/streams")
+def hr_streams(request: Request, token: str | None = None, repo=Depends(repo_dep)):
+    """What the wearable is delivering RIGHT NOW, per stream and per receiver.
+
+    The referee for two receivers sharing one band (the Windows box and a Pi at the bedside):
+    each forwarder asks this before starting the PMD streams, takes the generic heart-rate
+    service if another receiver already holds them, and steps up when that receiver's data
+    goes stale. Same auth as the ingest endpoint so the same URL/token works for both."""
+    _bcg_auth(request, token)
+    return services.wearable_stream_ages(repo)
+
+
 class BedTempBody(BaseModel):
     """A reading from an INDEPENDENT bed-temperature sensor. Either unit; °C is converted."""
     temp_f: float | None = None

@@ -16,9 +16,15 @@ drops a stale bond. Running the bridge on its own small box also puts the radio 
 bed** instead of wherever the PC is, and takes the BLE stack out of the same process tree as
 the controller, API, web build and self-updater.
 
-**What moves, what stays.** Only the forwarder moves. It is the same `scripts/verity_forwarder.py`
--- unchanged -- POSTing to the same `/hr/ingest` on the Windows box over the LAN. The controller,
-API, dashboard, publishers and watchdog stay where they are.
+**Two receivers, one band.** The Pi does not replace the Windows forwarder; it runs BESIDE it.
+The Verity accepts two Bluetooth centrals at once, and its PMD channel (accelerometer + PPI)
+serves one of them. The API is the referee (`GET /hr/streams`): whichever receiver connects
+first takes the PMD streams, the other takes the generic heart-rate service and stands by. If
+the PMD holder's data goes stale for 3 minutes, the standby drops its link and reconnects
+leading with PMD. If either radio loses the band entirely, the other still has heart rate,
+beat intervals and (if it holds PMD) movement. The controller, API, dashboard, publishers and
+watchdog stay where they are; the same `scripts/verity_forwarder.py` runs on both, posting to
+the same `/hr/ingest`, tagged `--source verity` (Windows) and `--source verity-pi` (Pi).
 
 ## Parts
 
@@ -38,14 +44,16 @@ API, dashboard, publishers and watchdog stay where they are.
    ```
    `BCG_INGEST_TOKEN` is the value in `deploy\.env` on the Windows box. The band's address is
    in `.run\verity.address` there, or run `python scripts/verity_forwarder.py --scan` on the Pi.
-3. On the Windows box, set `SLEEPCTL_VERITY=0` in `deploy\.env` and restart the watchdog, so two
-   forwarders do not fight over the band.
+3. Leave the Windows forwarder running. The two receivers share the band; the API assigns
+   the roles and the health page's "Wearable receivers" check shows both.
 4. Watch it come up:
    ```bash
    journalctl -u verity-bridge -f
    ```
-   You want `connected`, then `PMD: start PPI ok` and `PMD: start ACC @52Hz`. The dashboard's
-   armband card and the "Armband connected" push confirm the same thing from the other end.
+   You want `connected`, then either `PMD: start PPI ok` / `PMD: start ACC @52Hz` (this Pi
+   holds the PMD streams) or `receiver 'verity' is already serving the accelerometer/PPI --
+   taking the generic heart-rate service as the second receiver` (standing by). The
+   dashboard's armband card and the "Armband connected" push confirm it from the other end.
 
 ## What the installer sets up
 

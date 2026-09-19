@@ -15,7 +15,7 @@ Type=simple
 User=sleepctl
 EnvironmentFile=/etc/sleepctl/bridge.env
 WorkingDirectory=/opt/sleepctl
-ExecStart=/opt/sleepctl/.venv/bin/python /opt/sleepctl/scripts/verity_forwarder.py --url ${INGEST_URL} --address ${VERITY_ADDRESS}
+ExecStart=/opt/sleepctl/.venv/bin/python /opt/sleepctl/scripts/verity_forwarder.py --url ${INGEST_URL} --address ${VERITY_ADDRESS} --source ${SOURCE}
 # The forwarder already retries connections forever with its own backoff; systemd only has to
 # bring the PROCESS back if it dies (bleak/D-Bus faults, OOM, an unhandled exception).
 Restart=always

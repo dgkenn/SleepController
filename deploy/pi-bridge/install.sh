@@ -7,9 +7,12 @@
 #
 # INGEST_URL     the Windows box's API, reachable on the LAN, with BCG_INGEST_TOKEN as ?token=
 # VERITY_ADDRESS the band's BLE address (scripts/verity_forwarder.py --scan prints it)
+# SOURCE         this receiver's name as the API sees it (default verity-pi). Keep it different
+#                from the Windows forwarder's (verity): the API referees the two by name.
 set -euo pipefail
 : "${INGEST_URL:?set INGEST_URL}"
 : "${VERITY_ADDRESS:?set VERITY_ADDRESS}"
+SOURCE="${SOURCE:-verity-pi}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 apt-get update -qq
@@ -31,6 +34,7 @@ sudo -u sleepctl /opt/sleepctl/.venv/bin/pip install -q --upgrade pip bleak
 cat > /etc/sleepctl/bridge.env <<ENV
 INGEST_URL=${INGEST_URL}
 VERITY_ADDRESS=${VERITY_ADDRESS}
+SOURCE=${SOURCE}
 ENV
 chmod 600 /etc/sleepctl/bridge.env
 
@@ -44,4 +48,4 @@ systemctl enable --now verity-forwarder.service
 
 echo
 echo "bridge installed. follow it with:  journalctl -u verity-bridge -f"
-echo "on the Windows box set SLEEPCTL_VERITY=0 in deploy\\.env so two forwarders don't fight for the band."
+echo "leave the Windows forwarder running: the two receivers share the band and the API assigns roles."

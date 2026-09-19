@@ -1786,9 +1786,11 @@ def _record_wearable_link(repo, state: str, streams: list, source: str = "verity
     now = datetime.now(timezone.utc)
     try:
         prev = _kv_get_json(repo, _WEARABLE_LINK_KEY) or {}
-        _kv_set_json(repo, _WEARABLE_LINK_KEY,
-                     {"state": state, "streams": list(streams), "ts": now.isoformat(),
-                      "source": source})
+        rec = {"state": state, "streams": list(streams), "ts": now.isoformat(), "source": source}
+        _kv_set_json(repo, _WEARABLE_LINK_KEY, rec)
+        # ...and PER RECEIVER, so two radios sharing the band (Windows box + bedside Pi) are
+        # each visible and the API can referee which one holds the PMD streams.
+        _kv_set_json(repo, f"{_WEARABLE_LINK_KEY}:{source}", rec)
     except Exception:
         prev = {}
     # The forwarder re-asserts "connected" every couple of minutes so a post lost to an API
@@ -1866,6 +1868,88 @@ def _push_wearable_link(repo, kind: str, title: str, body: str, now: datetime) -
 #: ACC batches land every few seconds; two minutes is "this stream is alive" with margin, and it
 #: matches the forwarder's own stall guard.
 _PIPE_FRESH_S = 120.0
+
+
+def wearable_receivers(repo, max_age_s: float = 3600.0) -> list:
+    """Every receiver that has reported a link within ``max_age_s``, newest first:
+    ``[{"source", "state", "streams", "age_s"}]``. Never raises."""
+    import json as _json     # services.py has no module-level json import
+    out = []
+    try:
+        rows = repo.conn.execute(
+            "SELECT key, value FROM settings_kv WHERE key LIKE ?",
+            (f"{_WEARABLE_LINK_KEY}:%",)).fetchall()
+    except Exception:
+        return out
+    now = datetime.now(timezone.utc)
+    for key, value in rows:
+        try:
+            rec = _json.loads(value) if value else None
+        except Exception:
+            rec = None
+        if not rec:
+            continue
+        try:
+            age = (now - datetime.fromisoformat(str(rec.get("ts")))).total_seconds()
+        except Exception:
+            continue
+        if age < 0 or age > max_age_s:
+            continue
+        out.append({"source": rec.get("source") or str(key).split(":", 1)[-1],
+                    "state": rec.get("state"), "streams": list(rec.get("streams") or []),
+                    "age_s": round(age, 1)})
+    out.sort(key=lambda r: r["age_s"])
+    return out
+
+
+def wearable_stream_ages(repo) -> dict:
+    """Freshness and source of each wearable stream, plus who holds the PMD channel.
+
+    ``GET /hr/streams`` -- the referee for two receivers sharing one band. ``pmd_holder`` is
+    the receiver whose most recent link report (under 5 min old) lists ACC or PPI; the
+    per-stream ages say whether that holder is actually delivering. A standby receiver reads
+    this before every session and every couple of minutes during one."""
+    from app import bridge
+    now = datetime.now(timezone.utc)
+
+    def _age(ts):
+        try:
+            return round(max(0.0, (now - datetime.fromisoformat(str(ts))).total_seconds()), 1)
+        except Exception:
+            return None
+
+    out: dict = {"hr": {"age_s": None, "source": None}, "ppi": {"age_s": None, "source": None},
+                 "acc": {"age_s": None, "source": None}, "pmd_holder": None, "receivers": []}
+    try:
+        card = bridge.read_cardiac_sample(repo.conn) or {}
+        if card.get("updated"):
+            out["hr"] = {"age_s": _age(card.get("updated")), "source": card.get("source")}
+    except Exception:
+        pass
+    try:
+        row = repo.conn.execute(
+            "SELECT ts, source FROM rr_intervals ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            out["ppi"] = {"age_s": _age(row[0]), "source": row[1]}
+    except Exception:
+        pass
+    try:
+        row = repo.conn.execute(
+            "SELECT ts, source FROM actigraphy ORDER BY id DESC LIMIT 1").fetchone()
+        if row:
+            out["acc"] = {"age_s": _age(row[0]), "source": row[1]}
+    except Exception:
+        pass
+    rx = wearable_receivers(repo, max_age_s=3600.0)
+    out["receivers"] = rx
+    for r in rx:
+        age = r.get("age_s")
+        if r.get("state") == "connected" and age is not None and age <= 300 and any(
+                ("ACC" in x.upper() or "PPI" in x.upper()) for x in (r.get("streams") or [])):
+            out["pmd_holder"] = r["source"]
+            break
+    out["generated_utc"] = now.isoformat()
+    return out
 
 
 def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
@@ -2030,6 +2114,7 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
                 "pim": acti.get("pim"), "fs": acti.get("fs"), "n": acti.get("n")},
         "battery": {"pct": batt.get("pct"), "age_h": batt.get("age_h")},
         "used": used,
+        "receivers": wearable_receivers(repo, max_age_s=3600.0),
         "generated_utc": now.isoformat(),
     }
 

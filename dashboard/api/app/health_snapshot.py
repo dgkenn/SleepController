@@ -358,6 +358,8 @@ def _wearable_block(repo, run_dir) -> dict:
         "hr_stage": _stage(pl.get("hr")), "ppi_stage": _stage(pl.get("ppi")),
         "acc_stage": _stage(pl.get("acc")),
         "battery_pct": (pl.get("battery") or {}).get("pct"),
+        "receivers": [{k: r.get(k) for k in ("source", "state", "streams", "age_s")}
+                      for r in (pl.get("receivers") or [])],
         "used": {
             "ticking": used.get("ticking"), "in_session": used.get("in_session"),
             "controller_state": used.get("controller_state"),

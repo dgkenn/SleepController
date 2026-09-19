@@ -133,3 +133,46 @@ def test_a_reasserted_connected_link_is_a_refresh_not_a_new_event(repo, pushes):
     _link(repo, "connected", ["HR/RR (generic 0x180D)"])
     n = repo.conn.execute("SELECT COUNT(*) FROM events WHERE code='wearable_link_connected'").fetchone()[0]
     assert n == 2
+
+
+# ---------------------------------------------------------------- two receivers, one band
+def _acc(repo, source):
+    return services.ingest_hr(repo, {"source": source, "hr": 62.0, "rr": [980.0, 1000.0, 990.0],
+                                     "acc": {"pim": 3.0, "zcm": 1.0, "mad": 0.1, "std": 0.2,
+                                             "pmax": 0.5, "n": 104, "fs": 52}})
+
+
+def test_each_receiver_is_recorded_and_the_pmd_holder_is_named(repo, pushes):
+    _link(repo, "connected", ["ACC@52Hz", "PPI"])                       # verity (Windows)
+    services.ingest_hr(repo, {"source": "verity-pi", "link": "connected",
+                              "streams": ["HR/RR (generic 0x180D)"]})
+    _acc(repo, "verity")
+    rx = services.wearable_receivers(repo)
+    assert {r["source"] for r in rx} == {"verity", "verity-pi"}
+    st = services.wearable_stream_ages(repo)
+    assert st["pmd_holder"] == "verity"
+    assert st["acc"]["source"] == "verity" and st["acc"]["age_s"] < 5
+
+
+def test_a_receiver_that_only_serves_heart_rate_is_not_the_pmd_holder(repo, pushes):
+    services.ingest_hr(repo, {"source": "verity-pi", "link": "connected",
+                              "streams": ["HR/RR (generic 0x180D)"]})
+    st = services.wearable_stream_ages(repo)
+    assert st["pmd_holder"] is None
+    assert st["receivers"][0]["source"] == "verity-pi"
+
+
+def test_beat_intervals_are_read_from_one_receiver_at_a_time(repo, pushes):
+    """Both receivers post beats for the same heart; counting both halves every HRV timescale."""
+    from app import bridge
+    services.ingest_hr(repo, {"source": "verity-pi", "hr": 60.0, "rr": [1000.0] * 10})
+    services.ingest_hr(repo, {"source": "verity", "hr": 60.0, "rr": [1000.0] * 10})
+    rr = bridge.recent_rr_intervals(repo.conn, minutes=5.0)
+    assert len(rr) == 10
+
+
+def test_the_streams_endpoint_answers_with_the_ingest_token(auth_client):
+    r = auth_client.get("/hr/streams")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert set(body) >= {"hr", "ppi", "acc", "pmd_holder", "receivers"}

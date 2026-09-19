@@ -215,10 +215,22 @@ def recent_rr_intervals(conn: sqlite3.Connection, minutes: float = 45.0,
     out: list = []
     try:
         cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
-        rows = conn.execute(
-            "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
-            (cutoff, int(max_rows)),
-        ).fetchall()
+        # ONE source at a time. Two receivers on the band both post beat intervals (PPI from the
+        # PMD holder, RR from the generic service on the standby), and the same beats counted
+        # twice would halve every HRV feature's timescale. The receiver that wrote the newest
+        # batch is the series; the other is redundancy for when it stops.
+        latest = conn.execute(
+            "SELECT source FROM rr_intervals WHERE ts >= ? ORDER BY id DESC LIMIT 1",
+            (cutoff,)).fetchone()
+        src = latest["source"] if latest is not None else None
+        if src is None:
+            rows = conn.execute(
+                "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+                (cutoff, int(max_rows))).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? AND source = ? "
+                "ORDER BY ts ASC LIMIT ?", (cutoff, src, int(max_rows))).fetchall()
         for r in rows:
             try:
                 t = datetime.fromisoformat(r["ts"]).timestamp()

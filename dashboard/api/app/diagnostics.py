@@ -73,7 +73,7 @@ _CHECK_ORDER = [
     "device_water", "device_online", "priming", "thermal_response",
     "thermal_capacity", "external_conflict", "frozen_telemetry", "recent_errors",
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "wearable_reachable",
-    "actigraphy", "thermal_trial",
+    "actigraphy", "wearable_receivers", "thermal_trial",
     "wake_alarm", "wake_cue", "degraded", "calibration", "prevention_timing", "session_span",
     "maintenance_acted",
     "verity_forwarder",
@@ -1174,6 +1174,46 @@ def _check_remote_access(run_dir: str) -> dict:
                   f"remote UI unreachable: tailscale {text or 'state unknown'}", remedy)
 
 
+def _check_wearable_receivers(repo) -> dict:
+    """Which receivers have held a link to the band recently, and what each delivers.
+
+    Redundant capture means TWO radios (the Windows box and a Pi at the bedside) each holding a
+    link: the band accepts two centrals, its PMD channel serves one, and the API referees which
+    receiver takes the accelerometer/PPI and which stands by on heart rate. This is where that
+    arrangement becomes visible, so "only heart rate" can be read as "the PMD holder went away
+    and nobody stepped up" rather than as a band fault.
+    """
+    try:
+        from app.services import wearable_receivers
+        rx = wearable_receivers(repo, max_age_s=3600.0)
+    except Exception as exc:
+        return _check("wearable_receivers", "Wearable receivers", "info",
+                      f"not readable ({exc!r})", None)
+    if not rx:
+        return _check("wearable_receivers", "Wearable receivers", "info",
+                      "no receiver has reported a link in the last hour", None)
+    live = [r for r in rx if r.get("state") == "connected"
+            and r.get("age_s") is not None and r["age_s"] < 600]
+    parts = []
+    for r in rx:
+        streams = ", ".join(r.get("streams") or []) or "no streams"
+        parts.append(f"{r['source']}: {r.get('state')} ({streams}; {r.get('age_s', 0) / 60:.0f} min ago)")
+    detail = f"{len(rx)} receiver(s) seen in the last hour -- " + " | ".join(parts)
+    if len(rx) == 1:
+        return _check("wearable_receivers", "Wearable receivers", "info",
+                      detail + ". One radio, no redundancy: a dropped link is a gap until it "
+                      "reconnects", "a second receiver (deploy/PI_BRIDGE.md) holds a parallel "
+                      "link and takes over the streams the first one loses")
+    pmd = [r for r in live if any(("ACC" in x.upper() or "PPI" in x.upper())
+                                  for x in (r.get("streams") or []))]
+    if live and not pmd:
+        return _check("wearable_receivers", "Wearable receivers", "warn",
+                      detail + ". Receivers are linked but none holds the PMD streams",
+                      "the standby receiver steps up after 3 min without PMD data; if this "
+                      "persists the band's PMD channel is held by a third central (phone)")
+    return _check("wearable_receivers", "Wearable receivers", "ok", detail, None)
+
+
 def _check_publishers(run_dir: str) -> dict:
     """Are the two GitHub relay publishers actually succeeding?
 
@@ -2271,6 +2311,7 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("publishers", "GitHub relay publishers", lambda: _check_publishers(run_dir))
     add("remote_access", "Remote access (Tailscale funnel)",
         lambda: _check_remote_access(run_dir))
+    add("wearable_receivers", "Wearable receivers", lambda: _check_wearable_receivers(repo))
     add("actigraphy", "Wearable accelerometer", lambda: _check_actigraphy(repo))
     add("verity_forwarder", "Verity forwarder process",
         lambda: _check_verity_forwarder(run_dir, now))

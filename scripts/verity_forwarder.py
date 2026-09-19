@@ -176,6 +176,8 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
     rejected = isinstance(parsed, dict) and parsed.get("ok") is False
     if not rejected:
         _STATS["posts"] += 1
+        if payload.get("hr") is not None or payload.get("rr") or payload.get("acc"):
+            _STATS["last_data_at"] = time.monotonic()
         _reset_repeat_log()
     else:
         _log_repeating("api:rejected",
@@ -284,7 +286,7 @@ _RELEASE = {"run": 0, "until": 0.0}
 #: DATA instead, and escalate through qualitatively different recoveries rather than just waiting
 #: longer: try the other transport, then stop trusting the cached address, then ask for the
 #: Bluetooth stack itself to be reset.
-_STATS = {"posts": 0, "last_seen_at": 0.0, "acc_rung": 0}
+_STATS = {"posts": 0, "last_seen_at": 0.0, "acc_rung": 0, "last_data_at": 0.0}
 
 # --- accelerometer rate ladder -------------------------------------------------------------
 # Every PMD session since 2026-08-31 on the Windows box started PPI and ACC successfully and
@@ -364,6 +366,20 @@ _FORCED_HR_RETRY_PMD_S = 20 * 60.0
 _MAX_PMD_RETRIES = 2
 _REDISCOVER_AFTER = 3        # stop trusting a pinned/cached address; full rescan
 _ADAPTER_RESET_AFTER = 5     # ask the watchdog to restart the Bluetooth stack
+#: ...but only this many when the band was streaming to us MINUTES ago. A link lost mid-night is
+#: not a band on its charger: 2026-09-18 23:08 the link dropped, six "not found" attempts took
+#: 11 minutes, and the adapter reset that finally fixed it was rung five. Data that recent means
+#: the band is on the arm within range, so the stack is the suspect and gets reset at rung two.
+_ADAPTER_RESET_AFTER_RECENT = 2
+_RECENT_DATA_S = 15 * 60.0
+#: Silence on BOTH PMD streams for this long gets one stop/start of the streams on the live link
+#: before the stall guard (2 min) drops the link. Cheaper than a reconnect, and the band's PMD
+#: channel is known to go quiet while the connection itself stays perfectly healthy.
+_PMD_RESTART_AFTER_S = 60.0
+#: How often a receiver serving generic HR because another receiver holds PMD re-checks whether
+#: that is still true, and how long PMD must be missing everywhere before it steps up.
+_ROLE_CHECK_S = 120.0
+_PMD_MISSING_BEFORE_STEPUP_S = 180.0
 
 #: --- redundancy layer 1: a live LINK is not a live FEED --------------------------------------
 #: BLE can hold a connection open long after notifications stop. Both session loops ran
@@ -574,11 +590,26 @@ async def _discover(BleakScanner, address_hint: str | None):
     # phone keeps grabbing only surfaces in SOME windows -- a short scan turns an intermittently
     # visible device into a permanently invisible one.
     _log("scanning for a Polar/BLE heart-rate sensor (20s)...")
-    devices = await BleakScanner.discover(timeout=20.0)
+    # Signal strength at discovery is the one number that says whether the radio is placed
+    # well: a link that drops mid-night at -90 dBm is a placement problem, at -60 dBm it is not.
+    rssi: dict = {}
+    try:
+        found = await BleakScanner.discover(timeout=20.0, return_adv=True)
+        devices = []
+        for _addr, (d, adv) in found.items():
+            devices.append(d)
+            try:
+                rssi[d.address] = int(adv.rssi)
+            except Exception:
+                pass
+    except TypeError:                     # older bleak without return_adv
+        devices = await BleakScanner.discover(timeout=20.0)
     for d in devices:
         name = (d.name or "").lower()
         if any(h in name for h in _NAME_HINTS):
-            _log(f"found '{d.name}' at {d.address}")
+            _log(f"found '{d.name}' at {d.address}"
+                 + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
+            _STATS["last_rssi"] = rssi.get(d.address)
             return d.address
     # Fall back to any device advertising the HR service, if the backend exposes it.
     for d in devices:
@@ -659,6 +690,44 @@ def _scan_main(args) -> int:
     return 0
 
 
+def _streams_url(ingest_url: str) -> str:
+    """The API's stream-status endpoint next to the ingest one (same token query)."""
+    return ingest_url.replace("/hr/ingest", "/hr/streams")
+
+
+def _fetch_streams(args, timeout: float = 3.0):
+    """``GET /hr/streams`` as a dict, or None when the API cannot answer (then act alone)."""
+    try:
+        req = urllib.request.Request(_streams_url(args.url), method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (local URL)
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _pmd_held_elsewhere(streams, my_source: str, max_age_s: float = 90.0) -> "str | None":
+    """Name of ANOTHER receiver currently delivering the PMD streams (ACC/PPI), else None.
+
+    Two receivers (the Windows box and a Pi at the bedside) can both hold a link to the band --
+    the Verity accepts two centrals -- but its PMD channel serves ONE of them. So the second
+    receiver takes the generic heart-rate service and stands by; if the PMD holder's data goes
+    stale, it steps up on its next session. The API is the referee: it sees what actually
+    lands, per source, rather than what each receiver believes it is sending."""
+    if not isinstance(streams, dict):
+        return None
+    holder = streams.get("pmd_holder") or None
+    if not holder or holder == my_source:
+        return None
+    ages = []
+    for k in ("acc", "ppi"):
+        st = streams.get(k) or {}
+        if st.get("source") == holder and st.get("age_s") is not None:
+            ages.append(float(st["age_s"]))
+    if ages and min(ages) <= max_age_s:
+        return str(holder)
+    return None
+
+
 async def _hr_session(client, args) -> None:
     """Generic 0x180D Heart Rate Service path (the long-standing production behaviour)."""
     _post_link(args, "connected", ["HR/RR (generic 0x180D)"])
@@ -683,6 +752,7 @@ async def _hr_session(client, args) -> None:
         link_epoch = 0
         max_s = getattr(args, "hr_session_max_s", None)
         posts0 = int(_STATS.get("posts", 0) or 0)
+        role_next_check = _ROLE_CHECK_S
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
             _beat(_repo_root())
@@ -698,6 +768,17 @@ async def _hr_session(client, args) -> None:
                 _log(f"HR-only session was a fallback after barren attempts; dropping the link "
                      f"after {elapsed / 60:.0f} min to try the accelerometer/PPI again")
                 return
+            # Standing by as the SECOND receiver: if the PMD holder's streams go missing for
+            # long enough, drop this link so the next session leads with PMD ourselves.
+            if getattr(args, "secondary_to", None) and elapsed >= role_next_check:
+                role_next_check = elapsed + _ROLE_CHECK_S
+                st = _fetch_streams(args)
+                if st is not None and _pmd_held_elsewhere(st, args.source,
+                                                          _PMD_MISSING_BEFORE_STEPUP_S) is None:
+                    _log(f"PMD streams from '{args.secondary_to}' have been missing for over "
+                         f"{_PMD_MISSING_BEFORE_STEPUP_S / 60:.0f} min -- dropping this HR-only "
+                         "link to take over the accelerometer/PPI")
+                    return
             # Layer 1a: never forward a stale reading. Without this the last value seen was
             # re-sent every batch forever once notifications stopped.
             hr = last_hr["v"]
@@ -1064,6 +1145,7 @@ async def _pmd_session(client, args) -> bool:
         warned: set = set()
         link_epoch = 0
         acc_probe_at = (t0 + _ACC_PROBE_S) if pmd.MEAS_ACC in started else None
+        restarted = False
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
             _beat(_repo_root())
@@ -1124,6 +1206,30 @@ async def _pmd_session(client, args) -> bool:
             acc_mags.clear()
             if mags:
                 fresh.note()
+            # Layer 1a': one stop/start of every started stream on the LIVE link when they all
+            # go quiet -- before the stall guard below spends a reconnect on it.
+            if (not restarted and started
+                    and fresh.age() > _PMD_RESTART_AFTER_S
+                    and (time.monotonic() - t0) > args.pmd_grace_seconds):
+                restarted = True
+                _log(f"PMD: no data for {fresh.age():.0f}s on {len(started)} stream(s) -- "
+                     "restarting them on the live link")
+                revived = []
+                for mt in list(started):
+                    what = "ACC" if mt == pmd.MEAS_ACC else "PPI"
+                    try:
+                        await _pmd_command(client, responses, pmd.build_stop_command(mt),
+                                           f"stop {what}", args.control_timeout)
+                        cmd = (pmd.build_start_command(pmd.MEAS_ACC, acc_settings)
+                               if mt == pmd.MEAS_ACC else pmd.build_start_command(mt, None))
+                        if await _pmd_command(client, responses, cmd, f"restart {what}",
+                                              args.control_timeout) is not None:
+                            revived.append(what)
+                    except Exception as exc:
+                        _log(f"PMD: restart of {what} failed ({exc})")
+                if revived:
+                    _log(f"PMD: restarted {' + '.join(revived)}; waiting for frames")
+                    fresh.note()          # give the restarted streams a full stall window
             # Layer 1b: end a connected-but-silent session so the reconnect loop can rescan.
             # Suppressed during the documented PPI warm-up, which is legitimately quiet.
             if (fresh.age() > getattr(args, "stall_seconds", _STALL_TIMEOUT_S)
@@ -1315,6 +1421,18 @@ async def _run_once(args, env) -> None:
         # This is what makes the scan-miss fallback above work at all.
         _remember_address(address)
         await _report_battery(client, args)
+        args.secondary_to = None
+        if args.mode == "auto":
+            holder = _pmd_held_elsewhere(_fetch_streams(args), args.source)
+            if holder:
+                args.secondary_to = holder
+                args.hr_session_max_s = None
+                _log(f"receiver '{holder}' is already serving the accelerometer/PPI -- taking "
+                     "the generic heart-rate service as the second receiver")
+                await _hr_session(client, args)
+                _log("disconnected")
+                _post_link(args, "lost")
+                return
         if args.mode in ("pmd", "auto"):
             ok = False
             try:
@@ -1386,7 +1504,8 @@ async def _main_async(args, env) -> None:
                 args.address = None
             else:
                 args.address = pinned_address
-            if barren >= _ADAPTER_RESET_AFTER:
+            recent_data = (time.monotonic() - float(_STATS.get("last_data_at") or 0.0)) < _RECENT_DATA_S
+            if barren >= (_ADAPTER_RESET_AFTER_RECENT if recent_data else _ADAPTER_RESET_AFTER):
                 _request_adapter_reset(_repo_root(), barren)
 
             before = _STATS["posts"]
@@ -1423,7 +1542,9 @@ async def _main_async(args, env) -> None:
                 opened_barren += 1
             delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
             # If we saw the band this cycle, it is present and something transient is in the way.
-            if (time.monotonic() - float(_STATS.get("last_seen_at") or 0.0)) < 120.0:
+            # Same if it was streaming to us minutes ago: a mid-night drop is retried promptly.
+            if ((time.monotonic() - float(_STATS.get("last_seen_at") or 0.0)) < 120.0
+                    or (time.monotonic() - float(_STATS.get("last_data_at") or 0.0)) < _RECENT_DATA_S):
                 delay = min(delay, _PRESENT_BACKOFF_S)
             # ALWAYS include the exception TYPE. asyncio.TimeoutError (and several bleak
             # errors) have an empty str(), so the old "session error ()" was literally
