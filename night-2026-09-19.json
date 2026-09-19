@@ -1,0 +1,1541 @@
+{
+  "actigraphy_epochs": [],
+  "architecture": {
+    "avg_hr": null,
+    "avg_hrv": null,
+    "avg_respiratory_rate": null,
+    "deep_min": null,
+    "light_min": null,
+    "rem_min": null,
+    "sleep_efficiency": null,
+    "sleep_onset_latency_min": null,
+    "total_sleep_min": null,
+    "wake_events": null,
+    "waso_min": null
+  },
+  "bed_exit_events": [
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:00:29.497288"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:01:00.029616"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:01:30.762451"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:02:01.705851"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:02:31.235444"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:03:01.870442"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:03:31.754333"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:04:02.896940"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:04:33.025818"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:05:03.954613"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:05:34.088930"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:06:34.895128"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:07:05.948624"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:07:36.026166"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:08:06.476737"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:08:36.847821"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:09:07.213757"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:09:37.827609"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:10:08.376044"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:10:39.108928"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:11:09.696643"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:11:40.290584"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:12:10.795797"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:12:41.470966"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:13:12.479833"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:13:43.007411"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:14:14.115731"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:14:44.601653"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:15:15.067637"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:15:45.602428"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:16:16.211441"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:16:46.766765"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:17:17.239278"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:17:47.869551"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:18:18.380534"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:18:48.932329"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:19:19.689537"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:19:50.255018"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:20:20.723389"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:20:51.260162"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:22:22.815610"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:22:53.366898"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:23:23.934423"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:23:54.447252"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:24:25.064133"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:24:55.845521"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:25:26.501489"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:25:57.093697"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:26:27.733479"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:26:58.250229"
+    },
+    {
+      "active_fraction": null,
+      "confidence": 0.9,
+      "hr_excess": null,
+      "lying_baseline": null,
+      "n_ticks": 10,
+      "out_of_bed": true,
+      "reasons": [
+        "wearable reports it is off the arm (charger / not worn)"
+      ],
+      "ts": "2026-09-19T12:27:28.724542"
+    }
+  ],
+  "bed_exit_summary": {
+    "entries_blocked": {},
+    "exits": 51,
+    "max_confidence": 0.9,
+    "ticks_judged": 54,
+    "ticks_with_any_evidence": 51
+  },
+  "comfort_profile": {
+    "cool_edge_f": 67.0,
+    "id": 1,
+    "neutral_f": 69.0,
+    "ratings": {
+      "caveat": "n=1 night. The real fix was disabling the outdoor-weather ambient fallback, which was swinging water ~32 levels at a constant target; this band is secondary.",
+      "correction": "v1 (64.0/65.5/66.5) was derived from the CONTROLLER TARGET scale, which does NOT discriminate: target read 66.9F during the best 160-min unbroken stretch AND at most disruptions. The water LEVEL discriminates cleanly.",
+      "correction_reason": "The superseded band excluded 69 F, the water temperature its own evidence records as this user's best sleep (160 min unbroken). With it in force on 2026-08-27 the commanded water sat at 64-67 F all night, pinned at the floor for two thirds of maintenance ticks across 16 wake events, and pre-emption could not warm above 67 F. Re-centred on the measured best-sleep temperature with ~3 F clearance from both recorded awakening zones (cold 63-64 F, warm 70-72 F).",
+      "evidence": {
+        "best_sleep_median_level": "-55 (69F water), 160 min unbroken",
+        "cold_end_awakenings": "levels -77..-80 (63-64F water)",
+        "warm_end_awakenings": "levels -38..-51 (70-72F water)"
+      },
+      "superseded": {
+        "cool_edge_f": 65.5,
+        "neutral_f": 66.9,
+        "source": "observed_night_2026-08-04_v2",
+        "warm_edge_f": 68.0
+      }
+    },
+    "source": "evidence_corrected_2026-08-28",
+    "ts": "2026-08-28T07:00:06.087473",
+    "warm_edge_f": 69.5
+  },
+  "decision_reasons": {
+    "maintenance": []
+  },
+  "gait_anchors": [],
+  "generated_utc": "2026-09-19T16:27:45.080788+00:00",
+  "hrv_windows_summary": {
+    "n_intervals": 0,
+    "n_windows": 0
+  },
+  "induction_trace": [],
+  "interventions": [],
+  "interventions_summary": {
+    "by_action": {},
+    "by_controller_state": {},
+    "n": 0
+  },
+  "local_utc_offset_s": -14400,
+  "marker_anchors": [],
+  "marker_audit": {
+    "agreement": null,
+    "markers": [],
+    "n": 0,
+    "n_scored_awake": 0
+  },
+  "night_date": "2026-09-19",
+  "onset_events": [],
+  "onset_trace": [],
+  "posture_summary": {
+    "epochs": 0,
+    "turns": 0
+  },
+  "precursor_score_distribution": null,
+  "preemption_dead_zone": {
+    "first_preempt_ts": null,
+    "maintenance_ticks_before_first_preempt": 0,
+    "wake_signal_ticks_in_that_window": 0
+  },
+  "preemption_events": [],
+  "preemption_summary": {
+    "by_action": {},
+    "n_decisions": 54,
+    "n_in_maintenance": 0,
+    "n_preempting": 0,
+    "precursor_reasons": {},
+    "risk_reasons": {}
+  },
+  "raw_samples": [
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:00:13.864368",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:00:13.864368",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:01:15.160398",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:01:15.160398",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:02:16.857697",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:02:16.857697",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:03:17.421188",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:03:17.421188",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:04:17.601087",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:04:17.601087",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:05:18.722106",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:05:18.722106",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:06:20.551336",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:06:20.551336",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:07:21.569933",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:07:21.569933",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:08:36.769272",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:08:36.769272",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:09:37.699829",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:09:37.699829",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:10:38.998964",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:10:38.998964",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -50,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:11:40.202801",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:11:40.202801",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:12:41.390233",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:12:41.390233",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:13:42.925902",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:13:42.925902",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:14:44.526488",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:14:44.526488",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:15:45.510065",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:15:45.510065",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:16:46.706617",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:16:46.706617",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:17:47.802765",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:17:47.802765",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:18:48.861772",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:18:48.861772",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:19:50.177616",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:19:50.177616",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:20:51.192360",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:20:51.192360",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:21:52.280230",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:21:52.280230",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:22:53.288949",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:22:53.288949",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:23:54.377722",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:23:54.377722",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:24:55.778263",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:24:55.778263",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:25:57.029804",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:25:57.029804",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:26:58.186725",
+      "wake_event": 0
+    },
+    {
+      "bed_temp_f": null,
+      "commanded_level": -49,
+      "controller_state": "idle",
+      "heart_rate": null,
+      "hrv": null,
+      "movement": null,
+      "presence": null,
+      "respiratory_rate": null,
+      "stage": "unknown",
+      "stage_confidence": null,
+      "ts": "2026-09-19T12:26:58.186725",
+      "wake_event": 0
+    }
+  ],
+  "respiration_summary": {
+    "agreement_fraction": null,
+    "by_source": {},
+    "median_confidence": null,
+    "ticks": 54,
+    "ticks_with_rate": 0
+  },
+  "risk_reason_saturation": {},
+  "risk_score_distribution": null,
+  "schema": "sleepctl.night_data/v1",
+  "sensor_capture": {
+    "first_ts": "2026-09-19T12:00:13.864368",
+    "heart_rate_present": 0,
+    "last_ts": "2026-09-19T12:26:58.186725",
+    "movement_present": 0,
+    "n_samples": 54,
+    "usable_stage_present": 0
+  },
+  "staging": {
+    "stage_distribution": {
+      "unknown": 54
+    },
+    "transitions": [
+      {
+        "confidence": null,
+        "stage": "unknown",
+        "ts": "2026-09-19T12:00:13.864368"
+      }
+    ],
+    "wake_events": []
+  },
+  "steering_summary": {
+    "final": {
+      "active": false,
+      "deep_deficit_min": null,
+      "deep_min_so_far": 0.0,
+      "defending": false,
+      "frac_of_night": null,
+      "maneuver": "hold",
+      "observing": false,
+      "reason": null,
+      "rem_deficit_min": null,
+      "rem_min_so_far": 0.0
+    },
+    "maneuvers": {
+      "hold": 54
+    },
+    "n_acquiring": 0,
+    "n_decisions": 54,
+    "n_defending": 0,
+    "n_judged": 0
+  },
+  "thermal_exposure": {
+    "n_commanded": 54
+  },
+  "thermal_profile": {
+    "ambient_bias_f": 0.0,
+    "deep_bias_f": 68.0,
+    "neutral_f": 69.0,
+    "neutral_is_measured": true,
+    "override": {
+      "kept_deep_bias_f": 68.0,
+      "kept_neutral_f": 69.0,
+      "learned_deep_bias_f": 73.00625,
+      "learned_neutral_f": 73.721484375
+    },
+    "rem_warm_offset_f": 0.5,
+    "settle_nudge_f": -0.7,
+    "source": "manual_pref",
+    "version": 12,
+    "wake_ramp_f": 76.0
+  },
+  "trial_arms": {
+    "efficacy": null
+  },
+  "wake_log": null
+}
