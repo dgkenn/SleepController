@@ -450,6 +450,20 @@ def _effective_mode(preferred: str, barren: int) -> str:
     return "hr" if flip else "pmd"      # "auto": lead with one service explicitly
 
 
+def _grant_pmd_retry(stall: "dict | None") -> "float | None":
+    """How long an HR-only fallback may run before the link is dropped to retry PMD, or None
+    to leave it alone. Spends one unit of the per-run retry budget (``_MAX_PMD_RETRIES``);
+    a stall after a productive PMD stretch (>= 10 min of frames) refills the budget, since
+    a channel that works for a while and dies is worth chasing all night."""
+    if stall and float(stall.get("streamed_s") or 0.0) >= 600.0:
+        _STATS["pmd_retries"] = 0
+    used = int(_STATS.get("pmd_retries", 0) or 0)
+    if used >= _MAX_PMD_RETRIES:
+        return None
+    _STATS["pmd_retries"] = used + 1
+    return _FORCED_HR_RETRY_PMD_S
+
+
 def _request_adapter_reset(root: Path, barren: int) -> None:
     """Ask the watchdog to restart the Bluetooth stack (flag file, same protocol as
     update.request / restart.request).
@@ -1315,7 +1329,14 @@ async def _run_once(args, env) -> None:
                 _log(f"PMD unavailable on this device; retrying in {args.retry_seconds}s")
                 await asyncio.sleep(args.retry_seconds)
                 return
-            _log("falling back to the generic HR service")
+            # A PMD channel that STALLED (started, streamed, went silent) is retried later: the
+            # fallback below is bounded so the next session can lead with PMD at the next
+            # accelerometer rung. Left unbounded, 2026-09-18 23:43 fell back to HR-only after
+            # a 23-minute PMD session and stayed there for the remaining five hours.
+            limit = _grant_pmd_retry(_STATS.get("pmd_stall"))
+            args.hr_session_max_s = limit
+            _log("falling back to the generic HR service"
+                 + (f" for up to {limit / 60:.0f} min, then retrying PMD" if limit else ""))
         await _hr_session(client, args)
     _log("disconnected")
     _post_link(args, "lost")
@@ -1342,7 +1363,7 @@ async def _main_async(args, env) -> None:
     # transport; "device not found" says the band is away, not that PMD is wedged, and letting
     # it drive the alternation is how 2026-09-18 ran HR-only all night (see _FORCED_HR_RETRY_PMD_S).
     opened_barren = 0
-    pmd_retries = 0
+    _STATS["pmd_retries"] = 0
     while True:
         try:
             _beat(_repo_root())
@@ -1351,9 +1372,7 @@ async def _main_async(args, env) -> None:
             args.mode = _effective_mode(preferred_mode, opened_barren)
             args.hr_session_max_s = None
             if args.mode == "hr" and preferred_mode != "hr":
-                if pmd_retries < _MAX_PMD_RETRIES:
-                    args.hr_session_max_s = _FORCED_HR_RETRY_PMD_S
-                    pmd_retries += 1       # one more deliberate reconnect spent on PMD
+                args.hr_session_max_s = _grant_pmd_retry(None)
                 _log(f"leading with the generic HR service this session ({opened_barren} "
                      f"connected-but-silent session(s) in a row)"
                      + (f"; will retry PMD after {_FORCED_HR_RETRY_PMD_S / 60:.0f} min of streaming"
@@ -1384,7 +1403,7 @@ async def _main_async(args, env) -> None:
                 _STATS["acc_rung"] = nxt
                 _save_acc_rung(_repo_root(), nxt)
             if streamed > 0.0:
-                pmd_retries = 0            # PMD produced frames: the retry budget is fresh
+                _STATS["pmd_retries"] = 0  # PMD produced frames: the retry budget is fresh
             if _STATS["posts"] > before:
                 if barren:
                     _log(f"recovered after {barren} barren session(s)")

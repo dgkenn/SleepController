@@ -176,6 +176,34 @@ class LiveDashboardDaemon:
         self._attach_profiles(controller)
 
     # ------------------------------------------------------ onset / nap sessions
+    def _ensure_night_targets(self, why: str = "session start") -> None:
+        """Arm the in-night steerer with tonight's ideal architecture whenever a session runs
+        without one.
+
+        ``_apply_night_type`` plans the targets, and it only ever ran from the set-alarm
+        handler. A night that starts on wearable bed entry with no alarm set -- every night on
+        this account -- therefore ran with ``night_targets`` None, and ``_evaluate_steering``
+        returned on its very first gate: 2026-09-18 recorded 1970/1970 ticks as "hold" with no
+        reason, while the same physiology replayed with targets deepened on 156 ticks. A
+        restart mid-night lost the targets the same way. Idempotent: never replaces targets the
+        alarm handler already set."""
+        try:
+            ctrl = self.cycle.controller
+            if getattr(ctrl, "night_targets", None) is not None:
+                return
+            from sleepctl.controller.sleep_plan import plan_night
+            plan = plan_night(datetime.now(), self.context.required_wake_time,
+                              self.repo.recent_nights(14),
+                              hint=getattr(self.context, "night_type", None) or "auto",
+                              repo=self.repo)
+            ctrl.set_night_targets(plan.targets, plan.est_sleep_min)
+            est = plan.est_sleep_min
+            self._log(f"night targets planned at {why}: {plan.mode.value}, est sleep "
+                      f"{est:.0f} min" if est else
+                      f"night targets planned at {why}: {plan.mode.value}")
+        except Exception as exc:
+            self._skip("night-target planning", exc)
+
     def _start_induce(self) -> None:
         self.session_mode = "induce"
         self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
@@ -186,6 +214,7 @@ class LiveDashboardDaemon:
         self._onset_logged_ts = None
         self._apply_induce_deadline_awareness()
         self.cycle.controller.set_session("induce", keep_light=False)
+        self._ensure_night_targets("induce")
         self._persist_session()
 
     def _apply_induce_deadline_awareness(self) -> None:
@@ -1301,6 +1330,7 @@ class LiveDashboardDaemon:
                 return
             self.cycle.controller.restore_session_state(
                 rec["state"], rec["onset_ts"], rec.get("architecture"))
+            self._ensure_night_targets("session-state recovery")
             if getattr(self.cycle.controller, "_restored_session", None):
                 a = rec.get("architecture") or {}
                 self._log(f"resumed {rec['state']} after daemon restart: onset "
@@ -1609,6 +1639,11 @@ class LiveDashboardDaemon:
         self._refresh_shift_plan()
         decision = None
         if self.power_on and not self.paused and not self.away:
+            # A session that is running without steering targets (bed entry on wearable
+            # evidence, or a restart) gets them here rather than never.
+            if (getattr(self.cycle.controller.sm.state, "value", "idle") != "idle"
+                    and getattr(self.cycle.controller, "night_targets", None) is None):
+                self._ensure_night_targets("mid-session")
             decision = self.cycle.decide(frame, self.context, now)
             self._maybe_replan_nap()
             self._maybe_log_onset()
@@ -1693,6 +1728,11 @@ class LiveDashboardDaemon:
         if comfort_active:
             await self._comfort_set_level()
         elif self.power_on and not self.paused and not self.away:
+            # A session that is running without steering targets (bed entry on wearable
+            # evidence, or a restart) gets them here rather than never.
+            if (getattr(self.cycle.controller.sm.state, "value", "idle") != "idle"
+                    and getattr(self.cycle.controller, "night_targets", None) is None):
+                self._ensure_night_targets("mid-session")
             decision = self.cycle.decide(frame, self.context, now)
             self._maybe_replan_nap()
             self._maybe_log_onset()

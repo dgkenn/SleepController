@@ -508,3 +508,23 @@ def test_a_plug_failure_never_breaks_the_dawn_drive():
     d = _Daemon()
     LiveDashboardDaemon._drive_dawn(d, _Dec())
     assert any("plug" in m for m in d.logged)
+
+
+def test_a_session_started_without_an_alarm_still_gets_steering_targets():
+    """2026-09-18: bed entry on wearable evidence, no alarm, night_targets None all night --
+    the steerer returned on its first gate for 1970/1970 ticks."""
+    d, client, repo = _daemon()
+    d.cycle.controller.night_targets = None
+    d._start_induce()
+    assert d.cycle.controller.night_targets is not None
+    # with no alarm the planner may leave est_sleep_min unset; the steerer falls back to the
+    # targets' own total_sleep_target_min in that case
+
+
+def test_night_targets_are_planned_once_and_not_replaced():
+    d, client, repo = _daemon()
+    d.cycle.controller.night_targets = None
+    d._ensure_night_targets("test")
+    first = d.cycle.controller.night_targets
+    d._ensure_night_targets("again")
+    assert d.cycle.controller.night_targets is first

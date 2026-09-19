@@ -139,3 +139,15 @@ def test_the_hr_session_ends_itself_after_the_limit(monkeypatch, _quiet):
 
     asyncio.run(run())
     assert any("dropping the link" in m for m in _quiet)
+
+
+def test_the_pmd_retry_budget_is_spent_then_refilled_by_a_productive_stall(monkeypatch):
+    monkeypatch.setitem(vf._STATS, "pmd_retries", 0)
+    assert vf._grant_pmd_retry(None) == vf._FORCED_HR_RETRY_PMD_S
+    assert vf._grant_pmd_retry(None) == vf._FORCED_HR_RETRY_PMD_S
+    assert vf._grant_pmd_retry(None) is None                       # budget spent
+    # a stall after 23 minutes of PMD frames (2026-09-18 23:43) refills it
+    assert vf._grant_pmd_retry({"streamed_s": 23 * 60.0}) == vf._FORCED_HR_RETRY_PMD_S
+    # a stall after 30 s of frames does not
+    monkeypatch.setitem(vf._STATS, "pmd_retries", vf._MAX_PMD_RETRIES)
+    assert vf._grant_pmd_retry({"streamed_s": 30.0}) is None

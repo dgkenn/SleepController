@@ -271,7 +271,7 @@ class BedExitDetector:
         # window is the one movement proxy left, and 80-120 bpm across five ticks is a person
         # walking, whatever the median says.
         spread = max(hrs) - min(hrs)
-        max_spread = float(getattr(t, "bed_entry_max_hr_spread", 25.0))
+        max_spread = float(getattr(t, "bed_entry_max_hr_spread", 30.0))
         if spread > max_spread:
             return f"heart rate swinging {spread:.0f} bpm across the window is not someone lying still"
         return None

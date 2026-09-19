@@ -13,6 +13,11 @@ CLASSES = ["wake", "light", "deep", "rem"]
 _IDX = {"awake": 0, "wake": 0, "light": 1, "deep": 2, "rem": 3}
 MIN_NIGHTS = 5
 PSEUDO_COUNT = 200.0     # per row: population shape worth this many observed epochs
+#: Minimum share of the user's own epochs in deep / REM before their labels are believed.
+#: Adult norms are ~13-23% deep and ~20-25% REM; these floors are deliberately generous so
+#: only a degenerate hypnogram (the 2026-09-18 case: 0% REM) is rejected.
+MIN_DEEP_FRAC = 0.04
+MIN_REM_FRAC = 0.08
 EPOCH_S = 30.0
 
 
@@ -73,11 +78,32 @@ def learn_transitions(repo, population: dict, nights: int = 14, min_nights: int 
         return {"personalized": False, "n_nights": used_nights, "n_epochs": n_epochs,
                 "rationale": f"learning -- {used_nights}/{min_nights} nights before the stage "
                              "transitions are tuned to your own hypnogram"}
+    # The epochs above are the stager's OWN past labels, not ground truth. Blending them back
+    # into its transition matrix is a feedback loop: a stretch of nights it under-called deep
+    # or REM makes those states harder to enter, which under-calls them further. 2026-09-18
+    # came out as 385 min light / 3 min deep / 0 min REM with the personal matrix in force,
+    # against 36 deep / 442 REM ticks for the same physiology on the population matrix. A
+    # matrix is only trusted when the user's own labels carry a physiologically possible
+    # share of deep and REM; otherwise the population shape stays.
+    tot_occ = sum(occ) or 1.0
+    deep_frac, rem_frac = occ[2] / tot_occ, occ[3] / tot_occ
+    if deep_frac < MIN_DEEP_FRAC or rem_frac < MIN_REM_FRAC:
+        return {"personalized": False, "n_nights": used_nights, "n_epochs": n_epochs,
+                "deep_frac": round(deep_frac, 3), "rem_frac": round(rem_frac, 3),
+                "rationale": f"population transitions kept -- your own labels over {used_nights} "
+                             f"nights carry {deep_frac:.0%} deep / {rem_frac:.0%} REM, below the "
+                             f"{MIN_DEEP_FRAC:.0%} / {MIN_REM_FRAC:.0%} a real hypnogram has, so "
+                             "they cannot be trusted to reshape the stager"}
     trans = []
     for i in range(4):
         row_n = sum(counts[i])
         row = [(counts[i][j] + PSEUDO_COUNT * float(pop_t[i][j])) / (row_n + PSEUDO_COUNT)
                for j in range(4)]
+        # Entry into deep (2) and REM (3) is never made harder than half the population's:
+        # the blend may sharpen where the user's nights are rich, never close a state off.
+        for j in (2, 3):
+            if i != j:
+                row[j] = max(row[j], 0.5 * float(pop_t[i][j]))
         s = sum(row)
         trans.append([v / s for v in row] if s > 0 else list(pop_t[i]))
     tot = sum(occ)
@@ -85,6 +111,7 @@ def learn_transitions(repo, population: dict, nights: int = 14, min_nights: int 
     s = sum(prior)
     prior = [v / s for v in prior]
     return {"personalized": True, "n_nights": used_nights, "n_epochs": n_epochs,
+            "deep_frac": round(deep_frac, 3), "rem_frac": round(rem_frac, 3),
             "trans": [[round(v, 5) for v in r] for r in trans], "prior": [round(v, 5) for v in prior],
             "rationale": f"stage transitions blended from {n_epochs} of your own epochs over "
                          f"{used_nights} nights (population shape worth {PSEUDO_COUNT:.0f} per row)"}

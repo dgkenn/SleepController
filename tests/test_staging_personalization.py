@@ -75,3 +75,37 @@ def test_the_stager_accepts_a_wake_bias_and_a_personal_hmm():
     if st.hmm:
         st.set_personal_hmm(POP["trans"], POP["prior"])
         assert st.hmm["trans"][1][1] == 0.95
+
+
+def _light_only_night(repo, night):
+    """What 2026-09-18 looked like: light with a little wake, no deep, no REM."""
+    t = datetime(2026, 9, 1, 23, 0)
+    stages = ["light"] * 100 + ["awake"] * 8
+    for i in range(360):
+        st = stages[i % len(stages)]
+        repo.conn.execute("INSERT INTO raw_samples (ts, night_date, controller_state, stage, stage_confidence) VALUES (?,?,?,?,?)",
+                          ((t + timedelta(seconds=30 * i)).isoformat(), night, "maintenance", st, 0.65))
+    repo.conn.commit()
+
+
+def test_a_hypnogram_with_no_rem_is_not_believed(tmp_path):
+    """The learner feeds the stager its own past labels. Nights it under-called must not make
+    deep and REM harder to enter next time."""
+    repo = _repo(tmp_path)
+    for d in range(6):
+        _light_only_night(repo, f"2026-09-1{d}")
+    out = learn_transitions(repo, POP)
+    assert out["personalized"] is False
+    assert "cannot be trusted" in out["rationale"]
+    assert out["rem_frac"] == 0.0
+
+
+def test_entry_into_deep_and_rem_is_never_closed_off(tmp_path):
+    """Even when the user's nights qualify, the blend may not cut the population's entry into
+    deep or REM below half."""
+    repo = _repo(tmp_path)
+    for d in range(8):
+        _night(repo, f"2026-09-0{d + 1}", deep_heavy=False)   # light/REM only, no deep at all
+    out = learn_transitions(repo, POP)
+    if out["personalized"]:
+        assert out["trans"][1][2] >= 0.5 * POP["trans"][1][2] - 1e-6
