@@ -367,6 +367,11 @@ class Tunables:
     bed_exit_motion_threshold: float = 0.25    # movement index counted as "actually moving"
     bed_exit_active_fraction: float = 0.6      # share of the window moving => up, not turning
     bed_exit_ends_session: bool = True         # act on it, rather than only reporting it
+    # Inside the WAKE WINDOW the deadline outranks the bed-exit rule, so a person who is up
+    # before their alarm keeps the session alive until the window closes. 2026-09-20: up at
+    # 04:25, working out at 130-150 bpm from 05:28, session open until 05:45. Evidence that
+    # has held this long in the window is someone who has already woken, and ends it.
+    bed_exit_wake_window_persist_min: float = 15.0
     # Entry is a different question: someone who just lay down still has a walked-up heart rate
     # but IS lying still, so stillness is the gate and the ceiling sits far below the 120 bpm
     # that let a morning of walking around open a brand-new "night" every day.

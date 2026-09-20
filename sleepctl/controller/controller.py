@@ -648,12 +648,20 @@ class SleepController:
                 except Exception:
                     pass
             self.last_bed_exit = bed_exit
+            # The wake deadline outranks the bed-exit rule -- except for evidence that has held
+            # a long time inside the window. 2026-09-20: up at 04:25, working out at 130-150
+            # bpm from 05:28, and the session ran to the window's close at 05:45 with the
+            # bed commanded for nobody. Someone whose heart rate has said "up" for a quarter
+            # of an hour in the wake window has woken; the alarm has nothing left to do.
+            ww_hold = float(getattr(cfg.tunables, "bed_exit_wake_window_persist_min", 15.0))
+            held_long = (getattr(bed_exit, "held_min", None) is not None
+                         and float(bed_exit.held_min) >= ww_hold)
             if (bed_exit.out_of_bed
                     and bool(getattr(cfg.tunables, "bed_exit_ends_session", True))
                     and self.sm.state is not ControllerState.IDLE
-                    # The wake deadline outranks every other rule, and a Pod that positively
-                    # reports presence outranks an inference drawn from a wristband.
-                    and not wake_window_open
+                    # A Pod that positively reports presence outranks an inference drawn from
+                    # a wristband.
+                    and (not wake_window_open or held_long)
                     and frame.presence is not True):
                 self.sm.state = ControllerState.IDLE
                 self.sm.reason = ("bed exit: " + ", ".join(bed_exit.reasons)

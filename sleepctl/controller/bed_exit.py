@@ -83,10 +83,12 @@ class BedExitAssessment:
     active_fraction: Optional[float] = None  # share of the window with real movement
     lying_baseline: Optional[float] = None
     n_ticks: int = 0
+    held_min: Optional[float] = None         # how long the qualifying evidence has persisted
 
     def to_dict(self) -> dict:
         return {"out_of_bed": self.out_of_bed, "confidence": round(self.confidence, 3),
                 "reasons": list(self.reasons),
+                "held_min": (None if self.held_min is None else round(self.held_min, 1)),
                 "hr_excess": (None if self.hr_excess is None else round(self.hr_excess, 1)),
                 "active_fraction": (None if self.active_fraction is None
                                     else round(self.active_fraction, 3)),
@@ -220,6 +222,7 @@ class BedExitDetector:
                 self._out_since = stamp
             held = ((stamp - self._out_since).total_seconds() / 60.0
                     if stamp and self._out_since else 0.0)
+            assessment.held_min = held
             assessment.out_of_bed = held >= persist_min
             # Confidence grows with how long it has held and how many channels agree, and is
             # reported even before the persistence threshold is met so the telemetry shows the
