@@ -27,7 +27,10 @@ def test_starting_priors_are_evidence_grounded_and_ordered():
     assert p.rem_warm_offset_f > 0          # warmth promotes REM (Eight Sleep Autopilot RCT)
     # hot-sleeper biases the baseline cool; the settle default cools; onset nudges warm.
     assert CFG.tunables.hot_sleeper_cool_bias_f < 0
-    assert CFG.tunables.maintenance_settle_nudge_f < 0
+    # 2026-09-20: the settle default no longer cools (68 F woke this user); it holds neutral
+    # and the learner may only explore warm until the temperature trial earns a direction.
+    assert CFG.tunables.maintenance_settle_nudge_f == 0.0
+    assert CFG.tunables.settle_cooling_allowed is False
     assert CFG.tunables.onset_warm_nudge_f > 0
     # concrete anchored values (documented from the device's 55–110 °F water scale)
     assert p.deep_bias_f == 66.0 and p.neutral_f == 70.0 and p.wake_ramp_f == 74.0

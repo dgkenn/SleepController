@@ -16,8 +16,16 @@ from sleepctl.controller.thermal import ThermalController
 from sleepctl.models import NightObjective, ThermalIntent
 
 
-def _thermal(neutral=69.0):
+def _thermal(neutral=69.0, cooling_allowed=True):
+    """The cooling-settle contract below is for the policy that ALLOWS settle cooling (the
+    original -1.0 F default). Since 2026-09-20 the shipped default disallows it -- 68 F woke
+    this user cold -- so these tests opt back in explicitly; the shipped default is pinned by
+    test_the_shipped_settle_holds_neutral below."""
+    from dataclasses import replace
     cfg = AppConfig()
+    if cooling_allowed:
+        cfg = replace(cfg, tunables=replace(cfg.tunables, settle_cooling_allowed=True,
+                                             maintenance_settle_nudge_f=-1.0))
     t = ThermalController(cfg)
     t.profile.neutral_f = neutral
     t.neutral_is_measured = True          # suppress the population hot-sleeper prior
@@ -40,6 +48,17 @@ def test_a_cooling_settle_never_warms_the_bed():
 def test_a_cooling_settle_from_neutral_actually_cools():
     cfg, t = _thermal()
     assert _resolve(t, cfg, last_f=69.0) < 69.0
+
+
+def test_the_shipped_settle_holds_neutral():
+    """The default policy: a settle from neutral stays at neutral, and a settle from a colder
+    bed warms back toward it (bounded by the step) instead of cooling further."""
+    cfg, t = _thermal(cooling_allowed=False)
+    assert cfg.tunables.settle_cooling_allowed is False
+    assert _resolve(t, cfg, last_f=69.0) == 69.0
+    assert 66.0 < _resolve(t, cfg, last_f=66.0) <= 69.0
+    # an explicit cooling dose handed in by a caller is refused just the same
+    assert _resolve(t, cfg, last_f=69.0, settle=-2.0) == 69.0
 
 
 def test_the_preempt_settle_is_deeper_than_the_ordinary_one():

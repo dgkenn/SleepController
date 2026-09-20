@@ -103,7 +103,10 @@ class ThermalController:
     def set_settle_nudge(self, nudge_f: float) -> None:
         """Set the learned signed maintenance settle nudge, clamped to the comfort cap."""
         cap = self.cfg.tunables.maintenance_settle_cap_f
-        self.settle_nudge_f = max(-cap, min(cap, float(nudge_f or 0.0)))
+        nudge = max(-cap, min(cap, float(nudge_f or 0.0)))
+        if not bool(getattr(self.cfg.tunables, "settle_cooling_allowed", True)):
+            nudge = max(0.0, nudge)      # a learner may not cool this user on a precursor
+        self.settle_nudge_f = nudge
 
     # -- composite (effective) temperature ---------------------------------------
     # Effective comfort = a blend of what the COVERED body feels (the Pod's bed-surface
@@ -183,6 +186,8 @@ class ThermalController:
             else:
                 cap = t.maintenance_settle_cap_f
                 nudge = max(-cap, min(cap, float(settle_nudge_f)))
+            if not bool(getattr(t, "settle_cooling_allowed", True)):
+                nudge = max(0.0, nudge)   # 2026-09-20: a settle may not cool this user
             target = neutral + nudge
         elif intent is ThermalIntent.ONSET_WARM:
             # Small WARM nudge to induce onset (cutaneous warming speeds sleep onset). Bounded
@@ -327,6 +332,8 @@ class ThermalController:
         # prevent an awakening. Measured on 2026-08-29 and 2026-08-31: almost every pre-emption
         # episode that moved the bed at all moved it in the warm direction.
         nudge_now = (self.settle_nudge_f if settle_nudge_f is None else float(settle_nudge_f))
+        if not bool(getattr(self.cfg.tunables, "settle_cooling_allowed", True)):
+            nudge_now = max(0.0, nudge_now)
         if intent is ThermalIntent.SETTLE_COOL and nudge_now < 0:
             water = min(water, last)
 

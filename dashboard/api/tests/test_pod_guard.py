@@ -47,16 +47,16 @@ def _armed(commanded=-58, ago_s=600):
     return d, repo, writes
 
 
-def test_a_foreign_target_is_overridden_after_two_reads():
+def test_a_foreign_accepted_target_with_no_schedule_is_the_user_and_is_honoured():
+    """Before 2026-09-20 this case was re-asserted. The night showed who moves the accepted
+    target when no schedule is driving: the person in the bed, who was cold."""
     d, repo, writes = _armed()
     now = datetime.now()
-    assert _run(d._guard_pod(_frame(-30), now)) is False        # first read: streak 1
+    assert _run(d._guard_pod(_frame(-30), now)) is False
     assert writes == []
-    assert _run(d._guard_pod(_frame(-30), now + timedelta(seconds=60))) is True
-    assert writes == [-58]
+    assert d._last_commanded_level == -30
     s = d._pod_guard_summary()
-    assert s["enabled"] is True and s["reasserts_24h"] == 1
-    assert s["last_observed_level"] == -30 and s["last_commanded_level"] == -58
+    assert s["enabled"] is True and s["reasserts_24h"] == 0 and s["user_overrides_24h"] == 1
 
 
 def test_agreement_resets_the_streak():
@@ -117,10 +117,11 @@ def test_the_conflict_check_reports_the_guard():
 
 
 # ------------------------------------------------------- 2026-09-20: the schedule takeover
-def _schedule(d, target):
-    """The device's own schedule session, as device_status reports it."""
+def _schedule(d, target, activity="schedule"):
+    """The device's own session, as device_status reports it: "schedule" is the app's bedtime
+    schedule (fought); "temperatureControl" is a person setting a temperature (honoured)."""
     d._safe_device_status = lambda: {"external_schedule": {
-        "activity": "temperatureControl", "target_level": target, "active": True}}
+        "activity": activity, "target_level": target, "active": True}}
 
 
 def test_the_schedule_register_is_watched_even_right_after_our_own_write():
@@ -162,3 +163,54 @@ def test_a_long_hold_is_renewed_before_the_override_lapses():
     _run(d._guard_pod(_frame(-58), now))
     assert writes == [-58]
     assert durations == [7200]
+
+
+# ------------------------------------------------- 2026-09-20 01:03: the user's own hand
+def test_a_manual_change_from_the_phone_is_honoured_not_fought():
+    """The user woke cold at 68F and set 80F. Writing 68F back every two minutes would have
+    fought them all night."""
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    _schedule(d, -3, activity="temperatureControl")
+    now = datetime.now()
+    assert _run(d._guard_pod(_frame(-58), now)) is False
+    assert writes == [], "the guard wrote our level back over the user's"
+    assert d._last_commanded_level == -3            # we hold THEIR level now
+    assert d._user_override_active(now + timedelta(minutes=30))
+    assert not d._user_override_active(now + timedelta(minutes=61))
+    s = d._pod_guard_summary()
+    assert s["user_overrides_24h"] == 1 and s["reasserts_24h"] == 0
+
+
+def test_a_warmer_override_raises_tonights_floor_a_degree_above_where_they_were():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    _schedule(d, -3, activity="temperatureControl")
+    _run(d._guard_pod(_frame(-58), datetime.now()))
+    from sleepctl.controller.thermal import default_level_to_f
+    prior = default_level_to_f(-58)
+    assert d.cycle.controller.session_floor_f == prior + 1.0
+    assert d.cycle.controller.session_ceiling_f is None
+
+
+def test_a_cooler_override_lowers_tonights_ceiling():
+    d, repo, writes = _armed(commanded=-20, ago_s=600)
+    _schedule(d, -60, activity="temperatureControl")
+    _run(d._guard_pod(_frame(-20), datetime.now()))
+    from sleepctl.controller.thermal import default_level_to_f
+    assert d.cycle.controller.session_ceiling_f == default_level_to_f(-20) - 1.0
+
+
+def test_the_accepted_target_moving_with_no_schedule_is_also_the_user():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    now = datetime.now()
+    _run(d._guard_pod(_frame(-3), now))               # accepted target -3, no schedule active
+    assert writes == []
+    assert d._last_commanded_level == -3
+
+
+def test_the_schedule_is_still_fought_after_a_user_override_expires():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    _schedule(d, -3, activity="schedule")
+    now = datetime.now()
+    _run(d._guard_pod(_frame(-58), now))
+    assert _run(d._guard_pod(_frame(-58), now + timedelta(seconds=60))) is True
+    assert writes == [-58]

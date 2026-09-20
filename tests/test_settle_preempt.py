@@ -14,12 +14,18 @@ from sleepctl.storage.repository import Repository
 
 
 # ---- signed settle nudge --------------------------------------------------
+def _cooling_allowed(cfg):
+    from dataclasses import replace
+    return replace(cfg, tunables=replace(cfg.tunables, settle_cooling_allowed=True,
+                                         maintenance_settle_nudge_f=-1.0))
+
+
 def test_settle_nudge_signed_and_clamped():
-    cfg = AppConfig.default()
+    cfg = _cooling_allowed(AppConfig.default())
     th = ThermalController(cfg)
     neutral = th.target_for(ThermalIntent.NEUTRAL, NightObjective.OPTIMIZE, hot_sleeper=True)
     cool = th.target_for(ThermalIntent.SETTLE_COOL, NightObjective.OPTIMIZE, hot_sleeper=True)
-    assert cool < neutral  # default is a cool settle (hot sleeper)
+    assert cool < neutral  # with cooling allowed the -1.0 default is a cool settle
     th.set_settle_nudge(1.5)  # learn the WARM direction
     warm = th.target_for(ThermalIntent.SETTLE_COOL, NightObjective.OPTIMIZE, hot_sleeper=True)
     assert warm > neutral
@@ -27,8 +33,25 @@ def test_settle_nudge_signed_and_clamped():
     assert abs(th.settle_nudge_f) <= cfg.tunables.maintenance_settle_cap_f + 1e-9
 
 
-def test_settle_learner_flips_when_cooling_fails():
+def test_the_default_settle_holds_neutral_and_never_learns_to_cool():
+    """2026-09-19: the settle cooled this user to 68 F and 68 F woke them cold. The shipped
+    default is therefore "hold neutral": no cooling nudge, and a learner that asks for one is
+    clamped to zero. Warming is still learnable."""
     cfg = AppConfig.default()
+    assert cfg.tunables.settle_cooling_allowed is False
+    assert cfg.tunables.maintenance_settle_nudge_f == 0.0
+    th = ThermalController(cfg)
+    neutral = th.target_for(ThermalIntent.NEUTRAL, NightObjective.OPTIMIZE, hot_sleeper=True)
+    settle = th.target_for(ThermalIntent.SETTLE_COOL, NightObjective.OPTIMIZE, hot_sleeper=True)
+    assert settle == neutral
+    th.set_settle_nudge(-1.0)
+    assert th.settle_nudge_f == 0.0
+    th.set_settle_nudge(0.5)
+    assert th.settle_nudge_f == 0.5
+
+
+def test_settle_learner_flips_when_cooling_fails():
+    cfg = _cooling_allowed(AppConfig.default())
     repo = Repository(tempfile.mktemp(suffix=".db"))
     try:
         # 8 resolved pre-cools that did NOT prevent the awakening -> cooling isn't working
@@ -40,6 +63,41 @@ def test_settle_learner_flips_when_cooling_fails():
         repo.conn.commit()
         nudge = learn_settle_nudge(repo, cfg)
         assert nudge > 0  # flipped from the cool default toward warm exploration
+    finally:
+        repo.close()
+
+
+def test_settle_learner_explores_warm_from_a_zero_base_when_prevention_fails():
+    """With the default "hold neutral" settle there is no cool direction to flip from; a
+    failing pre-emption record still moves the learner, and the only way it may go is warm."""
+    from sleepctl.learning.settle import EXPLORE_WARM_F
+    cfg = AppConfig.default()
+    repo = Repository(tempfile.mktemp(suffix=".db"))
+    try:
+        for i in range(8):
+            repo.conn.execute(
+                "INSERT INTO precool_events (night_date, ts, window_type, lead_used_min, "
+                "eta_min, prevented, resolved) VALUES (?,?,?,?,?,0,1)",
+                ("2026-06-25", f"2026-06-26T0{i}:00:00", "circadian", 10, 5))
+        repo.conn.commit()
+        assert learn_settle_nudge(repo, cfg) == EXPLORE_WARM_F
+    finally:
+        repo.close()
+
+
+def test_settle_learner_never_returns_a_cooling_nudge_while_cooling_is_disallowed():
+    from dataclasses import replace
+    cfg = AppConfig.default()
+    cfg = replace(cfg, tunables=replace(cfg.tunables, maintenance_settle_nudge_f=-1.0))
+    repo = Repository(tempfile.mktemp(suffix=".db"))
+    try:
+        for i in range(8):
+            repo.conn.execute(
+                "INSERT INTO precool_events (night_date, ts, window_type, lead_used_min, "
+                "eta_min, prevented, resolved) VALUES (?,?,?,?,?,1,1)",
+                ("2026-06-25", f"2026-06-26T0{i}:00:00", "circadian", 10, 5))
+        repo.conn.commit()
+        assert learn_settle_nudge(repo, cfg) == 0.0     # "working" cooling is still refused
     finally:
         repo.close()
 

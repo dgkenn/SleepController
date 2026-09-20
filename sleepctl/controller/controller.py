@@ -90,6 +90,11 @@ class SleepController:
         # above knows how long it has been quiet. None until the first one tonight.
         self._last_settle_at = None
         self._settle_release = False
+        # Tonight's user-implied bounds (note_user_override) -- None until the phone is used.
+        self.session_floor_f = None
+        self.session_ceiling_f = None
+        self.user_overrides: list = []
+        self._bounds_clamped = False
         self.est_sleep_min: Optional[float] = None
         # Accrued time-in-stage since onset (the realized architecture so far).
         self._arch_deep_min = 0.0
@@ -1060,6 +1065,10 @@ class SleepController:
             bed_temp_f, ambient_temp_f, now=now, settle_nudge_f=settle_nudge,
         )
         self._settle_nudge_used = settle_nudge
+        # FLOORS. The maintenance floor (config) and the floor/ceiling the user's own hand on
+        # the phone implied tonight (note_user_override) both outrank every intent above: a
+        # bed that woke this user cold may not be commanded there again.
+        target_f, level = self._apply_session_bounds(state, target_f, level)
 
         # --- correction action vs current bed temp -----------------------------
         action = self._action_for(current_f, target_f)
@@ -1502,7 +1511,57 @@ class SleepController:
         control schedule). False = a control/observe night: judge + shadow-log, but don't cool."""
         self.steer_actuate = bool(actuate)
 
+    def note_user_override(self, prior_target_f: float, warmer: bool, level: int | None = None) -> None:
+        """The user changed the bed from the phone. Treat it as an instruction and as evidence.
+
+        2026-09-20 01:03: the bed was at 68.3F, the user woke cold and set 80F by hand. That
+        move says "68 is too cold for me tonight"; it does not say "80 is right". So a WARMER
+        override raises tonight's floor to a degree above the temperature they fled, a COOLER
+        one lowers tonight's ceiling the same way, and the record keeps the event for the
+        comfort learners. Cleared when the session ends."""
+        try:
+            prior = float(prior_target_f)
+        except Exception:
+            return
+        if warmer:
+            new_floor = prior + 1.0
+            cur = getattr(self, "session_floor_f", None)
+            self.session_floor_f = new_floor if cur is None else max(cur, new_floor)
+        else:
+            new_ceiling = prior - 1.0
+            cur = getattr(self, "session_ceiling_f", None)
+            self.session_ceiling_f = new_ceiling if cur is None else min(cur, new_ceiling)
+        self.user_overrides = getattr(self, "user_overrides", []) + [{
+            "prior_target_f": prior, "warmer": bool(warmer), "level": level,
+            "floor_f": getattr(self, "session_floor_f", None),
+            "ceiling_f": getattr(self, "session_ceiling_f", None)}]
+
+    def _apply_session_bounds(self, state, target_f: float, level: int):
+        """Clamp a resolved target to the maintenance floor and tonight's user-implied bounds."""
+        try:
+            if state not in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY):
+                return target_f, level
+            lo = float(getattr(self.cfg.tunables, "maintenance_floor_f", 0.0) or 0.0)
+            sf = getattr(self, "session_floor_f", None)
+            if sf is not None:
+                lo = max(lo, float(sf))
+            hi = getattr(self, "session_ceiling_f", None)
+            new = target_f
+            if lo and new < lo:
+                new = lo
+            if hi is not None and new > float(hi):
+                new = float(hi)
+            if abs(new - target_f) < 1e-9:
+                return target_f, level
+            self._bounds_clamped = True
+            return new, self.thermal.to_level(new)
+        except Exception:
+            return target_f, level
+
     def _reset_architecture(self) -> None:
+        self.session_floor_f = None
+        self.session_ceiling_f = None
+        self.user_overrides = []
         self._arch_deep_min = self._arch_rem_min = self._arch_light_min = 0.0
         self._arch_last_ts = None
         self._deepen_active = False
@@ -1588,10 +1647,12 @@ class SleepController:
         self.thermal.profile = replace(self.thermal.profile, wake_ramp_f=float(wake_f))
 
     #: A deep-bias anchor must sit at least this far BELOW neutral, or "deepen" warms.
-    DEEP_BIAS_MIN_BELOW_NEUTRAL_F = 0.5
+    DEEP_BIAS_MIN_BELOW_NEUTRAL_F = 0.0
     #: A learned deep bias that is not credibly below neutral is replaced by this offset (the
     #: config default relationship, 70 -> 66 F); the comfort clamp still bounds the result.
-    DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F = 1.0
+    # 0.0 since 2026-09-20: deep-sleep cooling put this user at 68F, and 68F woke them cold.
+    # The temperature trial decides whether any cooling helps; until then deep holds neutral.
+    DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F = 0.0
     #: No deepen may cool more than this below neutral, learned or not. This user's own nights
     #: (2026-08-27..09-07, 4,800 maintenance ticks): awakenings per tick ran 9.6% at 65 F,
     #: 6.5% at 66, 3.6% at 67, 3.0% at 68 and 1.3% at 69 -- the deepen dose is tested at one
@@ -1650,6 +1711,10 @@ class SleepController:
         may go) and half a degree (so it still acts). The fixed -2 F used to override the
         learner outright; on this user's nights the water it landed on (67 F) carried three
         times the per-tick awakening rate of 69 F."""
+        if not bool(getattr(cfg.tunables, "settle_cooling_allowed", True)):
+            # Pre-emption may not COOL this user: 68F woke them (2026-09-19). Holding neutral is
+            # the whole move until the trial shows a direction that helps.
+            return 0.0
         coldest = float(getattr(cfg.tunables, "preempt_settle_nudge_f", -2.0))
         learned = getattr(self.thermal, "settle_nudge_f", None)
         if learned is None:
@@ -1661,6 +1726,10 @@ class SleepController:
         if p is None:
             return {}
         return {
+            "maintenance_floor_f": getattr(self.cfg.tunables, "maintenance_floor_f", None),
+            "session_floor_f": getattr(self, "session_floor_f", None),
+            "session_ceiling_f": getattr(self, "session_ceiling_f", None),
+            "user_overrides": len(getattr(self, "user_overrides", []) or []),
             "neutral_f": round(float(p.neutral_f), 2),
             "deep_bias_f": round(float(p.deep_bias_f), 2),
             "rem_warm_offset_f": round(float(p.rem_warm_offset_f), 2),

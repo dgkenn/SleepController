@@ -23,17 +23,25 @@ def test_a_learned_profile_cannot_move_the_measured_neutral():
     assert c.thermal.profile.source == "ml"            # the rest of the profile still applies
     assert c.last_setpoint_override["learned_neutral_f"] == 71.5
     assert c.last_setpoint_override["kept_neutral_f"] == 69.0
+    # a settle stays anchored on the measured neutral; it may not cool by default (2026-09-20)
+    settle = c.thermal.target_for(ThermalIntent.SETTLE_COOL, NightObjective.OPTIMIZE, True, 69.0, -2.0)
+    assert settle == 69.0
+    c.cfg.tunables.settle_cooling_allowed = True
     settle = c.thermal.target_for(ThermalIntent.SETTLE_COOL, NightObjective.OPTIMIZE, True, 69.0, -2.0)
     assert settle == 67.0
 
 
-def test_a_deep_bias_warmer_than_neutral_is_bounded_below_it():
+def test_a_deep_bias_warmer_than_neutral_is_bounded_at_it():
+    """A "deepen" may never resolve WARMER than neutral. Since 2026-09-20 it also does not
+    resolve colder by default: deep-sleep cooling put this user at 68 F and 68 F woke them
+    cold, so the default deep bias IS neutral until the temperature trial earns a direction."""
     c = _ctl()
     c.set_setpoints(replace(c.thermal.profile, deep_bias_f=70.5))
+    assert SleepController.DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F == 0.0
     assert c.thermal.profile.deep_bias_f == 69.0 - SleepController.DEEP_BIAS_DEFAULT_BELOW_NEUTRAL_F
     assert c.last_setpoint_override["learned_deep_bias_f"] == 70.5
     deep = c.thermal.target_for(ThermalIntent.DEEP_BIAS_COOL, NightObjective.OPTIMIZE, True, 69.0)
-    assert deep < 69.0
+    assert deep <= 69.0
 
 
 def test_the_dose_trial_may_still_shift_neutral_on_purpose():
@@ -63,22 +71,39 @@ def test_the_decision_log_carries_the_profile_in_force_and_the_onset_state():
     assert o is not None and "signals" in o and o["confirmed"] is False
 
 
-def test_the_deepen_dose_is_one_degree_by_default_and_never_more_than_two():
+def test_the_deepen_dose_is_neutral_by_default_and_never_more_than_two_below():
     c = _ctl()
     c.set_setpoints(replace(c.thermal.profile, deep_bias_f=72.5))    # nonsense learned value
-    assert c.thermal.profile.deep_bias_f == 68.0
+    assert c.thermal.profile.deep_bias_f == 69.0                      # the default dose: none
     c.set_setpoints(replace(c.thermal.profile, deep_bias_f=63.0))    # colder than the evidence allows
     assert c.thermal.profile.deep_bias_f == 67.0
     c.set_setpoints(replace(c.thermal.profile, deep_bias_f=67.5))    # a learned dose inside the bounds
     assert c.thermal.profile.deep_bias_f == 67.5
 
 
-def test_the_preempt_settle_uses_the_learned_nudge_within_bounds():
+def test_the_preempt_settle_uses_the_learned_nudge_within_bounds_when_cooling_is_allowed():
     c = _ctl()
-    cfg = c.cfg
+    cfg = replace(c.cfg, tunables=replace(c.cfg.tunables, settle_cooling_allowed=True))
+    c.cfg = cfg
+    c.thermal.cfg = cfg
     c.set_settle_nudge(-0.7)
     assert c._preempt_nudge_f(cfg) == -0.7
     c.set_settle_nudge(-1.9)                    # colder than the pre-empt dose: capped at it
     assert c._preempt_nudge_f(cfg) == max(cfg.tunables.preempt_settle_nudge_f, -1.9)
     c.set_settle_nudge(0.8)                     # a warming learned nudge: the pre-empt still cools
     assert c._preempt_nudge_f(cfg) == -0.5
+
+
+def test_the_preempt_settle_holds_neutral_while_cooling_is_disallowed():
+    """2026-09-19: the pre-emptive settle cooled this user to 68 F on a precursor and 68 F woke
+    them cold. The default policy now disallows settle cooling: the pre-empt dose is zero and a
+    learned cooling nudge is clamped to zero, whatever the learner says."""
+    c = _ctl()
+    cfg = c.cfg
+    assert cfg.tunables.settle_cooling_allowed is False
+    c.set_settle_nudge(-0.7)
+    assert c.thermal.settle_nudge_f == 0.0
+    assert c._preempt_nudge_f(cfg) == 0.0
+    c.set_settle_nudge(0.4)                     # a warming nudge is still allowed to the learner
+    assert c.thermal.settle_nudge_f == 0.4
+    assert c._preempt_nudge_f(cfg) == 0.0

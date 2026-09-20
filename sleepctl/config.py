@@ -180,7 +180,19 @@ class Tunables:
     # DOI 10.1093/brain/awm315) yet over-cooling drives alertness (Fronczek 2008,
     # DOI 10.1093/sleep/31.2.233) -> the controller learns the sign/magnitude that prevents
     # THIS user's awakenings. Default cool (hot sleeper), bounded by the cap.
-    maintenance_settle_nudge_f: float = -1.0   # <0 cooler, >0 warmer (relative to neutral)
+    maintenance_settle_nudge_f: float = 0.0    # <0 cooler, >0 warmer (relative to neutral)
+    # COOLING AS PREVENTION IS OFF until the temperature trial says otherwise. 2026-09-19: the
+    # bed sat at the settle temperature (68.3F) and the user woke from COLD at 00:17 and 01:01,
+    # then warmed it by hand to 80F. The controller's only prevention move was to cool further.
+    # With this False the learned settle nudge is clamped at >= 0 and the pre-empt holds neutral.
+    settle_cooling_allowed: bool = False
+    # Hard floor on the water in MAINTENANCE / WAKE_RECOVERY: half a degree above the 68F that
+    # woke this user cold, below the 69F their record calls their best sleep. Induction keeps
+    # its short dip (they fell asleep through it); the floor is for the hours that follow.
+    maintenance_floor_f: float = 68.5
+    # A manual temperature change from the phone is an instruction, not interference: hold the
+    # user's level for this long, then resume control with the floor/ceiling it implied.
+    user_override_hold_min: float = 60.0
     # ...and the DEEPER settle used while actively PRE-EMPTING an awakening, as opposed to
     # settling after one. The ordinary -1.0 F lands at 68.0 F against a measured band of
     # 67.0-69.5 F -- only 40% of the way to the cool edge, and small enough that 12 of 23
@@ -743,7 +755,9 @@ class ThermalTrialConfig:
     # Maintenance-offset ladder (°F, relative to the learned neutral_f). 0.0 (or
     # ``control_offset_f``) is the current policy / control arm. Offsets are clamped to
     # +/-``comfort_band_f`` before use -- see sleepctl.ml.thermal_trial._clamped_ladder.
-    offset_ladder_f: list = field(default_factory=lambda: [-1.5, -0.75, 0.0, 0.4, 0.8])
+    # Re-centred WARM on 2026-09-20: the user woke from cold at 68F, so arms below -0.4 would
+    # test a dose already known to wake them. The question left is how much warmer helps.
+    offset_ladder_f: list = field(default_factory=lambda: [-0.4, 0.0, 0.4, 0.8, 1.2])
     control_offset_f: float = 0.0      # the "do nothing different" arm -- today's real policy
     comfort_band_f: float = 2.0        # hard comfort clamp on any offset, regardless of ladder
     # Target share of ELIGIBLE nights that run a NON-control offset (the rest run control).

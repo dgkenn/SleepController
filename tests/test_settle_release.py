@@ -51,9 +51,12 @@ def test_deep_and_rem_keep_their_own_targets():
 
 # ------------------------------------------------------------------ the controller's clock
 def _controller():
-    """The production anchors: measured neutral 69.0F, learned settle nudge -0.7F."""
+    """The 2026-09-18 anchors: measured neutral 69.0F, learned settle nudge -0.7F. That night
+    ran the policy that allowed a cooling settle; the shipped default no longer does (68F woke
+    this user cold on 09-19), so the release mechanics are exercised with cooling opted back in."""
     from sleepctl.controller.controller import SleepController
     cfg = AppConfig()
+    cfg.tunables.settle_cooling_allowed = True
     c = SleepController(cfg)
     c.thermal.set_measured_neutral(69.0)
     c.thermal.settle_nudge_f = -0.7

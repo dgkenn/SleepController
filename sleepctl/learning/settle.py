@@ -10,6 +10,9 @@ opposite (smaller) direction. Always bounded by the comfort cap.
 
 from __future__ import annotations
 
+#: The warm exploration step a failing settle takes when the default settle is "hold neutral".
+EXPLORE_WARM_F = 0.5
+
 
 def learn_settle_nudge(repo, cfg, min_events: int = 6) -> float:
     base = cfg.tunables.maintenance_settle_nudge_f
@@ -26,7 +29,12 @@ def learn_settle_nudge(repo, cfg, min_events: int = 6) -> float:
     if rate >= 0.6:
         nudge = base                      # working well: keep the default direction
     elif rate <= 0.35:
-        nudge = -base * 0.5               # failing: explore the opposite, smaller
+        # failing: explore the opposite, smaller. From a ZERO base (the 2026-09-20 policy:
+        # a settle holds neutral because cooling woke this user) the only direction left
+        # to explore is warm, by the same half degree.
+        nudge = -base * 0.5 if abs(base) > 1e-9 else EXPLORE_WARM_F
     else:
         nudge = base * 0.7                # marginal: soften
+    if not bool(getattr(cfg.tunables, "settle_cooling_allowed", True)):
+        nudge = max(0.0, nudge)           # never learn a cooling settle for this user
     return max(-cap, min(cap, nudge))

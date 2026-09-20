@@ -209,7 +209,7 @@ def test_assign_arm_never_exceeds_comfort_band():
 def test_dose_response_profile_stays_within_device_clamp():
     cfg = AppConfig.default()
     base = cfg.default_setpoints()
-    for offset in (-1.5, -0.75, 0.0, 0.4, 0.8):
+    for offset in (-0.4, 0.0, 0.4, 0.8, 1.2):
         prof = dose_response_profile(base, offset, cfg.thermal_trial)
         # A modest ladder offset off a ~70 F neutral is nowhere near the 55-110 F device edge;
         # the REAL enforcement of that range happens downstream in ThermalController.target_for
@@ -438,7 +438,8 @@ def test_thermal_trial_config_defaults():
     pinned here alongside it."""
     cfg = AppConfig.default()
     assert cfg.thermal_trial.enabled is True
-    assert cfg.thermal_trial.offset_ladder_f == [-1.5, -0.75, 0.0, 0.4, 0.8]
+    # Re-centred warm on 2026-09-20: 68 F woke this user cold, so the ladder tests warming.
+    assert cfg.thermal_trial.offset_ladder_f == [-0.4, 0.0, 0.4, 0.8, 1.2]
     assert cfg.thermal_trial.comfort_band_f == 2.0
     assert all(abs(x) <= cfg.thermal_trial.comfort_band_f
                for x in cfg.thermal_trial.offset_ladder_f)
