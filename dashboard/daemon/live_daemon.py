@@ -1182,6 +1182,24 @@ class LiveDashboardDaemon:
         except Exception:
             return {}
 
+    def _publish_session_state(self) -> None:
+        """Write .run/session.state so the WATCHDOG can see a night is running.
+
+        The auto-updater redeploys within 10 minutes of any push, and a restart during
+        INDUCTION re-arms the session as a fresh induction: the onset detector starts from
+        zero and the +2F warm opener runs again, on someone who is in the middle of falling
+        asleep. ``restore_session_state`` only covers states PAST onset, so induction is
+        exactly the window that has no protection -- and it is the window a push is most
+        likely to land in, because that is when someone is awake and asking for changes.
+        """
+        try:
+            state = getattr(self.cycle.controller.sm.state, "value", "idle")
+            path = os.path.join(bridge.run_dir(), "session.state")
+            with open(path, "w", encoding="ascii") as fh:
+                fh.write(str(state))
+        except Exception:
+            pass
+
     def _record_thermal(self, frame, now) -> None:
         """Track the Hub's water-side device level vs target; warn when it stalls."""
         self.thermal.record(now, frame.target_level, frame.device_level)
@@ -1876,6 +1894,7 @@ class LiveDashboardDaemon:
         frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
+        self._publish_session_state()
         snapshot = self._snapshot(self._last_decision, frame)
         bridge.write_runtime_state(self.repo.conn, snapshot)
         self._record_state_history(snapshot)

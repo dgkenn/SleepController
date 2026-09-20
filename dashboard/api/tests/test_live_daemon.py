@@ -528,3 +528,31 @@ def test_night_targets_are_planned_once_and_not_replaced():
     first = d.cycle.controller.night_targets
     d._ensure_night_targets("again")
     assert d.cycle.controller.night_targets is first
+
+
+def test_the_daemon_publishes_its_session_state_for_the_watchdog(tmp_path, monkeypatch):
+    """A redeploy during INDUCTION re-runs the warm opener on someone falling asleep, and
+    session recovery only covers states past onset. The watchdog defers on this file."""
+    import os
+    from app import bridge
+    from sleepctl.models import ControllerState
+
+    d, client, repo = _daemon()
+    monkeypatch.setattr(bridge, "run_dir", lambda: str(tmp_path))
+
+    d.cycle.controller.sm.state = ControllerState.INDUCTION
+    d._publish_session_state()
+    with open(os.path.join(str(tmp_path), "session.state")) as fh:
+        assert fh.read().strip() == "induction"
+
+    d.cycle.controller.sm.state = ControllerState.IDLE
+    d._publish_session_state()
+    with open(os.path.join(str(tmp_path), "session.state")) as fh:
+        assert fh.read().strip() == "idle"
+
+
+def test_publishing_the_session_state_never_raises(monkeypatch):
+    from app import bridge
+    d, client, repo = _daemon()
+    monkeypatch.setattr(bridge, "run_dir", lambda: "/nonexistent/path/that/cannot/be/written")
+    d._publish_session_state()          # must not raise

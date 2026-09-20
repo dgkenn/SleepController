@@ -1222,6 +1222,33 @@ function Check-AutoUpdate {
     $script:autoUpdateAt = (Get-Date).AddMinutes($script:autoUpdateEveryMin)
     # A manual/console update already pending? Don't stack another -- let it run first.
     if (Test-Path $script:updateRequestFile) { return }
+    # NOT WHILE A NIGHT IS RUNNING. A redeploy restarts the daemon, and a restart during
+    # INDUCTION re-arms the session as a fresh induction -- the onset detector starts from zero
+    # and the +2F warm opener runs again on someone in the middle of falling asleep. Session
+    # recovery only covers states PAST onset, so induction is exactly the unprotected window,
+    # and it is the window a push is most likely to land in. The daemon keeps
+    # .run\session.state current (see _publish_session_state); deploy when the night is over.
+    # Bounded at 12 h so a wedged state file can never strand an update indefinitely.
+    try {
+        $sessFile = Join-Path $run "session.state"
+        if (Test-Path $sessFile) {
+            $sess = (Get-Content -Path $sessFile -Raw -ErrorAction Stop).Trim()
+            $sessAge = (New-TimeSpan -Start (Get-Item $sessFile).LastWriteTime -End (Get-Date)).TotalMinutes
+            if ($sessAge -lt 3 -and $sess -and $sess -ne "idle") {
+                if ($script:updateDeferSince -eq $null) { $script:updateDeferSince = Get-Date }
+                if (((Get-Date) - $script:updateDeferSince).TotalHours -lt 12) {
+                    if ($script:updateDeferLogged -eq $null -or ((Get-Date) - $script:updateDeferLogged).TotalMinutes -ge 60) {
+                        Log "auto-update: a night is running (state=$sess) -- deferring the deploy until it ends"
+                        $script:updateDeferLogged = Get-Date
+                    }
+                    return
+                }
+                Log "auto-update: session '$sess' has been running over 12 h -- deploying anyway"
+            } else {
+                $script:updateDeferSince = $null
+            }
+        }
+    } catch {}
     try {
         & git -C $Root fetch --prune --quiet origin $script:deployBranch 2>$null
         if ($LASTEXITCODE -ne 0) { return }   # transient network/git error -- retry next window
