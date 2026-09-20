@@ -21,8 +21,18 @@ What changed vs v1 (which used one 10-minute window and scored ~kappa 0.33):
 Ordered feature lists (the column order is load-bearing — models store their own
 ``feature_names`` and :func:`feature_vector` projects onto them):
 
-    FEATURE_NAMES_HR        -- HR + clock features only (Verity Sense alone)
-    FEATURE_NAMES_HRMOTION  -- the above plus actigraphy features
+    FEATURE_NAMES_HR          -- HR + clock features only (Verity Sense alone)
+    FEATURE_NAMES_HRMOTION    -- the above plus actigraphy features
+    FEATURE_NAMES_HRV         -- the beat-interval (HRV) block on its own (see below)
+    FEATURE_NAMES_HR_HRV      -- HR + HRV (Verity Sense streaming PPI, no motion)
+    FEATURE_NAMES_HRV_MOTION  -- HR + HRV + the SCALE-FREE actigraphy block
+
+The HRV block (v3) is computed from a history of ``(t_seconds, ibi_ms)`` beat intervals via
+:mod:`hrv_features`: multi-scale trailing windows (2/5/10/30 min), deltas across scales,
+lagged contrasts, and causal per-night normalisation of the key summaries against the
+distribution of 2-minute bucket values seen so far in the night. It exists because the HR
+series a wearable reports is already smoothed, which destroys exactly the beat-to-beat
+dispersion and LF/HF structure the autonomic staging literature relies on.
 
 Normalization stats are passed in as an argument so that training and inference share one
 code path; :func:`compute_norm_stats` derives them from a plain HR history (the controller
@@ -35,6 +45,8 @@ import bisect
 import math
 import statistics
 from typing import Dict, List, Optional, Sequence, Tuple, Union
+
+from .hrv_features import _filter_ibis, hrv_features
 
 # --- window geometry -------------------------------------------------------------------
 WINDOWS_MIN: Tuple[float, ...] = (2.0, 5.0, 10.0, 30.0)
@@ -51,6 +63,51 @@ N_QUANTILES = 41  # 2.5% resolution for percentile-rank features
 
 Sample = Tuple[float, float]
 ActSample = Sequence[float]  # (t, pim) or (t, pim, zcm, mad, std, pmax)
+
+# --- HRV (beat-interval) block geometry -------------------------------------------------
+#: trailing windows the HRV summaries are computed over
+HRV_WINDOWS_MIN: Tuple[float, ...] = (2.0, 5.0, 10.0, 30.0)
+#: windows that also get the LF/HF spectral split. The Goertzel estimate costs
+#: O(n * bins) with bins growing with n, so the 30 min window is time-domain only.
+HRV_SPECTRAL_WINDOWS_MIN: Tuple[float, ...] = (2.0, 5.0, 10.0)
+#: windows that get sample entropy (O(n^2): affordable on 2 min, not on 10).
+HRV_SAMPEN_WINDOWS_MIN: Tuple[float, ...] = (2.0,)
+#: fewest clean intervals for a window to count as characterised (hrv_features' own floor)
+HRV_MIN_BEATS = 8
+#: bucket length for the per-night HRV distribution (see :func:`hrv_bucket_summaries`)
+HRV_BUCKET_S = 120.0
+#: the summaries that get causal per-night normalisation, and their hrv_features keys
+HRV_NORM_KEYS: Tuple[Tuple[str, str], ...] = (
+    ("hr", "hr_from_ibi"),
+    ("rmssd", "ibi_rmssd"),
+    ("sd1_sd2", "ibi_sd1_sd2"),
+    ("lf_hf", "ibi_lf_hf"),
+    ("hf_nu", "ibi_hf_nu"),
+)
+#: floor on the night IQR per key (units of the key) so a flat night cannot explode a z-score
+HRV_NORM_IQR_FLOOR: Dict[str, float] = {
+    "hr": 0.5, "rmssd": 1.0, "sd1_sd2": 0.02, "lf_hf": 0.05, "hf_nu": 0.02,
+}
+#: time-domain / Poincaré summaries emitted per window: (feature suffix, hrv_features key)
+HRV_TIME_KEYS: Tuple[Tuple[str, str], ...] = (
+    ("hr", "hr_from_ibi"),
+    ("sdnn", "ibi_sdnn"),
+    ("rmssd", "ibi_rmssd"),
+    ("pnn50", "ibi_pnn50"),
+    ("pnn20", "ibi_pnn20"),
+    ("cvnn", "ibi_cvnn"),
+    ("iqr", "ibi_iqr"),
+    ("skew", "ibi_skew"),
+    ("kurt", "ibi_kurtosis"),
+    ("sd1", "ibi_sd1"),
+    ("sd2", "ibi_sd2"),
+    ("sd1_sd2", "ibi_sd1_sd2"),
+)
+#: spectral summaries per spectral window
+HRV_SPECTRAL_KEYS: Tuple[str, ...] = ("lf_hf", "hf_nu", "lf_nu", "log_hf", "log_lf", "vlf_frac")
+#: summaries contrasted across scales (short window minus long window)
+HRV_DELTA_KEYS: Tuple[str, ...] = ("hr", "sdnn", "rmssd", "pnn50", "sd1_sd2")
+HRV_DELTA_SPECTRAL_KEYS: Tuple[str, ...] = ("lf_hf", "hf_nu")
 
 
 def _wtag(w: float) -> str:
@@ -167,9 +224,45 @@ def _activity_absolute_names() -> List[str]:
     return names
 
 
+def _hrv_names() -> List[str]:
+    """Beat-interval (HRV) block. Every name is prefixed ``hrv_`` (raw) or ``hrvn_``
+    (per-night normalised) so an HR-only model's projection never picks one up."""
+    names: List[str] = []
+    for w in HRV_WINDOWS_MIN:
+        t = _wtag(w)
+        names += [
+            f"hrv_present_w{t}",   # 1 when the window held enough clean beats
+            f"hrv_n_w{t}",         # clean beats in the window
+            f"hrv_cov_w{t}",       # fraction of the window covered by clean beats
+        ]
+        names += [f"hrv_{k}_w{t}" for k, _src in HRV_TIME_KEYS]
+        if w in HRV_SPECTRAL_WINDOWS_MIN:
+            names += [f"hrv_{k}_w{t}" for k in HRV_SPECTRAL_KEYS]
+        if w in HRV_SAMPEN_WINDOWS_MIN:
+            names.append(f"hrv_sampen_w{t}")
+    for k in HRV_DELTA_KEYS:
+        names += [f"hrv_{k}_d2_10", f"hrv_{k}_d5_30"]
+    for k in HRV_DELTA_SPECTRAL_KEYS:
+        names.append(f"hrv_{k}_d2_10")
+    for lag in LAGS_MIN:
+        t = _wtag(lag)
+        names += [f"hrv_lag{t}_rmssd", f"hrv_drmssd{t}", f"hrv_lag{t}_hr", f"hrv_dhr{t}"]
+    names.append("hrvn_present")
+    for k, _src in HRV_NORM_KEYS:
+        names += [
+            f"hrvn_{k}_z5",          # (5 min value - night p50) / night IQR
+            f"hrvn_{k}_rank5",       # percentile rank of the 5 min value in the night so far
+            f"hrvn_{k}_rank2",       # same for the 2 min value
+            f"hrvn_{k}_minus_p50",   # 5 min value - night p50, in the key's own units
+        ]
+    return names
+
+
 FEATURE_NAMES_HR: List[str] = _hr_names()
 ACT_FEATURES_SCALEFREE: List[str] = _activity_scalefree_names()
 ACT_FEATURES_ABSOLUTE: List[str] = _activity_absolute_names()
+#: the beat-interval block alone (requires an ``ibi_samples`` history)
+FEATURE_NAMES_HRV: List[str] = _hrv_names()
 
 #: primary HR+motion column order: unit-matched actigraphy counts AND their scale-free
 #: normalizations. Requires ``(t, pim, zcm, mad, std, pmax)`` activity samples.
@@ -181,6 +274,15 @@ FEATURE_NAMES_HRMOTION: List[str] = (
 FEATURE_NAMES_HRMOTION_SCALEFREE: List[str] = FEATURE_NAMES_HR + ACT_FEATURES_SCALEFREE
 #: backwards-compatible alias (the "with absolute counts" list is now the primary one)
 FEATURE_NAMES_HRMOTION_ABS: List[str] = FEATURE_NAMES_HRMOTION
+#: HR + beat-interval HRV: the Verity Sense streaming PPI, no movement channel
+FEATURE_NAMES_HR_HRV: List[str] = FEATURE_NAMES_HR + FEATURE_NAMES_HRV
+#: HR + HRV + the SCALE-FREE actigraphy block only. The DREAMT corpus this variant trains on
+#: is a wrist Empatica E4 at 32 Hz while the live device is an upper-arm Verity Sense at
+#: 52 Hz, so absolute counts (PIM is a per-epoch SUM over samples) are not comparable and
+#: are deliberately excluded.
+FEATURE_NAMES_HRV_MOTION: List[str] = FEATURE_NAMES_HR + FEATURE_NAMES_HRV + ACT_FEATURES_SCALEFREE
+#: every name any variant can emit (the runtime's vocabulary check)
+FEATURE_NAMES_ALL: List[str] = FEATURE_NAMES_HRMOTION + FEATURE_NAMES_HRV
 
 
 # --------------------------------------------------------------------------- small utils
@@ -256,32 +358,82 @@ def compute_norm_stats(
     hr_samples: Optional[Sequence[Sample]] = None,
     activity_samples: Optional[Sequence[ActSample]] = None,
     n_quantiles: int = N_QUANTILES,
+    ibi_samples: Optional[Sequence[Sample]] = None,
 ) -> Dict[str, object]:
-    """Per-recording normalization statistics from an HR (and optional activity) history.
+    """Per-recording normalization statistics from an HR (and optional activity / beat
+    interval) history.
 
     Pure python so the live controller can derive them from its own sample buffer:
     ``compute_norm_stats(hr_buffer)`` → pass the result straight into
     :func:`compute_features`. Use the *night so far* (causal) history — that is exactly how
     the training rows are built, so train/inference stay matched.
+
+    ``ibi_samples`` (``(t_seconds, ibi_ms)``) adds the HRV distribution: the per-bucket
+    summaries of :func:`hrv_bucket_summaries`, sorted per key.
     """
+    hrv_sorted: Optional[Dict[str, List[float]]] = None
+    if ibi_samples:
+        hrv_sorted = {k: [] for k, _src in HRV_NORM_KEYS}
+        for _end, summ in hrv_bucket_summaries(ibi_samples):
+            for k, _src in HRV_NORM_KEYS:
+                hrv_sorted[k].append(summ[k])
+        for k in hrv_sorted:
+            hrv_sorted[k].sort()
     return stats_from_sorted(
         sorted(float(v) for _, v in (hr_samples or [])),
         sorted(_aval(s) for s in (activity_samples or [])),
         n_quantiles=n_quantiles,
+        hrv_sorted=hrv_sorted,
     )
+
+
+def hrv_bucket_summaries(
+    ibi_samples: Optional[Sequence[Sample]], bucket_s: float = HRV_BUCKET_S,
+) -> List[Tuple[float, Dict[str, float]]]:
+    """``(bucket_end_s, {key: value})`` for every ``bucket_s`` block of a beat-interval
+    history that holds enough clean beats — the source of the night-so-far distribution the
+    ``hrvn_*`` features rank against.
+
+    Buckets are aligned to multiples of ``bucket_s`` on the history's own clock, and a
+    bucket counts as *known* only from its end time onwards, so a causal consumer includes
+    exactly the buckets with ``bucket_end <= epoch_end`` (see dataset.py / infer.py).
+    """
+    if not ibi_samples:
+        return []
+    pts = sorted(((float(t), float(v)) for t, v in ibi_samples), key=lambda s: s[0])
+    ct, cv = _filter_ibis([t for t, _ in pts], [v for _, v in pts])
+    out: List[Tuple[float, Dict[str, float]]] = []
+    i = 0
+    n = len(ct)
+    while i < n:
+        b0 = math.floor(ct[i] / bucket_s) * bucket_s
+        b1 = b0 + bucket_s
+        j = i
+        while j < n and ct[j] < b1:
+            j += 1
+        if j - i >= HRV_MIN_BEATS:
+            f = hrv_features(ct[i:j], cv[i:j], clean=False, sampen=False, spectral=True)
+            if f:
+                out.append((b1, {k: float(f.get(src, 0.0)) for k, src in HRV_NORM_KEYS}))
+        i = j
+    return out
 
 
 def stats_from_sorted(
     hr_sorted: Sequence[float],
     act_sorted: Sequence[float] = (),
     n_quantiles: int = N_QUANTILES,
+    hrv_sorted: Optional[Dict[str, Sequence[float]]] = None,
 ) -> Dict[str, object]:
     """Same statistics as :func:`compute_norm_stats`, from already-sorted value lists.
 
     Lets the training loader maintain one incrementally-sorted "night so far" list instead
-    of re-sorting per epoch, while producing byte-identical stats.
+    of re-sorting per epoch, while producing byte-identical stats. ``hrv_sorted`` maps each
+    :data:`HRV_NORM_KEYS` key to its sorted bucket values (may be empty early in a night).
     """
     stats: Dict[str, object] = {}
+    if hrv_sorted is not None:
+        stats.update(hrv_stats_from_sorted(hrv_sorted, n_quantiles=n_quantiles))
     vals = hr_sorted
     if vals:
         p25 = percentile(vals, 25.0)
@@ -316,6 +468,28 @@ def stats_from_sorted(
     return stats
 
 
+def hrv_stats_from_sorted(
+    hrv_sorted: Dict[str, Sequence[float]], n_quantiles: int = N_QUANTILES,
+) -> Dict[str, object]:
+    """Night-so-far HRV distribution stats: ``hrv_<key>_p50`` / ``_iqr`` / ``_q`` per key
+    plus ``hrv_n`` (bucket count). Empty when no bucket has completed yet."""
+    stats: Dict[str, object] = {}
+    n_min = None
+    for k, _src in HRV_NORM_KEYS:
+        vals = list(hrv_sorted.get(k) or [])
+        n_min = len(vals) if n_min is None else min(n_min, len(vals))
+        if not vals:
+            continue
+        p25 = percentile(vals, 25.0)
+        p75 = percentile(vals, 75.0)
+        stats[f"hrv_{k}_p50"] = percentile(vals, 50.0)
+        stats[f"hrv_{k}_iqr"] = max(p75 - p25, 0.0)
+        stats[f"hrv_{k}_q"] = quantile_grid(vals, n_quantiles)
+    if n_min:
+        stats["hrv_n"] = float(n_min)
+    return stats
+
+
 # --------------------------------------------------------------------------- main entry
 def compute_features(
     hr_samples: Optional[Sequence[Sample]],
@@ -329,6 +503,8 @@ def compute_features(
     total_minutes: Optional[float] = None,
     include_activity: bool = True,
     window_s: float = DEFAULT_WINDOW_S,  # accepted for v1 call compatibility; unused
+    ibi_samples: Optional[Sequence[Sample]] = None,
+    include_hrv: Optional[bool] = None,
 ) -> Dict[str, float]:
     """Ordered multi-scale feature dict for the epoch ending at ``epoch_end_s``.
 
@@ -345,6 +521,11 @@ def compute_features(
         ``norm_stats`` is not supplied.
     minutes_since_start / minutes_since_onset / total_minutes : clock context.
     include_activity : emit the actigraphy block (HR+motion variant).
+    ibi_samples : list of ``(t_seconds, ibi_ms)`` beat intervals (Polar PPI / E4 IBI); the
+        trailing :data:`MAX_LOOKBACK_S` seconds matter. ``norm_stats`` built with the same
+        history (``compute_norm_stats(..., ibi_samples=...)``) enables the ``hrvn_*`` block.
+    include_hrv : emit the HRV block; defaults to "when ``ibi_samples`` was given". Without
+        it the returned dict is exactly the v2 one, so HR / HR+motion callers are unaffected.
     """
     feats: Dict[str, float] = {}
     end = float(epoch_end_s)
@@ -474,7 +655,114 @@ def compute_features(
     if include_activity:
         _activity_block(feats, activity_samples, end, ns)
 
+    if include_hrv is None:
+        include_hrv = ibi_samples is not None
+    if include_hrv:
+        _hrv_block(feats, ibi_samples, end, ns)
+
     return feats
+
+
+def _hrv_block(
+    feats: Dict[str, float],
+    ibi_samples: Optional[Sequence[Sample]],
+    end: float,
+    ns: Dict[str, object],
+) -> None:
+    """Beat-interval block: multi-scale hrv_features summaries, cross-scale deltas, lagged
+    contrasts and causal per-night normalisation. Mirrors the HR block's structure."""
+    pts = _window(ibi_samples, end - MAX_LOOKBACK_S, end)
+    pts = sorted(((float(s[0]), float(s[1])) for s in pts), key=lambda s: s[0])
+    # ONE causal artifact pass over the whole lookback, then each window is a slice of the
+    # cleaned series (hrv_features(clean=False)); cheaper than re-filtering per window and
+    # identical between training and inference because both run this function.
+    ct, cv = _filter_ibis([t for t, _ in pts], [v for _, v in pts])
+
+    def _slice(start: float, stop: float):
+        lo = bisect.bisect_left(ct, start)
+        hi = bisect.bisect_right(ct, stop)
+        return ct[lo:hi], cv[lo:hi]
+
+    def _summ(start: float, stop: float, *, sampen: bool, spectral: bool) -> Dict[str, float]:
+        tw, vw = _slice(start, stop)
+        if len(vw) < HRV_MIN_BEATS:
+            return {}
+        return hrv_features(tw, vw, clean=False, sampen=sampen, spectral=spectral)
+
+    per: Dict[float, Dict[str, float]] = {}
+    for w in HRV_WINDOWS_MIN:
+        f = _summ(end - 60.0 * w, end,
+                  sampen=(w in HRV_SAMPEN_WINDOWS_MIN),
+                  spectral=(w in HRV_SPECTRAL_WINDOWS_MIN))
+        per[w] = f
+        tag = _wtag(w)
+        feats[f"hrv_present_w{tag}"] = 1.0 if f else 0.0
+        feats[f"hrv_n_w{tag}"] = float(f.get("ibi_n", 0.0)) if f else 0.0
+        cov = (f["ibi_n"] * f["ibi_mean"] / 1000.0) / (60.0 * w) if f else 0.0
+        feats[f"hrv_cov_w{tag}"] = max(0.0, min(1.5, cov))
+        for k, src in HRV_TIME_KEYS:
+            feats[f"hrv_{k}_w{tag}"] = float(f.get(src, 0.0)) if f else 0.0
+        if w in HRV_SPECTRAL_WINDOWS_MIN:
+            feats[f"hrv_lf_hf_w{tag}"] = float(f.get("ibi_lf_hf", 0.0)) if f else 0.0
+            feats[f"hrv_hf_nu_w{tag}"] = float(f.get("ibi_hf_nu", 0.0)) if f else 0.0
+            feats[f"hrv_lf_nu_w{tag}"] = float(f.get("ibi_lf_nu", 0.0)) if f else 0.0
+            feats[f"hrv_log_hf_w{tag}"] = math.log1p(max(0.0, float(f.get("ibi_hf", 0.0)))) if f else 0.0
+            feats[f"hrv_log_lf_w{tag}"] = math.log1p(max(0.0, float(f.get("ibi_lf", 0.0)))) if f else 0.0
+            feats[f"hrv_vlf_frac_w{tag}"] = float(f.get("ibi_vlf_frac", 0.0)) if f else 0.0
+        if w in HRV_SAMPEN_WINDOWS_MIN:
+            feats[f"hrv_sampen_w{tag}"] = float(f.get("ibi_sampen", 0.0)) if f else 0.0
+
+    src_of = dict(HRV_TIME_KEYS)
+    src_of.update({"lf_hf": "ibi_lf_hf", "hf_nu": "ibi_hf_nu"})
+
+    def _val(w: float, k: str) -> Optional[float]:
+        f = per.get(w)
+        if not f:
+            return None
+        v = f.get(src_of[k])
+        return None if v is None else float(v)
+
+    def _delta(a: Optional[float], b: Optional[float]) -> float:
+        return (a - b) if (a is not None and b is not None) else 0.0
+
+    for k in HRV_DELTA_KEYS:
+        feats[f"hrv_{k}_d2_10"] = _delta(_val(2.0, k), _val(10.0, k))
+        feats[f"hrv_{k}_d5_30"] = _delta(_val(5.0, k), _val(30.0, k))
+    for k in HRV_DELTA_SPECTRAL_KEYS:
+        feats[f"hrv_{k}_d2_10"] = _delta(_val(2.0, k), _val(10.0, k))
+
+    rmssd5 = _val(5.0, "rmssd")
+    hr5 = _val(5.0, "hr")
+    for lag in LAGS_MIN:
+        tag = _wtag(lag)
+        lag_end = end - 60.0 * lag
+        f = _summ(lag_end - 60.0 * LAG_WINDOW_MIN, lag_end, sampen=False, spectral=False)
+        lr = float(f["ibi_rmssd"]) if f else None
+        lh = float(f["hr_from_ibi"]) if f else None
+        feats[f"hrv_lag{tag}_rmssd"] = lr if lr is not None else 0.0
+        feats[f"hrv_drmssd{tag}"] = _delta(rmssd5, lr)
+        feats[f"hrv_lag{tag}_hr"] = lh if lh is not None else 0.0
+        feats[f"hrv_dhr{tag}"] = _delta(hr5, lh)
+
+    # --- causal per-night normalisation of the key summaries ---------------------------
+    have = bool(ns) and "hrv_n" in ns
+    feats["hrvn_present"] = 1.0 if have else 0.0
+    for k, _src in HRV_NORM_KEYS:
+        v5 = _val(5.0, k)
+        v2 = _val(2.0, k)
+        p50 = float(ns.get(f"hrv_{k}_p50", 0.0)) if have else None
+        if have and p50 is not None and f"hrv_{k}_p50" in ns:
+            iqr = max(float(ns.get(f"hrv_{k}_iqr", 0.0)), HRV_NORM_IQR_FLOOR.get(k, 1e-6))
+            grid = list(ns.get(f"hrv_{k}_q") or [])
+            feats[f"hrvn_{k}_z5"] = (v5 - p50) / iqr if v5 is not None else 0.0
+            feats[f"hrvn_{k}_rank5"] = percentile_rank(grid, v5) if (grid and v5 is not None) else 0.0
+            feats[f"hrvn_{k}_rank2"] = percentile_rank(grid, v2) if (grid and v2 is not None) else 0.0
+            feats[f"hrvn_{k}_minus_p50"] = (v5 - p50) if v5 is not None else 0.0
+        else:
+            feats[f"hrvn_{k}_z5"] = 0.0
+            feats[f"hrvn_{k}_rank5"] = 0.0
+            feats[f"hrvn_{k}_rank2"] = 0.0
+            feats[f"hrvn_{k}_minus_p50"] = 0.0
 
 
 def _activity_block(
@@ -623,11 +911,19 @@ __all__ = [
     "FEATURE_NAMES_HRMOTION",
     "FEATURE_NAMES_HRMOTION_SCALEFREE",
     "FEATURE_NAMES_HRMOTION_ABS",
+    "FEATURE_NAMES_HRV",
+    "FEATURE_NAMES_HR_HRV",
+    "FEATURE_NAMES_HRV_MOTION",
+    "FEATURE_NAMES_ALL",
     "ACT_FEATURES_SCALEFREE",
     "ACT_FEATURES_ABSOLUTE",
+    "HRV_NORM_KEYS",
+    "HRV_BUCKET_S",
     "compute_features",
     "compute_norm_stats",
     "stats_from_sorted",
+    "hrv_stats_from_sorted",
+    "hrv_bucket_summaries",
     "feature_vector",
     "percentile",
     "percentile_rank",

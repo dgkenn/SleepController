@@ -154,12 +154,16 @@ def _kurtosis(v: Sequence[float]) -> float:
 
 
 # ------------------------------------------------------------------ non-linear
-def nonlinear(ibis: Sequence[float]) -> Dict[str, float]:
+def nonlinear(ibis: Sequence[float], sampen: bool = True) -> Dict[str, float]:
     """Poincaré geometry + sample entropy.
 
     SD1/SD2 describe the shape of the successive-interval scatter: SD1 is short-term (vagal)
     variability, SD2 long-term. Their ratio shifts systematically across sleep stages, and it is
     computable from intervals but NOT from a smoothed HR series.
+
+    ``sampen=False`` skips :func:`sample_entropy`, which is O(n^2) and dominates the cost of a
+    window longer than a couple of minutes (the stager's multi-scale block only asks for it on
+    its shortest window).
     """
     v = list(ibis)
     if len(v) < 4:
@@ -168,13 +172,15 @@ def nonlinear(ibis: Sequence[float]) -> Dict[str, float]:
     sd1 = _safe(lambda: statistics.pstdev(d) / math.sqrt(2.0))
     sdnn = _safe(lambda: statistics.pstdev(v))
     sd2 = _safe(lambda: math.sqrt(max(0.0, 2.0 * sdnn * sdnn - sd1 * sd1)))
-    return {
+    out = {
         "ibi_sd1": sd1,
         "ibi_sd2": sd2,
         "ibi_sd1_sd2": (sd1 / sd2) if sd2 else 0.0,
         "ibi_ellipse_area": math.pi * sd1 * sd2,
-        "ibi_sampen": _safe(lambda: sample_entropy(v)),
     }
+    if sampen:
+        out["ibi_sampen"] = _safe(lambda: sample_entropy(v))
+    return out
 
 
 def sample_entropy(v: Sequence[float], m: int = 2, r_frac: float = 0.2) -> Optional[float]:
@@ -278,12 +284,17 @@ def frequency_domain(times_s: Sequence[float], ibis: Sequence[float]) -> Dict[st
 
 # ------------------------------------------------------------------ public entry point
 def hrv_features(times_s: Sequence[float], ibis: Sequence[float],
-                 clean: bool = True) -> Dict[str, float]:
+                 clean: bool = True, *, sampen: bool = True,
+                 spectral: bool = True) -> Dict[str, float]:
     """All HRV features for one window of inter-beat intervals.
 
     ``times_s`` are the beat timestamps in seconds (same length as ``ibis``). Returns ``{}`` when
     the window is too short or too contaminated to characterise, so callers can treat "no
     features" as missing rather than as zeros.
+
+    ``sampen`` / ``spectral`` switch off the two super-linear blocks (sample entropy is O(n^2),
+    the Goertzel band powers O(n * bins) with bins growing with n) for callers that score long
+    windows many times per tick; the default computes everything.
     """
     if clean:
         times_s, ibis = _filter_ibis(times_s, ibis)
@@ -291,7 +302,8 @@ def hrv_features(times_s: Sequence[float], ibis: Sequence[float],
         return {}
     feats: Dict[str, float] = {}
     feats.update(time_domain(ibis))
-    feats.update(nonlinear(ibis))
-    feats.update(frequency_domain(times_s, ibis))
+    feats.update(nonlinear(ibis, sampen=sampen))
+    if spectral:
+        feats.update(frequency_domain(times_s, ibis))
     feats["ibi_n"] = float(len(ibis))
     return feats

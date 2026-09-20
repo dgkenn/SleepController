@@ -229,7 +229,17 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                 # HR-only is always valid and is what makes the Verity work ALONE.
                 act = (_activity_series(recent, frame)
                        if getattr(t, "stager_use_motion", False) else None)
+                # Beat intervals (the Verity's PPI stream, [(epoch_seconds, rr_ms), ...]) reach
+                # the stager too: when the DREAMT-trained HRV variant is bundled and the stream
+                # is flowing, it scores instead of the HR / HR+motion models (infer.select_variant).
+                ibi = getattr(frame, "rr_history", None) or None
                 try:
+                    est = stager.predict(
+                        hr_samples, activity_samples=act,
+                        minutes_since_start=minutes_since_start,
+                        minutes_since_onset=minutes_since_onset,
+                        ibi_samples=ibi)
+                except TypeError:
                     est = stager.predict(
                         hr_samples, activity_samples=act,
                         minutes_since_start=minutes_since_start,
@@ -278,7 +288,9 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                             max_conf=t.est_stage_max_conf)
                         if h is not None and h[0] is SleepStage.DEEP:
                             return (SleepStage.DEEP, round(min(conf, h[1]), 3), "model+deep")
-                    return (stage, round(conf, 3), "model")
+                    variant = getattr(est, "variant", "hr")
+                    return (stage, round(conf, 3),
+                            "model" if variant in ("hr", "hrmotion") else f"model:{variant}")
 
     heur = estimate_stage_from_vitals(
         frame, sleep_hr_base, recent,

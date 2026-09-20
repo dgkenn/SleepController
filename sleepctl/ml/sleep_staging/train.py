@@ -50,6 +50,7 @@ from .dataset import (
     subjects_with_activity,
 )
 from .features import (
+    FEATURE_NAMES_ALL,
     FEATURE_NAMES_HR,
     FEATURE_NAMES_HRMOTION,
     FEATURE_NAMES_HRMOTION_SCALEFREE,
@@ -58,9 +59,10 @@ from .infer import DEFAULT_SMOOTHING_EPOCHS, blend_emission, forward_filter
 
 WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "weights")
 #: feature-set fingerprint: a cached dataset built against different features is unusable
+#: (covers every variant's vocabulary, HRV included, so a DREAMT cache invalidates too)
 FEATURE_TAG = "{}_{}".format(
-    len(FEATURE_NAMES_HRMOTION),
-    hashlib.md5("|".join(FEATURE_NAMES_HRMOTION).encode()).hexdigest()[:10],
+    len(FEATURE_NAMES_ALL),
+    hashlib.md5("|".join(FEATURE_NAMES_ALL).encode()).hexdigest()[:10],
 )
 STAGE4_LABELS = ["wake", "light", "deep", "rem"]
 N_FOLDS = 5

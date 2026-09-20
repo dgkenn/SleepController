@@ -8,7 +8,16 @@ Model variants under ``weights/``:
   * HR-only       ``wake_hr.json``,        ``stage4_hr.json``        -- Verity Sense alone
   * HR + motion   ``wake_hrmotion.json``,  ``stage4_hrmotion.json``  -- + a movement signal
   * sparse HR     ``wake_hr_sparse.json``, ``stage4_hr_sparse.json`` -- trained on 1 sample/min
+  * HR + HRV (+ scale-free motion)
+                  ``wake_hrv.json``,       ``stage4_hrv.json``       -- beat intervals streaming
+  * HR + HRV      ``wake_hrvonly.json``,   ``stage4_hrvonly.json``   -- beat intervals, no motion
   * ``hmm.json``  4x4 transition matrix + class order + start/prior distributions
+
+The HRV variants are trained on the PhysioNet DREAMT corpus (``scripts/train_dreamt.py``)
+and are OPTIONAL: when their files are absent nothing about the HR / HR+motion path changes.
+When present, :meth:`SleepStager.predict` prefers them whenever the caller supplies a beat
+interval history with at least :data:`MIN_IBI_FOR_HRV` intervals in the last 10 minutes,
+and records the variant it used in :attr:`StageEstimate.variant`.
 
 Because this feeds a *thermal controller*, the stage must not flap tick-to-tick, so the
 posterior is temporally smoothed with an **online HMM forward filter**: emissions are
@@ -34,18 +43,29 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from .features import (
+    FEATURE_NAMES_ALL,
     FEATURE_NAMES_HR,
     FEATURE_NAMES_HRMOTION,
     FEATURE_NAMES_HRMOTION_ABS,
+    FEATURE_NAMES_HRV,
+    HRV_NORM_KEYS,
     MAX_LOOKBACK_S,
     compute_features,
     feature_vector,
+    hrv_bucket_summaries,
     stats_from_sorted,
 )
 
 #: every feature name :func:`features.compute_features` can emit. A weights file naming
 #: anything outside this set was exported against a different feature version.
-KNOWN_FEATURES = frozenset(FEATURE_NAMES_HRMOTION_ABS)
+KNOWN_FEATURES = frozenset(FEATURE_NAMES_ALL)
+
+#: fewest beat intervals in the trailing 10 minutes before an HRV variant is preferred over
+#: the HR / HR+motion models. 10 min at 40-100 bpm is 400-1000 beats, so 200 means the PPI
+#: stream is genuinely flowing (not a stale or one-off batch) and every HRV window from
+#: 2 to 10 min is characterised, while a dropout-riddled stretch falls back to HR.
+MIN_IBI_FOR_HRV = 200
+HRV_RECENT_WINDOW_S = 600.0
 
 WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "weights")
 
@@ -64,6 +84,9 @@ class StageEstimate:
     probs: Dict[str, float]   # label -> probability (posterior, after smoothing)
     source: str = "model"
     smoothed: bool = False    # True when the HMM forward filter was applied
+    #: which weights scored this estimate: "hr", "hrmotion", "hrv" (HR + HRV + scale-free
+    #: motion) or "hrvonly" (HR + HRV)
+    variant: str = "hr"
 
 
 # --------------------------------------------------------------------------- forest model
@@ -266,16 +289,34 @@ class SleepStager:
         stage4_hrmotion: Optional[_Forest] = None,
         hmm: Optional[dict] = None,
         smoothing_epochs: int = DEFAULT_SMOOTHING_EPOCHS,
+        wake_hrv: Optional[_Forest] = None,
+        stage4_hrv: Optional[_Forest] = None,
+        wake_hrvonly: Optional[_Forest] = None,
+        stage4_hrvonly: Optional[_Forest] = None,
+        min_ibi_for_hrv: int = MIN_IBI_FOR_HRV,
     ) -> None:
         self.wake_hr = wake_hr
         self.stage4_hr = stage4_hr
         self.wake_hrmotion = wake_hrmotion
         self.stage4_hrmotion = stage4_hrmotion
+        self.wake_hrv = wake_hrv
+        self.stage4_hrv = stage4_hrv
+        self.wake_hrvonly = wake_hrvonly
+        self.stage4_hrvonly = stage4_hrvonly
         self.hmm = hmm
         self.smoothing_epochs = max(1, int(smoothing_epochs))
+        self.min_ibi_for_hrv = max(1, int(min_ibi_for_hrv))
         self._hr_ok = wake_hr is not None and stage4_hr is not None
         self._hrmotion_ok = wake_hrmotion is not None and stage4_hrmotion is not None
-        self.available = self._hr_ok or self._hrmotion_ok
+        self._hrv_ok = wake_hrv is not None and stage4_hrv is not None
+        self._hrvonly_ok = wake_hrvonly is not None and stage4_hrvonly is not None
+        self.available = (self._hr_ok or self._hrmotion_ok
+                          or self._hrv_ok or self._hrvonly_ok)
+
+    @property
+    def hrv_available(self) -> bool:
+        """True when at least one beat-interval (HRV) variant is loaded."""
+        return self._hrv_ok or self._hrvonly_ok
 
     def set_wake_bias(self, bias: float) -> None:
         self.wake_bias = max(0.5, min(2.0, float(bias or 1.0)))
@@ -305,7 +346,36 @@ class SleepStager:
             stage4_hrmotion=_load_model(os.path.join(weights_dir, "stage4_hrmotion.json")),
             hmm=hmm,
             smoothing_epochs=smoothing_epochs,
+            # optional DREAMT-trained beat-interval variants (absent until trained locally)
+            wake_hrv=_load_model(os.path.join(weights_dir, "wake_hrv.json")),
+            stage4_hrv=_load_model(os.path.join(weights_dir, "stage4_hrv.json")),
+            wake_hrvonly=_load_model(os.path.join(weights_dir, "wake_hrvonly.json")),
+            stage4_hrvonly=_load_model(os.path.join(weights_dir, "stage4_hrvonly.json")),
         )
+
+    def select_variant(self, has_activity: bool, n_recent_ibi: int) -> Optional[str]:
+        """Which bundled variant :meth:`predict` will score with.
+
+        Preference order: an HRV variant when enough beat intervals are streaming (the
+        +motion one when a movement series is present, else HR+HRV), otherwise HR+motion
+        when a movement series is present, otherwise HR-only. Each step falls through to
+        the next when its weights are not bundled, so the answer is ``None`` only when
+        nothing is loaded at all.
+        """
+        if n_recent_ibi >= self.min_ibi_for_hrv:
+            if has_activity and self._hrv_ok:
+                return "hrv"
+            if self._hrvonly_ok:
+                return "hrvonly"
+            if self._hrv_ok:
+                return "hrv"  # only the +motion HRV variant bundled: its motion block reads empty
+        if has_activity and self._hrmotion_ok:
+            return "hrmotion"
+        if self._hr_ok:
+            return "hr"
+        if self._hrmotion_ok:
+            return "hrmotion"
+        return None
 
     # ------------------------------------------------------------------ public interface
     def predict(
@@ -316,34 +386,61 @@ class SleepStager:
         minutes_since_onset: Optional[float] = None,
         *,
         smooth: bool = True,
+        ibi_samples: Optional[Sequence[Sample]] = None,
     ) -> Optional[StageEstimate]:
         """Stage estimate from trailing ``(t_seconds, value)`` sample histories.
 
         ``activity_samples`` may be ``(t, movement)`` — any monotone movement scale works,
         the motion features are expressed relative to this recording's own distribution —
         or the 6-tuple actigraphy form ``(t, pim, zcm, mad, std, pmax)``.
+
+        ``ibi_samples`` is an optional ``(t_seconds, ibi_ms)`` beat-interval history (the
+        Verity's PPI stream, e.g. ``frame.rr_history``). When an HRV variant is bundled and
+        at least :data:`MIN_IBI_FOR_HRV` intervals fall in the trailing 10 minutes, that
+        variant is scored instead (see :meth:`select_variant`); otherwise the intervals
+        are ignored and the estimate is exactly what the HR / HR+motion path returns.
         """
         if not hr_samples or not self.available:
             return None
 
-        use_motion = bool(activity_samples) and self._hrmotion_ok
-        if use_motion:
-            wake_model, stage_model = self.wake_hrmotion, self.stage4_hrmotion
-        elif self._hr_ok:
-            wake_model, stage_model = self.wake_hr, self.stage4_hr
-        else:  # only motion models bundled -> use them, motion block simply reads empty
-            wake_model, stage_model = self.wake_hrmotion, self.stage4_hrmotion
-            use_motion = True
-
         hr = sorted(((float(t), float(v)) for t, v in hr_samples), key=lambda s: s[0])
+        hr_ts = [t for t, _ in hr]
+        last_t = hr_ts[-1]
+
+        ibi: List[Sample] = []
+        n_recent_ibi = 0
+        if ibi_samples and (self._hrv_ok or self._hrvonly_ok):
+            ibi = sorted(((float(t), float(v)) for t, v in ibi_samples), key=lambda s: s[0])
+            lo = bisect.bisect_left([t for t, _ in ibi], last_t - HRV_RECENT_WINDOW_S)
+            n_recent_ibi = len(ibi) - lo
+        variant = self.select_variant(bool(activity_samples), n_recent_ibi)
+        if variant is None:
+            return None
+        use_hrv = variant in ("hrv", "hrvonly")
+        if variant == "hrv":
+            wake_model, stage_model = self.wake_hrv, self.stage4_hrv
+            use_motion = bool(activity_samples)
+        elif variant == "hrvonly":
+            wake_model, stage_model = self.wake_hrvonly, self.stage4_hrvonly
+            use_motion = False
+        elif variant == "hrmotion":
+            wake_model, stage_model = self.wake_hrmotion, self.stage4_hrmotion
+            use_motion = True  # motion block simply reads empty when no movement series
+        else:
+            wake_model, stage_model = self.wake_hr, self.stage4_hr
+            use_motion = False
+        if not use_hrv:
+            ibi = []
+
         act: List[Sequence[float]] = []
         if use_motion and activity_samples:
             act = sorted((tuple(float(x) for x in s) for s in activity_samples),
                          key=lambda s: s[0])
-        hr_ts = [t for t, _ in hr]
         act_ts = [s[0] for s in act]
+        ibi_ts = [t for t, _ in ibi]
+        # per-night HRV distribution source (2 min buckets, known from their end time)
+        buckets = hrv_bucket_summaries(ibi) if ibi else []
 
-        last_t = hr_ts[-1]
         span = last_t - hr_ts[0]
         n_epochs = self.smoothing_epochs if (smooth and self.hmm) else 1
         # only step back over epochs we actually have history for
@@ -353,8 +450,11 @@ class SleepStager:
         # causal, incrementally-sorted "night so far" distributions (matches training)
         hr_sorted: List[float] = []
         act_sorted: List[float] = []
+        hrv_sorted: Dict[str, List[float]] = {k: [] for k, _src in HRV_NORM_KEYS}
         hi = 0
         ai = 0
+        ii = 0
+        bi = 0
         emissions: List[List[float]] = []
         p_wake_last = 0.0  # raw binary-head wake probability at the newest epoch
 
@@ -365,10 +465,17 @@ class SleepStager:
             while ai < len(act) and act_ts[ai] <= end:
                 bisect.insort(act_sorted, float(act[ai][1]))
                 ai += 1
+            while ii < len(ibi) and ibi_ts[ii] <= end:
+                ii += 1
+            while bi < len(buckets) and buckets[bi][0] <= end:
+                for k, _src in HRV_NORM_KEYS:
+                    bisect.insort(hrv_sorted[k], buckets[bi][1][k])
+                bi += 1
             if hi == 0:
                 continue
             lo_hr = bisect.bisect_left(hr_ts, end - MAX_LOOKBACK_S)
             lo_act = bisect.bisect_left(act_ts, end - MAX_LOOKBACK_S) if act else 0
+            lo_ibi = bisect.bisect_left(ibi_ts, end - MAX_LOOKBACK_S) if ibi else 0
             back_min = (last_t - end) / 60.0
             if minutes_since_start is not None:
                 mss = float(minutes_since_start) - back_min
@@ -384,10 +491,13 @@ class SleepStager:
                 hr[lo_hr:hi],
                 act[lo_act:ai] if act else None,
                 end,
-                norm_stats=stats_from_sorted(hr_sorted, act_sorted),
+                norm_stats=stats_from_sorted(hr_sorted, act_sorted,
+                                             hrv_sorted=hrv_sorted if use_hrv else None),
                 minutes_since_start=mss,
                 minutes_since_onset=mso,
                 include_activity=use_motion,
+                ibi_samples=ibi[lo_ibi:ii] if use_hrv else None,
+                include_hrv=use_hrv,
             )
             stage_raw = _ordered_stage_probs(stage_model, feats)
             p_wake_raw = _prob_of_class(wake_model.predict_proba(feats),
@@ -431,6 +541,7 @@ class SleepStager:
             probs=probs,
             source="model",
             smoothed=smoothed,
+            variant=variant,
         )
 
 
@@ -458,6 +569,8 @@ __all__ = [
     "blend_emission",
     "forward_filter",
     "STAGE4_LABELS",
+    "MIN_IBI_FOR_HRV",
     "FEATURE_NAMES_HR",
     "FEATURE_NAMES_HRMOTION",
+    "FEATURE_NAMES_HRV",
 ]
