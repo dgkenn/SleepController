@@ -556,3 +556,16 @@ def test_publishing_the_session_state_never_raises(monkeypatch):
     d, client, repo = _daemon()
     monkeypatch.setattr(bridge, "run_dir", lambda: "/nonexistent/path/that/cannot/be/written")
     d._publish_session_state()          # must not raise
+
+
+def test_a_refused_alarm_write_is_remembered_across_a_restart():
+    """The flag lived in memory and reset on every deploy, so the wake page said vibration was
+    available on exactly the nights it was not."""
+    d, client, repo = _daemon()
+    assert d._alarm_write_denied is False
+    d._save_alarm_write_denied(True, "403 Subscription required")
+    d2 = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=False, verbose=False)
+    assert d2._alarm_write_denied is True
+    d2._save_alarm_write_denied(False)
+    d3 = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=False, verbose=False)
+    assert d3._alarm_write_denied is False

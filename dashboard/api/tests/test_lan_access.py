@@ -134,3 +134,15 @@ def test_remote_access_never_decides_the_verdict_even_with_a_pending_login(run_d
     checks = [_check("daemon_heartbeat", "Daemon", "ok", "fine"),
               _check("remote_access", "Remote access", "warn", "login waiting", "tap the link")]
     assert _aggregate(checks)[0] == "HEALTHY"
+
+
+def test_the_daemon_log_and_the_armed_wake_are_published(repo, tmp_path):
+    from app import bridge
+    run = tmp_path / ".run"
+    run.mkdir()
+    (run / "daemon.log").write_text("wake alarm programming skipped: server refused\n", encoding="utf-8")
+    bridge.write_runtime_state(repo.conn, {"state": "INDUCTION", "extra": {
+        "wake": {"time": "05:00", "window_min": 20}, "live": True}})
+    snap = health_snapshot.build_health_snapshot(repo, run_dir=str(run))
+    assert any("server refused" in ln for ln in snap["log_tails"].get("daemon", []))
+    assert snap["controller"]["wake_armed"] == {"time": "05:00", "window_min": 20}

@@ -157,7 +157,7 @@ class LiveDashboardDaemon:
         # True once the Pod has refused an alarm WRITE with 402/403 (subscription-gated).
         # Latched so we stop retrying a refusal no client can talk its way past, and so
         # the snapshot can say plainly that vibration is unavailable this night.
-        self._alarm_write_denied = False
+        self._alarm_write_denied = self._load_alarm_write_denied(repo)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
         self._wake_last_stage = None
         self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
@@ -1194,6 +1194,36 @@ class LiveDashboardDaemon:
         except Exception:
             return {}
 
+    _ALARM_DENIED_KV_KEY = "alarm_write_denied"
+
+    @classmethod
+    def _load_alarm_write_denied(cls, repo) -> bool:
+        """The Pod's refusal of the alarm write, persisted across restarts.
+
+        This flag lived in process memory and reset to False on every restart -- and the
+        watchdog restarts this process on every deploy. So after each deploy the wake_alarm and
+        wake_cue checks reported vibration as AVAILABLE until the next refused write, which is
+        the next alarm, which is the next night. The user's own report ("the alarm doesn't
+        work") was true while the page said the opposite."""
+        try:
+            row = repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key=?", (cls._ALARM_DENIED_KV_KEY,)).fetchone()
+            return bool(row and row[0] and json.loads(row[0]).get("denied"))
+        except Exception:
+            return False
+
+    def _save_alarm_write_denied(self, denied: bool, error: str = "") -> None:
+        try:
+            self.repo.conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._ALARM_DENIED_KV_KEY,
+                 json.dumps({"denied": bool(denied), "ts": datetime.now().isoformat(),
+                             "error": (error or "")[:200]})))
+            self.repo.conn.commit()
+        except Exception:
+            pass
+
     def _publish_session_state(self) -> None:
         """Write .run/session.state so the WATCHDOG can see a night is running.
 
@@ -1819,6 +1849,8 @@ class LiveDashboardDaemon:
                     try:
                         await self.client.set_wake_alarm(alarm)
                         self.cycle.mark_alarm_sent()
+                        if self._alarm_write_denied:
+                            self._save_alarm_write_denied(False)   # the Pod accepts writes again
                         self._alarm_write_denied = False
                     except Exception as exc:
                         # 402/403 is a SERVER-side refusal (Eight Sleep gating the alarm behind a
@@ -1832,6 +1864,7 @@ class LiveDashboardDaemon:
                         permanent = "402" in msg or "403" in msg
                         if permanent and not getattr(self, "_alarm_write_denied", False):
                             self._alarm_write_denied = True
+                            self._save_alarm_write_denied(True, msg)
                             self.cycle.mark_alarm_sent()   # stop re-offering a refused write
                             self._emit_event(
                                 "alert", "warn", "alarm_write_denied",

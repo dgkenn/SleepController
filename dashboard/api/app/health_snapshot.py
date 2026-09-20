@@ -167,6 +167,11 @@ _LOG_TAILS = (
     # only place the reason can appear is next.js's own stdout/stderr.
     ("web", "web.log", 15),
     ("web_err", "web.err", 15),
+    # The controller's own log: alarm writes and their refusals, wake-ramp starts, session
+    # restores. "The alarm doesn't work" (2026-09-19) could not be checked from off-box because
+    # the one log that records the alarm write was the one log not published.
+    ("daemon", "daemon.log", 20),
+    ("daemon_err", "daemon.err", 10),
 )
 
 
@@ -345,6 +350,11 @@ def _controller_block(repo) -> dict:
         out["pod_guard"] = pg if isinstance(pg, dict) else None
         tt = (rt.get("extra") or {}).get("thermal_trial")
         out["thermal_trial_tonight"] = tt if isinstance(tt, dict) else None
+        # The armed wake: the alarm the user set is the planner's ONLY schedule input (it arms
+        # the night targets, the wake window and the thermal ramp), so whether tonight has one
+        # must be visible off-box. A clock time is not physiology.
+        wk = (rt.get("extra") or {}).get("wake")
+        out["wake_armed"] = wk if isinstance(wk, dict) else ({"set": bool(wk)} if wk else None)
     except Exception as exc:
         out["pod_guard"] = {"error": repr(exc)}
     try:
