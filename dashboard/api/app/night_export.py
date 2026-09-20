@@ -802,6 +802,15 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception as exc:
         out["steering_error"] = repr(exc)
 
+    # ---- 6b. DECLARED AWAKENINGS from the morning note -------------------------------------
+    # "awake 00:15-00:25, up 3:10" is ground truth the same way a tap is, only coarser, and it
+    # exists on the nights the sleeper forgot to tap. Scored against the stages held inside.
+    try:
+        from sleepctl.learning.declared_awakenings import score_declared
+        out["declared_awakenings"] = score_declared(repo, night_date)
+    except Exception as exc:
+        out["declared_awakenings_error"] = repr(exc)
+
     # ---- 7. STAGE PLAUSIBILITY -----------------------------------------------------------
     # No polysomnography here, so accuracy is unmeasurable; plausibility is not. Each called
     # stage is judged against its physiological signature in this same night's signals

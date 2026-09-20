@@ -42,7 +42,7 @@ export default function NoteEditor({ date, initialText = '' }: NoteEditorProps) 
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Add notes about last night's sleep..."
+        placeholder="Last night... Declare awakenings as times and they become ground truth: e.g. awake 00:15-00:25, up 3:10"
         rows={3}
         className="
           w-full bg-surface-raised rounded-xl px-4 py-3
