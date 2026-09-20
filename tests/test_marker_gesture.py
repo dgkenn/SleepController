@@ -90,3 +90,87 @@ def test_degenerate_input_does_not_raise():
     for bad in ([], None, [1.0] * 3, [None] * 300):
         assert pmd.marker_gesture(bad, FS)["marker"] is False
     assert pmd.marker_gesture(_osc(5.0, 0.5), 0.0)["marker"] is False
+
+
+# ------------------------------------------------------------------ the SNAP (double tap) marker
+# 2026-09-19: the user marked every awakening by flicking or snapping the band and the shake
+# detector recorded none of them. A snap is an impulse, not a rhythm.
+
+def _quiet(secs=4.0, noise=0.01, seed=11):
+    random.seed(seed)
+    return [1.0 + random.gauss(0, noise) for _ in range(int(FS * secs))]
+
+
+def _tap(sig, at_s, amp=1.2, width=2):
+    i0 = int(at_s * FS)
+    for k in range(width):
+        if i0 + k < len(sig):
+            sig[i0 + k] += amp * (1.0 if k == 0 else 0.6)
+    return sig
+
+
+def test_two_sharp_taps_on_a_quiet_arm_are_a_marker():
+    for gap in (0.25, 0.4, 0.6, 1.0):
+        for amp in (0.9, 1.5, 3.0):
+            sig = _tap(_tap(_quiet(), 1.0, amp), 1.0 + gap, amp)
+            r = pmd.snap_gesture(sig, FS)
+            assert r["marker"] is True, f"gap {gap}s at {amp} g was missed: {r}"
+            assert r["kind"] == "snap" and abs(r["gap_s"] - gap) < 0.05
+
+
+def test_one_tap_is_a_bump_not_a_marker():
+    """A single impulse is what a knock against the headboard looks like."""
+    assert pmd.snap_gesture(_tap(_quiet(), 1.5, 2.0), FS)["marker"] is False
+
+
+def test_a_tap_ringing_is_still_one_tap():
+    sig = _tap(_tap(_quiet(), 1.0, 1.5), 1.0 + 0.08, 1.2)      # 80 ms later: the band bouncing
+    assert pmd.snap_gesture(sig, FS)["marker"] is False
+
+
+def test_two_taps_too_far_apart_are_two_bumps():
+    assert pmd.snap_gesture(_tap(_tap(_quiet(), 0.5, 1.5), 2.5, 1.5), FS)["marker"] is False
+
+
+def test_taps_during_a_turn_are_not_a_marker():
+    """Restless turning runs 0.2 g across the whole window; spikes inside it are not declared."""
+    random.seed(5)
+    sig = [1.0 + random.gauss(0, 0.20) for _ in range(int(FS * 4))]
+    sig = _tap(_tap(sig, 1.0, 1.5), 1.4, 1.5)
+    r = pmd.snap_gesture(sig, FS)
+    assert r["marker"] is False and r["quiet_g"] > pmd.SNAP_QUIET_G
+
+
+def test_a_big_roll_over_is_not_a_snap():
+    random.seed(4)
+    lurch = [1.0 + (1.0 if 40 < i < 90 else 0.0) + random.gauss(0, 0.02) for i in range(int(FS * 4))]
+    assert pmd.snap_gesture(lurch, FS)["marker"] is False
+    two = [1.0 + (1.0 if (40 < i < 70 or 90 < i < 120) else 0.0) + random.gauss(0, 0.02)
+           for i in range(int(FS * 4))]
+    assert pmd.snap_gesture(two, FS)["marker"] is False       # two slow lurches: too wide
+
+
+def test_restless_turning_never_produces_a_false_snap():
+    false_markers = 0
+    for seed in range(200):
+        random.seed(seed)
+        sig = [1.0 + random.gauss(0, 0.20) for _ in range(int(FS * 4))]
+        if pmd.snap_gesture(sig, FS)["marker"]:
+            false_markers += 1
+    assert false_markers == 0
+
+
+def test_a_shake_is_not_a_snap_and_a_snap_is_not_a_shake_but_either_is_a_marker():
+    shake = _osc(5.0, 0.5, secs=4.0)
+    snap = _tap(_tap(_quiet(), 1.0, 1.5), 1.4, 1.5)
+    assert pmd.snap_gesture(shake, FS)["marker"] is False
+    assert pmd.marker_gesture(snap, FS)["marker"] is False
+    assert pmd.any_marker(shake, FS)["kind"] == "shake"
+    assert pmd.any_marker(snap, FS)["kind"] == "snap"
+    assert pmd.any_marker(_quiet(), FS)["marker"] is False
+
+
+def test_snap_degenerate_input_does_not_raise():
+    for bad in ([], None, [1.0] * 3, [None] * 300):
+        assert pmd.snap_gesture(bad, FS)["marker"] is False
+    assert pmd.snap_gesture(_quiet(), 0.0)["marker"] is False

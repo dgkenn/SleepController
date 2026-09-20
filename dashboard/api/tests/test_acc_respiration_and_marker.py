@@ -49,3 +49,11 @@ def test_a_marker_gesture_records_the_stage_the_stager_held_at_that_instant(conn
     row = conn.execute("SELECT data FROM events WHERE code='marker_vs_stage' ORDER BY id DESC LIMIT 1").fetchone()
     assert row is not None
     assert json.loads(row[0])["stage_at_marker"] == "rem"
+
+
+def test_a_snap_marker_records_its_kind(conn):
+    bridge.append_actigraphy(conn, {"pim": 4.0, "n": 104, "fs": 52, "marker": True, "marker_kind": "snap"})
+    row = conn.execute("SELECT marker, marker_kind FROM actigraphy ORDER BY id DESC LIMIT 1").fetchone()
+    assert row[0] == 1 and row[1] == "snap"
+    ev = conn.execute("SELECT message, data FROM events WHERE code='marker_vs_stage' ORDER BY id DESC LIMIT 1").fetchone()
+    assert "snap" in ev[0] and json.loads(ev[1])["kind"] == "snap"

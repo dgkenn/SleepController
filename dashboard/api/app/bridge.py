@@ -275,12 +275,13 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
         conn.execute(
             """INSERT INTO actigraphy (ts, pim, zcm, mad, std, pmax, n, fs, source,
                                        resp_brpm, resp_conc, gait, cadence_hz, gait_conc,
-                                       marker, marker_hz, gx, gy, gz)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                       marker, marker_hz, marker_kind, gx, gy, gz)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (_now(), pim, zcm, mad, std, pmax, n, _num("fs"), source,
              _num("resp_brpm"), _num("resp_conc"),
              1 if counts.get("gait") else None, _num("cadence_hz"), _num("gait_conc"),
              1 if counts.get("marker") else None, _num("marker_hz"),
+             (str(counts.get("marker_kind"))[:16] if counts.get("marker") and counts.get("marker_kind") else None),
              _num("gx"), _num("gy"), _num("gz")),
         )
         if counts.get("marker"):
@@ -293,8 +294,9 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
                 conn.execute(
                     "INSERT INTO events (ts, category, severity, code, message, data) VALUES (?,?,?,?,?,?)",
                     (_now(), "sensor", "info", "marker_vs_stage",
-                     f"marker gesture while the stager said {stage or 'unknown'}",
-                     json.dumps({"stage_at_marker": stage, "runtime_stale": rt.get("stale")})))
+                     f"marker {counts.get('marker_kind') or 'gesture'} while the stager said {stage or 'unknown'}",
+                     json.dumps({"stage_at_marker": stage, "runtime_stale": rt.get("stale"),
+                                 "kind": counts.get("marker_kind")})))
             except Exception:
                 pass
         now_mono = time.monotonic()

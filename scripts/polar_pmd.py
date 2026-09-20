@@ -805,6 +805,116 @@ def marker_gesture(samples_g, fs: float = 52.0) -> dict:
     return out
 
 
+#: The SNAP marker: two sharp taps on the sensor (or two snaps of the band against the arm).
+#: Measured on 2026-09-19: the user marked awakenings by flicking/snapping the band, and the
+#: shake detector above -- which needs a sustained 4-7 Hz oscillation -- recorded none of them,
+#: while the accelerometer showed every awakening plainly. A snap is an IMPULSE, not a rhythm:
+#: a large deviation that lasts a few samples on an otherwise quiet arm. One impulse is exactly
+#: what a knock against the headboard looks like, so a single one never counts; two impulses a
+#: fraction of a second apart on a quiet arm is a deliberate act.
+SNAP_MIN_AMPLITUDE_G = 0.8
+#: An impulse (a tap, or a wrist flick) is over in a fifth of a second; a postural lurch takes half a second
+#: or more to rise and fall, so width separates the two.
+SNAP_MAX_WIDTH_S = 0.2
+#: Two taps by a human come 0.2-1.2 s apart. Closer is one tap ringing; farther is two events.
+SNAP_MIN_GAP_S, SNAP_MAX_GAP_S = 0.2, 1.2
+SNAP_MIN_COUNT = 2
+#: The arm must be QUIET apart from the taps: the 75th percentile of |deviation| over the window
+#: stays under this. Restless turning runs 0.2 g and up across the whole window, so a tap-like
+#: spike inside a turn is not a marker.
+SNAP_QUIET_G = 0.12
+
+
+def snap_gesture(samples_g, fs: float = 52.0) -> dict:
+    """Detect a DELIBERATE double tap/snap on the band in a window of accelerometer magnitudes.
+
+    The companion to ``marker_gesture``: that one hears a sustained shake, this one hears two
+    sharp impulses on a quiet arm. Both declare "I am awake right now"; a person half-asleep
+    does whichever comes naturally, and on 2026-09-19 what came naturally was a snap.
+
+    Returns ``{"marker", "kind", "n_impulses", "amp_g", "gap_s", "quiet_g"}``.
+    """
+    mags = [float(m) for m in (samples_g or []) if m is not None]
+    n = len(mags)
+    out = {"marker": False, "kind": "snap", "n_impulses": 0, "amp_g": 0.0, "gap_s": None,
+           "quiet_g": None}
+    if fs <= 0 or n < int(MARKER_MIN_BURST_S * fs):
+        out["too_short"] = True
+        return out
+    srt = sorted(mags)
+    median = srt[n // 2]
+    dev = [m - median for m in mags]
+    absdev = sorted(abs(v) for v in dev)
+    quiet = absdev[min(n - 1, int(0.75 * n))]
+    out["quiet_g"] = round(quiet, 4)
+    amp = absdev[-1]
+    out["amp_g"] = round(amp, 5)
+    if amp < SNAP_MIN_AMPLITUDE_G:
+        return out
+    # Impulses: local maxima of |dev| above the amplitude gate, each measured for the width of
+    # its contiguous run above half its own peak.
+    max_w = max(1, int(round(SNAP_MAX_WIDTH_S * fs)))
+    impulses = []          # (index, peak, width)
+    i = 0
+    while i < n:
+        a = abs(dev[i])
+        if a < SNAP_MIN_AMPLITUDE_G:
+            i += 1
+            continue
+        # walk the contiguous run above the gate and take its peak
+        j = i
+        peak, peak_i = a, i
+        while j + 1 < n and abs(dev[j + 1]) >= SNAP_MIN_AMPLITUDE_G:
+            j += 1
+            if abs(dev[j]) > peak:
+                peak, peak_i = abs(dev[j]), j
+        half = 0.5 * peak
+        lo = peak_i
+        while lo - 1 >= 0 and abs(dev[lo - 1]) >= half:
+            lo -= 1
+        hi = peak_i
+        while hi + 1 < n and abs(dev[hi + 1]) >= half:
+            hi += 1
+        width = hi - lo + 1
+        impulses.append((peak_i, peak, width))
+        i = hi + 1
+    sharp = [im for im in impulses if im[2] <= max_w]
+    out["n_impulses"] = len(sharp)
+    if quiet > SNAP_QUIET_G:
+        return out
+    min_gap = SNAP_MIN_GAP_S * fs
+    max_gap = SNAP_MAX_GAP_S * fs
+    best = None
+    run = 1
+    for k in range(1, len(sharp)):
+        gap = sharp[k][0] - sharp[k - 1][0]
+        if min_gap <= gap <= max_gap:
+            run += 1
+            best = gap if best is None else min(best, gap)
+        elif gap < min_gap:
+            continue           # the same tap ringing: neither a new tap nor a broken pair
+        else:
+            run = 1
+        if run >= SNAP_MIN_COUNT:
+            out["marker"] = True
+            out["gap_s"] = round(gap / fs, 3)
+            return out
+    return out
+
+
+def any_marker(samples_g, fs: float = 52.0) -> dict:
+    """Either declared-awake gesture: the sustained shake or the double snap."""
+    shake = marker_gesture(samples_g, fs)
+    if shake.get("marker"):
+        shake["kind"] = "shake"
+        return shake
+    snap = snap_gesture(samples_g, fs)
+    if snap.get("marker"):
+        return snap
+    shake["kind"] = None
+    return shake
+
+
 def actigraphy_counts(samples_g, zcm_threshold: float = ZCM_THRESHOLD_G,
                       round_values: bool = True) -> dict:
     """Actigraphy counts over a batch of accelerometer samples, in g.

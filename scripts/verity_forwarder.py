@@ -1269,14 +1269,20 @@ async def _pmd_session(client, args) -> bool:
                 # marker rather than one per batch.
                 if len(marker_buf) >= int(pmd.MARKER_MIN_BURST_S * args.acc_rate):
                     try:
-                        mk = pmd.marker_gesture(list(marker_buf), float(args.acc_rate))
+                        mk = pmd.any_marker(list(marker_buf), float(args.acc_rate))
                         if mk.get("marker") and (time.monotonic() - marker_last["t"]) > 20.0:
                             marker_last["t"] = time.monotonic()
                             counts["marker"] = True
+                            counts["marker_kind"] = mk.get("kind")
                             counts["marker_hz"] = mk.get("freq_hz")
                             marker_buf.clear()
-                            _log(f"MARKER gesture detected ({mk.get('freq_hz')} Hz) -- "
-                                 f"logging an awake anchor")
+                            if mk.get("kind") == "snap":
+                                _log(f"MARKER snap detected ({mk.get('n_impulses')} taps, "
+                                     f"{mk.get('gap_s')} s apart, {mk.get('amp_g')} g) -- "
+                                     f"logging an awake anchor")
+                            else:
+                                _log(f"MARKER shake detected ({mk.get('freq_hz')} Hz) -- "
+                                     f"logging an awake anchor")
                     except Exception:
                         pass
 

@@ -646,7 +646,8 @@ def build_night_export(repo, night_date: str) -> dict:
                 except Exception:
                     data = {}
                 st = data.get("stage_at_marker")
-                audit.append({"ts": r["ts"], "stage_at_marker": st, "scored_awake": st == "awake"})
+                audit.append({"ts": r["ts"], "stage_at_marker": st, "scored_awake": st == "awake",
+                              "kind": data.get("kind")})
             # The accelerometer night at 30-second resolution: enough to audit wake detection,
             # restlessness ramps, breathing and gait the next morning without the box.
             out["actigraphy_epochs"] = _actigraphy_epochs(conn, lo, hi)

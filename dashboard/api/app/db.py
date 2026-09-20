@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS actigraphy (
     -- other anchor is inferred; this one is declared, which is the only kind that can settle a
     -- disagreement between two inferences.
     marker INTEGER, marker_hz REAL,
+    marker_kind TEXT,          -- "shake" (sustained 4-7 Hz) or "snap" (double tap on the band)
     source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actigraphy_ts ON actigraphy(ts);
@@ -213,6 +214,7 @@ _MIGRATIONS = [
     ("actigraphy", "gait_conc", "REAL"),
     ("actigraphy", "marker", "INTEGER"),
     ("actigraphy", "marker_hz", "REAL"),
+    ("actigraphy", "marker_kind", "TEXT"),
     ("actigraphy", "resp_conc", "REAL"),
     # Gravity direction on the band per batch (g): how the arm lies, which on an upper-arm band
     # tracks the trunk. Posture changes and breathing detectability both follow from it.
