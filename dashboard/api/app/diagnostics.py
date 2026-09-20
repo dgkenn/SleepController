@@ -75,6 +75,7 @@ _CHECK_ORDER = [
     "cloud_errors", "live_mode", "phone_sensor", "cardiac_sensor", "wearable_reachable",
     "actigraphy", "wearable_receivers", "thermal_trial",
     "wake_alarm", "wake_cue", "degraded", "calibration", "prevention_timing", "session_span",
+    "staging_plausibility",
     "maintenance_acted",
     "verity_forwarder",
     "eight_sleep_creds", "version", "auto_update", "self_update", "publishers",
@@ -1992,6 +1993,41 @@ def _check_degraded(repo) -> dict:
     return _check("degraded", "Silently skipped subsystems", status, detail, remedy)
 
 
+#: Minutes of one stage that may rest on a contradicted signature before it is a warning.
+STAGING_UNSUPPORTED_WARN_MIN = 60.0
+
+
+def _check_staging_plausibility(repo) -> dict:
+    """The latest night's stage calls against their physiological signatures.
+
+    Written by the night export (sleepctl/eval/stage_consistency). There is no PSG here, so
+    this is the only statement about staging that rests on the night's own signals rather
+    than on the model grading itself: a stage whose signature fails is one the thermal
+    steering and the architecture numbers should not lean on."""
+    try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key='staging_consistency_latest'").fetchone()
+        rec = json.loads(row[0]) if row and row[0] else None
+    except Exception as exc:
+        return _check("staging_plausibility", "Sleep staging plausibility", "info",
+                      f"check could not run: {exc!r}", None)
+    if not rec:
+        return _check("staging_plausibility", "Sleep staging plausibility", "info",
+                      "no night audited yet (written by the morning export)", None)
+    verdicts = rec.get("verdicts") or {}
+    bad = [(s, v) for s, v in verdicts.items() if v.get("verdict") == "unsupported"]
+    heavy = [(s, v) for s, v in bad if float(v.get("minutes") or 0) >= STAGING_UNSUPPORTED_WARN_MIN]
+    detail = f"{rec.get('night_date')}: {rec.get('summary')}"
+    if heavy:
+        names = ", ".join(f"{s} ({v.get('minutes')} min)" for s, v in heavy)
+        return _check("staging_plausibility", "Sleep staging plausibility", "warn", detail,
+                      f"{names} rest on a contradicted signature -- treat those minutes as "
+                      f"unknown; a beat-interval model trained on sleep-lab labels "
+                      f"(docs/DREAMT_TRAINING.md) is the fix, not a threshold")
+    return _check("staging_plausibility", "Sleep staging plausibility", "ok" if not bad else "info",
+                  detail, None)
+
+
 def _check_calibration(repo) -> dict:
     """The three measurements that turn evidence PRIORS into this user's physics.
 
@@ -2481,6 +2517,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("wake_cue", "Wake cues available", lambda: _check_wake_cue(repo))
     add("degraded", "Silently skipped subsystems", lambda: _check_degraded(repo))
     add("calibration", "Personal calibration", lambda: _check_calibration(repo))
+    add("staging_plausibility", "Sleep staging plausibility",
+        lambda: _check_staging_plausibility(repo))
     add("prevention_timing", "Awakening pre-emption timing",
         lambda: _check_prevention_timing(repo))
     add("calendar", "Work calendar (ICS)", lambda: _check_calendar(repo))

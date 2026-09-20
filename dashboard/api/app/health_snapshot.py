@@ -344,6 +344,17 @@ def _controller_block(repo) -> dict:
     except Exception as exc:
         out["staging_personalization"] = {"error": repr(exc)}
     try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key='staging_consistency_latest'").fetchone()
+        rec = json.loads(row[0]) if row and row[0] else None
+        out["staging_plausibility"] = ({k: rec.get(k) for k in ("night_date", "summary", "shares",
+                                                                 "outside_norms")}
+                                       | {"verdicts": {s: v.get("verdict") for s, v in
+                                                       (rec.get("verdicts") or {}).items()}}
+                                       if rec else None)
+    except Exception as exc:
+        out["staging_plausibility"] = {"error": repr(exc)}
+    try:
         from app import bridge as _bridge
         rt = _bridge.read_runtime_state(repo.conn, 180) or {}
         pg = (rt.get("extra") or {}).get("pod_guard")

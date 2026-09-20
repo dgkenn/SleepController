@@ -802,6 +802,29 @@ def build_night_export(repo, night_date: str) -> dict:
     except Exception as exc:
         out["steering_error"] = repr(exc)
 
+    # ---- 7. STAGE PLAUSIBILITY -----------------------------------------------------------
+    # No polysomnography here, so accuracy is unmeasurable; plausibility is not. Each called
+    # stage is judged against its physiological signature in this same night's signals
+    # (sleepctl/eval/stage_consistency). 2026-09-19: 104 min of REM whose breathing was
+    # MORE regular than light sleep's. The latest verdict is kept in settings_kv so the
+    # diagnostics battery and the health snapshot can say it without rebuilding the night.
+    try:
+        from sleepctl.eval.stage_consistency import stage_consistency
+        sc = stage_consistency(out)
+        out["staging_consistency"] = sc
+        if sc.get("n_epochs"):
+            conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("staging_consistency_latest",
+                 json.dumps({"night_date": night_date, "summary": sc.get("summary"),
+                             "verdicts": sc.get("verdicts"), "shares": sc.get("shares"),
+                             "outside_norms": sc.get("outside_norms"),
+                             "n_epochs": sc.get("n_epochs")})))
+            conn.commit()
+    except Exception as exc:
+        out["staging_consistency_error"] = repr(exc)
+
     return out
 
 

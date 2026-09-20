@@ -1830,3 +1830,34 @@ def test_a_remote_access_warning_does_not_degrade_the_verdict():
     assert verdict == "HEALTHY"
     checks.append(_check("device_water", "Water", "warn", "low"))
     assert _aggregate(checks)[0] == "DEGRADED"
+
+
+# ------------------------------------------------------ staging plausibility (2026-09-20)
+def test_staging_plausibility_warns_when_an_hour_of_a_stage_is_contradicted(repo):
+    import json as _json
+    repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES (?,?)", (
+        "staging_consistency_latest", _json.dumps({
+            "night_date": "2026-09-19", "summary": "rem: 103.5 min called but breathing regular",
+            "verdicts": {"rem": {"verdict": "unsupported", "minutes": 103.5, "failed": ["breathing"]},
+                         "deep": {"verdict": "insufficient", "minutes": 0.5},
+                         "awake": {"verdict": "supported", "minutes": 29.5}},
+            "shares": {"rem": 0.48}, "outside_norms": [], "n_epochs": 300})))
+    repo.conn.commit()
+    c = diagnostics._check_staging_plausibility(repo)
+    assert c["status"] == "warn" and "rem (103.5 min)" in c["remedy"]
+
+
+def test_staging_plausibility_is_ok_when_signatures_hold(repo):
+    import json as _json
+    repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES (?,?)", (
+        "staging_consistency_latest", _json.dumps({
+            "night_date": "2026-09-07", "summary": "deep: 18 min, signature holds",
+            "verdicts": {"deep": {"verdict": "supported", "minutes": 18.0},
+                         "rem": {"verdict": "supported", "minutes": 50.0}},
+            "shares": {}, "outside_norms": [], "n_epochs": 300})))
+    repo.conn.commit()
+    assert diagnostics._check_staging_plausibility(repo)["status"] == "ok"
+
+
+def test_staging_plausibility_without_an_audit_is_informational(repo):
+    assert diagnostics._check_staging_plausibility(repo)["status"] == "info"
