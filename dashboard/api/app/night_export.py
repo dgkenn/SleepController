@@ -271,10 +271,31 @@ def build_night_export(repo, night_date: str) -> dict:
                 transitions.append({"ts": r["ts"], "stage": r["stage"],
                                     "confidence": r["stage_confidence"]})
                 prev = r["stage"]
+        # WHICH path produced each label: the learned stager alone, the deep corroboration, the
+        # autonomic REM/deep rescorer, or the actigraphy wake override. A night that reads
+        # 207 min REM / 1 min deep (2026-09-19) is only diagnosable if the record says which
+        # channel said so, and this is the one place the per-tick source is kept.
+        src_counts: Counter = Counter()
+        released = 0
+        try:
+            for r2 in conn.execute(
+                    "SELECT log_payload FROM decisions WHERE night_date = ? AND state IN "
+                    "('induction','maintenance','wake_recovery','wake_window')", (night_date,)):
+                try:
+                    pl2 = json.loads(r2[0]) if r2[0] else {}
+                except Exception:
+                    continue
+                src_counts[str(pl2.get("stage_source") or "none")] += 1
+                if (pl2.get("preemption") or {}).get("settle_released"):
+                    released += 1
+        except Exception:
+            pass
         out["staging"] = {
             "stage_distribution": dict(stage_counts),
+            "stage_sources": dict(src_counts),
             "transitions": transitions,
             "wake_events": [{"ts": r["ts"], "stage": r["stage"]} for r in rows if r["wake_event"]],
+            "settle_released_ticks": released,
         }
         wl = conn.execute("SELECT * FROM wake_log WHERE date = ?", (night_date,)).fetchone()
         out["wake_log"] = dict(wl) if wl else None

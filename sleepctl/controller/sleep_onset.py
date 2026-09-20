@@ -241,17 +241,35 @@ class SleepOnsetDetector:
         # actigraphy), and irregular breathing is positive evidence AGAINST sleep -- so it blocks
         # onset instead of being outvoted by "still" plus a LIGHT stage label, which is exactly
         # the pair a person lying awake in bed satisfies.
+        # Compare LIKE WITH LIKE. The breathing rate is fused from two estimators (RSA from
+        # the beat intervals, and the accelerometer), and on ticks where only one is confident
+        # the frame carries that one alone. They read a few breaths apart on the same person,
+        # so a window that mixes them looks "irregular" when the breathing is not: 2026-09-19
+        # 21:06-21:31 alternated 9.7 (RSA) and 17.0 (ACC), the CV sat at 0.12-0.27 against a
+        # 0.10 threshold, and the run that had reached 12 ticks was broken and held at zero for
+        # 25 minutes on a sleeping user until the stage-persistence fallback confirmed. A fused
+        # rate (both agreeing) is compatible with either estimator by construction.
+        cur_src = getattr(frame, "respiratory_rate_source", None)
+
+        def _compatible(f) -> bool:
+            src = getattr(f, "respiratory_rate_source", None)
+            return (cur_src is None or src is None or src == cur_src
+                    or "+" in str(src) or "+" in str(cur_src))
+
         resp_window = [f.respiratory_rate for f in (recent or [])
-                       if f.respiratory_rate is not None][-(self.resp_cv_window - 1):]
+                       if f.respiratory_rate is not None and _compatible(f)][-(self.resp_cv_window - 1):]
         resp_cv = (_cv(resp_window + [frame.respiratory_rate])
                    if len(resp_window) >= self.resp_cv_window - 1 else None)
-        if resp_cv is not None and resp_cv >= self.resp_irregular_cv:
-            self._break_run()
-            return None
 
         base = self._awake_baseline(recent or [])
         sig = self._signals(frame, base, recent or [])
+        # Recorded BEFORE the irregularity break below, so status() reports what this tick
+        # actually saw. Returning early left the previous tick's signals frozen in the trace for
+        # the whole 25 minutes, which is why the reset looked causeless.
         self._last_sig, self._last_base_hr = list(sig), base.get("hr")
+        if resp_cv is not None and resp_cv >= self.resp_irregular_cv:
+            self._break_run()
+            return None
 
         # Stage-persistence FALLBACK, bounded and physiological: half an hour of uninterrupted
         # asleep scoring at a heart rate no higher than the bed-entry level is sleep, whatever
