@@ -635,7 +635,19 @@ class LiveDashboardDaemon:
         shows why a night carries no thermal arm."""
         try:
             trial_cfg = getattr(self.cfg, "thermal_trial", None)
-            if trial_cfg is None or not getattr(trial_cfg, "enabled", False):
+            if trial_cfg is None:
+                return
+            # The dashboard can stop the trial without a deploy: an experiment that changes what
+            # the bed does overnight must be revocable from the phone at 2am, not only by a push.
+            enabled = bool(getattr(trial_cfg, "enabled", False))
+            try:
+                row = self.repo.conn.execute(
+                    "SELECT value FROM settings_kv WHERE key='thermal_trial'").fetchone()
+                if row and row[0] not in (None, ""):
+                    enabled = bool(json.loads(row[0]))
+            except Exception:
+                pass
+            if not enabled:
                 return
             # Never stack this on top of another experiment's arm (validity + do-no-harm).
             eff = (self.efficacy_trial_arm or {}).get("arm")
@@ -1285,6 +1297,7 @@ class LiveDashboardDaemon:
                       "induce_note": self._induce_note,
                       "thermal_health": self.thermal.status().to_dict(),
                       "pod_guard": self._pod_guard_summary(),
+                      "thermal_trial": self.thermal_trial_arm,
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
                       "data_quality": self.cycle.controller.data_quality_summary(),

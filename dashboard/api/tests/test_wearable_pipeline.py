@@ -115,8 +115,20 @@ def test_usage_is_not_judged_while_idle(repo):
     assert r["used"]["checks"] == []
 
 
+def _breathing(repo, n=3):
+    """Breathing estimates in the recent window -- the check is judged over 15 minutes, not
+    one tick, because a tick without a rate is normal."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).isoformat()
+    for _ in range(n):
+        repo.conn.execute(
+            "INSERT INTO sensor_samples (ts, hr, source, respiratory_rate) VALUES (?,?,?,?)",
+            (now, 60.0, "verity", 14.0))
+    repo.conn.commit()
+
+
 def test_a_fully_consumed_stream_passes_every_check(repo):
-    _cardiac(repo, 3); _rr(repo, 4); _acc(repo, 2)
+    _cardiac(repo, 3); _rr(repo, 4); _acc(repo, 2); _breathing(repo)
     _decision(repo, state="maintenance", hr_n=800, acc_n=400, units="counts",
               rr_n=320, resp_conf=0.85, resp_source="rsa+acc")
     r = services.wearable_pipeline(repo)

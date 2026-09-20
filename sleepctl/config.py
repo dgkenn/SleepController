@@ -725,7 +725,14 @@ class ThermalTrialConfig:
     overnight, so it must be explicitly opted into.
     """
 
-    enabled: bool = False              # OFF by default -- changes what the bed does at night
+    # ON since 2026-09-20, at the user's explicit request. The question it answers is the one
+    # the whole system turns on: the controller's only prevention move is to COOL, and nobody
+    # knows whether cooling prevents this user's awakenings or causes them. Observation cannot
+    # answer it -- the controller warms BECAUSE you woke, so rate-by-temperature is
+    # reverse-causal -- and two real nights are not enough for anything else. A randomized
+    # offset, comfort-clamped and block-balanced, answers it in about two weeks.
+    # Revocable from the dashboard without a deploy: settings_kv "thermal_trial" overrides this.
+    enabled: bool = True
     # Maintenance-offset ladder (°F, relative to the learned neutral_f). 0.0 (or
     # ``control_offset_f``) is the current policy / control arm. Offsets are clamped to
     # +/-``comfort_band_f`` before use -- see sleepctl.ml.thermal_trial._clamped_ladder.

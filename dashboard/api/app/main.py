@@ -969,6 +969,9 @@ def _config_defaults() -> dict:
         # Exclusive control: the daemon re-asserts its level whenever the Eight Sleep app (or
         # its schedule) writes over it. ON by default; the Settings page toggles it.
         "pod_guard": True,
+        # n-of-1 randomized maintenance-temperature offset. On since 2026-09-20 to answer
+        # whether cooling prevents this user's awakenings or causes them; the toggle stops it.
+        "thermal_trial": bool(getattr(AppConfig.default().thermal_trial, "enabled", False)),
     }
 
 

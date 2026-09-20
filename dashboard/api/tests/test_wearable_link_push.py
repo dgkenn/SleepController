@@ -239,6 +239,28 @@ def _check(pl, cid):
     return next((c for c in pl["used"]["checks"] if c["id"] == cid), None)
 
 
+def _breathing(repo, n=5):
+    """Breathing estimates in the recent window (the RSA estimator needs minutes of beats,
+    more than a unit test ingests, so seed the rows it would have written)."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).isoformat()
+    for _ in range(n):
+        repo.conn.execute(
+            "INSERT INTO sensor_samples (ts, hr, source, respiratory_rate) VALUES (?,?,?,?)",
+            (now, 60.0, "verity", 14.2))
+    repo.conn.commit()
+
+
+def test_a_payload_from_the_previous_build_is_not_read_as_a_broken_pipeline(repo, pushes):
+    """2026-09-20 00:42: straight after a deploy the newest decision came from the old build,
+    whose payload has no rr_history_n. Reading that absence as zero reported a healthy
+    pipeline as broken; it was green again three minutes later."""
+    _streaming(repo)
+    _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
+                                         "activity_units": "counts"}})     # no rr key at all
+    assert _check(services.wearable_pipeline(repo), "autonomic_rr") is None
+
+
 def test_the_beat_series_reaching_the_estimator_is_proved_not_assumed(repo, pushes):
     """HRV is computed at ingest, so it can look healthy while frame.rr_history is empty and
     the autonomic REM/deep rescorer silently never runs."""
@@ -254,15 +276,32 @@ def test_the_beat_series_reaching_the_estimator_is_proved_not_assumed(repo, push
     assert c and c["ok"] is True and "320" in c["detail"]
 
 
-def test_breathing_reaching_the_controller_is_proved(repo, pushes):
+def test_breathing_is_judged_over_a_window_not_one_tick(repo, pushes):
+    """A tick without a breathing estimate is normal -- 262 of 1970 ticks carried one on
+    2026-09-18 -- so only an empty WINDOW is a fault."""
+    from datetime import datetime as _dt, timezone as _tz
+
     _streaming(repo)
+    _breathing(repo)
     _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
                                          "activity_units": "counts", "rr_history_n": 320}})
+    # A tick with no rate of its own must still pass while the window has them.
+    assert services._recent_respiration_count(repo, minutes=15.0) > 0
+    c = _check(services.wearable_pipeline(repo), "respiration")
+    assert c and c["ok"] is True and "last 15 min" in c["detail"]
+
+    # Nothing in the window at all IS a fault.
+    repo.conn.execute("UPDATE sensor_samples SET respiratory_rate = NULL")
+    repo.conn.commit()
     c = _check(services.wearable_pipeline(repo), "respiration")
     assert c and c["ok"] is False and "onset signals" in c["detail"]
 
+
+def test_the_latest_confidence_and_source_are_reported_when_present(repo, pushes):
+    _streaming(repo)
+    _breathing(repo)
     _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
                                          "activity_units": "counts", "rr_history_n": 320},
                      "respiratory_rate_conf": 0.85, "respiratory_rate_source": "rsa+acc"})
     c = _check(services.wearable_pipeline(repo), "respiration")
-    assert c and c["ok"] is True and "rsa+acc" in c["detail"]
+    assert c and c["ok"] is True and "rsa+acc" in c["detail"] and "0.85" in c["detail"]

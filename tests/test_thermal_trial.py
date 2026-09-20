@@ -431,8 +431,14 @@ def test_analyze_dose_response_from_repo_rows_shape(repo):
 # --------------------------------------------------------------------------- config wiring
 
 
-def test_thermal_trial_config_defaults_disabled():
+def test_thermal_trial_config_defaults():
+    """ENABLED since 2026-09-20, at the user's request: the controller's only prevention move
+    is to cool and nobody knows whether that prevents this user's awakenings or causes them.
+    The ladder and the comfort clamp are what keep an always-on experiment safe, so they are
+    pinned here alongside it."""
     cfg = AppConfig.default()
-    assert cfg.thermal_trial.enabled is False
+    assert cfg.thermal_trial.enabled is True
     assert cfg.thermal_trial.offset_ladder_f == [-1.5, -0.75, 0.0, 0.4, 0.8]
     assert cfg.thermal_trial.comfort_band_f == 2.0
+    assert all(abs(x) <= cfg.thermal_trial.comfort_band_f
+               for x in cfg.thermal_trial.offset_ladder_f)

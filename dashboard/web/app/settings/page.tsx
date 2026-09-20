@@ -34,6 +34,8 @@ function SettingsContent() {
   // Exclusive control: the daemon overwrites any level the Eight Sleep app (or its schedule)
   // sets. Default ON; stored as the boolean setting `pod_guard`.
   const [podGuard, setPodGuard] = useState<boolean>(true);
+  // n-of-1 randomized maintenance-temperature offset (settings key `thermal_trial`).
+  const [thermalTrial, setThermalTrial] = useState<boolean>(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState('');
 
@@ -51,6 +53,10 @@ function SettingsContent() {
       setPodGuard(
         typeof storedGuard === 'boolean' ? storedGuard : (data.defaults.pod_guard ?? true),
       );
+      const storedTrial = (data.stored as Record<string, unknown>)['thermal_trial'];
+      setThermalTrial(
+        typeof storedTrial === 'boolean' ? storedTrial : (data.defaults.thermal_trial ?? false),
+      );
     }
   }, [data]);
 
@@ -62,7 +68,11 @@ function SettingsContent() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      await api.saveSettings({ ...values, pod_guard: podGuard });
+      await api.saveSettings({
+        ...values,
+        pod_guard: podGuard,
+        thermal_trial: thermalTrial,
+      });
       await mutate();
       showToast('Settings saved');
     } catch {
@@ -119,6 +129,28 @@ function SettingsContent() {
               When on, any level the app or its schedule sets is written back to this
               controller&apos;s level within about a minute, all night. Overrides are counted on
               the Diagnostics page under &quot;External controller conflict&quot;. Default on.
+            </p>
+          </div>
+
+          {/* n-of-1 randomized temperature trial */}
+          <div className="bg-surface-card rounded-2xl p-4 border border-surface-border">
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Temperature trial</p>
+            <label className="flex items-center justify-between gap-4 min-h-[44px]">
+              <span className="text-sm text-gray-300">
+                Randomise the overnight temperature to find what works
+              </span>
+              <input
+                type="checkbox"
+                checked={thermalTrial}
+                onChange={(e) => setThermalTrial(e.target.checked)}
+                className="w-6 h-6 accent-brand shrink-0"
+              />
+            </label>
+            <p className="text-xs text-gray-500 mt-1">
+              On eligible nights the maintenance temperature is shifted by a small randomised
+              amount, warmer or cooler, inside your comfort band. It is the only way to learn
+              whether cooling prevents your awakenings or causes them. Turning this off returns
+              the bed to today&apos;s fixed policy tonight.
             </p>
           </div>
 

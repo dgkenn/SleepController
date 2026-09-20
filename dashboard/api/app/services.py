@@ -1872,6 +1872,18 @@ def _push_wearable_link(repo, kind: str, title: str, body: str, now: datetime) -
 _PIPE_FRESH_S = 120.0
 
 
+def _recent_respiration_count(repo, minutes: float = 15.0) -> int:
+    """How many breathing estimates the pipeline produced recently. Never raises."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(minutes=float(minutes))).isoformat()
+        row = repo.conn.execute(
+            "SELECT COUNT(*) FROM sensor_samples WHERE ts >= ? AND respiratory_rate IS NOT NULL",
+            (cutoff,)).fetchone()
+        return int(row[0] or 0) if row else 0
+    except Exception:
+        return 0
+
+
 def wearable_receivers(repo, max_age_s: float = 3600.0) -> list:
     """Every receiver that has reported a link within ``max_age_s``, newest first:
     ``[{"source", "state", "streams", "age_s"}]``. Never raises."""
@@ -2024,7 +2036,7 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
     used: dict = {"decision_age_s": None, "controller_state": None, "stage_source": None,
                   "hr_source": None, "movement_source": None,
                   "hr_history_n": 0, "activity_history_n": 0, "activity_units": None,
-                  "rr_history_n": 0, "respiratory_rate_conf": None,
+                  "rr_history_n": 0, "rr_history_recorded": False, "respiratory_rate_conf": None,
                   "respiratory_source": None, "autonomic": False}
     try:
         row = repo.conn.execute(
@@ -2040,6 +2052,7 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
             used["activity_history_n"] = int(wi.get("activity_history_n") or 0)
             used["activity_units"] = wi.get("activity_units")
             used["rr_history_n"] = int(wi.get("rr_history_n") or 0)
+            used["rr_history_recorded"] = "rr_history_n" in wi
             used["respiratory_rate_conf"] = pl.get("respiratory_rate_conf")
             used["respiratory_source"] = pl.get("respiratory_rate_source")
             used["autonomic"] = bool(pl.get("stage_autonomic"))
@@ -2078,20 +2091,30 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
             # is computed at ingest, while the autonomic rescorer (REM vs deep from RMSSD and
             # LF/HF) reads frame.rr_history. Starve that and every other signal still looks
             # healthy while a whole staging channel silently never runs.
-            n_rr = used["rr_history_n"]
-            checks.append(("autonomic_rr", n_rr > 0,
-                           f"{n_rr} beat intervals reached the stage estimator"
-                           if n_rr else "PPI is landing but no beat intervals reach the "
-                                        "estimator -- the autonomic REM/deep rescorer cannot run"))
+            # Only judge this when the RUNNING build records it. Straight after a deploy the
+            # newest decision was written by the previous build, whose payload has no such key,
+            # and reading that absence as zero reported a healthy pipeline as broken for one
+            # snapshot (2026-09-20 00:42, green again at 00:45).
+            if used["rr_history_recorded"]:
+                n_rr = used["rr_history_n"]
+                checks.append(("autonomic_rr", n_rr > 0,
+                               f"{n_rr} beat intervals reached the stage estimator"
+                               if n_rr else "PPI is landing but no beat intervals reach the "
+                                            "estimator -- the autonomic REM/deep rescorer cannot run"))
             # Breathing, fused from the same beats (RSA) and the accelerometer. It feeds two of
             # the seven sleep-onset signals and the respiration-irregularity wake precursor.
+            # Judged over a WINDOW, not one tick: a per-tick gap is normal (movement, weak RSA --
+            # 262 of 1970 ticks carried a rate on 2026-09-18), so a single empty tick is not a
+            # fault, and only a window with nothing at all in it is.
+            n_resp = _recent_respiration_count(repo, minutes=15.0)
             conf = used["respiratory_rate_conf"]
-            checks.append(("respiration", conf is not None,
-                           f"breathing rate in use (confidence {conf}, "
-                           f"source {used['respiratory_source'] or 'unknown'})"
-                           if conf is not None else
-                           "no breathing rate is reaching the controller -- the two "
-                           "respiration onset signals and the irregularity precursor are off"))
+            detail = (f"{n_resp} breathing estimate(s) in the last 15 min"
+                      + (f"; latest confidence {conf}, source "
+                         f"{used['respiratory_source'] or 'unknown'}" if conf is not None
+                         else "; none on the latest tick, which is normal between estimates"))
+            checks.append(("respiration", n_resp > 0, detail if n_resp else
+                           "no breathing rate in the last 15 min -- the two respiration onset "
+                           "signals and the irregularity precursor are off"))
     used["checks"] = [{"id": i, "ok": bool(ok), "detail": d} for i, ok, d in checks]
     used["ticking"] = ticking
     used["in_session"] = in_session

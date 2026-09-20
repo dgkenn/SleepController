@@ -1790,9 +1790,19 @@ def _check_thermal_trial(repo) -> dict:
         return _check("thermal_trial", "Thermal dose-response trial", "info",
                       f"check could not run: {exc!r}", None)
 
-    if not getattr(tc, "enabled", False):
+    # The dashboard toggle wins over the shipped default, so this reports what the daemon
+    # will actually do tonight rather than what the config file says.
+    enabled = bool(getattr(tc, "enabled", False))
+    try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key='thermal_trial'").fetchone()
+        if row and row[0] not in (None, ""):
+            enabled = bool(json.loads(row[0]))
+    except Exception:
+        pass
+    if not enabled:
         return _check("thermal_trial", "Thermal dose-response trial", "info",
-                      "not enabled (opt-in personal-offset trial -- off by default)", None)
+                      "switched off (Settings) -- the bed runs today's fixed policy", None)
 
     min_n = int(getattr(tc, "min_nights_before_verdict", 8))
     try:

@@ -343,6 +343,8 @@ def _controller_block(repo) -> dict:
         rt = _bridge.read_runtime_state(repo.conn, 180) or {}
         pg = (rt.get("extra") or {}).get("pod_guard")
         out["pod_guard"] = pg if isinstance(pg, dict) else None
+        tt = (rt.get("extra") or {}).get("thermal_trial")
+        out["thermal_trial_tonight"] = tt if isinstance(tt, dict) else None
     except Exception as exc:
         out["pod_guard"] = {"error": repr(exc)}
     try:
@@ -393,6 +395,9 @@ def _wearable_block(repo, run_dir) -> dict:
             "stage_source": used.get("stage_source"),
             "hr_source": used.get("hr_source"), "movement_source": used.get("movement_source"),
             "activity_units": used.get("activity_units"),
+            "rr_history_n": used.get("rr_history_n"),
+            "respiratory_rate_conf": used.get("respiratory_rate_conf"),
+            "respiratory_source": used.get("respiratory_source"),
             "checks": used.get("checks") or [],
         },
     }

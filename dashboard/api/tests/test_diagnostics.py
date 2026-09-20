@@ -257,7 +257,7 @@ def test_thermal_trial_disabled_is_info(repo, run_dir, tmp_path, monkeypatch):
     report = _run_full_diagnostics(repo, run_dir, tmp_path, monkeypatch)
     c = _by_id(report, "thermal_trial")
     assert c["status"] == "info"
-    assert "not enabled" in c["detail"]
+    assert "switched off" in c["detail"]
 
 
 def test_thermal_trial_enabled_collecting_is_ok(repo, run_dir, tmp_path, monkeypatch):

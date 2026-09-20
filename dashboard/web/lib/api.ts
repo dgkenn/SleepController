@@ -255,6 +255,7 @@ export interface SettingsResponse {
     hrv_target_ms: number;
     wake_events_max: number;
     pod_guard?: boolean;
+    thermal_trial?: boolean;
   };
 }
 
