@@ -1247,6 +1247,11 @@ class SleepController:
         # INDUCTION from IDLE/CALIBRATION so the onset thermal cascade runs open-loop right away;
         # confirmed onset (once physiology arrives) then hands off to MAINTENANCE as usual.
         if self.session_mode in ("induce", "nap_power", "nap_cycle"):
+            # Tonight's bounds belong to tonight: a manual change from an earlier session or
+            # from the day must not carry a floor or ceiling into this one.
+            self.session_floor_f = None
+            self.session_ceiling_f = None
+            self.user_overrides = []
             # Restart the onset cascade clock so cold-settle begins NOW on every press, even if
             # already in INDUCTION or lying awake in bed for a while.
             self._induction_restart = True

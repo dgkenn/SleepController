@@ -1554,6 +1554,12 @@ def _check_external_conflict(repo, extra: dict, history: list | None = None) -> 
                        f"our {guard.get('last_commanded_level')})")
         else:
             detail += " | exclusive control is on; no external writes overridden in 24 h"
+    if status == "external_setpoint_conflict" and guard is not None and guard.get("user_override_active"):
+        # The device disagrees with our last level because a person set it and the daemon is
+        # honouring that (Settings > Exclusive control adopts a hand on the phone). Not a fight.
+        detail += (f" | the bed is at a level set by hand ({guard.get('user_override_level')}) "
+                   f"and the daemon is honouring it")
+        return _check("external_conflict", "External controller conflict", "info", detail, None)
     if status == "external_setpoint_conflict":
         return _check("external_conflict", "External controller conflict", "warn", detail, remedy)
     if guard is not None and guard.get("enabled", True) and int(guard.get("reasserts_24h") or 0) >= 3:

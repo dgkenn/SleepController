@@ -181,8 +181,14 @@ def test_a_manual_change_from_the_phone_is_honoured_not_fought():
     assert s["user_overrides_24h"] == 1 and s["reasserts_24h"] == 0
 
 
+def _in_session(d):
+    from datetime import datetime as _dt, timedelta as _td
+    d.cycle.controller.restore_session_state("maintenance", _dt.now() - _td(hours=2), {"deep_min": 10.0})
+
+
 def test_a_warmer_override_raises_tonights_floor_a_degree_above_where_they_were():
     d, repo, writes = _armed(commanded=-58, ago_s=600)
+    _in_session(d)
     _schedule(d, -3, activity="temperatureControl")
     _run(d._guard_pod(_frame(-58), datetime.now()))
     from sleepctl.controller.thermal import default_level_to_f
@@ -193,6 +199,7 @@ def test_a_warmer_override_raises_tonights_floor_a_degree_above_where_they_were(
 
 def test_a_cooler_override_lowers_tonights_ceiling():
     d, repo, writes = _armed(commanded=-20, ago_s=600)
+    _in_session(d)
     _schedule(d, -60, activity="temperatureControl")
     _run(d._guard_pod(_frame(-20), datetime.now()))
     from sleepctl.controller.thermal import default_level_to_f
@@ -214,3 +221,85 @@ def test_the_schedule_is_still_fought_after_a_user_override_expires():
     _run(d._guard_pod(_frame(-58), now))
     assert _run(d._guard_pod(_frame(-58), now + timedelta(seconds=60))) is True
     assert writes == [-58]
+
+
+# ------------------------------------------------------------- 2026-09-20 05:48, after the deploy
+# The daemon restarted on a deploy, wrote 69F over the 80F the user had set, then saw its own
+# timed override come back through the register as "temperatureControl" and adopted it as a
+# second manual change -- moving tonight's ceiling to 79F in the middle of the morning.
+
+def test_our_own_timed_override_echoed_by_the_register_is_not_the_user():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    now = datetime.now()
+    d._our_levels = [(-54, now - timedelta(minutes=2))]        # we wrote -54 two minutes ago
+    d._last_commanded_level = -3                              # ...while holding the user's -3
+    _schedule(d, -54, activity="temperatureControl")
+    d._user_override = {"level": -3, "prior_level": -54, "until": now + timedelta(minutes=50)}
+    assert _run(d._guard_pod(_frame(-54), now)) is False
+    assert d._user_override is None                          # the hold ended...
+    assert d._last_commanded_level == -54                    # ...and ours is what is on the bed
+    assert writes == []
+    assert d._pod_guard_summary()["user_overrides_24h"] == 0
+
+
+def test_the_first_look_after_a_restart_adopts_a_manual_level_before_writing():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    d._last_commanded_level = None                           # fresh process: nothing of ours yet
+    _schedule(d, -3, activity="temperatureControl")
+    now = datetime.now()
+    assert _run(d._guard_pod(_frame(-3), now)) is False
+    assert d._user_override_active(now + timedelta(minutes=30))
+    assert d._last_commanded_level == -3
+    assert writes == []
+
+
+def test_a_daytime_manual_level_moves_no_bounds():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    assert not d._session_running()
+    _schedule(d, -3, activity="temperatureControl")
+    _run(d._guard_pod(_frame(-58), datetime.now()))
+    assert d._user_override_active(datetime.now() + timedelta(minutes=1))
+    assert d.cycle.controller.session_floor_f is None
+    assert d.cycle.controller.session_ceiling_f is None
+
+
+def test_a_new_session_starts_with_clean_bounds_and_no_hold():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    _in_session(d)
+    _schedule(d, -3, activity="temperatureControl")
+    _run(d._guard_pod(_frame(-58), datetime.now()))
+    assert d.cycle.controller.session_floor_f is not None
+    d._start_induce()
+    assert d._user_override is None
+    assert d.cycle.controller.session_floor_f is None
+    assert d.cycle.controller.session_ceiling_f is None
+
+
+def test_nothing_is_written_while_no_session_is_running():
+    """By day the bed is the user's: the daemon neither writes nor guards it."""
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    d.cycle.pending_level = lambda decision, frame, now: -40      # the controller wants -40
+    d._session_running = lambda: False
+    _run(d.control_tick())
+    _run(d.control_tick())
+    assert writes == []
+    d._session_running = lambda: True
+    _run(d.control_tick())
+    assert writes == [-40]
+
+
+def test_the_conflict_check_is_informational_while_a_manual_level_is_honoured():
+    from app import diagnostics
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    extra = {"device": {"external_schedule": {"activity": "temperatureControl", "target_level": -3, "active": True}},
+             "pod_guard": {"enabled": True, "reasserts_24h": 0, "user_override_active": True,
+                           "user_override_level": -3}}
+    fake = {"status": "external_setpoint_conflict", "reason": "device -3 vs ours -54"}
+    import sleepctl.diagnostics_thermal as dt
+    orig = dt.detect_external_conflict
+    dt.detect_external_conflict = lambda device, history: fake
+    try:
+        c = diagnostics._check_external_conflict(repo, extra, history=[])
+    finally:
+        dt.detect_external_conflict = orig
+    assert c["status"] == "info" and "set by hand" in c["detail"]

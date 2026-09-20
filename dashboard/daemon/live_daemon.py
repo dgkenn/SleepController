@@ -205,6 +205,7 @@ class LiveDashboardDaemon:
             self._skip("night-target planning", exc)
 
     def _start_induce(self) -> None:
+        self._user_override = None          # "help me fall asleep" is the newer instruction
         self.session_mode = "induce"
         self.mode, self.power_on, self.paused, self.away = "auto", True, False, False
         self.nap_plan, self.nap_deadline = None, None
@@ -250,6 +251,7 @@ class LiveDashboardDaemon:
 
     def _start_nap(self, duration_min=None, wake_time=None) -> None:
         from sleepctl.controller.nap import NapRequestKind, NapStrategy, fallback_deadline, nap_strategy
+        self._user_override = None          # a nap request is the newer instruction
         now = datetime.now()
         if wake_time:
             hh, mm = (int(x) for x in str(wake_time).split(":"))
@@ -702,6 +704,35 @@ class LiveDashboardDaemon:
         # over it, and re-asserts it.
         self._last_commanded_level = int(level)
         self._last_command_at = datetime.now()
+        # Every level WE wrote recently. The device reports our own timed override under
+        # the same "temperatureControl" activity a hand on the phone produces (2026-09-20
+        # 05:48: our -54 came back through the register and was adopted as a second manual
+        # change), so the guard needs its own memory of what is ours.
+        ours = list(getattr(self, "_our_levels", []) or [])
+        ours.append((int(level), datetime.now()))
+        self._our_levels = ours[-20:]
+
+    def _ours_recently(self, level, now) -> bool:
+        """True when ``level`` is (within the guard delta) something we wrote inside the
+        override duration -- i.e. the device echoing us, not someone else driving it."""
+        try:
+            lv = int(level)
+        except Exception:
+            return False
+        dur = float(getattr(self.cfg.tunables, "pod_write_duration_s", 7200) or 7200)
+        for l, at in getattr(self, "_our_levels", []) or []:
+            try:
+                if abs(int(l) - lv) < self._GUARD_DELTA and (now - at).total_seconds() <= dur:
+                    return True
+            except Exception:
+                continue
+        return False
+
+    def _session_running(self) -> bool:
+        try:
+            return getattr(self.cycle.controller.sm.state, "value", "idle") != "idle"
+        except Exception:
+            return False
 
     # ------------------------------------------------------------------ pod guard
     #: Levels of disagreement between the device's accepted target and ours before it counts.
@@ -732,13 +763,18 @@ class LiveDashboardDaemon:
         self._guard_enabled_cache = (enabled, now)
         return enabled
 
-    def _adopt_user_override(self, observed: int, ours: int, now) -> None:
-        """A manual temperature change is an instruction: hold it, and learn from it."""
+    def _adopt_user_override(self, observed: int, ours: int, now, bounds: bool = True) -> None:
+        """A manual temperature change is an instruction: hold it, and learn from it.
+
+        ``bounds`` is False outside a session: a hand on the bed by day is honoured (held, not
+        fought) but says nothing about tonight, so it moves no floor or ceiling."""
         try:
             hold = float(getattr(self.cfg.tunables, "user_override_hold_min", 60.0) or 0.0)
             prev = getattr(self, "_user_override", None)
             if prev and prev.get("level") == observed and now < prev.get("until", now):
                 return                      # already holding this one
+            if self._ours_recently(observed, now):
+                return                      # the device echoing our own write
             prior_f = None
             try:
                 prior_f = float(self.cycle.controller.thermal.default_level_to_f(ours)) \
@@ -756,17 +792,21 @@ class LiveDashboardDaemon:
             self._last_commanded_level = observed
             self._last_command_at = now
             self._guard_streak = 0
-            try:
-                self.cycle.controller.note_user_override(prior_f, warmer, level=observed)
-            except Exception:
-                pass
+            bounds = bool(bounds) and self._session_running()
+            if bounds:
+                try:
+                    self.cycle.controller.note_user_override(prior_f, warmer, level=observed)
+                except Exception:
+                    pass
             log = getattr(self, "_user_override_log", [])
-            log.append({"at": now, "level": observed, "prior_level": ours, "warmer": warmer})
+            log.append({"at": now, "level": observed, "prior_level": ours, "warmer": warmer,
+                        "bounds": bounds})
             self._user_override_log = log[-100:]
+            tail = (f"tonight's {'floor' if warmer else 'ceiling'} moves to "
+                    f"{prior_f + 1.0 if warmer else prior_f - 1.0:.1f}F" if bounds
+                    else "no session running, so tonight's bounds are untouched")
             self._log(f"pod guard: the bed was set to {observed} by hand (ours was {ours}, "
-                      f"{'warmer' if warmer else 'cooler'}) -- honouring it for {hold:.0f} min; "
-                      f"tonight's {'floor' if warmer else 'ceiling'} moves to "
-                      f"{prior_f + 1.0 if warmer else prior_f - 1.0:.1f}F")
+                      f"{'warmer' if warmer else 'cooler'}) -- honouring it for {hold:.0f} min; {tail}")
             self._emit_event("device", "info", "user_override_adopted",
                              f"manual temperature change honoured ({ours} -> {observed})",
                              {"observed_level": observed, "commanded_level": ours,
@@ -813,6 +853,17 @@ class LiveDashboardDaemon:
                 return False
             cmd = getattr(self, "_last_commanded_level", None)
             if cmd is None:
+                # FIRST LOOK after a (re)start: nothing of ours is on the bed yet. A manual
+                # temperature already in force is the user's, and it is adopted BEFORE our
+                # first write rather than written over (2026-09-20 05:48: the daemon restarted
+                # on a deploy and its first tick wrote 69F over the 80F the user had set).
+                try:
+                    sched = self._safe_device_status().get("external_schedule") or {}
+                    tgt = sched.get("target_level")
+                    if sched.get("activity") == "temperatureControl" and isinstance(tgt, (int, float)):
+                        self._adopt_user_override(int(tgt), int(tgt), now, bounds=False)
+                except Exception:
+                    pass
                 return False
             last_cmd = getattr(self, "_last_command_at", None)
             # KEEPALIVE: our timed override lapses after pod_write_duration_s, and the controller
@@ -837,7 +888,23 @@ class LiveDashboardDaemon:
             except Exception:
                 sched_target = None
             foreign = (isinstance(sched_target, (int, float))
-                       and abs(int(sched_target) - int(cmd)) >= self._GUARD_DELTA)
+                       and abs(int(sched_target) - int(cmd)) >= self._GUARD_DELTA
+                       and not self._ours_recently(sched_target, now))
+            # A held manual level giving way to one of OUR recent levels is the app's own
+            # override lapsing (or the user putting it back), not a second manual change.
+            uo = getattr(self, "_user_override", None)
+            if uo and now < uo.get("until", now):
+                seen = [v for v in (sched_target, getattr(frame, "target_level", None) if frame is not None else None)
+                        if isinstance(v, (int, float))]
+                back = next((int(v) for v in seen if abs(int(v) - int(cmd)) >= self._GUARD_DELTA
+                             and self._ours_recently(v, now)), None)
+                if back is not None:
+                    self._user_override = None
+                    self._last_commanded_level = back
+                    self._last_command_at = now
+                    self._guard_streak = 0
+                    self._log(f"pod guard: the bed is back at our {back} -- the manual hold ({int(cmd)}) has ended")
+                    return False
             # WHOSE hand. "schedule" is the app's bedtime schedule: fought. Anything else
             # driving the device to a different target -- "temperatureControl" is what the app
             # reports when a PERSON sets a temperature -- is the user, and the user wins.
@@ -852,6 +919,7 @@ class LiveDashboardDaemon:
             accepted = getattr(frame, "target_level", None) if frame is not None else None
             accepted_fight = (accepted is not None
                               and abs(int(accepted) - int(cmd)) >= self._GUARD_DELTA
+                              and not self._ours_recently(accepted, now)
                               and (last_cmd is None
                                    or (now - last_cmd).total_seconds() >= self._GUARD_SETTLE_S))
             if accepted_fight and not schedule_fight:
@@ -950,9 +1018,11 @@ class LiveDashboardDaemon:
                     cs.apply_set_mode(self, p)
                 elif t == "set_temp":
                     cs.apply_set_temp(self, p)
+                    self._user_override = None      # set through OUR UI: an instruction to us
                     await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
                 elif t == "nudge_temp":
                     cs.apply_nudge_temp(self, p)
+                    self._user_override = None
                     await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
                 elif t == "set_wake":
                     self.wake = cs.build_wake_dict(self.cfg, p)
@@ -1928,13 +1998,20 @@ class LiveDashboardDaemon:
             if self.mode == "manual" and self.manual_target_f is not None:
                 await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
             elif self.mode == "auto":
-                level = self.cycle.pending_level(decision, frame, now)
-                if level is not None and not self._user_override_active(now):
-                    await self._set_level(level)
-                # Every tick, including ones we just wrote on: the controller's own re-writes
-                # are exactly what the schedule ignored for 3.5 h on 2026-09-20, and the guard
-                # is what notices that and says so.
-                await self._guard_pod(frame, now)
+                if getattr(self, "_last_commanded_level", None) is None:
+                    await self._guard_pod(frame, now)     # first look: adopt a manual level first
+                idle_writes = bool(getattr(self.cfg.tunables, "idle_pod_writes", False))
+                if self._session_running() or idle_writes:
+                    level = self.cycle.pending_level(decision, frame, now)
+                    if level is not None and not self._user_override_active(now):
+                        await self._set_level(level)
+                    # Every tick, including ones we just wrote on: the controller's own re-writes
+                    # are exactly what the schedule ignored for 3.5 h on 2026-09-20, and the
+                    # guard is what notices that and says so.
+                    await self._guard_pod(frame, now)
+                # Outside a session the bed is the user's (and the app's) by day: nothing is
+                # written, nothing is guarded. 2026-09-19 the daemon wrote ~70F all day, two
+                # hundred times, and the conflict check spent the day DEGRADED over it.
                 alarm = self.cycle.pending_alarm()
                 if alarm is not None and not self.dry_run:
                     # Confirm-on-success: if this raises (cloud 5xx, token refresh, or the Pod

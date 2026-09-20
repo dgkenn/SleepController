@@ -193,6 +193,9 @@ class Tunables:
     # A manual temperature change from the phone is an instruction, not interference: hold the
     # user's level for this long, then resume control with the floor/ceiling it implied.
     user_override_hold_min: float = 60.0
+    # Outside a session the daemon leaves the bed alone: no writes, no guard. By day the bed is
+    # the user's and the app's; the session's last level lapses with its override duration.
+    idle_pod_writes: bool = False
     # ...and the DEEPER settle used while actively PRE-EMPTING an awakening, as opposed to
     # settling after one. The ordinary -1.0 F lands at 68.0 F against a measured band of
     # 67.0-69.5 F -- only 40% of the way to the cool edge, and small enough that 12 of 23
