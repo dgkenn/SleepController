@@ -692,7 +692,11 @@ class LiveDashboardDaemon:
     # ------------------------------------------------------------------ device
     async def _set_level(self, level: int) -> None:
         if not self.dry_run:
-            await self.client.set_heating_level(level)
+            # A TIMED override, not a bare level set: the app's schedule session supersedes a
+            # bare set (2026-09-20, 3.5 h at 80F against 49 writes of 68F); a timeBased write
+            # with a real duration is the app's own mechanism for beating its schedule.
+            dur = int(getattr(self.cfg.tunables, "pod_write_duration_s", 7200) or 0)
+            await self.client.set_heating_level(level, dur)
         # What WE last asked the bed for, and when. The pod guard below compares the device's
         # accepted target against this to catch the Eight Sleep app (or its schedule) writing
         # over it, and re-asserts it.
@@ -756,18 +760,45 @@ class LiveDashboardDaemon:
             if getattr(self, "comfort", None) is not None and not self.comfort.done:
                 return False
             cmd = getattr(self, "_last_commanded_level", None)
-            accepted = getattr(frame, "target_level", None) if frame is not None else None
-            if cmd is None or accepted is None:
-                return False
-            if abs(int(accepted) - int(cmd)) < self._GUARD_DELTA:
-                self._guard_streak = 0
+            if cmd is None:
                 return False
             last_cmd = getattr(self, "_last_command_at", None)
-            if last_cmd is not None and (now - last_cmd).total_seconds() < self._GUARD_SETTLE_S:
-                return False          # the bed may simply not have accepted ours yet
+            # KEEPALIVE: our timed override lapses after pod_write_duration_s, and the controller
+            # only writes when its target CHANGES -- a long hold would let the schedule back in.
+            # Renew the same level at half-life.
+            dur = float(getattr(self.cfg.tunables, "pod_write_duration_s", 7200) or 0)
+            if dur > 0 and last_cmd is not None and (now - last_cmd).total_seconds() >= dur / 2.0:
+                await self._set_level(int(cmd))
+                return False
+            # SIGNAL 1 -- the device's OWN SCHEDULE holds a different target. This is the register
+            # the 2026-09-20 takeover lived in: the user-level accepted target kept echoing our
+            # -58 while the schedule's currentTargetLevel read -3 and the water followed IT.
+            # Not gated by the settle window: a schedule target is not something our write
+            # "settles" into -- when our write takes, the schedule target equals ours.
+            sched_target = None
+            try:
+                sched = self._safe_device_status().get("external_schedule") or {}
+                if (sched.get("activity") in ("schedule", "temperatureControl")
+                        or sched.get("active") is True):
+                    sched_target = sched.get("target_level")
+            except Exception:
+                sched_target = None
+            schedule_fight = (isinstance(sched_target, (int, float))
+                              and abs(int(sched_target) - int(cmd)) >= self._GUARD_DELTA)
+            # SIGNAL 2 -- the accepted target itself disagrees (a hand on the phone), after a
+            # settle window so our own fresh write is not mistaken for a foreign one.
+            accepted = getattr(frame, "target_level", None) if frame is not None else None
+            accepted_fight = (accepted is not None
+                              and abs(int(accepted) - int(cmd)) >= self._GUARD_DELTA
+                              and (last_cmd is None
+                                   or (now - last_cmd).total_seconds() >= self._GUARD_SETTLE_S))
+            if not schedule_fight and not accepted_fight:
+                self._guard_streak = 0
+                return False
             self._guard_streak = getattr(self, "_guard_streak", 0) + 1
             if self._guard_streak < self._GUARD_STREAK:
                 return False
+            accepted = sched_target if schedule_fight else accepted
             last_re = getattr(self, "_guard_last_reassert", None)
             if last_re is not None and (now - last_re).total_seconds() < self._GUARD_REASSERT_EVERY_S:
                 return False
@@ -778,8 +809,9 @@ class LiveDashboardDaemon:
             log = getattr(self, "_guard_reassert_log", [])
             log.append({"at": now, "observed": observed, "commanded": int(cmd)})
             self._guard_reassert_log = log[-200:]
-            self._log(f"pod guard: the bed's target read {observed} against our {int(cmd)} -- "
-                      f"something else wrote it; re-asserting ours")
+            self._log(f"pod guard: the bed's {'schedule' if schedule_fight else 'accepted'} target "
+                      f"read {observed} against our {int(cmd)} -- something else is driving it; "
+                      f"re-asserting ours as a timed override")
             self._emit_event("device", "warn", "external_override_reasserted",
                              f"external write to the bed ({observed}) overridden back to {int(cmd)}",
                              {"observed_level": observed, "commanded_level": int(cmd)})
@@ -1833,8 +1865,10 @@ class LiveDashboardDaemon:
                 level = self.cycle.pending_level(decision, frame, now)
                 if level is not None:
                     await self._set_level(level)
-                else:
-                    await self._guard_pod(frame, now)
+                # Every tick, including ones we just wrote on: the controller's own re-writes
+                # are exactly what the schedule ignored for 3.5 h on 2026-09-20, and the guard
+                # is what notices that and says so.
+                await self._guard_pod(frame, now)
                 alarm = self.cycle.pending_alarm()
                 if alarm is not None and not self.dry_run:
                     # Confirm-on-success: if this raises (cloud 5xx, token refresh, or the Pod

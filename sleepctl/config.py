@@ -56,6 +56,13 @@ class Benchmarks:
 @dataclass
 class Tunables:
     max_step_f: float = 2.0  # max temperature change per correction
+    # How long each level write asks the Pod to HOLD it (the API's timeBased override). A
+    # zero-second write is a plain currentLevel set, and the app's own schedule session
+    # ("temperatureControl") supersedes those: 2026-09-20 01:03 the schedule took the bed from
+    # 68F to 80F and held it 3.5 h while this controller wrote 68F forty-nine times. A timed
+    # override is what the app itself uses to beat its schedule; the daemon renews it well
+    # before it lapses (see _guard_pod keepalive).
+    pod_write_duration_s: int = 7200
     min_hold_minutes: int = 20  # hold a change this long before re-evaluating in-night
     min_hold_nights: int = 3  # nights before judging an intervention across nights
     variability_cap_f: float = 3.0  # cap total thermal swing within a window
