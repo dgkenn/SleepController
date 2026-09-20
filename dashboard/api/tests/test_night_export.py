@@ -252,3 +252,24 @@ def test_posture_turns_and_orientation_are_exported(repo):
     ps = out["posture_summary"]
     assert ps["turns"] == 1 and "+z" in ps["by_orientation"] and "+y" in ps["by_orientation"]
     assert ps["by_orientation"]["+z"]["resp_fraction"] == 1.0
+
+
+def test_an_older_night_never_overwrites_the_latest_staging_verdict(tmp_path):
+    import json as _json
+    from sleepctl.storage.repository import Repository
+    from app import db as app_db
+    from app import night_export
+    repo = Repository(str(tmp_path / "e.db"), check_same_thread=False)
+    repo.conn.executescript(app_db._DASHBOARD_DDL)
+    repo.conn.execute("INSERT INTO settings_kv (key, value) VALUES (?,?)", (
+        "staging_consistency_latest", _json.dumps({"night_date": "2026-09-19", "summary": "new"})))
+    from datetime import datetime, timedelta
+    t = datetime(2026, 9, 7, 23, 0)
+    for i in range(200):
+        repo.conn.execute("INSERT INTO raw_samples (ts, night_date, stage, heart_rate, controller_state) VALUES (?,?,?,?,?)",
+                          ((t + timedelta(minutes=i)).isoformat(), "2026-09-07", "light", 60.0, "maintenance"))
+    repo.conn.commit()
+    out = night_export.build_night_export(repo, "2026-09-07")
+    assert out.get("staging_consistency", {}).get("n_epochs", 0) > 0
+    row = repo.conn.execute("SELECT value FROM settings_kv WHERE key='staging_consistency_latest'").fetchone()
+    assert _json.loads(row[0])["night_date"] == "2026-09-19"

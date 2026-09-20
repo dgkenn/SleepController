@@ -795,11 +795,15 @@ class LiveDashboardDaemon:
         self._guard_enabled_cache = (enabled, now)
         return enabled
 
-    def _adopt_user_override(self, observed: int, ours: int, now, bounds: bool = True) -> None:
+    def _adopt_user_override(self, observed: int, ours: int, now, bounds: bool = True,
+                             first_look: bool = False) -> None:
         """A manual temperature change is an instruction: hold it, and learn from it.
 
         ``bounds`` is False outside a session: a hand on the bed by day is honoured (held, not
-        fought) but says nothing about tonight, so it moves no floor or ceiling."""
+        fought) but says nothing about tonight, so it moves no floor or ceiling. ``first_look``
+        is the level found on the bed when a fresh process has nothing of its own to compare
+        with: it is held the same way, but it is not counted or reported as the user's hand,
+        because it may just as well be our own previous override still in force."""
         try:
             hold = float(getattr(self.cfg.tunables, "user_override_hold_min", 60.0) or 0.0)
             prev = getattr(self, "_user_override", None)
@@ -830,6 +834,10 @@ class LiveDashboardDaemon:
                     self.cycle.controller.note_user_override(prior_f, warmer, level=observed)
                 except Exception:
                     pass
+            if first_look:
+                self._log(f"pod guard: found the bed holding {observed} at start -- leaving it "
+                          f"for {hold:.0f} min before writing over it")
+                return
             log = getattr(self, "_user_override_log", [])
             log.append({"at": now, "level": observed, "prior_level": ours, "warmer": warmer,
                         "bounds": bounds})
@@ -893,7 +901,8 @@ class LiveDashboardDaemon:
                     sched = self._safe_device_status().get("external_schedule") or {}
                     tgt = sched.get("target_level")
                     if sched.get("activity") == "temperatureControl" and isinstance(tgt, (int, float)):
-                        self._adopt_user_override(int(tgt), int(tgt), now, bounds=False)
+                        self._adopt_user_override(int(tgt), int(tgt), now, bounds=False,
+                                                  first_look=True)
                 except Exception:
                     pass
                 return False

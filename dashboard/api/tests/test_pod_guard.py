@@ -253,6 +253,8 @@ def test_the_first_look_after_a_restart_adopts_a_manual_level_before_writing():
     assert d._user_override_active(now + timedelta(minutes=30))
     assert d._last_commanded_level == -3
     assert writes == []
+    # held, but not counted as the user's hand: it may be our own previous override
+    assert d._pod_guard_summary()["user_overrides_24h"] == 0
 
 
 def test_a_daytime_manual_level_moves_no_bounds():

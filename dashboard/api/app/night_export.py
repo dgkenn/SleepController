@@ -821,7 +821,16 @@ def build_night_export(repo, night_date: str) -> dict:
         from sleepctl.eval.stage_consistency import stage_consistency
         sc = stage_consistency(out)
         out["staging_consistency"] = sc
-        if sc.get("n_epochs"):
+        # Exports run over the recent nights in whatever order; only a night at least as new
+        # as the one already recorded may replace it (2026-09-20: the 09-07 night, exported
+        # last, overwrote the 09-19 verdict in the health snapshot).
+        prev_date = None
+        try:
+            row = conn.execute("SELECT value FROM settings_kv WHERE key='staging_consistency_latest'").fetchone()
+            prev_date = (json.loads(row[0]) or {}).get("night_date") if row and row[0] else None
+        except Exception:
+            prev_date = None
+        if sc.get("n_epochs") and (prev_date is None or str(night_date) >= str(prev_date)):
             conn.execute(
                 "INSERT INTO settings_kv (key, value) VALUES (?,?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
