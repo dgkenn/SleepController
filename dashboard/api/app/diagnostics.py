@@ -77,7 +77,8 @@ _CHECK_ORDER = [
     "wake_alarm", "wake_cue", "degraded", "calibration", "prevention_timing", "session_span",
     "maintenance_acted",
     "verity_forwarder",
-    "eight_sleep_creds", "version", "auto_update", "self_update", "publishers", "remote_access",
+    "eight_sleep_creds", "version", "auto_update", "self_update", "publishers",
+    "lan_access", "remote_access",
     "log_sizes",
     "calendar", "shift",
 ]
@@ -1135,6 +1136,50 @@ def _check_verity_forwarder(run_dir: str, now: float) -> dict:
                   "killing and relaunching it")
 
 
+def _check_lan_access(run_dir: str) -> dict:
+    """Can a phone on the same network actually open the dashboard?
+
+    Everything else answers "is the box working"; this answers "can you reach it", which is a
+    different question with its own failure mode. The inbound rule for port 3000 was created
+    once, for the PRIVATE profile only, so when Windows re-categorises the network as PUBLIC
+    the phone is blocked while api/web/daemon all stay green -- the box looks perfect and the
+    site is simply gone. The watchdog now re-checks this every 5 minutes (Ensure-LanAccess)
+    and records what it found here, including the URL to open.
+    """
+    import json as _json
+
+    path = os.path.join(run_dir, "lan.state")
+    if not os.path.exists(path):
+        return _check("lan_access", "Dashboard reachable on your network", "info",
+                      "no LAN state recorded yet (watchdog older than this check)", None)
+    try:
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            st = _json.load(fh)
+    except Exception as exc:
+        return _check("lan_access", "Dashboard reachable on your network", "info",
+                      f"lan.state unreadable ({exc!r})", None)
+    url = st.get("url")
+    profiles = ", ".join(st.get("profiles") or []) or "unknown"
+    rules = ", ".join(st.get("rules") or []) or "none"
+    if not url:
+        return _check("lan_access", "Dashboard reachable on your network", "warn",
+                      f"the box has no usable LAN address (profiles: {profiles})",
+                      "check the machine's network connection; without a LAN address only "
+                      "the box itself can open the dashboard")
+    detail = f"open {url} on the same network -- network profile: {profiles}; port-3000 rules: {rules}"
+    if st.get("public") and "public/localsubnet" not in (st.get("rules") or []):
+        return _check("lan_access", "Dashboard reachable on your network", "warn",
+                      detail + ". Windows has this network marked PUBLIC and the local-subnet "
+                      "rule could not be added, so inbound port 3000 is blocked",
+                      "on the box: Settings > Network > this network > set it to Private, or "
+                      "run the watchdog elevated so it can add the firewall rule itself")
+    if st.get("public"):
+        return _check("lan_access", "Dashboard reachable on your network", "ok",
+                      detail + ". Windows marks this network PUBLIC, so port 3000 is open to "
+                      "the local subnet only", None)
+    return _check("lan_access", "Dashboard reachable on your network", "ok", detail, None)
+
+
 def _check_remote_access(run_dir: str) -> dict:
     """Is the Tailscale funnel (remote UI / live /diag) up, and if not, why?
 
@@ -1162,6 +1207,16 @@ def _check_remote_access(run_dir: str) -> dict:
         return _check("remote_access", "Remote access (Tailscale funnel)", "ok",
                       f"tailscale {text}", None)
     remedy = None
+    if os.path.exists(os.path.join(run_dir, "tailscale-login.url")):
+        # The URL itself is a credential (it would let anyone join the tailnet), so it is NOT
+        # published here -- the dashboard serves it to an authenticated session instead.
+        return _check(
+            "remote_access", "Remote access (Tailscale funnel)", "warn",
+            f"remote UI unreachable: tailscale {text or 'state unknown'}; a browser login is "
+            f"waiting to re-attach this machine",
+            "open the dashboard on your own network and use the one-tap link on Diagnostics "
+            "(or put TS_AUTHKEY from the Tailscale admin console into deploy\\.env for an "
+            "automatic re-attach). Sleep control does not depend on this")
     if state.lower() in ("needslogin", "needsmachineauth"):
         remedy = ("the tailscale backend on the box needs a login: run `tailscale login` (or "
                   "`tailscale up`) in a shell there and approve in the browser; nothing about "
@@ -2328,6 +2383,8 @@ def run_diagnostics(repo, run_dir: str | None = None) -> dict:
     add("auto_update", "Auto-update currency", lambda: _check_auto_update(repo_root))
     add("self_update", "Self-update / deploy history", lambda: _check_self_update(run_dir))
     add("publishers", "GitHub relay publishers", lambda: _check_publishers(run_dir))
+    add("lan_access", "Dashboard reachable on your network",
+        lambda: _check_lan_access(run_dir))
     add("remote_access", "Remote access (Tailscale funnel)",
         lambda: _check_remote_access(run_dir))
     add("wearable_receivers", "Wearable receivers", lambda: _check_wearable_receivers(repo))

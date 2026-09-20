@@ -496,6 +496,22 @@ def hr_ingest(body: HRBody, request: Request, token: str | None = None,
     return services.ingest_hr(repo, payload)
 
 
+@app.get("/admin/tailscale-login")
+def admin_tailscale_login(user: str = AuthDep):
+    """The pending Tailscale login URL, if remote access needs a browser re-attach.
+
+    Authenticated and never published: this URL would let anyone join the tailnet, so the
+    health branch only says that a login is waiting. Reachable from the LAN dashboard, which
+    is exactly where someone is when they can fix it.
+    """
+    try:
+        with open(os.path.join(_run_dir(), "tailscale-login.url"), "r", encoding="utf-8-sig") as fh:
+            url = fh.read().strip()
+    except Exception:
+        url = ""
+    return {"login_url": url or None}
+
+
 @app.get("/hr/streams")
 def hr_streams(request: Request, token: str | None = None, repo=Depends(repo_dep)):
     """What the wearable is delivering RIGHT NOW, per stream and per receiver.

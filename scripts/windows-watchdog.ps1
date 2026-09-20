@@ -533,7 +533,7 @@ if (Test-Path $validateScript) {
 try {
     if (-not (Get-NetFirewallRule -DisplayName "SleepController 3000" -ErrorAction SilentlyContinue)) {
         New-NetFirewallRule -DisplayName "SleepController 3000" -Direction Inbound `
-            -LocalPort 3000 -Protocol TCP -Action Allow -Profile Private -ErrorAction Stop | Out-Null
+            -LocalPort 3000 -Protocol TCP -Action Allow -Profile Private,Domain -ErrorAction Stop | Out-Null
         Log "added firewall rule for port 3000"
     }
 } catch { Log "firewall rule skipped (run once as admin if the phone can't connect): $_" }
@@ -858,6 +858,80 @@ function Ensure-Daemon {
     $script:daemonGraceUntil = (Get-Date).AddSeconds(45)  # don't re-judge until it can beat
 }
 
+# --- LAN reachability (how the phone actually opens the dashboard) ----------------------------
+# The box can be perfectly healthy and still unreachable. The inbound rule for port 3000 was
+# created ONCE, at first start, for the PRIVATE profile only -- so when Windows re-categorises
+# the network as PUBLIC (a router swap, a DHCP change, an update), the phone is blocked while
+# api/web/daemon all stay green and nothing anywhere says why. This re-checks every 5 minutes,
+# keeps the rule present and enabled, adds a LOCAL-SUBNET-ONLY rule when the profile is Public,
+# and records the URL + state for the health relay (diagnostics lan_access) so the address to
+# open is visible from off-box instead of being guessed.
+$script:lanNextCheck = Get-Date "2000-01-01"
+$script:lanLastDetail = ""
+function Ensure-LanAccess {
+    if ((Get-Date) -lt $script:lanNextCheck) { return }
+    $script:lanNextCheck = (Get-Date).AddMinutes(5)
+    $ips = @(); $profiles = @(); $isPublic = $false
+    try {
+        foreach ($p in @(Get-NetConnectionProfile -ErrorAction SilentlyContinue)) {
+            $cat = "$($p.NetworkCategory)"
+            $profiles += ("{0}={1}" -f $p.Name, $cat)
+            if ($cat -eq "Public") { $isPublic = $true }
+            try {
+                $ips += @(Get-NetIPAddress -InterfaceIndex $p.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+                          Where-Object { $_.IPAddress -notmatch '^(127\.|169\.254\.)' } |
+                          Select-Object -ExpandProperty IPAddress)
+            } catch {}
+        }
+    } catch {}
+    $ips = @($ips | Select-Object -Unique)
+
+    $rules = @()
+    try {
+        $r = Get-NetFirewallRule -DisplayName "SleepController 3000" -ErrorAction SilentlyContinue
+        if (-not $r) {
+            New-NetFirewallRule -DisplayName "SleepController 3000" -Direction Inbound `
+                -LocalPort 3000 -Protocol TCP -Action Allow -Profile Private,Domain -ErrorAction Stop | Out-Null
+            Log "lan: added the inbound firewall rule for port 3000 (Private+Domain)"
+            $rules += "private+domain"
+        } else {
+            if ("$($r.Enabled)" -ne "True") {
+                Enable-NetFirewallRule -DisplayName "SleepController 3000" -ErrorAction SilentlyContinue
+                Log "lan: the port-3000 firewall rule was DISABLED -- re-enabled it"
+            }
+            $rules += "private+domain"
+        }
+    } catch { Log "lan: could not ensure the port-3000 firewall rule: $_" }
+
+    if ($isPublic) {
+        # Scoped to LocalSubnet: this opens 3000 to devices on the same network only, never to
+        # the internet, which is the minimum that lets the phone in while Windows insists the
+        # network is Public.
+        try {
+            if (-not (Get-NetFirewallRule -DisplayName "SleepController 3000 (LocalSubnet)" -ErrorAction SilentlyContinue)) {
+                New-NetFirewallRule -DisplayName "SleepController 3000 (LocalSubnet)" -Direction Inbound `
+                    -LocalPort 3000 -Protocol TCP -Action Allow -Profile Public `
+                    -RemoteAddress LocalSubnet -ErrorAction Stop | Out-Null
+                Log "lan: this network is categorised PUBLIC (which blocks the phone) -- added a port-3000 rule limited to the local subnet"
+            }
+            $rules += "public/localsubnet"
+        } catch { Log "lan: could not add the local-subnet rule: $_" }
+    }
+
+    $url = $null
+    if ($ips.Count -gt 0) { $url = "http://$($ips[0]):3000" }
+    $detail = ("{0} | profiles: {1} | rules: {2}" -f $url, ($profiles -join ","), ($rules -join ","))
+    if ($detail -ne $script:lanLastDetail) {
+        Log "lan: $detail"
+        $script:lanLastDetail = $detail
+    }
+    try {
+        $state = @{ url = $url; ips = $ips; profiles = $profiles; rules = $rules
+                    public = $isPublic; ts = (Get-Date -Format o) }
+        Set-Content -Path (Join-Path $run "lan.state") -Value ($state | ConvertTo-Json -Compress) -Encoding ASCII
+    } catch {}
+}
+
 # --- tailscale/funnel self-heal -----------------------------------------------------------------
 # Targets the "502 then TLS failure" outage signature: tailscale's backend drops, or the funnel
 # (HTTPS ingress that exposes port 3000) goes stale, while api/daemon/web all stay perfectly
@@ -962,7 +1036,29 @@ function Ensure-Tailscale {
         }
     } catch { Log "WARN: could not start the Tailscale service: $_" }
     Log "tailscale: backend state '$bs'; running 'tailscale up' (next attempt in 10 min at the earliest)"
-    try { & tailscale up --timeout 20s *> $null } catch { Log "WARN: 'tailscale up' failed: $_" }
+    # With TS_AUTHKEY in deploy\.env this is fully automatic. Without one, a logged-out node
+    # can only be re-attached by a human in a browser -- `tailscale up` then prints a login URL
+    # and gives up. Capture that URL to .run\tailscale-login.url so the dashboard can offer it
+    # as one tap on the LAN. It is a CREDENTIAL (it would let anyone join the tailnet), so it is
+    # never logged here and never published: watchdog.log and the health snapshot are public.
+    $upOut = ""
+    try {
+        if ($env:TS_AUTHKEY) {
+            $upOut = (& tailscale up --authkey $env:TS_AUTHKEY --timeout 20s 2>&1 | Out-String)
+        } else {
+            $upOut = (& tailscale up --timeout 20s 2>&1 | Out-String)
+        }
+    } catch { $upOut = "$_" }
+    try {
+        $loginFile = Join-Path $run "tailscale-login.url"
+        $m = [regex]::Match($upOut, 'https://login\.tailscale\.com/\S+')
+        if ($m.Success) {
+            Set-Content -Path $loginFile -Value $m.Value -Encoding ASCII
+            Log "tailscale: a BROWSER LOGIN is needed to restore remote access -- open the dashboard on the LAN for the one-tap link, or put TS_AUTHKEY in deploy\.env for an automatic re-attach"
+        } else {
+            Remove-Item -Path $loginFile -Force -ErrorAction SilentlyContinue
+        }
+    } catch {}
     try { & tailscale funnel --bg 3000 *> $null } catch { Log "WARN: 'tailscale funnel --bg 3000' failed: $_" }
 }
 
@@ -1186,6 +1282,7 @@ while ($true) {
         Clear-StormState "web"
     }
 
+    Ensure-LanAccess
     Ensure-Tailscale
 
     if (-not $script:smokeTestDone -and (Get-Date) -ge $script:smokeTestAt) {

@@ -1524,7 +1524,13 @@ async def _main_async(args, env) -> None:
                 args.address = None
             else:
                 args.address = pinned_address
-            recent_data = (time.monotonic() - float(_STATS.get("last_data_at") or 0.0)) < _RECENT_DATA_S
+            # 0.0 means NO data has ever arrived in this run -- not "data arrived at time
+            # zero". Without the first clause a freshly started forwarder counts as "streaming
+            # a moment ago" for as long as the process clock is under _RECENT_DATA_S, and
+            # escalates to a Bluetooth adapter reset after two failed connects to a band that
+            # is simply not there.
+            _last_data = float(_STATS.get("last_data_at") or 0.0)
+            recent_data = _last_data > 0.0 and (time.monotonic() - _last_data) < _RECENT_DATA_S
             if barren >= (_ADAPTER_RESET_AFTER_RECENT if recent_data else _ADAPTER_RESET_AFTER):
                 _request_adapter_reset(_repo_root(), barren)
 
@@ -1563,8 +1569,10 @@ async def _main_async(args, env) -> None:
             delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
             # If we saw the band this cycle, it is present and something transient is in the way.
             # Same if it was streaming to us minutes ago: a mid-night drop is retried promptly.
-            if ((time.monotonic() - float(_STATS.get("last_seen_at") or 0.0)) < 120.0
-                    or (time.monotonic() - float(_STATS.get("last_data_at") or 0.0)) < _RECENT_DATA_S):
+            _seen = float(_STATS.get("last_seen_at") or 0.0)
+            _last_data = float(_STATS.get("last_data_at") or 0.0)
+            if ((_seen > 0.0 and (time.monotonic() - _seen) < 120.0)
+                    or (_last_data > 0.0 and (time.monotonic() - _last_data) < _RECENT_DATA_S)):
                 delay = min(delay, _PRESENT_BACKOFF_S)
             # ALWAYS include the exception TYPE. asyncio.TimeoutError (and several bleak
             # errors) have an empty str(), so the old "session error ()" was literally

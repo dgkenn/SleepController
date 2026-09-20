@@ -162,6 +162,11 @@ _LOG_TAILS = (
     ("health_publish", "health-publish.log", 12),
     ("watchdog", "watchdog.log", 12),
     ("verity_err", "verity.err", 10),
+    # The web UI's own output. A dashboard that will not load is invisible in every other
+    # signal here -- port 3000 answers, the build is current, every check is green -- so the
+    # only place the reason can appear is next.js's own stdout/stderr.
+    ("web", "web.log", 15),
+    ("web_err", "web.err", 15),
 )
 
 
@@ -194,6 +199,20 @@ def _log_tails(run_dir: str | None) -> dict:
             out[label] = [f"<unreadable: {exc!r}>"]
     return out
 
+
+
+def _lan_url(run_dir: str | None) -> str | None:
+    """The http://<lan-ip>:3000 the watchdog last recorded, so the address to open is visible
+    from off-box. A private address is not a secret and reaches nothing from the internet."""
+    import json as _json
+    try:
+        if not run_dir:
+            from app.diagnostics import _default_run_dir
+            run_dir = _default_run_dir()
+        with open(os.path.join(run_dir, "lan.state"), "r", encoding="utf-8-sig") as fh:
+            return (_json.load(fh) or {}).get("url")
+    except Exception:
+        return None
 
 
 def _funnel_url(run_dir: str | None) -> str | None:
@@ -268,6 +287,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "preflight": _preflight_block(repo, diag.get("checks")),
         "log_tails": _log_tails(run_dir),
         "funnel_url": _funnel_url(run_dir),
+        "lan_url": _lan_url(run_dir),
         "wearable": _wearable_block(repo, run_dir),
         "controller": _controller_block(repo),
     }
