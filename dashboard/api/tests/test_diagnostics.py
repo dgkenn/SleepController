@@ -824,8 +824,19 @@ def _timing_report(verdict="timing_limited", last_failure_days_ago=1.0):
 def test_a_still_happening_pre_emption_problem_still_warns(repo, monkeypatch):
     import sleepctl.learning.prevention_timing as pt
     monkeypatch.setattr(pt, "from_repo", lambda *a, **k: _timing_report(last_failure_days_ago=1))
+    monkeypatch.setattr(diagnostics, "_settle_cooling_allowed", lambda: True)
     c = diagnostics._check_prevention_timing(repo)
     assert c["status"] == "warn"
+
+
+def test_arrival_timing_is_moot_while_pre_emption_does_not_cool(repo, monkeypatch):
+    """The shipped policy since 2026-09-20: a pre-empt holds neutral. A bed that was never
+    asked to move cannot be late."""
+    import sleepctl.learning.prevention_timing as pt
+    monkeypatch.setattr(pt, "from_repo", lambda *a, **k: _timing_report(last_failure_days_ago=1))
+    assert diagnostics._settle_cooling_allowed() is False
+    c = diagnostics._check_prevention_timing(repo)
+    assert c["status"] == "info" and "moot" in c["detail"]
 
 
 def test_a_long_resolved_pre_emption_problem_stops_pinning_the_verdict(repo, monkeypatch):
@@ -833,6 +844,7 @@ def test_a_long_resolved_pre_emption_problem_stops_pinning_the_verdict(repo, mon
     split -- but it meant a cause fixed weeks ago (an external schedule fighting the setpoint, a
     stalled loop) kept the whole battery at DEGRADED until it aged out."""
     import sleepctl.learning.prevention_timing as pt
+    monkeypatch.setattr(diagnostics, "_settle_cooling_allowed", lambda: True)
     monkeypatch.setattr(pt, "from_repo", lambda *a, **k: _timing_report(last_failure_days_ago=21))
     c = diagnostics._check_prevention_timing(repo)
     assert c["status"] == "info"
@@ -846,6 +858,7 @@ def test_an_unknown_failure_age_is_treated_as_live(repo, monkeypatch):
     import sleepctl.learning.prevention_timing as pt
     monkeypatch.setattr(pt, "from_repo",
                         lambda *a, **k: _timing_report(last_failure_days_ago=None))
+    monkeypatch.setattr(diagnostics, "_settle_cooling_allowed", lambda: True)
     assert diagnostics._check_prevention_timing(repo)["status"] == "warn"
 
 

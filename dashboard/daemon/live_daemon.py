@@ -158,6 +158,7 @@ class LiveDashboardDaemon:
         # Latched so we stop retrying a refusal no client can talk its way past, and so
         # the snapshot can say plainly that vibration is unavailable this night.
         self._alarm_write_denied = self._load_alarm_write_denied(repo)
+        self._our_levels = self._load_our_levels(repo)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
         self._wake_last_stage = None
         self._wake_base_window = cfg.tunables.wake_window_min  # learned per-user window base
@@ -711,6 +712,37 @@ class LiveDashboardDaemon:
         ours = list(getattr(self, "_our_levels", []) or [])
         ours.append((int(level), datetime.now()))
         self._our_levels = ours[-20:]
+        self._save_our_levels()
+
+    _OUR_LEVELS_KV_KEY = "pod_our_levels"
+
+    def _save_our_levels(self) -> None:
+        """Our recent writes outlive the process: a daemon restarted mid-night (heartbeat stale,
+        deploy) would otherwise meet its own previous override on the bed and adopt it as a
+        hand on the phone -- and skip the controller's writes for an hour (2026-09-20 06:08)."""
+        try:
+            self.repo.conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._OUR_LEVELS_KV_KEY,
+                 json.dumps([[int(l), at.isoformat()] for l, at in self._our_levels])))
+            self.repo.conn.commit()
+        except Exception:
+            pass
+
+    @classmethod
+    def _load_our_levels(cls, repo) -> list:
+        try:
+            row = repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key=?", (cls._OUR_LEVELS_KV_KEY,)).fetchone()
+            if not row or not row[0]:
+                return []
+            out = []
+            for l, at in json.loads(row[0]):
+                out.append((int(l), datetime.fromisoformat(at)))
+            return out[-20:]
+        except Exception:
+            return []
 
     def _ours_recently(self, level, now) -> bool:
         """True when ``level`` is (within the guard delta) something we wrote inside the
@@ -1415,7 +1447,10 @@ class LiveDashboardDaemon:
         self.thermal.record(now, frame.target_level, frame.device_level)
         th = self.thermal.status(now)
         if th.state != self._thermal_state:
-            if th.state == "stalled":
+            # Outside a session nothing of ours is being followed (idle_pod_writes=False), and
+            # while a manual level is honoured the device is following the user, not us.
+            judged = self._session_running() and not self._user_override_active(now)
+            if th.state == "stalled" and judged:
                 self._log(f"WARNING: thermal: {th.reason}")
                 self._emit_event("thermal", "warn", "thermal_stalled",
                                  th.reason or "thermal response stalled",

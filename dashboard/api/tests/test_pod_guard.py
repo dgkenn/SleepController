@@ -33,8 +33,10 @@ def _armed(commanded=-58, ago_s=600):
     # The daemon fixture shares one database across the file; the toggle test below writes
     # pod_guard=false into it, so every test starts from the shipped default.
     repo.conn.execute("DELETE FROM settings_kv WHERE key='pod_guard'")
+    repo.conn.execute("DELETE FROM settings_kv WHERE key='pod_our_levels'")
     repo.conn.commit()
     d._guard_enabled_cache = None
+    d._our_levels = []
 
     async def set_heating_level(level, duration_s=0):
         writes.append(level)
@@ -303,3 +305,34 @@ def test_the_conflict_check_is_informational_while_a_manual_level_is_honoured():
     finally:
         dt.detect_external_conflict = orig
     assert c["status"] == "info" and "set by hand" in c["detail"]
+
+
+def test_our_writes_survive_a_restart_so_the_first_look_does_not_adopt_them():
+    """2026-09-20 06:08: the restarted daemon met its own -54 override on the bed and adopted it
+    as a hand on the phone."""
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    _run(d._set_level(-54))                                  # written and persisted
+    from test_live_daemon import _daemon
+    d2, client2, repo2 = _daemon()                            # a fresh process on the same DB
+    assert any(l == -54 for l, _ in d2._our_levels)
+    d2.power_on, d2.paused, d2.away, d2.mode = True, False, False, "auto"
+    d2._last_commanded_level = None
+    _schedule(d2, -54, activity="temperatureControl")
+    _run(d2._guard_pod(_frame(-54), datetime.now()))
+    assert getattr(d2, "_user_override", None) is None
+    repo.conn.execute("DELETE FROM settings_kv WHERE key='pod_our_levels'")
+    repo.conn.commit()
+
+
+def test_the_thermal_stall_warning_is_silent_outside_a_session():
+    d, repo, writes = _armed(commanded=-58, ago_s=600)
+    logs = []
+    d._log = lambda msg: logs.append(msg)
+    d._session_running = lambda: False
+
+    class _Th:
+        state, reason = "stalled", "moved the WRONG WAY"
+    d.thermal.status = lambda now: _Th()
+    d._thermal_state = "ok"
+    d._record_thermal(_frame(-58), datetime.now())
+    assert not any("WRONG WAY" in m for m in logs)

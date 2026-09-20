@@ -117,7 +117,8 @@ def test_timing_check_is_info_with_no_data(repo):
     assert c["status"] == "info"
 
 
-def test_timing_limited_is_surfaced_as_a_warning_with_a_lead_remedy(repo):
+def test_timing_limited_is_surfaced_as_a_warning_with_a_lead_remedy(repo, monkeypatch):
+    monkeypatch.setattr(diagnostics, "_settle_cooling_allowed", lambda: True)   # the cooling policy
     _seed_failed_precools(repo, n=5, arrival_at=12, wake_at=4)
     c = diagnostics._check_prevention_timing(repo)
     assert c["status"] == "warn"

@@ -2052,6 +2052,14 @@ def _check_calibration(repo) -> dict:
                   "loop first — both in-bed batteries need a loop that can move heat.")
 
 
+def _settle_cooling_allowed() -> bool:
+    try:
+        from sleepctl.config import AppConfig
+        return bool(getattr(AppConfig.default().tunables, "settle_cooling_allowed", True))
+    except Exception:
+        return True
+
+
 def _check_prevention_timing(repo) -> dict:
     """Whether pre-emptive cooling can physically arrive before the awakening it targets.
 
@@ -2074,6 +2082,13 @@ def _check_prevention_timing(repo) -> dict:
     if rep.verdict == "no_thermal_response":
         return _check("prevention_timing", "Awakening pre-emption timing", "fail",
                       rep.detail, rep.remedy)
+    if rep.verdict == "timing_limited" and not _settle_cooling_allowed():
+        # 2026-09-20: pre-emption no longer cools this user (settle_cooling_allowed=False), so
+        # "the bed had not moved before the awakening" is the design, not a fault. Every future
+        # failure would count as unmoved and pin the verdict to DEGRADED for good.
+        return _check("prevention_timing", "Awakening pre-emption timing", "info",
+                      f"{rep.detail} — moot: pre-emption holds neutral rather than cooling on "
+                      f"this configuration, so arrival timing no longer applies", None)
     if rep.verdict == "timing_limited":
         # The learner's window is 30 days, which is right for a stable timing/dose split but wrong
         # for CURRENT health: a cause that was fixed weeks ago keeps producing this verdict until
