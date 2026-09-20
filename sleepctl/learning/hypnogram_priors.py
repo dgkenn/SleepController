@@ -88,12 +88,18 @@ def learn_transitions(repo, population: dict, nights: int = 14, min_nights: int 
     tot_occ = sum(occ) or 1.0
     deep_frac, rem_frac = occ[2] / tot_occ, occ[3] / tot_occ
     if deep_frac < MIN_DEEP_FRAC or rem_frac < MIN_REM_FRAC:
+        # Name the criterion that actually failed, with a decimal: rounding to whole percent
+        # produced "4% deep / 34% REM, below the 4% / 8%", which reads as a contradiction.
+        short = []
+        if deep_frac < MIN_DEEP_FRAC:
+            short.append(f"{deep_frac:.1%} deep (needs {MIN_DEEP_FRAC:.0%})")
+        if rem_frac < MIN_REM_FRAC:
+            short.append(f"{rem_frac:.1%} REM (needs {MIN_REM_FRAC:.0%})")
         return {"personalized": False, "n_nights": used_nights, "n_epochs": n_epochs,
                 "deep_frac": round(deep_frac, 3), "rem_frac": round(rem_frac, 3),
                 "rationale": f"population transitions kept -- your own labels over {used_nights} "
-                             f"nights carry {deep_frac:.0%} deep / {rem_frac:.0%} REM, below the "
-                             f"{MIN_DEEP_FRAC:.0%} / {MIN_REM_FRAC:.0%} a real hypnogram has, so "
-                             "they cannot be trusted to reshape the stager"}
+                             f"nights carry too little " + " and ".join(short) +
+                             " to be trusted to reshape the stager"}
     trans = []
     for i in range(4):
         row_n = sum(counts[i])

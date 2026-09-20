@@ -21,7 +21,8 @@ def test_dense_inputs_are_recorded():
     f.activity_units = "counts"
     d = _tick(f)
     wi = d.log_payload["wearable_inputs"]
-    assert wi == {"hr_history_n": 40, "activity_history_n": 40, "activity_units": "counts"}
+    assert wi == {"hr_history_n": 40, "activity_history_n": 40, "activity_units": "counts",
+                  "rr_history_n": 0}
 
 
 def test_absent_inputs_read_as_zero_not_missing():
@@ -29,4 +30,5 @@ def test_absent_inputs_read_as_zero_not_missing():
                     heart_rate=62.0, data_age_seconds=5)
     d = _tick(f)
     assert d.log_payload["wearable_inputs"] == {
-        "hr_history_n": 0, "activity_history_n": 0, "activity_units": None}
+        "hr_history_n": 0, "activity_history_n": 0, "activity_units": None,
+        "rr_history_n": 0}

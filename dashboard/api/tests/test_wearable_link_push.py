@@ -216,3 +216,53 @@ def test_an_accelerometer_only_batch_is_stored_not_rejected(repo, pushes):
     assert bridge.recent_actigraphy(repo.conn, minutes=5.0)
     r = services.ingest_hr(repo, {"source": "verity"})
     assert r["ok"] is False
+
+
+# ------------------------------------------------- every stream proved all the way downstream
+def _decision(repo, payload):
+    import json as _j
+    from datetime import datetime as _dt
+    repo.conn.execute(
+        "INSERT INTO decisions (ts, night_date, state, log_payload) VALUES (?,?,?,?)",
+        (_dt.now().isoformat(), "2026-09-19", "maintenance", _j.dumps(payload)))
+    repo.conn.commit()
+
+
+def _streaming(repo):
+    """All three streams live, so the consumption checks are actually evaluated."""
+    services.ingest_hr(repo, {"source": "verity", "hr": 61.0, "rr": [980.0, 1000.0, 990.0] * 4,
+                              "acc": {"pim": 3.0, "zcm": 1.0, "mad": 0.1, "std": 0.2,
+                                      "pmax": 0.5, "n": 104, "fs": 52}})
+
+
+def _check(pl, cid):
+    return next((c for c in pl["used"]["checks"] if c["id"] == cid), None)
+
+
+def test_the_beat_series_reaching_the_estimator_is_proved_not_assumed(repo, pushes):
+    """HRV is computed at ingest, so it can look healthy while frame.rr_history is empty and
+    the autonomic REM/deep rescorer silently never runs."""
+    _streaming(repo)
+    _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
+                                         "activity_units": "counts", "rr_history_n": 0}})
+    c = _check(services.wearable_pipeline(repo), "autonomic_rr")
+    assert c and c["ok"] is False and "rescorer cannot run" in c["detail"]
+
+    _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
+                                         "activity_units": "counts", "rr_history_n": 320}})
+    c = _check(services.wearable_pipeline(repo), "autonomic_rr")
+    assert c and c["ok"] is True and "320" in c["detail"]
+
+
+def test_breathing_reaching_the_controller_is_proved(repo, pushes):
+    _streaming(repo)
+    _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
+                                         "activity_units": "counts", "rr_history_n": 320}})
+    c = _check(services.wearable_pipeline(repo), "respiration")
+    assert c and c["ok"] is False and "onset signals" in c["detail"]
+
+    _decision(repo, {"wearable_inputs": {"hr_history_n": 200, "activity_history_n": 90,
+                                         "activity_units": "counts", "rr_history_n": 320},
+                     "respiratory_rate_conf": 0.85, "respiratory_rate_source": "rsa+acc"})
+    c = _check(services.wearable_pipeline(repo), "respiration")
+    assert c and c["ok"] is True and "rsa+acc" in c["detail"]

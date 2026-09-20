@@ -2023,7 +2023,9 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
     # ---- used: the controller's own account of its last tick --------------------------------
     used: dict = {"decision_age_s": None, "controller_state": None, "stage_source": None,
                   "hr_source": None, "movement_source": None,
-                  "hr_history_n": 0, "activity_history_n": 0, "activity_units": None}
+                  "hr_history_n": 0, "activity_history_n": 0, "activity_units": None,
+                  "rr_history_n": 0, "respiratory_rate_conf": None,
+                  "respiratory_source": None, "autonomic": False}
     try:
         row = repo.conn.execute(
             "SELECT ts, state, log_payload FROM decisions ORDER BY id DESC LIMIT 1").fetchone()
@@ -2037,6 +2039,10 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
             used["hr_history_n"] = int(wi.get("hr_history_n") or 0)
             used["activity_history_n"] = int(wi.get("activity_history_n") or 0)
             used["activity_units"] = wi.get("activity_units")
+            used["rr_history_n"] = int(wi.get("rr_history_n") or 0)
+            used["respiratory_rate_conf"] = pl.get("respiratory_rate_conf")
+            used["respiratory_source"] = pl.get("respiratory_rate_source")
+            used["autonomic"] = bool(pl.get("stage_autonomic"))
     except Exception:
         pass
     try:
@@ -2068,6 +2074,24 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
             checks.append(("hrv", card.get("hrv") is not None,
                            "beat-to-beat intervals produce HRV" if card.get("hrv") is not None
                            else "PPI is landing but no HRV is being computed"))
+            # HRV alone does not prove the beat series REACHED the stager: the windowed RMSSD
+            # is computed at ingest, while the autonomic rescorer (REM vs deep from RMSSD and
+            # LF/HF) reads frame.rr_history. Starve that and every other signal still looks
+            # healthy while a whole staging channel silently never runs.
+            n_rr = used["rr_history_n"]
+            checks.append(("autonomic_rr", n_rr > 0,
+                           f"{n_rr} beat intervals reached the stage estimator"
+                           if n_rr else "PPI is landing but no beat intervals reach the "
+                                        "estimator -- the autonomic REM/deep rescorer cannot run"))
+            # Breathing, fused from the same beats (RSA) and the accelerometer. It feeds two of
+            # the seven sleep-onset signals and the respiration-irregularity wake precursor.
+            conf = used["respiratory_rate_conf"]
+            checks.append(("respiration", conf is not None,
+                           f"breathing rate in use (confidence {conf}, "
+                           f"source {used['respiratory_source'] or 'unknown'})"
+                           if conf is not None else
+                           "no breathing rate is reaching the controller -- the two "
+                           "respiration onset signals and the irregularity precursor are off"))
     used["checks"] = [{"id": i, "ok": bool(ok), "detail": d} for i, ok, d in checks]
     used["ticking"] = ticking
     used["in_session"] = in_session

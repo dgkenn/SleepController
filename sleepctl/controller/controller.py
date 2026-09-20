@@ -1765,6 +1765,11 @@ class SleepController:
                 "activity_history_n": (len(frame.activity_history or [])
                                        if getattr(frame, "activity_history", None) else 0),
                 "activity_units": getattr(frame, "activity_units", None),
+                # Beat intervals reaching the estimator. Without this the autonomic rescorer
+                # (REM vs deep from RMSSD / LF-HF) could be starved and nothing would say so:
+                # HR, HRV and movement all look healthy while it silently never runs.
+                "rr_history_n": (len(frame.rr_history or [])
+                                 if getattr(frame, "rr_history", None) else 0),
             },
             # How many estimated-stage flips the hysteresis has absorbed so far this session --
             # the churn stays measurable instead of being silently smoothed away.

@@ -53,7 +53,10 @@ def _decision(repo, state="maintenance", ago_s=10.0, **inputs):
     ts = (datetime.now() - timedelta(seconds=ago_s)).isoformat()   # decisions.ts is naive local
     payload = {"stage_source": "model", "wearable_inputs": {
         "hr_history_n": inputs.get("hr_n", 0), "activity_history_n": inputs.get("acc_n", 0),
-        "activity_units": inputs.get("units")}}
+        "activity_units": inputs.get("units"),
+        "rr_history_n": inputs.get("rr_n", 0)},
+        "respiratory_rate_conf": inputs.get("resp_conf"),
+        "respiratory_rate_source": inputs.get("resp_source")}
     repo.conn.execute(
         "INSERT INTO decisions (ts, night_date, state, action, target_level, log_payload) "
         "VALUES (?, date('now'), ?, 'hold', -54, ?)", (ts, state, json.dumps(payload)))
@@ -114,11 +117,15 @@ def test_usage_is_not_judged_while_idle(repo):
 
 def test_a_fully_consumed_stream_passes_every_check(repo):
     _cardiac(repo, 3); _rr(repo, 4); _acc(repo, 2)
-    _decision(repo, state="maintenance", hr_n=800, acc_n=400, units="counts")
+    _decision(repo, state="maintenance", hr_n=800, acc_n=400, units="counts",
+              rr_n=320, resp_conf=0.85, resp_source="rsa+acc")
     r = services.wearable_pipeline(repo)
     assert r["verdict"] == "streaming_full"
     assert all(c["ok"] for c in r["used"]["checks"])
-    assert {c["id"] for c in r["used"]["checks"]} >= {"stager_hr", "wake_detector_acc", "hrv"}
+    # Every stream proved all the way to the module that consumes it: the stager, the fusion,
+    # the actigraphy wake detector, HRV, the autonomic REM/deep rescorer and breathing.
+    assert {c["id"] for c in r["used"]["checks"]} >= {
+        "stager_hr", "fusion_hr", "wake_detector_acc", "hrv", "autonomic_rr", "respiration"}
 
 
 def test_refusing_shape_from_the_forwarder_log_wins_when_nothing_lands(repo, tmp_path):

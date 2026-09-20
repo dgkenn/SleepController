@@ -96,7 +96,7 @@ def test_a_hypnogram_with_no_rem_is_not_believed(tmp_path):
         _light_only_night(repo, f"2026-09-1{d}")
     out = learn_transitions(repo, POP)
     assert out["personalized"] is False
-    assert "cannot be trusted" in out["rationale"]
+    assert "too little" in out["rationale"] and "REM" in out["rationale"]
     assert out["rem_frac"] == 0.0
 
 
@@ -109,3 +109,14 @@ def test_entry_into_deep_and_rem_is_never_closed_off(tmp_path):
     out = learn_transitions(repo, POP)
     if out["personalized"]:
         assert out["trans"][1][2] >= 0.5 * POP["trans"][1][2] - 1e-6
+
+
+def test_the_gate_names_only_the_criterion_that_failed(tmp_path):
+    """"4% deep / 34% REM, below the 4% / 8%" read as a contradiction -- it was rounding."""
+    repo = _repo(tmp_path)
+    for d in range(8):
+        _night(repo, f"2026-09-0{d + 1}", deep_heavy=False)      # REM-rich, deep-poor
+    out = learn_transitions(repo, POP)
+    if out["personalized"] is False:
+        assert "deep" in out["rationale"]
+        assert "REM (needs" not in out["rationale"], "REM was fine; do not blame it"
