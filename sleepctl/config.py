@@ -356,6 +356,17 @@ class Tunables:
     bed_entry_max_hr_spread: float = 30.0     # max-min HR across the entry window; wider = moving about
     bed_entry_min_worn_ticks: int = 5         # HR-carrying ticks needed before entry can be judged
 
+    # --- SETTLE RELEASE (sleepctl/controller/maintenance.py) ----------------------------
+    # STABILIZE resolves to "hold the last target", so every settle nudge RATCHETS the bed
+    # down and it never comes back. Measured 2026-09-18: the bed spent 828 of 949 maintenance
+    # ticks (87%) at 68F while pre-emption was active on only 21% of them -- and pre-emption
+    # moved the bed TWICE in 196 firings, because the bed was already sitting at the settle
+    # temperature and had nothing left to give. Releasing back to the measured neutral after a
+    # quiet spell both restores that headroom and stops the night being spent a degree below
+    # the temperature this user's own record calls their best sleep.
+    settle_release_enabled: bool = True
+    settle_release_after_min: float = 20.0    # quiet minutes before the bed relaxes to neutral
+
     # --- HYPNOGRAM PLAUSIBILITY (sleepctl/controller/hypnogram.py) -----------------------
     # Stage hysteresis damps flapping BETWEEN sleep stages but exempts every transition through
     # AWAKE, in both directions -- deliberately, so a wake label is never delayed. A stage that

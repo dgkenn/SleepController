@@ -18,7 +18,7 @@ class MaintenanceRoutine:
 
     def step(self, frame: SensorFrame, objective: NightObjective,
              preempt_cool: bool = False, keep_light: bool = False,
-             deepen: bool = False) -> ThermalIntent:
+             deepen: bool = False, release: bool = False) -> ThermalIntent:
         if keep_light:
             # Power-nap mode: hold neutral so the bed never drives slow-wave sleep — keep the
             # nap light so waking is grogginess-free. A rising wake-risk still gets a gentle cool.
@@ -39,6 +39,15 @@ class MaintenanceRoutine:
             return ThermalIntent.SETTLE_COOL
         if deepen:
             return ThermalIntent.DEEP_BIAS_COOL
+        if release:
+            # RELEASE the settle. STABILIZE means "hold the last target", so without this every
+            # settle nudge ratchets the bed down and nothing ever brings it back: 2026-09-18
+            # held 68F for 87% of maintenance while pre-emption was active on 21% of ticks, and
+            # 194 of 196 pre-empt firings resolved to "hold" because the bed was already there.
+            # After a quiet spell, return to neutral -- slew- and variability-limited on the way,
+            # so it is a drift, not a jolt -- which both restores the headroom pre-emption needs
+            # and puts the night back on the temperature this user's record calls their best.
+            return ThermalIntent.NEUTRAL
         return ThermalIntent.STABILIZE
 
 

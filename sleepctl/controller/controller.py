@@ -86,6 +86,10 @@ class SleepController:
         # Tonight's personalized ideal architecture (set by the daemon from the SleepPlan); the
         # steerer targets these. None -> steering holds (no target to chase).
         self.night_targets = None
+        # When the bed was last pushed below neutral by a settle / awakening, so the release
+        # above knows how long it has been quiet. None until the first one tonight.
+        self._last_settle_at = None
+        self._settle_release = False
         self.est_sleep_min: Optional[float] = None
         # Accrued time-in-stage since onset (the realized architecture so far).
         self._arch_deep_min = 0.0
@@ -448,6 +452,28 @@ class SleepController:
             self._stab_last_move_at = now
         except Exception:
             pass
+
+    def _should_release_settle(self, now, cfg) -> bool:
+        """Has it been quiet long enough to let the bed drift back to neutral?
+
+        Only in MAINTENANCE, only when nothing is brewing, and only while the bed is actually
+        BELOW neutral -- releasing is about undoing an accumulated settle, never about warming
+        the sleeper past the temperature their own record calls best.
+        """
+        try:
+            t = cfg.tunables
+            if not bool(getattr(t, "settle_release_enabled", True)):
+                return False
+            last = getattr(self, "_last_settle_at", None)
+            if last is None:
+                return False
+            quiet_min = (now - last).total_seconds() / 60.0
+            if quiet_min < float(getattr(t, "settle_release_after_min", 20.0)):
+                return False
+            neutral = self.thermal.profile.neutral_f + getattr(self.thermal, "ambient_bias_f", 0.0)
+            return float(self._last_target_f) < neutral - 0.05
+        except Exception:
+            return False
 
     def _wearable_bed_entry(self, frame, recent, cfg) -> bool:
         """Can sustained LIVE wearable physiology stand in for an unavailable Pod presence?
@@ -964,11 +990,20 @@ class SleepController:
             # reconciled with the wake-up trajectory (stands down near the deadline).
             deepen = self._evaluate_steering(now, frame, wake_detected, minutes_in_bed,
                                              required_wake)
+            preempting = bool(getattr(self, "_preempt_cool", False))
+            if preempting or wake_detected:
+                self._last_settle_at = now
+            self._settle_release = self._should_release_settle(now, cfg)
             intent = self.maintenance.step(frame, objective,
-                                           preempt_cool=getattr(self, "_preempt_cool", False),
-                                           keep_light=self.session_keep_light, deepen=deepen)
+                                           preempt_cool=preempting,
+                                           keep_light=self.session_keep_light, deepen=deepen,
+                                           release=self._settle_release)
         elif state is ControllerState.WAKE_RECOVERY:
             self._deepen_active = False     # an awakening breaks any active deepen maneuver
+            # Recovery IS a settle, so the quiet clock restarts here too -- otherwise the bed
+            # would release the moment recovery handed back to maintenance.
+            self._last_settle_at = now
+            self._settle_release = False
             intent = self.wake_recovery.step(frame)
         elif state is ControllerState.WAKE_WINDOW:
             # Multi-signal orchestrator: fuse the calibrated P(wake) with stage to catch a real
@@ -1229,6 +1264,7 @@ class SleepController:
         return {
             "preempting": preempting,
             "intent": "settle_cool" if preempting else None,
+            "settle_released": bool(getattr(self, "_settle_release", False)),
             "wake_risk": round(risk.score, 3) if risk else None,
             # Split out so a saturated score is visible per tick: a risk of 0.58 built from
             # 0.28 of evidence plus 0.30 of clock is a different fact from 0.58 of pure clock,
