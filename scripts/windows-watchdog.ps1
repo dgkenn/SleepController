@@ -893,13 +893,9 @@ function Ensure-LanAccess {
             New-NetFirewallRule -DisplayName "SleepController 3000" -Direction Inbound `
                 -LocalPort 3000 -Protocol TCP -Action Allow -Profile Private,Domain -ErrorAction Stop | Out-Null
             Log "lan: added the inbound firewall rule for port 3000 (Private+Domain)"
-            $rules += "private+domain"
-        } else {
-            if ("$($r.Enabled)" -ne "True") {
-                Enable-NetFirewallRule -DisplayName "SleepController 3000" -ErrorAction SilentlyContinue
-                Log "lan: the port-3000 firewall rule was DISABLED -- re-enabled it"
-            }
-            $rules += "private+domain"
+        } elseif ("$($r.Enabled)" -ne "True") {
+            Enable-NetFirewallRule -DisplayName "SleepController 3000" -ErrorAction SilentlyContinue
+            Log "lan: the port-3000 firewall rule was DISABLED -- re-enabled it"
         }
     } catch { Log "lan: could not ensure the port-3000 firewall rule: $_" }
 
@@ -914,9 +910,29 @@ function Ensure-LanAccess {
                     -RemoteAddress LocalSubnet -ErrorAction Stop | Out-Null
                 Log "lan: this network is categorised PUBLIC (which blocks the phone) -- added a port-3000 rule limited to the local subnet"
             }
-            $rules += "public/localsubnet"
         } catch { Log "lan: could not add the local-subnet rule: $_" }
     }
+
+    # Report what the rules ACTUALLY say, not what we meant to create. A rule that already
+    # existed was made once for one profile and never revisited, so its real Profile/Enabled/
+    # Action is the only thing worth publishing -- and `covered` answers the question the
+    # person is really asking: will the phone get in on the network this box is on now.
+    $covered = $false
+    try {
+        $cats = @(@(Get-NetConnectionProfile -ErrorAction SilentlyContinue) |
+                  ForEach-Object { "$($_.NetworkCategory)" } | Select-Object -Unique)
+        foreach ($name in @("SleepController 3000", "SleepController 3000 (LocalSubnet)")) {
+            $fr = Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue
+            if (-not $fr) { continue }
+            $prof = "$($fr.Profile)"; $en = "$($fr.Enabled)"; $act = "$($fr.Action)"
+            $rules += ("{0}={1}/{2}/{3}" -f $name.Replace("SleepController 3000", "3000"), $prof, $en, $act)
+            if ($en -eq "True" -and $act -eq "Allow") {
+                foreach ($c in $cats) {
+                    if ($prof -match "Any" -or $prof -match $c) { $covered = $true }
+                }
+            }
+        }
+    } catch {}
 
     $url = $null
     if ($ips.Count -gt 0) { $url = "http://$($ips[0]):3000" }
@@ -927,7 +943,7 @@ function Ensure-LanAccess {
     }
     try {
         $state = @{ url = $url; ips = $ips; profiles = $profiles; rules = $rules
-                    public = $isPublic; ts = (Get-Date -Format o) }
+                    public = $isPublic; covered = $covered; ts = (Get-Date -Format o) }
         Set-Content -Path (Join-Path $run "lan.state") -Value ($state | ConvertTo-Json -Compress) -Encoding ASCII
     } catch {}
 }

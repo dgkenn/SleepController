@@ -1167,12 +1167,16 @@ def _check_lan_access(run_dir: str) -> dict:
                       "check the machine's network connection; without a LAN address only "
                       "the box itself can open the dashboard")
     detail = f"open {url} on the same network -- network profile: {profiles}; port-3000 rules: {rules}"
-    if st.get("public") and "public/localsubnet" not in (st.get("rules") or []):
+    # `covered` is measured from the rules as Windows actually holds them (enabled, allow, and
+    # matching the profile this machine is on right now), not from what the watchdog intended
+    # to create -- the rule that caused this was made once for one profile and never revisited.
+    if st.get("covered") is False:
         return _check("lan_access", "Dashboard reachable on your network", "warn",
-                      detail + ". Windows has this network marked PUBLIC and the local-subnet "
-                      "rule could not be added, so inbound port 3000 is blocked",
-                      "on the box: Settings > Network > this network > set it to Private, or "
-                      "run the watchdog elevated so it can add the firewall rule itself")
+                      detail + ". No enabled allow-rule covers the profile this machine is on, "
+                      "so inbound port 3000 is blocked and only the box itself can open the "
+                      "dashboard",
+                      "on the box: set this network to Private (Settings > Network), or run the "
+                      "watchdog elevated so it can add the rule itself")
     if st.get("public"):
         return _check("lan_access", "Dashboard reachable on your network", "ok",
                       detail + ". Windows marks this network PUBLIC, so port 3000 is open to "

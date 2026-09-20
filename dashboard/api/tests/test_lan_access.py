@@ -35,7 +35,8 @@ def repo(tmp_path):
 
 def _state(run_dir, **kw):
     st = {"url": "http://192.168.1.50:3000", "ips": ["192.168.1.50"],
-          "profiles": ["Home=Private"], "rules": ["private+domain"], "public": False,
+          "profiles": ["Home=Private"], "rules": ["3000=Private, Domain/True/Allow"],
+          "public": False, "covered": True,
           "ts": "2026-09-20T00:00:00-04:00"}
     st.update(kw)
     with open(os.path.join(run_dir, "lan.state"), "w", encoding="utf-8") as fh:
@@ -55,19 +56,28 @@ def test_a_private_network_reports_the_url_to_open(run_dir):
 
 
 def test_a_public_network_without_the_subnet_rule_is_the_phone_being_blocked(run_dir):
-    _state(run_dir, public=True, profiles=["Home=Public"], rules=["private+domain"])
+    _state(run_dir, public=True, profiles=["Home=Public"],
+           rules=["3000=Private, Domain/True/Allow"], covered=False)
     c = diagnostics._check_lan_access(run_dir)
     assert c["status"] == "warn"
-    assert "PUBLIC" in c["detail"]
+    assert "blocked" in c["detail"]
     assert "Private" in (c["remedy"] or "")
 
 
 def test_a_public_network_with_the_subnet_rule_is_fine(run_dir):
     _state(run_dir, public=True, profiles=["Home=Public"],
-           rules=["private+domain", "public/localsubnet"])
+           rules=["3000=Private, Domain/True/Allow", "3000 (LocalSubnet)=Public/True/Allow"],
+           covered=True)
     c = diagnostics._check_lan_access(run_dir)
     assert c["status"] == "ok"
     assert "local subnet only" in c["detail"]
+
+
+def test_a_disabled_rule_is_reported_as_the_phone_being_blocked(run_dir):
+    """The rule existed but Windows had it off -- every other signal stays green."""
+    _state(run_dir, rules=["3000=Private, Domain/False/Allow"], covered=False)
+    c = diagnostics._check_lan_access(run_dir)
+    assert c["status"] == "warn"
 
 
 def test_no_lan_address_at_all_is_a_warning(run_dir):
