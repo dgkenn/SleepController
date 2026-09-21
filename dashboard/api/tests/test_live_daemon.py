@@ -543,7 +543,9 @@ def test_the_daemon_publishes_its_session_state_for_the_watchdog(tmp_path, monke
     d.cycle.controller.sm.state = ControllerState.INDUCTION
     d._publish_session_state()
     with open(os.path.join(str(tmp_path), "session.state")) as fh:
-        assert fh.read().strip() == "induction"
+        # " protect" marks the states a restart cannot be recovered from; the watchdog
+        # defers on that flag alone (see _restart_would_damage)
+        assert fh.read().strip() == "induction protect"
 
     d.cycle.controller.sm.state = ControllerState.IDLE
     d._publish_session_state()
@@ -569,3 +571,59 @@ def test_a_refused_alarm_write_is_remembered_across_a_restart():
     d2._save_alarm_write_denied(False)
     d3 = LiveDashboardDaemon(AppConfig.default(), client, repo, dry_run=False, verbose=False)
     assert d3._alarm_write_denied is False
+
+
+# ------------------------------------------- 2026-09-21: a stuck session stranded a deploy
+def test_only_unrecoverable_states_are_protected_from_a_restart():
+    """restore_session_state covers every state past onset, so a restart in MAINTENANCE /
+    WAKE_RECOVERY / WAKE_WINDOW costs a tick. Induction re-arms from zero, and a restart
+    mid-nap loses the deadline that ends it."""
+    class _Stub:
+        nap_deadline = None
+    stub = _Stub()
+    for state in ("induction", "calibration"):
+        assert LiveDashboardDaemon._restart_would_damage(stub, state) is True, state
+    for state in ("idle", "maintenance", "wake_recovery", "wake_window"):
+        assert LiveDashboardDaemon._restart_would_damage(stub, state) is False, state
+
+
+def test_an_armed_nap_is_protected_in_any_state():
+    from datetime import datetime
+
+    class _Stub:
+        nap_deadline = datetime(2026, 9, 21, 14, 0)
+    assert LiveDashboardDaemon._restart_would_damage(_Stub(), "maintenance") is True
+
+
+def test_a_recoverable_state_does_not_hold_back_a_deploy(tmp_path, monkeypatch):
+    """2026-09-21: a WAKE_RECOVERY that failed to end -- the band had been on its charger
+    since 05:28 -- held the day's deploy for over ten hours, including the accelerometer fix
+    that the previous night's data loss had been waiting for."""
+    import os
+    from app import bridge
+    from sleepctl.models import ControllerState
+    d, client, repo = _daemon()
+    monkeypatch.setattr(bridge, "run_dir", lambda: str(tmp_path))
+    for state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY,
+                  ControllerState.WAKE_WINDOW):
+        d.cycle.controller.sm.state = state
+        d.nap_deadline = None
+        d._publish_session_state()
+        with open(os.path.join(str(tmp_path), "session.state")) as fh:
+            assert "protect" not in fh.read()
+
+
+def test_an_armed_nap_holds_back_a_deploy_in_any_state(tmp_path, monkeypatch):
+    """A restart mid-nap loses the in-memory deadline that ends it."""
+    import os
+    from datetime import datetime
+    from app import bridge
+    from sleepctl.models import ControllerState
+    d, client, repo = _daemon()
+    monkeypatch.setattr(bridge, "run_dir", lambda: str(tmp_path))
+    d.cycle.controller.sm.state = ControllerState.MAINTENANCE
+    d.nap_deadline = datetime(2026, 9, 21, 14, 0)
+    d._publish_session_state()
+    with open(os.path.join(str(tmp_path), "session.state")) as fh:
+        assert fh.read().strip() == "maintenance protect"
+    d.nap_deadline = None

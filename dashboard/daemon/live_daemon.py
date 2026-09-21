@@ -1447,9 +1447,26 @@ class LiveDashboardDaemon:
             state = getattr(self.cycle.controller.sm.state, "value", "idle")
             path = os.path.join(bridge.run_dir(), "session.state")
             with open(path, "w", encoding="ascii") as fh:
-                fh.write(str(state))
+                fh.write(f"{state} protect" if self._restart_would_damage(state) else str(state))
         except Exception:
             pass
+
+    def _restart_would_damage(self, state: str) -> bool:
+        """Is this a state a daemon restart cannot be recovered from?
+
+        Only INDUCTION and CALIBRATION are, plus an armed nap: ``restore_session_state`` covers
+        every state past onset, so a restart in MAINTENANCE / WAKE_RECOVERY / WAKE_WINDOW costs
+        a tick, while a restart in induction re-arms a fresh one (the onset detector starts from
+        zero and the warm opener runs again on someone falling asleep) and a restart mid-nap
+        loses the deadline that ends it.
+
+        The watchdog defers the deploy on this flag alone. It used to defer on ANY non-idle
+        state, which on 2026-09-21 meant a WAKE_RECOVERY that failed to end (the band had been
+        on its charger since 05:28) held the day's deploy for over ten hours -- including the
+        accelerometer fix that the previous night's data loss had been waiting for."""
+        if str(state) in ("induction", "calibration"):
+            return True
+        return getattr(self, "nap_deadline", None) is not None
 
     def _record_thermal(self, frame, now) -> None:
         """Track the Hub's water-side device level vs target; warn when it stalls."""

@@ -1222,28 +1222,33 @@ function Check-AutoUpdate {
     $script:autoUpdateAt = (Get-Date).AddMinutes($script:autoUpdateEveryMin)
     # A manual/console update already pending? Don't stack another -- let it run first.
     if (Test-Path $script:updateRequestFile) { return }
-    # NOT WHILE A NIGHT IS RUNNING. A redeploy restarts the daemon, and a restart during
-    # INDUCTION re-arms the session as a fresh induction -- the onset detector starts from zero
-    # and the +2F warm opener runs again on someone in the middle of falling asleep. Session
-    # recovery only covers states PAST onset, so induction is exactly the unprotected window,
-    # and it is the window a push is most likely to land in. The daemon keeps
-    # .run\session.state current (see _publish_session_state); deploy when the night is over.
-    # Bounded at 12 h so a wedged state file can never strand an update indefinitely.
+    # NOT WHILE A RESTART WOULD DAMAGE THE SESSION. A redeploy restarts the daemon, and a
+    # restart during INDUCTION re-arms the session as a fresh induction -- the onset detector
+    # starts from zero and the +2F warm opener runs again on someone in the middle of falling
+    # asleep. Session recovery covers every state PAST onset, so induction (and an armed nap,
+    # whose deadline is in memory) is the unprotected window.
+    #
+    # The DAEMON decides that, because it is the side that knows: it appends " protect" to
+    # .run\session.state (see _publish_session_state). This used to defer on ANY non-idle
+    # state, and on 2026-09-21 a WAKE_RECOVERY that failed to end -- the band had been on its
+    # charger since 05:28 -- held the day's deploy for over ten hours, including the
+    # accelerometer fix the previous night's data loss had been waiting for.
+    # Bounded at 3 h: an induction that long is itself broken, and must not strand an update.
     try {
         $sessFile = Join-Path $run "session.state"
         if (Test-Path $sessFile) {
             $sess = (Get-Content -Path $sessFile -Raw -ErrorAction Stop).Trim()
             $sessAge = (New-TimeSpan -Start (Get-Item $sessFile).LastWriteTime -End (Get-Date)).TotalMinutes
-            if ($sessAge -lt 3 -and $sess -and $sess -ne "idle") {
+            if ($sessAge -lt 3 -and $sess -and $sess -match 'protect') {
                 if ($script:updateDeferSince -eq $null) { $script:updateDeferSince = Get-Date }
-                if (((Get-Date) - $script:updateDeferSince).TotalHours -lt 12) {
+                if (((Get-Date) - $script:updateDeferSince).TotalHours -lt 3) {
                     if ($script:updateDeferLogged -eq $null -or ((Get-Date) - $script:updateDeferLogged).TotalMinutes -ge 60) {
-                        Log "auto-update: a night is running (state=$sess) -- deferring the deploy until it ends"
+                        Log "auto-update: a restart would damage this session (state=$sess) -- deferring the deploy"
                         $script:updateDeferLogged = Get-Date
                     }
                     return
                 }
-                Log "auto-update: session '$sess' has been running over 12 h -- deploying anyway"
+                Log "auto-update: session '$sess' has been running over 3 h -- deploying anyway"
             } else {
                 $script:updateDeferSince = $null
             }
