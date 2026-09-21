@@ -1482,12 +1482,28 @@ def _check_priming(extra: dict) -> dict:
     return _check("priming", "Priming state", "ok", "not priming / doesn't need priming", None)
 
 
+#: The snapshot key saying whether the controller is commanding the bed at all right now.
+#: Absent on a snapshot written before 2026-09-21, which is read as "yes" so the checks
+#: behave exactly as they did on older data.
+def _driving_the_bed(extra: dict) -> bool:
+    v = (extra or {}).get("driving")
+    return True if v is None else bool(v)
+
+
 def _check_thermal_response(extra: dict) -> dict:
     thermal = extra.get("thermal_health") or {}
     if not isinstance(thermal, dict):
         thermal = {}
     state = thermal.get("state")
     reason = thermal.get("reason")
+    if not _driving_the_bed(extra):
+        # Outside a session the bed belongs to the Eight Sleep app; we stopped writing to it
+        # by day on 2026-09-20. A device level that does not follow our last decision is that
+        # policy working, and reporting it as a stalled loop would leave the battery DEGRADED
+        # every daylight hour -- which is how a real fault gets missed.
+        return _check("thermal_response", "Thermal response", "info",
+                      f"not judged: the bed is not being commanded right now "
+                      f"(state={state or 'unknown'})", None)
     if state == "stalled":
         why = reason or "bed temperature is not responding to commands"
         return _check("thermal_response", "Thermal response", "fail",
@@ -1552,6 +1568,10 @@ def _check_external_conflict(repo, extra: dict, history: list | None = None) -> 
     reason = result.get("reason") or "no external-controller conflict detected."
     remedy = result.get("remedy") or None
     detail = f"{status}: {reason}"
+    if status == "external_setpoint_conflict" and not _driving_the_bed(extra):
+        return _check("external_conflict", "External controller conflict", "info",
+                      f"{detail} | the bed is not being commanded right now, so the device "
+                      f"following someone else is expected rather than a conflict", None)
     # The pod guard (Settings > Exclusive control): the daemon writes our level back whenever
     # the device's accepted target disagrees with it. Its count is the direct measure of how
     # often something else is touching the bed -- and whether it is being held off.

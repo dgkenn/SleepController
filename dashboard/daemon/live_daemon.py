@@ -1451,6 +1451,17 @@ class LiveDashboardDaemon:
         except Exception:
             pass
 
+    def _driving_the_bed(self) -> bool:
+        """True when this controller is the thing setting the bed's temperature."""
+        if self.dry_run or not self.power_on or self.paused or self.away:
+            return False
+        if self.mode == "manual":
+            return True
+        if self._user_override_active(datetime.now()):
+            return False      # a hand on the phone owns it for the hold
+        return bool(self._session_running()
+                    or getattr(self.cfg.tunables, "idle_pod_writes", False))
+
     def _restart_would_damage(self, state: str) -> bool:
         """Is this a state a daemon restart cannot be recovered from?
 
@@ -1475,7 +1486,7 @@ class LiveDashboardDaemon:
         if th.state != self._thermal_state:
             # Outside a session nothing of ours is being followed (idle_pod_writes=False), and
             # while a manual level is honoured the device is following the user, not us.
-            judged = self._session_running() and not self._user_override_active(now)
+            judged = self._driving_the_bed()
             if th.state == "stalled" and judged:
                 self._log(f"WARNING: thermal: {th.reason}")
                 self._emit_event("thermal", "warn", "thermal_stalled",
@@ -1555,6 +1566,12 @@ class LiveDashboardDaemon:
                       # _apply_induce_deadline_awareness); None outside that situation.
                       "induce_note": self._induce_note,
                       "thermal_health": self.thermal.status().to_dict(),
+                      # Are we COMMANDING the bed at all right now? Outside a session we
+                      # deliberately are not (idle_pod_writes=False), so a device level that
+                      # does not follow our last decision is the Eight Sleep app doing its
+                      # job -- not a stalled loop and not a conflict. Every check that judges
+                      # the bed's obedience has to know which it is.
+                      "driving": self._driving_the_bed(),
                       "pod_guard": self._pod_guard_summary(),
                       "thermal_trial": self.thermal_trial_arm,
                       "preemption": self.cycle.controller.preemption_summary(),

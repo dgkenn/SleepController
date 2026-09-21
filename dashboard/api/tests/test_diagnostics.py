@@ -1877,3 +1877,27 @@ def test_maintenance_holding_neutral_is_the_policy_not_a_swallowed_move(monkeypa
     c = _check_maintenance_acted(_DecisionsRepo(rows))
     assert c["status"] == "info" and "holding IS the action" in c["detail"]
     assert c["remedy"] is None
+
+
+# ------------------------------------------- 2026-09-21: checks that assumed we always command
+def test_the_bed_not_following_us_is_not_a_fault_when_we_are_not_commanding_it():
+    """We stopped writing to the bed outside a session on 2026-09-20. Judging its obedience
+    anyway left the battery DEGRADED every daylight hour, which is how a real fault gets
+    missed."""
+    stalled = {"thermal_health": {"state": "stalled", "reason": "did not move at all"}}
+    assert diagnostics._check_thermal_response({**stalled, "driving": False})["status"] == "info"
+    assert diagnostics._check_thermal_response({**stalled, "driving": True})["status"] == "fail"
+    # a snapshot written before the flag existed behaves exactly as it did
+    assert diagnostics._check_thermal_response(stalled)["status"] == "fail"
+
+
+def test_an_external_setpoint_is_not_a_conflict_when_we_are_not_commanding(repo, monkeypatch):
+    import sleepctl.diagnostics_thermal as dt
+    monkeypatch.setattr(dt, "detect_external_conflict",
+                        lambda device, history: {"status": "external_setpoint_conflict",
+                                                 "reason": "device -3 vs ours -54"})
+    idle = {"device": {}, "driving": False}
+    c = diagnostics._check_external_conflict(repo, idle, history=[])
+    assert c["status"] == "info" and "not being commanded" in c["detail"]
+    live = {"device": {}, "driving": True}
+    assert diagnostics._check_external_conflict(repo, live, history=[])["status"] == "warn"
