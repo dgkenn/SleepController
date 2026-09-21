@@ -209,7 +209,7 @@ def test_assign_arm_never_exceeds_comfort_band():
 def test_dose_response_profile_stays_within_device_clamp():
     cfg = AppConfig.default()
     base = cfg.default_setpoints()
-    for offset in (-0.4, 0.0, 0.4, 0.8, 1.2):
+    for offset in (0.0, 0.5, 1.0, 1.5, 2.0):
         prof = dose_response_profile(base, offset, cfg.thermal_trial)
         # A modest ladder offset off a ~70 F neutral is nowhere near the 55-110 F device edge;
         # the REAL enforcement of that range happens downstream in ThermalController.target_for
@@ -287,8 +287,11 @@ def _seed_trial_rows(repo, control_wake, bad_arm_wake, bad_arm="+0.80", start=da
 
 
 def test_auto_stop_suspends_only_the_clearly_worse_arm(repo):
+    # an explicit ladder: these test the auto-stop MECHANISM, not whichever offsets the
+    # shipped ladder happens to carry (it was re-centred warm on 2026-09-21)
     cfg = ThermalTrialConfig(enabled=True, experimental_fraction=MAX_EXPERIMENTAL_FRACTION,
-                             auto_stop_min_n=6, auto_stop_threshold=1.0)
+                             auto_stop_min_n=6, auto_stop_threshold=1.0,
+                             offset_ladder_f=[0.0, 0.4, 0.8, 1.2])
     _seed_trial_rows(repo, control_wake=[1, 1, 2, 1, 1, 0, 1],
                      bad_arm_wake=[4, 5, 4, 5, 4, 5, 4], bad_arm="+0.80")
     context = {"night_type": "normal", "session_mode": "night"}
@@ -305,8 +308,11 @@ def test_auto_stop_suspends_only_the_clearly_worse_arm(repo):
 
 
 def test_auto_stop_does_not_trigger_on_thin_data(repo):
+    # an explicit ladder: these test the auto-stop MECHANISM, not whichever offsets the
+    # shipped ladder happens to carry (it was re-centred warm on 2026-09-21)
     cfg = ThermalTrialConfig(enabled=True, experimental_fraction=MAX_EXPERIMENTAL_FRACTION,
-                             auto_stop_min_n=6, auto_stop_threshold=1.0)
+                             auto_stop_min_n=6, auto_stop_threshold=1.0,
+                             offset_ladder_f=[0.0, 0.4, 0.8, 1.2])
     _seed_trial_rows(repo, control_wake=[1, 1], bad_arm_wake=[5, 5], bad_arm="+0.80")
     context = {"night_type": "normal", "session_mode": "night"}
     offsets = {assign_arm(d, context, cfg, repo=repo) for d in _dates(200, start=date(2027, 2, 1))}
@@ -314,8 +320,11 @@ def test_auto_stop_does_not_trigger_on_thin_data(repo):
 
 
 def test_auto_stop_does_not_trigger_when_arms_are_similar(repo):
+    # an explicit ladder: these test the auto-stop MECHANISM, not whichever offsets the
+    # shipped ladder happens to carry (it was re-centred warm on 2026-09-21)
     cfg = ThermalTrialConfig(enabled=True, experimental_fraction=MAX_EXPERIMENTAL_FRACTION,
-                             auto_stop_min_n=6, auto_stop_threshold=1.0)
+                             auto_stop_min_n=6, auto_stop_threshold=1.0,
+                             offset_ladder_f=[0.0, 0.4, 0.8, 1.2])
     _seed_trial_rows(repo, control_wake=[2, 3, 2, 3, 2, 3], bad_arm_wake=[2, 3, 3, 2, 3, 2],
                      bad_arm="+0.80")
     context = {"night_type": "normal", "session_mode": "night"}
@@ -438,8 +447,11 @@ def test_thermal_trial_config_defaults():
     pinned here alongside it."""
     cfg = AppConfig.default()
     assert cfg.thermal_trial.enabled is True
-    # Re-centred warm on 2026-09-20: 68 F woke this user cold, so the ladder tests warming.
-    assert cfg.thermal_trial.offset_ladder_f == [-0.4, 0.0, 0.4, 0.8, 1.2]
+    # Re-centred warm again on 2026-09-21: every arm at or above neutral, because the
+    # comfort clamp had made the warm side unreachable and so unmeasured.
+    assert cfg.thermal_trial.offset_ladder_f == [0.0, 0.5, 1.0, 1.5, 2.0]
+    assert all(x >= 0.0 for x in cfg.thermal_trial.offset_ladder_f), \
+        "below neutral is measured worse, not an open question"
     assert cfg.thermal_trial.comfort_band_f == 2.0
     assert all(abs(x) <= cfg.thermal_trial.comfort_band_f
                for x in cfg.thermal_trial.offset_ladder_f)

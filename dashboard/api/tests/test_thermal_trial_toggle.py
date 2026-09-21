@@ -37,12 +37,19 @@ def test_the_trial_ships_enabled():
     assert AppConfig.default().thermal_trial.enabled is True
 
 
-def test_the_ladder_tests_warming_as_well_as_cooling():
-    """Raymann 2008 found a small skin-temperature RISE suppressed nocturnal wakefulness --
-    the opposite of this controller's default cool bias. The trial has to be able to find that."""
+def test_the_ladder_spends_its_nights_where_the_question_is_still_open():
+    """Raymann 2008 found a small skin-temperature RISE suppressed nocturnal wakefulness -- the
+    opposite of this controller's original cool bias -- and the trial exists to find that.
+
+    Since 2026-09-21 every arm sits at or above neutral. Below neutral is not an open question
+    on this user: pooled over every recorded night, 68.0 F shows 5.7% awakening ticks against
+    1.8% at 69.0 F, and they were woken cold twice. The warm side is the unmeasured one,
+    because the comfort clamp made it unreachable, so that is where the nights are spent."""
     from sleepctl.config import AppConfig
     ladder = AppConfig.default().thermal_trial.offset_ladder_f
-    assert any(x > 0 for x in ladder) and any(x < 0 for x in ladder) and 0.0 in ladder
+    assert any(x > 0 for x in ladder) and 0.0 in ladder      # a warm arm and a control arm
+    assert not any(x < 0 for x in ladder)
+    assert max(ladder) >= 1.5
 
 
 def test_every_arm_stays_inside_the_comfort_band():

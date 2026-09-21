@@ -1026,6 +1026,17 @@ class SleepController:
             self._last_settle_at = now
             self._settle_release = False
             intent = self.wake_recovery.step(frame)
+            # COLD RESCUE. Recovery resolves to SETTLE_COOL, and with settle cooling switched
+            # off that is exactly neutral -- so the one moment the system knows this user has
+            # woken, it did nothing about the cause they actually report. Answer an awakening
+            # with warmth while the bed is at or below neutral.
+            self._recovery_warm = 0.0
+            if not bool(getattr(cfg.tunables, "settle_cooling_allowed", True)):
+                warm = float(getattr(cfg.tunables, "wake_recovery_warm_f", 0.0) or 0.0)
+                neutral_f = getattr(self.thermal.profile, "neutral_f", None)
+                last = getattr(self, "_last_target_f", None)
+                if warm > 0 and (neutral_f is None or last is None or last <= float(neutral_f) + 1e-9):
+                    self._recovery_warm = warm
         elif state is ControllerState.WAKE_WINDOW:
             # Multi-signal orchestrator: fuse the calibrated P(wake) with stage to catch a real
             # light-sleep moment early, run the thermal dawn, escalate vibration silently, and
@@ -1076,6 +1087,9 @@ class SleepController:
         # AppConfig.preempt_settle_nudge_f. The comfort clamp downstream still bounds it to the
         # measured band, so "deeper" can never mean "colder than this user tolerates".
         settle_nudge = self._preempt_nudge_f(cfg) if getattr(self, "_preempt_cool", False) else None
+        recovery_warm = float(getattr(self, "_recovery_warm", 0.0) or 0.0)
+        if recovery_warm > 0.0 and state is ControllerState.WAKE_RECOVERY:
+            settle_nudge = max(settle_nudge or 0.0, recovery_warm)
         target_f, level = self.thermal.resolve(
             intent, objective, cfg.profile.hot_sleeper, self._last_target_f,
             bed_temp_f, ambient_temp_f, now=now, settle_nudge_f=settle_nudge,
@@ -1169,6 +1183,14 @@ class SleepController:
             margin = getattr(cfg.tunables, "comfort_clamp_margin_f", 0.5)
             if lo_edge is not None and hi_edge is not None and hi_edge >= lo_edge:
                 lo, hi = float(lo_edge) - margin, float(hi_edge) + margin
+                # The warm side of the sweep is the one bound the evidence cannot speak to,
+                # because this clamp is what stopped anything warmer ever being commanded.
+                # Let the measured neutral plus an allowance open it; the cold side is
+                # untouched, being the side that is actually measured (and that woke them).
+                allow = float(getattr(cfg.tunables, "comfort_clamp_warm_allowance_f", 0.0) or 0.0)
+                neutral_f = getattr(self.thermal, "measured_neutral_f", None)
+                if allow > 0 and neutral_f is not None:
+                    hi = max(hi, float(neutral_f) + allow)
                 bounded = max(lo, min(hi, target_f))
                 if abs(bounded - target_f) > 1e-9:
                     clamped_from, target_f = target_f, bounded

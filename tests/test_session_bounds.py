@@ -21,11 +21,11 @@ def _c():
 
 def test_the_maintenance_floor_holds_in_maintenance_and_recovery_only():
     c, cfg = _c()
-    assert cfg.tunables.maintenance_floor_f == 68.5
+    assert cfg.tunables.maintenance_floor_f == 69.0
     t, lv = c._apply_session_bounds(ControllerState.MAINTENANCE, 67.0, c.thermal.to_level(67.0))
-    assert t == 68.5 and lv == c.thermal.to_level(68.5)
+    assert t == 69.0 and lv == c.thermal.to_level(69.0)
     t, _ = c._apply_session_bounds(ControllerState.WAKE_RECOVERY, 66.0, 0)
-    assert t == 68.5
+    assert t == 69.0
     t, _ = c._apply_session_bounds(ControllerState.INDUCTION, 67.0, 0)   # the onset dip survives
     assert t == 67.0
 
@@ -82,5 +82,5 @@ def test_the_summary_publishes_the_bounds():
     c, cfg = _c()
     c.note_user_override(68.3, warmer=True)
     s = c.thermal_profile_summary()
-    assert s["maintenance_floor_f"] == 68.5 and s["session_floor_f"] == 69.3
+    assert s["maintenance_floor_f"] == 69.0 and s["session_floor_f"] == 69.3
     assert s["user_overrides"] == 1

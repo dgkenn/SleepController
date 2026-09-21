@@ -189,7 +189,28 @@ class Tunables:
     # Hard floor on the water in MAINTENANCE / WAKE_RECOVERY: half a degree above the 68F that
     # woke this user cold, below the 69F their record calls their best sleep. Induction keeps
     # its short dip (they fell asleep through it); the floor is for the hours that follow.
-    maintenance_floor_f: float = 68.5
+    # 69.0 since 2026-09-21. Pooled over every recorded night, the awakening rate per
+    # maintenance tick runs 5.7% at 68.0 F and 1.8% at 69.0 F -- three times worse one degree
+    # down -- and the user's standing complaint is being woken COLD. Nothing at night goes
+    # below the best temperature ever measured on them.
+    maintenance_floor_f: float = 69.0
+    #: How far above the measured NEUTRAL a maintenance target may be clamped to, when that is
+    #: warmer than the comfort sweep's own warm edge.
+    #:
+    #: The sweep (2026-08-28) put the warm edge 0.5 F above neutral, and the comfort clamp
+    #: applies in MAINTENANCE and WAKE_RECOVERY -- so no night-time target above 69.5 F has
+    #: ever been reachable, by the learner, by the n-of-1 trial, or by the controller. That is
+    #: why the evidence table has thousands of ticks at 68-69 F and a hundred above it: the
+    #: clamp is the reason the warm side is unmeasured, and "we have no evidence up there" then
+    #: reads as a reason not to go. Meanwhile the setpoint learner has been asking for 74.4 F
+    #: every night, and on 2026-09-19 the user woke cold and set the bed to 80 F by hand.
+    #: The cold side of the band stays exactly where the evidence put it.
+    comfort_clamp_warm_allowance_f: float = 3.0
+    #: An awakening while the bed sits at or below neutral is answered with warmth, not a hold.
+    #: This user's reported reason for waking is cold, and WAKE_RECOVERY resolved to SETTLE_COOL
+    #: -- which, with settle cooling switched off, is exactly neutral. So the one moment the
+    #: system knew they had woken, it did nothing at all about the stated cause.
+    wake_recovery_warm_f: float = 0.5
     # A manual temperature change from the phone is an instruction, not interference: hold the
     # user's level for this long, then resume control with the floor/ceiling it implied.
     user_override_hold_min: float = 60.0
@@ -765,7 +786,10 @@ class ThermalTrialConfig:
     # +/-``comfort_band_f`` before use -- see sleepctl.ml.thermal_trial._clamped_ladder.
     # Re-centred WARM on 2026-09-20: the user woke from cold at 68F, so arms below -0.4 would
     # test a dose already known to wake them. The question left is how much warmer helps.
-    offset_ladder_f: list = field(default_factory=lambda: [-0.4, 0.0, 0.4, 0.8, 1.2])
+    # Re-centred UP on 2026-09-21: every arm at or above neutral. Below neutral is not an open
+    # question -- 68 F measures three times the awakening rate of 69 F and woke this user twice
+    # -- so the trial spends its nights on the side nothing has ever been able to reach.
+    offset_ladder_f: list = field(default_factory=lambda: [0.0, 0.5, 1.0, 1.5, 2.0])
     control_offset_f: float = 0.0      # the "do nothing different" arm -- today's real policy
     comfort_band_f: float = 2.0        # hard comfort clamp on any offset, regardless of ladder
     # Target share of ELIGIBLE nights that run a NON-control offset (the rest run control).
