@@ -998,6 +998,17 @@ def _check_maintenance_acted(repo) -> dict:
     rng = max(temps) - min(temps)
     moved = sum(1 for r in rows if (r[1] or "hold") != "hold")
     active_intents = sum(v for k, v in intents.items() if k not in ("stabilize", "?"))
+    if rng < MAINT_ACTED_MIN_RANGE_F and active_intents > 0 and not _settle_cooling_allowed():
+        # 2026-09-20: settle_cool and deep_bias_cool BOTH resolve to neutral under the
+        # no-cooling policy (68 F woke this user), so a night of "active" intents landing on
+        # one temperature is the design, not a layer swallowing the moves. Saying otherwise
+        # would pin the battery to DEGRADED every night for doing exactly what was asked.
+        return _check(
+            "maintenance_acted", "Maintenance moved the water", "info",
+            f"{night}: {n} maintenance ticks held {min(temps):.1f}-{max(temps):.1f}F "
+            f"(range {rng:.1f}F). {active_intents} tick(s) asked for a cooling intent "
+            f"(intents: {intents_txt}) and every one resolved to neutral: settle cooling is "
+            f"switched off for this user, so holding IS the action.", None)
     if rng < MAINT_ACTED_MIN_RANGE_F and active_intents > 0:
         return _check(
             "maintenance_acted", "Maintenance moved the water", "warn",

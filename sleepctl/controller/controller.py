@@ -639,7 +639,8 @@ class SleepController:
             # The band saying it is on its charger / off the arm outranks any inference from
             # the physiology it is no longer measuring. 2026-09-19 05:07 the band reported
             # "in charger"; the session stayed in MAINTENANCE, steering blind, for an hour.
-            if getattr(frame, "wearable_off_arm", None) and not bed_exit.out_of_bed:
+            off_arm = bool(getattr(frame, "wearable_off_arm", None))
+            if off_arm and not bed_exit.out_of_bed:
                 try:
                     bed_exit.out_of_bed = True
                     bed_exit.reasons = list(getattr(bed_exit, "reasons", []) or []) + [
@@ -653,9 +654,16 @@ class SleepController:
             # bpm from 05:28, and the session ran to the window's close at 05:45 with the
             # bed commanded for nobody. Someone whose heart rate has said "up" for a quarter
             # of an hour in the wake window has woken; the alarm has nothing left to do.
+            # ...and a band ON ITS CHARGER outranks the window outright: it is not an
+            # inference about the sleeper, it is the sensor saying it is no longer on them.
+            # 2026-09-21 05:28 the band went on the charger and the session ran on in
+            # WAKE_RECOVERY to the window's close, which also held back the day's deploy
+            # (auto-update defers while a night is running) -- so the accelerometer fix that
+            # night had been waiting for could not land.
             ww_hold = float(getattr(cfg.tunables, "bed_exit_wake_window_persist_min", 15.0))
-            held_long = (getattr(bed_exit, "held_min", None) is not None
-                         and float(bed_exit.held_min) >= ww_hold)
+            held_long = (off_arm
+                         or (getattr(bed_exit, "held_min", None) is not None
+                             and float(bed_exit.held_min) >= ww_hold))
             if (bed_exit.out_of_bed
                     and bool(getattr(cfg.tunables, "bed_exit_ends_session", True))
                     and self.sm.state is not ControllerState.IDLE

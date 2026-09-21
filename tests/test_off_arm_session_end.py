@@ -49,3 +49,28 @@ def test_bed_entry_is_refused_while_the_band_is_off_the_arm():
     assert c._wearable_bed_entry(_frame(t0, hr=71.0, off_arm=True), recent, c.cfg) is False
     assert "off the arm" in (c.last_bed_entry_block or "")
     assert c._wearable_bed_entry(_frame(t0, hr=71.0), recent, c.cfg) is True
+
+
+def test_a_band_on_its_charger_ends_the_session_inside_the_wake_window():
+    """2026-09-21 05:28: the band went on its charger and the session ran on in WAKE_RECOVERY
+    to the window's close -- which also held back the day's deploy, because auto-update defers
+    while a night is running. A charger is not an inference about the sleeper; it is the sensor
+    saying it is no longer on them, and it outranks the wake deadline."""
+    from sleepctl.models import ContextRecord
+    c, t0 = _asleep_controller()
+    wake = t0 + timedelta(minutes=10)                 # the window is open around t0+10
+    ctx = ContextRecord(date="2026-09-19", required_wake_time=wake)
+    recent = [_frame(t0 - timedelta(minutes=i)) for i in range(12, 0, -1)]
+    c.decide(_frame(wake, hr=None, off_arm=True), ctx, recent, wake)
+    assert c.sm.state is ControllerState.IDLE
+    assert "off the arm" in (c.sm.reason or "")
+
+
+def test_an_ordinary_bed_exit_inside_the_window_still_waits_for_its_hold():
+    from sleepctl.models import ContextRecord
+    c, t0 = _asleep_controller()
+    wake = t0 + timedelta(minutes=10)
+    ctx = ContextRecord(date="2026-09-19", required_wake_time=wake)
+    recent = [_frame(t0 - timedelta(minutes=i)) for i in range(12, 0, -1)]
+    c.decide(_frame(wake, hr=64.0), ctx, recent, wake)
+    assert c.sm.state is not ControllerState.IDLE

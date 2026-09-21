@@ -1630,8 +1630,11 @@ class _DecisionsRepo:
                               (night, "maintenance", t, action, reason, intent))
 
 
-def test_a_night_that_judged_all_night_and_never_moved_the_water_is_flagged_with_the_reasons():
+def test_a_night_that_judged_all_night_and_never_moved_the_water_is_flagged_with_the_reasons(monkeypatch):
     from app.diagnostics import _check_maintenance_acted
+    # the 2026-09-07 night ran the policy that ALLOWED settle cooling, so a clamp that ate
+    # every move really was a layer swallowing them (see the policy-aware branch below)
+    monkeypatch.setattr(diagnostics, "_settle_cooling_allowed", lambda: True)
     rows = [(69.0, "hold", f"maintenance -> settle_cool (x) [data_quality=0.5{i%2}:missing]; clamped 67.0-69.5F (was 66.{i}F)", "settle_cool")
             for i in range(150)] + [(69.0, "hold", "maintenance -> stabilize", "stabilize")] * 50
     c = _check_maintenance_acted(_DecisionsRepo(rows))
@@ -1861,3 +1864,16 @@ def test_staging_plausibility_is_ok_when_signatures_hold(repo):
 
 def test_staging_plausibility_without_an_audit_is_informational(repo):
     assert diagnostics._check_staging_plausibility(repo)["status"] == "info"
+
+
+def test_maintenance_holding_neutral_is_the_policy_not_a_swallowed_move(monkeypatch):
+    """Under the no-cooling policy settle_cool and deep_bias_cool BOTH resolve to neutral, so a
+    night of cooling intents landing on one temperature is what was asked for -- not a layer
+    eating the moves. Saying otherwise pins the battery to DEGRADED every night."""
+    from app.diagnostics import _check_maintenance_acted
+    rows = [(69.0, "hold", "maintenance -> settle_cool", "settle_cool") for _ in range(150)] + \
+           [(69.0, "hold", "maintenance -> deep_bias_cool", "deep_bias_cool")] * 50
+    monkeypatch.setattr(diagnostics, "_settle_cooling_allowed", lambda: False)
+    c = _check_maintenance_acted(_DecisionsRepo(rows))
+    assert c["status"] == "info" and "holding IS the action" in c["detail"]
+    assert c["remedy"] is None
