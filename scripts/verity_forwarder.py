@@ -311,39 +311,105 @@ _ACC_FALLBACK_RATE_HZ = 26
 #: An accelerometer that has started but delivered no frame within this long is not going to.
 #: (PPI has a documented ~25 s warm-up; ACC has none -- it streams within a second or two.)
 _ACC_PROBE_S = 45.0
-_ACC_RUNG_FILE = "verity-acc-rung"
+#: The rate the ladder settled on, persisted as a RATE ("52" / "26" / "off") rather than a
+#: position in the ladder: the ladder itself changes as rates are learned unsupported, so an
+#: index written by one build means something else in the next. A file holding anything that
+#: is not a rate we currently offer resumes at the top, which is also the honest answer for a
+#: band whose stored rate has just been dropped from the ladder.
+_ACC_RATE_FILE = "verity-acc-rate"
+#: Rates this band has REFUSED outright. The Verity Sense streams accelerometer at 52 Hz and
+#: rejects 26 Hz with "invalid sample rate" (code 8) -- see the refusal handler below.
+_ACC_UNSUPPORTED_FILE = "verity-acc-unsupported"
+#: Refusal codes that mean "this SAMPLE RATE is wrong", as opposed to "the link is too slow".
+_ACC_RATE_ERRORS = (5, 8)      # invalid parameter, invalid sample rate
 _ACC_RESTORE_AFTER_S = 3 * 3600.0
 
 
-def _acc_ladder(cli_rate: int) -> list:
-    """Accelerometer rates to try, best first; ``None`` is "no accelerometer (PPI only)"."""
-    rungs: list = [int(cli_rate)]
+def _acc_ladder(cli_rate: int, unsupported=()) -> list:
+    """Accelerometer rates to try, best first; ``None`` is "no accelerometer (PPI only)".
+
+    Rates the band has refused are dropped: offering one again costs a whole session, and on
+    2026-09-20 it cost a whole night (the ladder stepped to 26 Hz, the Verity refused it, and
+    the accelerometer -- every marker gesture and the actigraphy wake detector with it -- was
+    off from 22:37 to morning)."""
+    bad = {int(x) for x in (unsupported or ())}
+    rates = [int(cli_rate)]
     if int(cli_rate) > _ACC_FALLBACK_RATE_HZ:
-        rungs.append(_ACC_FALLBACK_RATE_HZ)
-    rungs.append(None)
-    return rungs
+        rates.append(_ACC_FALLBACK_RATE_HZ)
+    rates = [r for r in rates if r not in bad] or [int(cli_rate)]
+    return rates + [None]
 
 
-def _load_acc_rung(root: Path) -> int:
+def _load_unsupported_rates(root: Path) -> set:
     try:
-        return max(0, int((root / ".run" / _ACC_RUNG_FILE).read_text().strip() or "0"))
+        raw = (root / ".run" / _ACC_UNSUPPORTED_FILE).read_text()
     except Exception:
-        return 0
+        return set()
+    out = set()
+    for part in raw.replace("\n", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.add(int(part))
+    return out
 
 
-def _save_acc_rung(root: Path, rung: int) -> None:
+def _remember_unsupported_rate(root: Path, rate: int) -> set:
+    """Record a rate the band refused, and return the full set."""
+    rates = _load_unsupported_rates(root) | {int(rate)}
+    _STATS["acc_unsupported"] = rates
     try:
         (root / ".run").mkdir(parents=True, exist_ok=True)
-        (root / ".run" / _ACC_RUNG_FILE).write_text(str(int(rung)))
+        (root / ".run" / _ACC_UNSUPPORTED_FILE).write_text(",".join(str(r) for r in sorted(rates)))
+    except Exception:
+        pass
+    return rates
+
+
+def _load_acc_rate(root: Path):
+    """The persisted rate: an int, ``None`` for "no accelerometer", or "" when unset."""
+    try:
+        raw = (root / ".run" / _ACC_RATE_FILE).read_text().strip()
+    except Exception:
+        return ""
+    if raw.lower() == "off":
+        return None
+    return int(raw) if raw.isdigit() else ""
+
+
+def _save_acc_rate(root: Path, rate) -> None:
+    try:
+        (root / ".run").mkdir(parents=True, exist_ok=True)
+        (root / ".run" / _ACC_RATE_FILE).write_text("off" if rate is None else str(int(rate)))
     except Exception:
         pass
 
 
+def _rung_for_rate(ladder: list, rate) -> int:
+    """Where a persisted rate sits in today's ladder; the top rung when it is no longer offered."""
+    if rate == "":
+        return 0
+    if rate is None:
+        return len(ladder) - 1
+    try:
+        return ladder.index(int(rate))
+    except ValueError:
+        return 0
+
+
 def _next_acc_rung(rung: int, ladder_len: int, stall: "dict | None", streamed_s: float) -> int:
-    """Where the ladder goes after a session: down one rung after a stall with the
-    accelerometer running, back to the top after a long clean stretch, else unchanged."""
-    if stall is not None and stall.get("acc") is not None and rung < ladder_len - 1:
-        return rung + 1
+    """Where the ladder goes after a session: down one rung when the ACCELEROMETER SPECIFICALLY
+    was the stream that failed, back to the top after a long clean stretch, else unchanged.
+
+    "Specifically" means it delivered nothing at all while the beat-interval stream on the same
+    link kept delivering. A stall where BOTH streams went quiet is a link that died (2026-09-20
+    22:36: both restarts failed with "Not connected"), and stepping the accelerometer down for
+    it treats a radio drop as an accelerometer fault."""
+    if stall is not None and rung < ladder_len - 1 and stall.get("acc") is not None:
+        acc_frames = stall.get("acc_frames")
+        ppi_frames = stall.get("ppi_frames")
+        acc_specific = (acc_frames == 0 and (ppi_frames or 0) > 0) if acc_frames is not None else False
+        if acc_specific:
+            return rung + 1
     if streamed_s >= _ACC_RESTORE_AFTER_S and rung > 0:
         return 0
     return rung
@@ -1072,7 +1138,8 @@ async def _pmd_session(client, args) -> bool:
             pmd.SETTING_RESOLUTION: args.acc_resolution,
             pmd.SETTING_CHANNELS: 3,
         }
-        ladder = _acc_ladder(int(getattr(args, "acc_rate_cli", args.acc_rate)))
+        cli_rate = int(getattr(args, "acc_rate_cli", args.acc_rate))
+        ladder = _acc_ladder(cli_rate, _STATS.get("acc_unsupported") or ())
         rung = min(int(_STATS.get("acc_rung", 0) or 0), len(ladder) - 1)
         acc_rate = ladder[rung]
         if acc_rate is not None:
@@ -1111,6 +1178,30 @@ async def _pmd_session(client, args) -> bool:
                 await _pmd_command(client, responses, pmd.build_stop_command(meas_type),
                                    f"stop {what}", args.control_timeout)
                 resp = await _pmd_command(client, responses, cmd, what, args.control_timeout)
+
+            if (resp is None and meas_type == pmd.MEAS_ACC and acc_rate is not None
+                    and _PMD_LAST_ERROR.get("code") in _ACC_RATE_ERRORS):
+                # The band is saying this RATE is wrong for this hardware -- not that the link
+                # is too slow to carry it. 2026-09-20 22:37 the ladder had stepped to 26 Hz
+                # after a link drop, the Verity refused it ("invalid sample rate", code 8), and
+                # the accelerometer stayed off until morning: no marker gestures, no actigraphy
+                # wake detector, no accelerometer breathing estimate. Remember the rate so the
+                # ladder never offers it again, and retry at the best rate that remains.
+                refused = int(acc_rate)
+                ladder = _acc_ladder(cli_rate, _remember_unsupported_rate(_repo_root(), refused))
+                rung = 0
+                acc_rate = ladder[0]
+                if acc_rate is not None and int(acc_rate) != refused:
+                    args.acc_rate = int(acc_rate)
+                    acc_settings[pmd.SETTING_SAMPLE_RATE] = int(acc_rate)
+                    _STATS["acc_rung"] = rung
+                    _save_acc_rate(_repo_root(), acc_rate)
+                    _log(f"PMD: this band does not support ACC@{refused}Hz -- dropping that rate "
+                         f"from the ladder and retrying at {acc_rate}Hz")
+                    what = (f"start ACC @{args.acc_rate}Hz/{args.acc_resolution}bit/"
+                            f"{args.acc_range}G")
+                    cmd = pmd.build_start_command(pmd.MEAS_ACC, acc_settings)
+                    resp = await _pmd_command(client, responses, cmd, what, args.control_timeout)
 
             if resp is None:
                 _log(f"PMD: {what} FAILED; continuing without it")
@@ -1176,7 +1267,7 @@ async def _pmd_session(client, args) -> bool:
                     if rung < len(ladder) - 1:
                         rung += 1
                         _STATS["acc_rung"] = rung
-                        _save_acc_rung(_repo_root(), rung)
+                        _save_acc_rate(_repo_root(), ladder[rung])
                     nxt = ladder[rung]
                     if nxt is not None:
                         args.acc_rate = int(nxt)
@@ -1248,6 +1339,7 @@ async def _pmd_session(client, args) -> bool:
                 _log(f"PMD: no sensor data for {fresh.age():.0f}s while connected -- "
                      f"dropping the link to force a reconnect")
                 _STATS["pmd_stall"] = {"rung": rung, "acc": acc_rate,
+                                       "acc_frames": frames["acc"], "ppi_frames": frames["ppi"],
                                        "streamed_s": time.monotonic() - t0}
                 return False
 
@@ -1499,8 +1591,13 @@ async def _main_async(args, env) -> None:
     preferred_mode = args.mode
     pinned_address = args.address
     args.acc_rate_cli = int(args.acc_rate)
-    ladder = _acc_ladder(args.acc_rate_cli)
-    _STATS["acc_rung"] = min(_load_acc_rung(_repo_root()), len(ladder) - 1)
+    _STATS["acc_unsupported"] = _load_unsupported_rates(_repo_root())
+    ladder = _acc_ladder(args.acc_rate_cli, _STATS["acc_unsupported"])
+    _STATS["acc_rung"] = _rung_for_rate(ladder, _load_acc_rate(_repo_root()))
+    if _STATS["acc_unsupported"]:
+        _log("PMD: this band refuses ACC at "
+             + ", ".join(f"{r}Hz" for r in sorted(_STATS["acc_unsupported"]))
+             + " -- those rates are not in the ladder")
     if _STATS["acc_rung"]:
         _log(f"PMD: resuming at accelerometer rung {_STATS['acc_rung']}/{len(ladder) - 1}")
     # Sessions that OPENED a connection and produced nothing. Only these say anything about the
@@ -1544,15 +1641,19 @@ async def _main_async(args, env) -> None:
             await _run_once(args, env)
             stall = _STATS.pop("pmd_stall", None)
             streamed = float(_STATS.pop("pmd_streamed_s", 0.0) or 0.0)
-            nxt = _next_acc_rung(int(_STATS["acc_rung"]), len(ladder), stall, streamed)
+            # A rate refused mid-session is out of the ladder from here on, so rebuild it
+            # before deciding where the next session starts.
+            ladder = _acc_ladder(args.acc_rate_cli, _STATS.get("acc_unsupported") or ())
+            cur = min(int(_STATS["acc_rung"]), len(ladder) - 1)
+            nxt = _next_acc_rung(cur, len(ladder), stall, streamed)
             if nxt != _STATS["acc_rung"]:
                 what = ladder[nxt]
                 _log(f"PMD: accelerometer rung {_STATS['acc_rung']} -> {nxt} "
                      + (f"(ACC@{what}Hz)" if what is not None else "(no accelerometer, PPI only)")
-                     + (" after a stall with the accelerometer running" if stall else
+                     + (" after a stall with the accelerometer alone silent" if stall else
                         f" after {streamed / 3600:.1f}h of clean streaming"))
                 _STATS["acc_rung"] = nxt
-                _save_acc_rung(_repo_root(), nxt)
+                _save_acc_rate(_repo_root(), ladder[nxt])
             if streamed > 0.0:
                 _STATS["pmd_retries"] = 0  # PMD produced frames: the retry budget is fresh
             if _STATS["posts"] > before:

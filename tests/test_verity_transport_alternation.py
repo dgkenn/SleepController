@@ -30,7 +30,7 @@ def _args():
 def _quiet(monkeypatch, tmp_path):
     monkeypatch.setattr(vf, "_repo_root", lambda: tmp_path)
     monkeypatch.setattr(vf, "_beat", lambda *a, **k: None)
-    monkeypatch.setattr(vf, "_load_acc_rung", lambda root: 0)
+    monkeypatch.setattr(vf, "_load_acc_rate", lambda root: "")
     monkeypatch.setattr(vf, "_post_link", lambda *a, **k: None)
     monkeypatch.setitem(vf._STATS, "posts", 0)
     monkeypatch.setitem(vf._STATS, "acc_rung", 0)

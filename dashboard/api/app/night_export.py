@@ -485,8 +485,22 @@ def build_night_export(repo, night_date: str) -> dict:
                                     "conf": pl.get("stage_confidence"), "signals": o.get("signals"),
                                     "run_len": o.get("run_len"), "hits": o.get("transition_hits"),
                                     "awake_hr_ref": o.get("awake_hr_ref"),
-                                    "entry_ref_n": o.get("entry_ref_n")})
+                                    "entry_ref_n": o.get("entry_ref_n"),
+                                    # Why the last run that had progressed ended, and this
+                                    # tick's breathing-irregularity reading: the two fields
+                                    # that turn "onset was 96 min late" into a cause.
+                                    "last_break": o.get("last_break"),
+                                    "resp_cv": o.get("resp_cv")})
         out["onset_trace"] = onset_trace
+        breaks: dict = {}
+        for t in onset_trace:
+            b = t.get("last_break") or {}
+            why = str(b.get("why") or "").split(" (")[0]
+            if why:
+                rec = breaks.setdefault(why, {"n": 0, "max_run_len": 0})
+                rec["n"] += 1
+                rec["max_run_len"] = max(rec["max_run_len"], int(b.get("run_len") or 0))
+        out["onset_breaks"] = breaks
         out["thermal_profile"] = profile_seen
         # Every INDUCTION tick as the controller saw it (stage, confidence, source, heart rate,
         # data quality, dense-history depth). The onset trace above needs the new per-tick

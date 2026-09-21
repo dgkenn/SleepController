@@ -24,6 +24,9 @@ class Script:
     def __init__(self):
         self.refuse_code = 0          # PMD START error code (0 = accept)
         self.hr_stream = True         # generic HR service delivers packets
+        #: ACC sample rates this fake band rejects with "invalid sample rate" (code 8), the
+        #: way a real Verity Sense rejects 26 Hz.
+        self.refuse_acc_rates = set()
         self.clients = []
 
 
@@ -37,6 +40,18 @@ class _Device:
 
 class _Svc:
     uuid = pmd.PMD_SERVICE_UUID
+
+
+def _acc_rate_of(cmd: bytes):
+    """The SAMPLE_RATE this START command asks for, or None when it carries no settings."""
+    if len(cmd) < 3 or cmd[0] != pmd.OP_START_MEASUREMENT:
+        return None
+    try:
+        settings, _exact = pmd._try_parse_settings(bytes(cmd[2:]))
+    except Exception:
+        return None
+    vals = settings.get(pmd.SETTING_SAMPLE_RATE) or []
+    return int(vals[0]) if vals else None
 
 
 def _fake_bleak(script: Script):
@@ -84,8 +99,12 @@ def _fake_bleak(script: Script):
 
         async def write_gatt_char(self, uuid, cmd, response=True):
             opcode, meas = cmd[0], cmd[1]
-            self.commands.append((opcode, meas))
+            rate = _acc_rate_of(cmd)
+            self.commands.append((opcode, meas, rate))
             err = script.refuse_code if opcode == pmd.OP_START_MEASUREMENT else 0
+            if (not err and opcode == pmd.OP_START_MEASUREMENT and meas == pmd.MEAS_ACC
+                    and rate in script.refuse_acc_rates):
+                err = 8                       # "invalid sample rate"
             self.control_cb(0, bytes([pmd.CONTROL_RESPONSE_HEADER, opcode, meas, err, 0x00]))
 
     mod = types.ModuleType("bleak")
@@ -121,7 +140,7 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(vf, "_ROLE_CHECK_S", 0.05)
     monkeypatch.setattr(vf, "_PMD_MISSING_BEFORE_STEPUP_S", 0.05)
     for k, v in (("posts", 0), ("acc_rung", 0), ("pmd_retries", 0), ("last_data_at", 0.0),
-                 ("session_opened", False)):
+                 ("session_opened", False), ("acc_unsupported", set())):
         monkeypatch.setitem(vf._STATS, k, v)
     monkeypatch.setitem(vf._RELEASE, "until", 0.0)
     monkeypatch.setitem(vf._RELEASE, "run", 0)
@@ -141,11 +160,16 @@ def _links(posts):
 
 
 def _starts(client):
-    return [m for op, m in client.commands if op == pmd.OP_START_MEASUREMENT]
+    return [m for op, m, _r in client.commands if op == pmd.OP_START_MEASUREMENT]
 
 
 def _stops(client):
-    return [m for op, m in client.commands if op == pmd.OP_STOP_MEASUREMENT]
+    return [m for op, m, _r in client.commands if op == pmd.OP_STOP_MEASUREMENT]
+
+
+def _acc_start_rates(client):
+    return [r for op, m, r in client.commands
+            if op == pmd.OP_START_MEASUREMENT and m == pmd.MEAS_ACC]
 
 
 def test_a_band_on_its_charger_ends_the_session_instead_of_falling_back_to_heart_rate(harness):
@@ -199,3 +223,36 @@ def test_with_the_api_unreachable_the_receiver_acts_alone(harness):
     script.refuse_code = pmd.ERROR_DEVICE_IN_CHARGER     # any quick exit will do
     _run(_args())
     assert not any("second receiver" in m for m in logs)
+
+
+# ------------------------------------------------------- 2026-09-20: a rate the band refuses
+def test_a_refused_sample_rate_costs_the_rate_not_the_accelerometer(harness, tmp_path):
+    """The night the accelerometer went missing. A link drop stepped the ladder to 26 Hz, the
+    Verity refused 26 Hz outright ("invalid sample rate"), and the forwarder carried on with
+    PPI alone -- so no marker gesture, no actigraphy and no accelerometer breathing estimate
+    from 22:37 until morning. A refused RATE must cost that rate, never the accelerometer."""
+    script, posts, logs = harness
+    script.refuse_acc_rates = {26}
+    args = _args()
+    args.acc_rate = 26                      # where last night's ladder left us
+    vf._STATS["acc_rung"] = 1
+    _run(args)
+    client = script.clients[-1]
+    rates = _acc_start_rates(client)
+    assert 26 in rates, "the refused rate was never tried"
+    assert rates[-1] == 52, f"never came back to a supported rate: {rates}"
+    assert pmd.MEAS_ACC in _starts(client)
+    assert any("does not support ACC@26Hz" in m for m in logs), logs
+    assert any("ACC@52Hz" in " ".join(l.get("streams") or []) for l in _links(posts) if isinstance(l, dict)) or \
+        any("streaming ACC@52Hz" in m for m in logs), logs
+    # ...and the band is never asked for 26 Hz again, in this session or a later one
+    assert vf._load_unsupported_rates(tmp_path) == {26}
+    assert vf._acc_ladder(52, vf._load_unsupported_rates(tmp_path)) == [52, None]
+
+
+def test_a_band_that_accepts_its_rate_is_left_alone(harness, tmp_path):
+    script, posts, logs = harness
+    _run(_args())
+    assert _acc_start_rates(script.clients[-1])[0] == 52
+    assert vf._load_unsupported_rates(tmp_path) == set()
+    assert not any("does not support" in m for m in logs)

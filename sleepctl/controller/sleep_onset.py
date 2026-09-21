@@ -95,6 +95,8 @@ class SleepOnsetDetector:
         self._lapse_start: Optional[datetime] = None  # start of the current non-qualifying lapse
         self._transition_hits = 0                     # qualifying samples carrying a TRANSITION signal
         self._confirmed: Optional[SleepOnsetEvent] = None
+        self._last_break: Optional[dict] = None       # what ended the last run that had progressed
+        self._last_resp_cv: Optional[float] = None    # this tick's breathing-irregularity reading
 
     @property
     def onset_time(self) -> Optional[datetime]:
@@ -110,6 +112,8 @@ class SleepOnsetDetector:
         self._transition_hits = 0
         self._confirmed = None
         self._entry_hrs = []
+        self._last_break = None
+        self._last_resp_cv = None
 
     def status(self) -> dict:
         """The detector's working state for the per-tick decision log: what it saw this tick,
@@ -123,6 +127,12 @@ class SleepOnsetDetector:
                              if getattr(self, "_last_base_hr", None) is not None else None),
             "entry_ref_n": len(self._entry_hrs),
             "confirmed": self._confirmed is not None,
+            # What ended the LAST run that had made progress, and how far it had got. The
+            # single most useful field for "why is onset late", and the one the 2026-09-20
+            # trace was missing.
+            "last_break": dict(getattr(self, "_last_break", None) or {}) or None,
+            "resp_cv": (round(float(self._last_resp_cv), 4)
+                        if getattr(self, "_last_resp_cv", None) is not None else None),
         }
 
     def mark_confirmed(self, ts: datetime, latency_min: Optional[float] = None) -> None:
@@ -141,8 +151,17 @@ class SleepOnsetDetector:
         if 0.0 <= since <= self.entry_ref_min and len(self._entry_hrs) < 40:
             self._entry_hrs.append(float(frame.heart_rate))
 
-    def _break_run(self) -> None:
-        """Abandon the current persistence run. Called only on POSITIVE evidence of wakefulness."""
+    def _break_run(self, why: str = "unspecified") -> None:
+        """Abandon the current persistence run. Called only on POSITIVE evidence of wakefulness.
+
+        ``why`` is carried into :meth:`status` and so into the night's onset trace. Without it
+        a reset is invisible after the fact: on 2026-09-20 the run reached 9-12 ticks four
+        separate times between 21:22 and 22:33 and collapsed each time, and the published
+        trace recorded the signals but not one word about what broke it -- so the 96 minutes
+        between the stager's first sustained sleep and the confirmed onset could be described
+        and not explained."""
+        if self._run_len:
+            self._last_break = {"why": why, "run_len": self._run_len}
         self._run_start = None
         self._run_len = 0
         self._lapse_start = None
@@ -227,13 +246,13 @@ class SleepOnsetDetector:
 
         # Must be in bed to fall asleep.
         if frame.presence is False:
-            self._break_run()
+            self._break_run("out of bed (the Pod reports no presence)")
             return None
 
         # Reliability gate: the BCG HR/HRV/RR are only valid when still. A high-movement
         # sample can't be sleep onset and breaks the run, regardless of the stage label.
         if frame.movement is not None and frame.movement > self.move_unreliable:
-            self._break_run()
+            self._break_run(f"movement {frame.movement:.3f} over {self.move_unreliable:.2f}")
             return None
 
         # RESPIRATORY-IRREGULARITY VETO. Breathing variability is the one signal that actually
@@ -267,8 +286,10 @@ class SleepOnsetDetector:
         # actually saw. Returning early left the previous tick's signals frozen in the trace for
         # the whole 25 minutes, which is why the reset looked causeless.
         self._last_sig, self._last_base_hr = list(sig), base.get("hr")
+        self._last_resp_cv = resp_cv
         if resp_cv is not None and resp_cv >= self.resp_irregular_cv:
-            self._break_run()
+            self._break_run(f"breathing irregular (CV {resp_cv:.3f} over {self.resp_irregular_cv:.2f}, "
+                            f"{len(resp_window) + 1} samples from {cur_src or 'unknown'})")
             return None
 
         # Stage-persistence FALLBACK, bounded and physiological: half an hour of uninterrupted
@@ -348,7 +369,7 @@ class SleepOnsetDetector:
                 return self._confirmed
         elif frame.stage is SleepStage.AWAKE:
             # A stage label that says AWAKE is positive evidence against sleep, not a gap in it.
-            self._break_run()
+            self._break_run("the stager scored this tick AWAKE")
         elif self._run_start is not None:
             # A LAPSE, not a contradiction: the stage is still sleep (or unknown) and nothing has
             # positively said otherwise -- the 2-of-N test simply did not fire on this sample,
@@ -357,5 +378,6 @@ class SleepOnsetDetector:
             if self._lapse_start is None:
                 self._lapse_start = now
             if (now - self._lapse_start).total_seconds() / 60.0 > self.break_tolerance_min:
-                self._break_run()
+                self._break_run(f"{self.break_tolerance_min:.0f} min without {self.min_signals} "
+                                f"signals (last saw {len(sig)}: {', '.join(sig) or 'none'})")
         return None

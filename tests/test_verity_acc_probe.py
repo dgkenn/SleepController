@@ -70,4 +70,5 @@ def test_silent_acc_is_restarted_at_26hz_then_dropped(monkeypatch, tmp_path):
     assert kinds.count(pmd.OP_START_MEASUREMENT) == 2
     assert any("retrying at 26Hz" in l for l in logs), logs
     assert any("PPI only" in l for l in logs), logs
-    assert vf._load_acc_rung(tmp_path) == 2
+    # the rung is persisted as the RATE it settled on, not its position in the ladder
+    assert vf._load_acc_rate(tmp_path) is None

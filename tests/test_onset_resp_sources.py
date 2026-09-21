@@ -84,3 +84,77 @@ def test_the_status_reports_the_tick_it_saw_even_when_the_run_is_broken():
               for i in range(30)]
     _feed(det, cfg, frames)
     assert isinstance(det.status().get("signals"), list)
+
+
+# ---------------------------------------------------- 2026-09-20: a reset with no recorded cause
+def test_every_reset_says_what_broke_the_run():
+    """The run reached 9-12 ticks four times between 21:22 and 22:33 and collapsed each time;
+    the published trace recorded the signals and nothing about the cause, so 96 minutes of
+    INDUCTION on a sleeping user could be described and not explained."""
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.sleep_onset import SleepOnsetDetector
+    from sleepctl.models import SensorFrame, SleepStage
+
+    t = AppConfig().tunables
+    det = SleepOnsetDetector(AppConfig())
+    assert det.status()["last_break"] is None
+
+    t0 = datetime(2026, 9, 20, 21, 20)
+
+    def _f(i, stage=SleepStage.LIGHT, movement=0.02, rr=14.0, hr=64.0):
+        return SensorFrame(timestamp=t0 + timedelta(minutes=i), stage=stage,
+                           stage_confidence=0.7, heart_rate=hr, movement=movement,
+                           respiratory_rate=rr, data_age_seconds=5.0)
+
+    recent = []
+    for i in range(6):                       # build a run
+        f = _f(i)
+        det.evaluate(f, recent, t0 + timedelta(minutes=i), bed_entry_time=t0)
+        recent = (recent + [f])[-40:]
+    assert det.status()["run_len"] > 0
+
+    det.evaluate(_f(7, stage=SleepStage.AWAKE), recent, t0 + timedelta(minutes=7), bed_entry_time=t0)
+    brk = det.status()["last_break"]
+    assert brk and "AWAKE" in brk["why"] and brk["run_len"] > 0
+
+    # only a run that had PROGRESSED is worth recording, so rebuild one before the next break
+    for i in range(8, 14):
+        f = _f(i)
+        det.evaluate(f, recent, t0 + timedelta(minutes=i), bed_entry_time=t0)
+        recent = (recent + [f])[-40:]
+    assert det.status()["run_len"] > 0
+    det.evaluate(_f(15, movement=0.9), recent, t0 + timedelta(minutes=15), bed_entry_time=t0)
+    assert "movement" in det.status()["last_break"]["why"]
+
+
+def test_the_breathing_veto_reports_its_reading():
+    from datetime import datetime, timedelta
+    from sleepctl.config import AppConfig
+    from sleepctl.controller.sleep_onset import SleepOnsetDetector
+    from sleepctl.models import SensorFrame, SleepStage
+
+    t = AppConfig().tunables
+    t0 = datetime(2026, 9, 20, 21, 20)
+
+    def _hist(rr_of):
+        return [SensorFrame(timestamp=t0 + timedelta(minutes=i), stage=SleepStage.LIGHT,
+                            stage_confidence=0.7, heart_rate=64.0, movement=0.02,
+                            respiratory_rate=rr_of(i), data_age_seconds=5.0)
+                for i in range(t.onset_resp_cv_window + 5)]
+
+    # wildly irregular breathing from ONE estimator: the veto fires and says what it read
+    hist = _hist(lambda i: 10.0 if i % 2 else 18.0)
+    det = SleepOnsetDetector(AppConfig())
+    det.evaluate(hist[-1], hist[:-1], t0 + timedelta(minutes=40), bed_entry_time=t0)
+    st = det.status()
+    assert st["resp_cv"] is not None and st["resp_cv"] >= t.onset_resp_irregular_cv
+    assert st["confirmed"] is False
+
+    # steady breathing: measured, reported, and no veto
+    steady = _hist(lambda i: 14.0 + (0.1 if i % 2 else -0.1))
+    det2 = SleepOnsetDetector(AppConfig())
+    det2.evaluate(steady[-1], steady[:-1], t0 + timedelta(minutes=40), bed_entry_time=t0)
+    st2 = det2.status()
+    assert st2["resp_cv"] is not None and st2["resp_cv"] < t.onset_resp_irregular_cv
+    assert st2["last_break"] is None
