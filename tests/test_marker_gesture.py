@@ -174,3 +174,65 @@ def test_snap_degenerate_input_does_not_raise():
     for bad in ([], None, [1.0] * 3, [None] * 300):
         assert pmd.snap_gesture(bad, FS)["marker"] is False
     assert pmd.snap_gesture(_quiet(), 0.0)["marker"] is False
+
+
+# ------------------------------------------------- the gesture this user actually performs
+# 2026-09-21, in their words: "I shook the sensor on the arm band by snapping it on my skin
+# and shaking it." Measured, that combination was missed by BOTH detectors above and fell
+# between them -- the snap spread the spectrum so the shake's single-peak concentration read
+# 0.23-0.32 against a 0.35 gate, while the shake kept the arm from being quiet so the snap's
+# quiet-arm test read 0.33-0.36 g against a 0.12 limit.
+
+def _shaken(sig, start_s, dur_s, freq, amp):
+    for i in range(int(start_s * FS), min(len(sig), int((start_s + dur_s) * FS))):
+        sig[i] += amp * math.sin(2 * math.pi * freq * (i - int(start_s * FS)) / FS)
+    return sig
+
+
+def test_a_snap_followed_by_a_shake_is_a_marker():
+    for freq in (3.0, 4.0, 5.0, 6.5):
+        for amp in (0.35, 0.6, 1.0):
+            sig = _shaken(_tap(_quiet(), 1.0, 1.5), 1.3, 1.5, freq, amp)
+            r = pmd.any_marker(sig, FS)
+            assert r["marker"] is True, f"{freq} Hz at {amp} g was missed: {r}"
+
+
+def test_a_short_shake_is_a_marker():
+    """Spectral concentration is length-dependent, so the sustained-shake detector needs 1.5 s.
+    Half-asleep, the shake is shorter than that."""
+    for dur in (0.8, 1.0, 1.2):
+        assert pmd.any_marker(_shaken(_quiet(), 1.0, dur, 5.0, 0.6), FS)["marker"] is True
+
+
+def test_a_slow_deliberate_shake_is_a_marker_and_still_is_not_walking():
+    assert pmd.marker_gesture(_osc(3.0, 0.6), FS)["marker"] is True
+    assert pmd.GAIT_HI_HZ < pmd.MARKER_LO_HZ          # still no overlap with gait
+    assert pmd.any_marker(_osc(1.9, 0.25), FS)["marker"] is False
+
+
+def test_the_burst_detector_rejects_everything_a_sleeping_body_does():
+    """Restless turning is large and broadband but STATIONARY; a gesture starts and stops."""
+    for sd in (0.20, 0.35, 0.50):
+        false_markers = 0
+        for seed in range(200):
+            random.seed(seed)
+            sig = [1.0 + random.gauss(0, sd) for _ in range(int(FS * 4))]
+            if pmd.any_marker(sig, FS)["marker"]:
+                false_markers += 1
+        assert false_markers == 0, f"{sd} g turning produced {false_markers} false markers"
+    random.seed(4)
+    lurch = [1.0 + (1.0 if 40 < i < 120 else 0.0) + random.gauss(0, 0.03)
+             for i in range(int(FS * 4))]
+    assert pmd.any_marker(lurch, FS)["marker"] is False
+    assert pmd.burst_gesture(_osc(6.0, 0.05), FS)["marker"] is False      # tremor: too small
+
+
+def test_the_burst_detector_reports_what_it_measured():
+    r = pmd.burst_gesture(_shaken(_tap(_quiet(), 1.0, 1.5), 1.3, 1.5, 5.0, 0.6), FS)
+    assert r["kind"] == "burst" and r["marker"] is True
+    assert r["amp_g"] >= pmd.BURST_MIN_AMPLITUDE_G
+    assert r["band_fraction"] >= pmd.BURST_MIN_BAND_FRACTION
+    assert r["burst_ratio"] >= pmd.BURST_MIN_RATIO
+    for bad in ([], None, [1.0] * 3, [None] * 300):
+        assert pmd.burst_gesture(bad, FS)["marker"] is False
+    assert pmd.burst_gesture(_quiet(), 0.0)["marker"] is False

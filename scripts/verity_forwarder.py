@@ -1368,9 +1368,15 @@ async def _pmd_session(client, args) -> bool:
                             counts["marker_kind"] = mk.get("kind")
                             counts["marker_hz"] = mk.get("freq_hz")
                             marker_buf.clear()
-                            if mk.get("kind") == "snap":
+                            kind = mk.get("kind")
+                            if kind == "snap":
                                 _log(f"MARKER snap detected ({mk.get('n_impulses')} taps, "
                                      f"{mk.get('gap_s')} s apart, {mk.get('amp_g')} g) -- "
+                                     f"logging an awake anchor")
+                            elif kind == "burst":
+                                _log(f"MARKER burst detected ({mk.get('amp_g')} g, "
+                                     f"{mk.get('band_fraction')} of its energy in-band, "
+                                     f"{mk.get('burst_ratio')}x the quiet floor) -- "
                                      f"logging an awake anchor")
                             else:
                                 _log(f"MARKER shake detected ({mk.get('freq_hz')} Hz) -- "

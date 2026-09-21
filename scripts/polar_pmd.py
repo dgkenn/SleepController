@@ -729,7 +729,10 @@ def locomotion_features(samples_g, fs: float = 52.0) -> dict:
 
 #: Deliberate MARKER GESTURE band, in Hz. A person shaking their arm on purpose oscillates at
 #: roughly 4-7 Hz -- far above gait (1.2-2.8 Hz) and far above any postural movement in bed.
-MARKER_LO_HZ, MARKER_HI_HZ = 3.5, 8.0
+#: Lowered from 3.5 to 3.0 on 2026-09-21: the user's own gesture is "snap the band against
+#: the skin and shake it", and a deliberate shake performed half-asleep runs slower than the
+#: brisk 4-7 Hz the band was drawn around. 3.0 still clears GAIT_HI_HZ (2.8) with no overlap.
+MARKER_LO_HZ, MARKER_HI_HZ = 3.0, 8.0
 
 #: A marker must be VIGOROUS. This is the threshold that separates a deliberate shake from
 #: physiological tremor, which lives in an overlapping frequency band (4-12 Hz) but at an order
@@ -902,8 +905,86 @@ def snap_gesture(samples_g, fs: float = 52.0) -> dict:
     return out
 
 
+#: The BURST marker: one vigorous act, whether it is rhythmic, impulsive, or (as this user
+#: actually performs it) a snap against the skin followed by a shake. Measured 2026-09-21,
+#: that combination is missed by BOTH detectors above and falls between them: the snap's
+#: impulse spreads the spectrum so the shake's single-peak concentration lands at 0.23-0.32
+#: against a 0.35 gate, while the shake keeps the arm from being quiet so the snap detector's
+#: quiet-arm test fails at 0.33-0.36 g against a 0.12 limit. A short shake (under 1.5 s) falls
+#: through the same crack, because spectral concentration is length-dependent.
+#:
+#: What separates a deliberate act from everything a sleeping body does is not its rhythm. It
+#: is three things together: it is LARGE, its energy sits at frequencies a body at rest does
+#: not produce, and it STARTS AND STOPS -- the arm is still on either side of it.
+BURST_MIN_AMPLITUDE_G = 0.5
+#: Share of spectral power in 2.5-12 Hz. Measured against the confounders: a postural roll-over
+#: scores 0.04, walking 0.03, and broadband restless turning 0.66-0.73, while every real gesture
+#: scores 0.89-0.99.
+BURST_LO_HZ, BURST_HI_HZ = 2.5, 12.0
+BURST_MIN_BAND_FRACTION = 0.80
+#: Peak sub-window energy over the window's QUIET floor. This is what rejects restless turning,
+#: which is large and broadband but STATIONARY -- it scores 1.4-1.7 because every part of the
+#: window looks alike, where a gesture scores 13-48.
+BURST_SUB_WINDOW_S = 0.25
+BURST_MIN_RATIO = 4.0
+
+
+def _sub_window_rms(x, fs: float, sub_s: float = BURST_SUB_WINDOW_S):
+    """RMS of each contiguous ``sub_s`` block of a mean-removed series, sorted ascending."""
+    k = max(1, int(sub_s * fs))
+    out = []
+    for i in range(0, len(x) - k + 1, k):
+        w = x[i:i + k]
+        out.append(math.sqrt(sum(v * v for v in w) / len(w)))
+    out.sort()
+    return out
+
+
+def burst_gesture(samples_g, fs: float = 52.0) -> dict:
+    """Detect ONE deliberate vigorous act -- snap, shake, or a snap followed by a shake.
+
+    Returns ``{"marker", "kind", "amp_g", "band_fraction", "burst_ratio"}``.
+    """
+    mags = [float(m) for m in (samples_g or []) if m is not None]
+    n = len(mags)
+    out = {"marker": False, "kind": "burst", "amp_g": 0.0, "band_fraction": 0.0,
+           "burst_ratio": 0.0}
+    if fs <= 0 or n < int(MARKER_MIN_BURST_S * fs):
+        out["too_short"] = True
+        return out
+    mean = sum(mags) / n
+    x = [m - mean for m in mags]
+    amp = max(abs(v) for v in x)
+    out["amp_g"] = round(amp, 5)
+    if amp < BURST_MIN_AMPLITUDE_G:
+        return out
+    band = total = 0.0
+    f = 0.25
+    while f <= BURST_HI_HZ + 3.0 + 1e-9:
+        p = _goertzel_power(x, fs, f)
+        total += p
+        if BURST_LO_HZ <= f <= BURST_HI_HZ:
+            band += p
+        f += 0.25
+    if total <= 0:
+        return out
+    frac = band / total
+    out["band_fraction"] = round(frac, 4)
+    if frac < BURST_MIN_BAND_FRACTION:
+        return out
+    rms = _sub_window_rms(x, fs)
+    if len(rms) < 4:
+        return out
+    floor = rms[len(rms) // 4]          # the window's quiet quartile
+    ratio = (rms[-1] / floor) if floor > 1e-9 else 999.0
+    out["burst_ratio"] = round(ratio, 2)
+    out["marker"] = bool(ratio >= BURST_MIN_RATIO)
+    return out
+
+
 def any_marker(samples_g, fs: float = 52.0) -> dict:
-    """Either declared-awake gesture: the sustained shake or the double snap."""
+    """Any declared-awake gesture: the sustained shake, the double snap, or one vigorous
+    burst (which is what a snap-then-shake looks like -- see :func:`burst_gesture`)."""
     shake = marker_gesture(samples_g, fs)
     if shake.get("marker"):
         shake["kind"] = "shake"
@@ -911,6 +992,9 @@ def any_marker(samples_g, fs: float = 52.0) -> dict:
     snap = snap_gesture(samples_g, fs)
     if snap.get("marker"):
         return snap
+    burst = burst_gesture(samples_g, fs)
+    if burst.get("marker"):
+        return burst
     shake["kind"] = None
     return shake
 
