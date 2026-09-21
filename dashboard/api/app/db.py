@@ -23,6 +23,21 @@ CREATE TABLE IF NOT EXISTS users (
     role TEXT DEFAULT 'owner',
     created TEXT
 );
+-- The WAKE REVIEW: what the sleeper says about the night, filled in the moment they end the
+-- session. Two things nothing else can supply: how the night actually FELT (every learner
+-- otherwise scores itself), and a verdict on each awakening the detector believes it found.
+-- A confirmed one is a declared-awake instant exactly like a marker gesture; a denied one is
+-- a declared-ASLEEP instant at a moment the detector called wake, which is the only source of
+-- false-alarm evidence the system has ever had.
+CREATE TABLE IF NOT EXISTS wake_review (
+    night_date TEXT PRIMARY KEY,
+    ts TEXT NOT NULL,
+    rested INTEGER,            -- 1..5, 5 = fully rested
+    temperature TEXT,          -- too_cold | bit_cold | right | bit_warm | too_warm
+    onset_feel TEXT,           -- fast | normal | slow
+    note TEXT,
+    verdicts TEXT              -- JSON [{"ts","verdict"}] verdict: yes | no | unsure
+);
 CREATE TABLE IF NOT EXISTS notes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,

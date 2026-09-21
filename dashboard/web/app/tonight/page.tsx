@@ -300,6 +300,7 @@ function TonightContent() {
             sessionMode={data?.session_mode ?? 'night'}
             nap={data?.nap ?? null}
             napDeadline={data?.nap_deadline ?? null}
+            controllerState={data?.state ?? null}
             onChanged={() => mutate()}
             onToast={showToast}
           />

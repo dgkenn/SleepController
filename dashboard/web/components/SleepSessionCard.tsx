@@ -1,12 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { api, NapPlan } from '@/lib/api';
+import { api, NapPlan, WakeReviewPayload } from '@/lib/api';
+import WakeReviewSheet from './WakeReviewSheet';
 
 interface Props {
   sessionMode: 'night' | 'induce' | 'nap';
   nap: NapPlan | null;
   napDeadline: string | null;
+  /** The controller's own state. A night the sleeper never started with "help me fall
+   *  asleep" still runs -- bed entry is detected from the armband -- and until this was
+   *  wired in, such a night had no off switch anywhere in the app. */
+  controllerState?: string | null;
   onChanged?: () => void;
   onToast?: (msg: string) => void;
 }
@@ -22,10 +27,14 @@ function fmtClock(iso: string | null): string {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+const RUNNING_STATES = ['induction', 'maintenance', 'wake_recovery', 'wake_window',
+  'calibration'];
+
 export default function SleepSessionCard({
   sessionMode,
   nap,
   napDeadline,
+  controllerState,
   onChanged,
   onToast,
 }: Props) {
@@ -33,6 +42,28 @@ export default function SleepSessionCard({
   const [napMin, setNapMin] = useState(20);
   const [preview, setPreview] = useState<NapPlan | null>(null);
   const [remaining, setRemaining] = useState<number | null>(null);
+  const [review, setReview] = useState<WakeReviewPayload | null>(null);
+
+  // "I'm awake": end the session AND open the morning review in one press. Until this
+  // existed the only way to stop a night was the Stop button on the induce card, which
+  // disappears the moment onset is confirmed -- so a running night had no off switch at all.
+  const wakeUp = async () => {
+    setBusy('wake');
+    try {
+      const payload = await api.wakeUp();
+      onToast?.('Session ended');
+      onChanged?.();
+      setReview(payload);
+    } catch {
+      onToast?.('Command failed');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sheet = review ? (
+    <WakeReviewSheet payload={review} onClose={() => setReview(null)} onToast={onToast} />
+  ) : null;
 
   // Live preview of the chosen nap length's strategy (when idle).
   useEffect(() => {
@@ -83,12 +114,13 @@ export default function SleepSessionCard({
           let go.
         </p>
         <button
-          onClick={() => run('end', api.endSession, 'Stopped')}
-          disabled={busy === 'end'}
-          className="w-full py-2.5 rounded-xl bg-surface-raised border border-surface-border text-sm font-medium text-gray-300 disabled:opacity-50"
+          onClick={wakeUp}
+          disabled={!!busy}
+          className="w-full py-3 rounded-xl bg-surface-raised border border-surface-border text-sm font-semibold text-gray-200 disabled:opacity-50"
         >
-          Stop
+          ☀️ I&apos;m awake
         </button>
+        {sheet}
       </div>
     );
   }
@@ -114,12 +146,38 @@ export default function SleepSessionCard({
         )}
         <p className="text-xs text-gray-400 leading-relaxed">{nap.advice}</p>
         <button
-          onClick={() => run('end', api.endSession, 'Nap ended')}
-          disabled={busy === 'end'}
+          onClick={wakeUp}
+          disabled={!!busy}
           className="w-full py-2.5 rounded-xl bg-surface-raised border border-surface-border text-sm font-medium text-gray-300 disabled:opacity-50"
         >
-          End nap now
+          ☀️ I&apos;m awake
         </button>
+        {sheet}
+      </div>
+    );
+  }
+
+  // ---- a night is running without an induce session: the same button, the other way round ----
+  const nightRunning = !!controllerState && RUNNING_STATES.includes(controllerState);
+  if (nightRunning) {
+    return (
+      <div className="bg-surface-card rounded-2xl p-4 border border-brand/30 space-y-3">
+        <div className="flex items-center gap-2">
+          <span className="live-dot" />
+          <p className="text-sm font-semibold text-white">Night in progress</p>
+        </div>
+        <p className="text-xs text-gray-400 leading-relaxed">
+          Holding your bed through the night. Press this when you get up and it will end the
+          session and ask a few quick questions about how it went.
+        </p>
+        <button
+          onClick={wakeUp}
+          disabled={!!busy}
+          className="w-full py-3 rounded-xl bg-brand text-surface font-semibold active:scale-[0.98] transition disabled:opacity-50"
+        >
+          ☀️ I&apos;m awake
+        </button>
+        {sheet}
       </div>
     );
   }
@@ -140,6 +198,7 @@ export default function SleepSessionCard({
         Runs a warm-then-cool onset program (cutaneous warming speeds sleep onset), then hands
         off to normal night control once you&apos;re asleep.
       </p>
+      {sheet}
 
       <div className="border-t border-surface-border pt-3">
         <p className="text-xs text-gray-500 uppercase tracking-wider mb-2">Nap</p>

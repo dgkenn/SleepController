@@ -24,6 +24,9 @@ def wake_truth_profile(repo, nights: int = 30, min_markers: int = MIN_MARKERS) -
         rows = []
     n = 0
     awake = 0
+    misses = 0          # declared AWAKE, scored asleep -- the detector missed it
+    false_alarms = 0    # declared ASLEEP, scored awake -- the detector cried wolf
+    n_denied = 0
     for r in rows:
         try:
             d = json.loads(r[0]) if r[0] else {}
@@ -32,8 +35,18 @@ def wake_truth_profile(repo, nights: int = 30, min_markers: int = MIN_MARKERS) -
         st = d.get("stage_at_marker")
         if st is None:
             continue
+        # A wake review can declare either direction. A marker gesture only ever means
+        # "awake", so an absent flag is awake.
+        declared_awake = bool(d.get("declared_awake", True))
+        if not declared_awake:
+            n_denied += 1
+            if st == "awake":
+                false_alarms += 1
+            continue
         n += 1
         awake += 1 if st == "awake" else 0
+        if st != "awake":
+            misses += 1
     n_markers = n
     try:
         from sleepctl.learning.declared_awakenings import declared_instants
@@ -45,15 +58,29 @@ def wake_truth_profile(repo, nights: int = 30, min_markers: int = MIN_MARKERS) -
         awake += 1 if st == "awake" else 0
     n_notes = n - n_markers
     src = f"{n_markers} gesture(s) + {n_notes} from morning notes"
+    if n_denied:
+        src += f", {n_denied} denied in a wake review"
     if n < min_markers:
-        return {"n": n, "n_markers": n_markers, "n_notes": n_notes,
+        return {"n": n, "n_markers": n_markers, "n_notes": n_notes, "n_denied": n_denied,
                 "agreement": (round(awake / n, 2) if n else None), "bias": 1.0,
                 "personalized": False,
                 "rationale": f"learning -- {n}/{min_markers} declared awakenings ({src}) before "
                              f"the wake threshold is tuned to them"}
     r = awake / n
-    bias = max(BIAS_MIN, min(BIAS_MAX, 1.0 + 1.5 * (TARGET_AGREEMENT - r)))
-    return {"n": n, "n_markers": n_markers, "n_notes": n_notes, "agreement": round(r, 2),
-            "bias": round(bias, 3), "personalized": True,
-            "rationale": (f"{awake}/{n} declared awakenings ({src}) were scored awake; wake "
-                          f"probability scaled x{bias:.2f}")}
+    # SYMMETRIC. Missing an awakening and inventing one are both errors, and until the wake
+    # review existed only the first could ever be measured -- a marker gesture, by
+    # construction, is never evidence that the detector cried wolf. A denial is exactly that
+    # evidence, and it pulls the bias the other way.
+    miss_rate = misses / n
+    false_alarm_rate = (false_alarms / n_denied) if n_denied else 0.0
+    bias = max(BIAS_MIN, min(BIAS_MAX,
+                             1.0 + 1.5 * (miss_rate - (1.0 - TARGET_AGREEMENT) - false_alarm_rate)))
+    rationale = (f"{awake}/{n} declared awakenings ({src}) were scored awake; wake "
+                 f"probability scaled x{bias:.2f}")
+    if n_denied:
+        rationale += (f" -- {false_alarms}/{n_denied} denied awakening(s) had been scored "
+                      f"awake, which pulls it back down")
+    return {"n": n, "n_markers": n_markers, "n_notes": n_notes, "n_denied": n_denied,
+            "agreement": round(r, 2), "miss_rate": round(miss_rate, 3),
+            "false_alarm_rate": round(false_alarm_rate, 3),
+            "bias": round(bias, 3), "personalized": True, "rationale": rationale}

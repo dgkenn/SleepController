@@ -341,6 +341,46 @@ export interface MaintenanceSummary {
   strategy: string;
 }
 
+// ---- wake review: the "I'm awake" flow ----
+export interface SuspectedAwakening {
+  ts: string;
+  minutes: number;
+  n_ticks: number;
+  stages: string[];
+}
+
+export type WakeVerdictValue = 'yes' | 'no' | 'unsure';
+
+export interface WakeVerdict {
+  ts: string;
+  verdict: WakeVerdictValue;
+}
+
+export interface WakeReview {
+  night_date: string;
+  ts: string;
+  rested: number | null;
+  temperature: string | null;
+  onset_feel: string | null;
+  note: string | null;
+  verdicts: WakeVerdict[];
+}
+
+export interface WakeReviewPayload {
+  night_date: string;
+  awakenings: SuspectedAwakening[];
+  review: WakeReview | null;
+}
+
+export interface WakeReviewSubmission {
+  night_date: string;
+  rested?: number | null;
+  temperature?: string | null;
+  onset_feel?: string | null;
+  note?: string | null;
+  verdicts?: WakeVerdict[];
+}
+
 export interface CheckInStatus {
   due: boolean;
   date: string | null;
@@ -1115,6 +1155,19 @@ export const api = {
     }),
 
   endSession: () => apiFetch<CommandResponse>('/api/tonight/session/end', { method: 'POST' }),
+
+  // "I'm awake": ends the session and hands back the night's suspected awakenings to review
+  wakeUp: () => apiFetch<WakeReviewPayload>('/api/tonight/wake-up', { method: 'POST' }),
+
+  wakeReview: (date?: string) =>
+    apiFetch<WakeReviewPayload>(
+      date ? `/api/tonight/wake-review?date=${date}` : '/api/tonight/wake-review'),
+
+  submitWakeReview: (payload: WakeReviewSubmission) =>
+    apiFetch<{ ok: boolean; verdicts: number }>('/api/tonight/wake-review', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
 
   // Wake-up exit survey (morning check-in)
   checkinStatus: () => apiFetch<CheckInStatus>('/api/checkin/status'),

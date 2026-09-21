@@ -863,6 +863,46 @@ class CheckInBody(BaseModel):
     factors: dict | None = None          # caffeine/alcohol/late_work/illness/travel/stress
 
 
+# --------------------------------------------------------- wake review (the "I'm awake" flow)
+class WakeVerdict(BaseModel):
+    ts: str
+    verdict: str                          # yes | no | unsure
+
+
+class WakeReviewBody(BaseModel):
+    night_date: str | None = None
+    rested: int | None = None             # 1..5
+    temperature: str | None = None        # too_cold | bit_cold | right | bit_warm | too_warm
+    onset_feel: str | None = None         # fast | normal | slow
+    note: str | None = None
+    verdicts: list[WakeVerdict] | None = None
+
+
+@app.get("/tonight/wake-review")
+def get_wake_review(date: str | None = None, repo=Depends(repo_dep), user: str = AuthDep):
+    """The suspected awakenings to confirm or deny, plus any review already filed."""
+    from app import wake_review
+    return wake_review.review_payload(repo, date)
+
+
+# "/tonight/wake" is taken: it SETS the wake time (line ~761). This one says you ARE awake.
+@app.post("/tonight/wake-up")
+def wake_up(repo=Depends(repo_dep), user: str = AuthDep):
+    """End the session AND hand back the review to fill in. One button, one round trip."""
+    from app import wake_review
+    out = _enqueue(repo, "end_session")
+    payload = wake_review.review_payload(repo)
+    return {**payload, "command": out}
+
+
+@app.post("/tonight/wake-review")
+def post_wake_review(body: WakeReviewBody, repo=Depends(repo_dep), user: str = AuthDep):
+    from app import wake_review
+    data = body.model_dump()
+    data["verdicts"] = [v for v in (data.get("verdicts") or [])]
+    return wake_review.save_review(repo, data)
+
+
 @app.get("/checkin/status")
 def checkin_status(repo=Depends(repo_dep), user: str = AuthDep):
     return services.checkin_status(repo)
