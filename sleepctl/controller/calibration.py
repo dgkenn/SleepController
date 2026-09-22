@@ -12,6 +12,8 @@ Key reference points: level 0 ~= 81 째F, -100 = 55 째F, +92 = 110 째F (e.g. 66 �
 
 from __future__ import annotations
 
+import math
+
 MIN_TEMP_F = 55
 MAX_TEMP_F = 110
 
@@ -32,22 +34,63 @@ def clamp_fahrenheit(degrees_f: float) -> float:
     return max(float(MIN_TEMP_F), min(float(MAX_TEMP_F), degrees_f))
 
 
+def _anchors():
+    """The table as (level, 째F) sorted by level, with repeated temperatures collapsed so the
+    curve is strictly increasing (the vendored table maps both -18 and -17 to 77 째F)."""
+    pts = sorted(RAW_TO_FAHRENHEIT_MAP.items())
+    out = []
+    for lvl, temp in pts:
+        if out and float(temp) <= out[-1][1]:
+            continue
+        out.append((int(lvl), float(temp)))
+    return out
+
+
+_ANCHORS = None
+
+
+def _curve():
+    global _ANCHORS
+    if _ANCHORS is None:
+        _ANCHORS = _anchors()
+    return _ANCHORS
+
+
 def fahrenheit_to_level(degrees_f: float) -> int:
-    """Nearest device level for a target 째F (mirrors pyEight temp_to_heating_level)."""
+    """Device level for a target 째F, INTERPOLATED between the table's whole-degree anchors.
+
+    The vendored table has one entry per whole degree, and the lookup used to snap to the
+    nearest one -- so every target was rounded to a whole degree before it reached the bed,
+    although the Pod accepts every integer level between (-58 is 68 F, -54 is 69 F, and -57,
+    -56, -55 are the temperatures in between; the Pod's own ramps pass through them).
+    Measured 2026-09-22 against that snapping: 68.75-69.5 F all mapped to -54, so the 0.5 F
+    wake-recovery warmth never changed the bed, and the thermal trial's 0.0 / 0.5 and 1.0 /
+    1.5 F arms were physically the same dose. Whole degrees still map exactly to their
+    anchors, so nothing that asked for a whole degree changes.
+    """
     degrees_f = clamp_fahrenheit(degrees_f)
-    best_level, best_diff = 0, 1e9
-    for level, temp in RAW_TO_FAHRENHEIT_MAP.items():
-        diff = abs(temp - degrees_f)
-        if diff < best_diff:
-            best_diff, best_level = diff, level
-    return best_level
+    pts = _curve()
+    if degrees_f <= pts[0][1]:
+        return pts[0][0]
+    if degrees_f >= pts[-1][1]:
+        return pts[-1][0]
+    for (l0, t0), (l1, t1) in zip(pts, pts[1:]):
+        if t0 <= degrees_f <= t1:
+            frac = (degrees_f - t0) / (t1 - t0)
+            return int(math.floor(l0 + frac * (l1 - l0) + 0.5))
+    return pts[-1][0]
 
 
 def level_to_fahrenheit(level: int) -> float:
-    """째F for a device level (nearest key; mirrors pyEight heating_level_to_temp)."""
-    best_temp, best_diff = RAW_TO_FAHRENHEIT_MAP[0] if 0 in RAW_TO_FAHRENHEIT_MAP else 81, 1e9
-    for lvl, temp in RAW_TO_FAHRENHEIT_MAP.items():
-        diff = abs(lvl - level)
-        if diff < best_diff:
-            best_diff, best_temp = diff, temp
-    return float(best_temp)
+    """째F for a device level, interpolated the same way (the exact inverse at the anchors)."""
+    pts = _curve()
+    lvl = float(level)
+    if lvl <= pts[0][0]:
+        return float(pts[0][1])
+    if lvl >= pts[-1][0]:
+        return float(pts[-1][1])
+    for (l0, t0), (l1, t1) in zip(pts, pts[1:]):
+        if l0 <= lvl <= l1:
+            frac = (lvl - l0) / (l1 - l0) if l1 != l0 else 0.0
+            return round(t0 + frac * (t1 - t0), 2)
+    return float(pts[-1][1])

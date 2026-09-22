@@ -94,7 +94,9 @@ def test_calibration_matches_real_eight_sleep_table():
     assert fahrenheit_to_level(66) == -68
     assert fahrenheit_to_level(70) == -49
     assert fahrenheit_to_level(74) == -31
-    assert level_to_fahrenheit(0) == 81  # NOT 70 (the old wrong assumption)
+    # NOT 70 (the old wrong assumption). Level 0 is not itself a table key (-3 is 80 F, 1 is
+    # 81 F); interpolated it sits between them rather than snapping to the nearer key.
+    assert 80.5 <= level_to_fahrenheit(0) <= 81.0
     assert level_to_fahrenheit(-100) == 55
     # out-of-range targets clamp to the device's supported window
     assert MIN_TEMP_F <= level_to_fahrenheit(fahrenheit_to_level(40)) <= MAX_TEMP_F

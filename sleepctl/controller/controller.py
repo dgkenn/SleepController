@@ -289,6 +289,31 @@ class SleepController:
             return
         self._recovered_bed_entry = ts
 
+    #: A recovered bed entry older than this is not tonight's, whatever else it looks like.
+    RECOVERED_BED_ENTRY_MAX_AGE_H = 14.0
+
+    def _usable_recovered_bed_entry(self, now: datetime) -> Optional[datetime]:
+        """The bed entry recovered at start-up, if it still describes THIS session.
+
+        2026-09-21: the daemon restarted at 08:51 for a deploy. Under the noon cutoff that is
+        still the night of the 20th, so recovery found that night's first running sample --
+        20:51 the evening before -- and held it. The session then ended, and at 22:50 the NEXT
+        night's bed entry consumed the held value. Onset was reported 1,562 minutes after bed
+        entry, and worse, the stager's minutes-since-start feature read ~1,500 minutes all
+        night: a clock 26 hours fast, on a model that leans on that clock to place deep sleep.
+        That night scored 3% deep.
+        """
+        ts = getattr(self, "_recovered_bed_entry", None)
+        if ts is None:
+            return None
+        try:
+            age_h = (now - ts).total_seconds() / 3600.0
+        except Exception:
+            return None
+        if age_h < 0 or age_h > self.RECOVERED_BED_ENTRY_MAX_AGE_H:
+            return None
+        return ts
+
     def restore_session_state(self, state: Optional[str], onset_ts: Optional[datetime],
                               architecture: Optional[dict] = None) -> None:
         """Resume a night that was already past sleep onset when the daemon restarted.
@@ -614,6 +639,7 @@ class SleepController:
                 self.sm.state = ControllerState.IDLE
                 self.sm.reason = f"session abandoned: no physiology for {gap_min:.0f} min"
                 self._bed_entry_time = None
+                self._recovered_bed_entry = None     # the session it described is over
                 self._sleep_onset_time = None
                 self._reset_architecture()
                 self._cold_since = None
@@ -675,6 +701,7 @@ class SleepController:
                 self.sm.reason = ("bed exit: " + ", ".join(bed_exit.reasons)
                                   if bed_exit.reasons else "bed exit")
                 self._bed_entry_time = None
+                self._recovered_bed_entry = None     # the session it described is over
                 self._sleep_onset_time = None
                 self._cold_since = None
                 self._cold_relief_f = 0.0
@@ -924,7 +951,7 @@ class SleepController:
             # and losing it is what the comment above measures at REM 27% -> 0% with the whole
             # hypnogram collapsing onto LIGHT. A restart was silently degrading the staging for
             # the rest of the night.
-            self._bed_entry_time = self._recovered_bed_entry or now
+            self._bed_entry_time = self._usable_recovered_bed_entry(now) or now
             self._recovered_bed_entry = None
             self.onset_detector.reset()
             self._sleep_onset_time = None
@@ -985,6 +1012,7 @@ class SleepController:
             # including one recovered across a restart.
             if state_before is not ControllerState.IDLE:
                 self._bed_entry_time = None
+                self._recovered_bed_entry = None     # the session it described is over
                 self._sleep_onset_time = None
                 self.onset_detector.reset()
                 self.wake_orch.reset()
