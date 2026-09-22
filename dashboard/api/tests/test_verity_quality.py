@@ -308,3 +308,74 @@ def test_real_sleeping_hrv_is_never_flagged_as_unworn():
 
     assert out["not_worn"] is False
     assert out["usable"] is True
+
+
+# ------------------------------------------ 2026-09-22: a racing heart on a motionless band
+def test_a_motionless_band_reporting_a_racing_heart_is_not_worn():
+    """The band sat on its charger from ~09:40 with its accelerometer motionless while the
+    optical sensor reported 100-140 bpm. After artifact cleaning its beat intervals scored an
+    RMSSD of 33-145 ms -- inside the physiological range -- so the RMSSD ceiling never fired."""
+    from app.services import (NOT_WORN_MIN_DURATION_S, STILL_HR_IMPLAUSIBLY_HIGH_BPM,
+                              assess_cardiac_quality)
+    now = 1_000_000.0
+    span = NOT_WORN_MIN_DURATION_S + 60
+    history = _hist(now, [span - 10 * i for i in range(int(span // 10))], hr=137.0, pim=0.4)
+    plausible_rr = [440.0, 452.0, 431.0, 447.0, 438.0, 455.0]     # RMSSD in range
+    out = assess_cardiac_quality(hr=137.0, rr=plausible_rr, acc={"pim": 0.39},
+                                 history=history, now=now)
+    assert out["not_worn"] is True, out
+    assert "motionless" in out["reason"]
+    assert STILL_HR_IMPLAUSIBLY_HIGH_BPM <= 110
+
+
+def test_a_still_sleeper_at_a_normal_rate_is_never_discarded():
+    """Stillness alone describes deep sleep -- the batch PIM that night ran 0.43-0.57 asleep,
+    also under the stillness floor. Only the racing heart makes it implausible."""
+    from app.services import NOT_WORN_MIN_DURATION_S, assess_cardiac_quality
+    now = 1_000_000.0
+    span = NOT_WORN_MIN_DURATION_S + 60
+    history = _hist(now, [span - 10 * i for i in range(int(span // 10))], hr=62.0, pim=0.45)
+    rr = [960.0, 985.0, 950.0, 975.0, 990.0, 955.0]
+    for hr in (52.0, 62.0, 78.0, 95.0):
+        out = assess_cardiac_quality(hr=hr, rr=rr, acc={"pim": 0.45}, history=history, now=now)
+        assert out["not_worn"] is False, (hr, out)
+
+
+def test_a_racing_heart_while_moving_is_exercise_not_a_charger():
+    from app.services import NOT_WORN_MIN_DURATION_S, assess_cardiac_quality
+    now = 1_000_000.0
+    span = NOT_WORN_MIN_DURATION_S + 60
+    history = _hist(now, [span - 10 * i for i in range(int(span // 10))], hr=140.0, pim=12.0)
+    out = assess_cardiac_quality(hr=140.0, rr=[430.0, 425.0, 440.0], acc={"pim": 12.0},
+                                 history=history, now=now)
+    assert out["not_worn"] is False
+
+
+def test_a_not_worn_verdict_keeps_the_noise_out_of_the_live_readout(auth_client):
+    """The verdict used to be computed AFTER the live sample was published, so it reached the
+    history table and nothing else: the controller's frame and the app's readout showed the
+    charger's noise as the user's heart rate all afternoon."""
+    from app import bridge
+    from app.db import get_repo
+    from app.services import NOT_WORN_MIN_DURATION_S
+
+    repo = get_repo()
+    repo.conn.execute("DELETE FROM sensor_samples")
+    repo.conn.execute("DELETE FROM actigraphy")
+    repo.conn.commit()
+    n = int((NOT_WORN_MIN_DURATION_S + 30) // 10)
+    _seed_verity_history(repo.conn, hr=137.0, pim=0.4, n=n, step_s=10.0)
+    repo.close()
+
+    r = auth_client.post("/hr/ingest", json={
+        "hr": 137, "rr": [440.0, 452.0, 431.0, 447.0, 438.0, 455.0],
+        "source": "verity", "acc": {"pim": 0.39}})
+    assert r.status_code == 200 and r.json()["not_worn"] is True
+
+    repo = get_repo()
+    live = bridge.read_cardiac_sample(repo.conn)
+    flagged = repo.conn.execute(
+        "SELECT hr, not_worn FROM sensor_samples ORDER BY id DESC LIMIT 1").fetchone()
+    repo.close()
+    assert live is None or live.get("hr") is None, f"charger noise reached the live readout: {live}"
+    assert flagged["not_worn"] == 1 and flagged["hr"] == 137.0   # kept for audit, flagged

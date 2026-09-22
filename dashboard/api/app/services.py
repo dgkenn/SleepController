@@ -1632,6 +1632,15 @@ RMSSD_IMPLAUSIBLY_LOW_MS = 2.0
 # worn maximum than to the charger minimum so it stays conservative about discarding real data.
 RMSSD_IMPLAUSIBLY_HIGH_MS = 160.0
 
+# ...and a heart rate that cannot coexist with that stillness. On 2026-09-22 the band sat on
+# its charger from ~09:40 with its accelerometer motionless (PIM ~0.39, orientation unchanged
+# to three decimals) while the optical sensor reported 100-140 bpm. Its beat intervals passed
+# through artifact cleaning at an RMSSD of 33-145 ms -- INSIDE the physiological range -- so
+# the RMSSD ceiling above never fired and two-plus hours of charger noise were stored and shown
+# as the user's heart rate. A body that has not moved for five minutes is not running at
+# 105 bpm: that night the sleeping median was 78.
+STILL_HR_IMPLAUSIBLY_HIGH_BPM = 105.0
+
 
 def _parse_epoch(ts) -> "float | None":
     """``ts`` (an epoch-seconds number or an ISO8601 string) -> epoch seconds, or None if
@@ -1736,14 +1745,17 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
             no_rr = not rr
             implausible_rr = rmssd is not None and rmssd < RMSSD_IMPLAUSIBLY_LOW_MS
             implausible_high = rmssd is not None and rmssd > RMSSD_IMPLAUSIBLY_HIGH_MS
-            if no_rr or implausible_rr or implausible_high:
+            racing_still = hr is not None and float(hr) >= STILL_HR_IMPLAUSIBLY_HIGH_BPM
+            if no_rr or implausible_rr or implausible_high or racing_still:
                 not_worn = True
                 if no_rr:
                     rr_note = "no RR intervals"
                 elif implausible_rr:
                     rr_note = f"RMSSD {rmssd:.1f}ms implausibly low"
-                else:
+                elif implausible_high:
                     rr_note = f"RMSSD {rmssd:.1f}ms implausibly high"
+                else:
+                    rr_note = f"heart rate {float(hr):.0f} bpm on a motionless band"
                 reasons.append(
                     f"actigraphy flat for ~{duration:.0f}s (pim={pim:g} <= "
                     f"{STILLNESS_PIM_FLOOR:g}) with {rr_note} -- device likely not worn")
@@ -2368,20 +2380,12 @@ def ingest_hr(repo, payload: dict) -> dict:
     resp_est = _windowed_respiration_estimate(repo.conn, source)
     resp = resp_est.breaths_per_min if resp_est is not None else None
 
-    bridge.write_cardiac_sample(repo.conn, {"hr": hr, "hrv": hrv, "source": source,
-                                            "respiratory_rate": resp,
-                                            "respiratory_conc": (resp_est.concentration
-                                                                 if resp_est is not None else None)})
-    # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
-    # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
-    # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.
-    if isinstance(acc, dict):
-        bridge.append_actigraphy(repo.conn, acc, source)
-
-    # Data-quality guard (see assess_cardiac_quality above): needs to see recent history for THIS
-    # source to judge whether the current hr/stillness reading is a sustained run, not just a
-    # snapshot. Best-effort -- a history lookup hiccup degrades to "no flags" (assess with []),
-    # never breaks the real-time ingest path.
+    # Data-quality guard (see assess_cardiac_quality above), run BEFORE the live sample is
+    # published. It used to run after, so its not-worn verdict reached the history table and
+    # nothing else: the daemon's frame and the app's live readout took the charger's noise as
+    # the user's heart rate (2026-09-22, band on its charger from ~09:40, "HRV" shown all
+    # afternoon). Needs recent history for THIS source to judge a sustained run. Best-effort --
+    # a lookup hiccup degrades to "no flags", never breaks the real-time ingest path.
     now_ts = datetime.now(timezone.utc).timestamp()
     try:
         lookback_s = NOT_WORN_MIN_DURATION_S + 60.0  # margin past the longer of the two windows
@@ -2390,6 +2394,20 @@ def ingest_hr(repo, payload: dict) -> dict:
         history = []
     quality = assess_cardiac_quality(hr, rr, acc if isinstance(acc, dict) else None,
                                      history, now=now_ts)
+    worn = not quality["not_worn"]
+
+    bridge.write_cardiac_sample(repo.conn, {"hr": hr if worn else None,
+                                            "hrv": hrv if worn else None,
+                                            "source": source,
+                                            "respiratory_rate": resp if worn else None,
+                                            "respiratory_conc": (resp_est.concentration
+                                                                 if (resp_est is not None and worn)
+                                                                 else None)})
+    # Actigraphy counts from the wearable's OWN accelerometer (Polar PMD ACC stream). Same
+    # PIM/ZCM/MAD definitions as the training-set reduction, so these are unit-comparable with
+    # training data -- unlike the iPhone's unitless 0..1 movement index, which stays separate.
+    if isinstance(acc, dict):
+        bridge.append_actigraphy(repo.conn, acc, source)
 
     # Accumulate into the same overnight time-series as the phone samples (source-tagged so the
     # two channels stay distinguishable for model training). Best-effort; never fails the ingest.
