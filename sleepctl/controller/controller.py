@@ -830,6 +830,9 @@ class SleepController:
                 est = constrain(est, now, cfg, self.hypnogram, self._sleep_onset_time)
                 est = self._hold_stage(est, cfg)
                 frame.stage, frame.stage_confidence, self._stage_source = est
+                # Carried on the frame so the wake voter can tell a label the accelerometer
+                # produced from independent stager evidence (WakeDetector._votes).
+                frame.stage_source = self._stage_source
                 self._stage_estimated = True
                 self.hypnogram.observe(frame.stage, now)
 

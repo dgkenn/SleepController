@@ -64,6 +64,18 @@ def test_the_list_is_capped_so_it_stays_answerable(repo):
     assert len(eps) == wake_review.MAX_EPISODES
 
 
+def test_an_awakening_the_bed_answered_is_asked_about_even_without_a_vote(repo):
+    """The voter no longer logs a lone turn in bed, but a sustained awakening the controller
+    answered (WAKE_RECOVERY) is exactly the one whose verdict the learners need."""
+    _seed(repo, wakes=())
+    for k in range(4):
+        repo.conn.execute("UPDATE raw_samples SET controller_state = 'wake_recovery' "
+                          "WHERE ts = ?", ((T0 + timedelta(minutes=120 + k)).isoformat(),))
+    repo.conn.commit()
+    eps = wake_review.suspected_awakenings(repo, NIGHT)
+    assert len(eps) == 1 and eps[0]["n_ticks"] == 4
+
+
 def test_a_quiet_night_asks_nothing(repo):
     _seed(repo, wakes=())
     assert wake_review.suspected_awakenings(repo, NIGHT) == []

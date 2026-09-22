@@ -44,6 +44,15 @@ class WakeDetector:
     #: Measured on 2026-08-27: 25 of 51 wake ticks had neither elevated heart rate nor
     #: movement. Three votes from one estimator is one vote.
     STAGER_SIGNALS = frozenset({"stage_regression", "awake_stage", "confidence_drop"})
+    #: ...and the same holds for the accelerometer. One movement of the arm sets
+    #: ``movement_spike`` (the fused index jumped), ``low_motion_break`` (it jumped out of a
+    #: quiet spell) and ``actigraphy_motion`` (the band's counts crossed the burst threshold) --
+    #: three votes from one sensor reading one event. On 2026-09-19 and 09-21 every one of the
+    #: 44 movement bouts became a "wake event", while only 11 of them carried a heart-rate rise
+    #: of more than 5 bpm over the preceding ten minutes. A turn in bed is not, by itself, an
+    #: awakening; the quorum exists to require corroboration, so the accelerometer votes once
+    #: (and so does a stage label the accelerometer produced -- see ``_votes``).
+    MOTION_SIGNALS = frozenset({"movement_spike", "low_motion_break", "actigraphy_motion"})
 
     def __init__(self, min_signals: int = 3, require_independent: bool = True, cfg=None) -> None:
         self.min_signals = min_signals
@@ -52,6 +61,30 @@ class WakeDetector:
         # or respiration). The stager is allowed to make the case; it is not allowed to be the
         # only witness.
         self.require_independent = require_independent
+
+    def _votes(self, signals: list[str], frame=None, prev=None) -> int:
+        """Distinct witnesses. The accelerometer votes once however many of its signals fired.
+        When the stage label itself came from the accelerometer (``actigraphy_wake``), the
+        stager's signals are that same witness again and fold into the motion vote -- for ONE
+        tick. Motion that holds the label at AWAKE into a second consecutive minute is no longer
+        a turn in bed, and the label then votes for itself again: a sustained awakening with
+        no heart-rate response (lying awake, still cold) must still reach the wake ledger."""
+        motion_stage = getattr(frame, "stage_source", None) == "actigraphy_wake"
+        if motion_stage and prev is not None and prev.stage is SleepStage.AWAKE \
+                and getattr(prev, "stage_source", None) == "actigraphy_wake":
+            motion_stage = False
+        # Only when motion is the SOLE physiological witness. A movement with a heart-rate or
+        # breathing response is the canonical awakening, and the label may speak to it.
+        if motion_stage and any(sig not in self.MOTION_SIGNALS and sig not in self.STAGER_SIGNALS
+                                for sig in signals):
+            motion_stage = False
+        groups = set()
+        for sig in signals:
+            if sig in self.MOTION_SIGNALS or (motion_stage and sig in self.STAGER_SIGNALS):
+                groups.add("motion")
+            else:
+                groups.add(sig)
+        return len(groups)
 
     def evaluate(
         self,
@@ -133,7 +166,7 @@ class WakeDetector:
         independent = [x for x in signals if x not in self.STAGER_SIGNALS]
         if self.require_independent and not independent:
             return None
-        if len(signals) >= self.min_signals:
+        if self._votes(signals, frame, window[-1] if window else None) >= self.min_signals:
             confidence = min(1.0, len(signals) / 5.0)
             return WakeEvent(
                 timestamp=frame.timestamp,

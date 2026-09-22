@@ -353,6 +353,14 @@ def test_accelerometer_wake_reaches_the_wake_ledger():
 
     assert d.log_payload["stage"] == "awake"
     assert d.log_payload["stage_source"] == "actigraphy_wake"
+    # One minute of motion is one witness (a turn in bed); the accelerometer may not also vote
+    # as the stage label it produced (WakeDetector._votes).
+    assert c.last_wake_event is None, "a single turn in bed was logged as an awakening"
+    recent.append(f)
+    i += 1
+    f = frame(i, 25.6)                          # ...still moving a minute later
+    d = c.decide(f, ctx, recent, start + timedelta(minutes=i))
+    assert d.log_payload["stage"] == "awake"
     assert c.last_wake_event is not None, "accelerometer wake left the learner's ledger empty"
 
 

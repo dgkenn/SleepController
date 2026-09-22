@@ -1684,7 +1684,8 @@ def _stillness_run_start(history: list) -> "float | None":
 
 
 def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
-                           now: float | None = None) -> dict:
+                           now: float | None = None, *, recent_rr_n: int | None = None,
+                           window_rmssd: float | None = None) -> dict:
     """Pure, deterministic Verity Sense data-quality guard -- see the module comments above the
     threshold constants for the documented Polar behaviours this defends against.
 
@@ -1697,6 +1698,12 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
         the current sample. ``[]`` is always safe -- no flag can fire without at least one prior
         sample corroborating a sustained run.
       now: epoch seconds for "the current sample's time"; defaults to the real current time.
+      recent_rr_n: beat intervals persisted for this source over the last
+        ``NOT_WORN_MIN_DURATION_S``. When given, "no RR" means none for that whole span rather
+        than none in this 2-second batch -- PPI frames arrive every few seconds, so most batches
+        of a perfectly worn, sleeping band carry no intervals at all.
+      window_rmssd: RMSSD over the persisted window (``_windowed_rmssd``). Preferred over the
+        batch's own two or three intervals, where one artefact swings RMSSD past either bound.
 
     Returns ``{"hr_frozen": bool, "not_worn": bool, "usable": bool, "reason": str}``. No hidden
     global state -- same inputs always produce the same output, so this is trivially unit-testable
@@ -1741,8 +1748,9 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
         run_start = still_start if still_start is not None else now_ts
         duration = now_ts - run_start
         if duration >= NOT_WORN_MIN_DURATION_S:
-            rmssd = _rmssd(rr) if rr else None
-            no_rr = not rr
+            rmssd = (window_rmssd if window_rmssd is not None
+                     else (_rmssd(rr) if rr else None))
+            no_rr = not rr and (recent_rr_n is None or int(recent_rr_n) <= 0)
             implausible_rr = rmssd is not None and rmssd < RMSSD_IMPLAUSIBLY_LOW_MS
             implausible_high = rmssd is not None and rmssd > RMSSD_IMPLAUSIBLY_HIGH_MS
             racing_still = hr is not None and float(hr) >= STILL_HR_IMPLAUSIBLY_HIGH_BPM
@@ -2392,8 +2400,17 @@ def ingest_hr(repo, payload: dict) -> dict:
         history = bridge.recent_cardiac_history(repo.conn, source, lookback_s=lookback_s)
     except Exception:
         history = []
+    # Sustained RR absence and windowed RMSSD, not this batch's: a worn band asleep posts
+    # most 2-second batches with no intervals (PPI frames land every few seconds), and judging
+    # "not worn" per batch would blank real heart rate through every still stretch of sleep.
+    try:
+        recent_rr_n = len(bridge.recent_rr_intervals(
+            repo.conn, minutes=NOT_WORN_MIN_DURATION_S / 60.0))
+    except Exception:
+        recent_rr_n = None
     quality = assess_cardiac_quality(hr, rr, acc if isinstance(acc, dict) else None,
-                                     history, now=now_ts)
+                                     history, now=now_ts, recent_rr_n=recent_rr_n,
+                                     window_rmssd=hrv_windowed)
     worn = not quality["not_worn"]
 
     bridge.write_cardiac_sample(repo.conn, {"hr": hr if worn else None,

@@ -79,3 +79,25 @@ def test_an_independent_signal_alone_still_needs_the_full_quorum():
     recent = _window()
     frame = _f(11, hr=80.0)          # hr_rise only
     assert WakeDetector().evaluate(frame, recent) is None
+
+
+def test_one_arm_movement_is_one_vote_not_three():
+    """movement_spike, low_motion_break and actigraphy_motion all fire from one movement of the
+    arm; with the stage label also produced by that movement, a single turn in bed used to
+    clear the quorum on its own (every one of 44 movement bouts on 2026-09-19/21)."""
+    cfg = AppConfig.default()
+    cfg.tunables.est_stage_actigraphy_wake_enabled = True
+    recent = _window(stage=SleepStage.LIGHT, conf=0.6)
+    frame = _f(11, stage=SleepStage.AWAKE, conf=0.3, hr=66.0, move=0.9)
+    frame.activity_history = [(1000.0 + k * 10.0, 25.6) for k in range(6)]
+    frame.activity_units = "counts"
+    frame.stage_source = "actigraphy_wake"
+    assert WakeDetector(cfg=cfg).evaluate(frame, recent) is None
+    # ...a heart-rate response is a second witness, and the label may then speak to it
+    frame.heart_rate = 80.0
+    assert WakeDetector(cfg=cfg).evaluate(frame, recent) is not None
+    # ...and so is the same movement still going a minute later
+    frame.heart_rate = 66.0
+    prev = _f(10, stage=SleepStage.AWAKE, conf=0.3, move=0.9)
+    prev.stage_source = "actigraphy_wake"
+    assert WakeDetector(cfg=cfg).evaluate(frame, recent[:-1] + [prev]) is not None

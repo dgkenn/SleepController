@@ -45,7 +45,11 @@ def suspected_awakenings(repo, night_date: str) -> List[dict]:
     """
     try:
         rows = repo.conn.execute(
-            "SELECT ts, stage FROM raw_samples WHERE night_date = ? AND wake_event = 1 "
+            # The voter's wake events AND every tick the controller spent answering an
+            # awakening (WAKE_RECOVERY): a sustained awakening the voter did not log is still
+            # one the bed acted on, and its verdict is exactly what the learners need.
+            "SELECT ts, stage FROM raw_samples WHERE night_date = ? "
+            "AND (wake_event = 1 OR controller_state = 'wake_recovery') "
             "ORDER BY ts ASC", (night_date,)).fetchall()
     except Exception:
         return []

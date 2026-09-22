@@ -379,3 +379,37 @@ def test_a_not_worn_verdict_keeps_the_noise_out_of_the_live_readout(auth_client)
     repo.close()
     assert live is None or live.get("hr") is None, f"charger noise reached the live readout: {live}"
     assert flagged["not_worn"] == 1 and flagged["hr"] == 137.0   # kept for audit, flagged
+
+
+def test_a_still_sleeper_whose_batch_happens_to_carry_no_intervals_is_worn():
+    """PPI frames land every few seconds, so most 2-second batches from a worn band carry no
+    intervals. "No RR" has to mean none for the whole stillness span, or every still stretch of
+    sleep would have its heart rate blanked."""
+    from app.services import assess_cardiac_quality
+
+    now = 1_000_000.0
+    history = _hist(now, [400.0, 350.0, 300.0, 250.0, 200.0, 150.0, 100.0, 50.0],
+                    hr=58.0, pim=0.3)
+    out = assess_cardiac_quality(hr=58.0, rr=[], acc={"pim": 0.3}, history=history, now=now,
+                                 recent_rr_n=280, window_rmssd=31.0)
+    assert out["not_worn"] is False and out["usable"] is True
+    # ...and a real absence over the span is still caught
+    out = assess_cardiac_quality(hr=58.0, rr=[], acc={"pim": 0.0}, history=history, now=now,
+                                 recent_rr_n=0)
+    assert out["not_worn"] is True
+
+
+def test_one_artefact_in_a_tiny_batch_does_not_read_as_a_charger():
+    """A 2-3 interval batch with one ectopic beat can post a batch RMSSD far past 160 ms; the
+    windowed RMSSD is the one that describes the band."""
+    from app.services import assess_cardiac_quality
+
+    now = 1_000_000.0
+    history = _hist(now, [400.0, 300.0, 200.0, 100.0], hr=60.0, pim=0.2)
+    out = assess_cardiac_quality(hr=60.0, rr=[1000.0, 700.0, 1000.0], acc={"pim": 0.2},
+                                 history=history, now=now, recent_rr_n=300, window_rmssd=28.0)
+    assert out["not_worn"] is False
+    # the charger's windowed RMSSD (~237 ms on 2026-08-05) is still caught
+    out = assess_cardiac_quality(hr=60.0, rr=[1000.0, 1010.0], acc={"pim": 0.2},
+                                 history=history, now=now, recent_rr_n=300, window_rmssd=237.0)
+    assert out["not_worn"] is True
