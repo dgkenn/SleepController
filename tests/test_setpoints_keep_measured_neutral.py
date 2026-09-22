@@ -96,14 +96,15 @@ def test_the_preempt_settle_uses_the_learned_nudge_within_bounds_when_cooling_is
 
 def test_the_preempt_settle_holds_neutral_while_cooling_is_disallowed():
     """2026-09-19: the pre-emptive settle cooled this user to 68 F on a precursor and 68 F woke
-    them cold. The default policy now disallows settle cooling: the pre-empt dose is zero and a
-    learned cooling nudge is clamped to zero, whatever the learner says."""
+    them cold. The default policy now disallows settle cooling: the pre-empt dose is the small
+    configured WARMING dose and a learned cooling nudge is clamped to zero, whatever the learner
+    says."""
     c = _ctl()
     cfg = c.cfg
     assert cfg.tunables.settle_cooling_allowed is False
     c.set_settle_nudge(-0.7)
     assert c.thermal.settle_nudge_f == 0.0
-    assert c._preempt_nudge_f(cfg) == 0.0
+    assert c._preempt_nudge_f(cfg) == cfg.tunables.preempt_warm_f >= 0.0
     c.set_settle_nudge(0.4)                     # a warming nudge is still allowed to the learner
     assert c.thermal.settle_nudge_f == 0.4
-    assert c._preempt_nudge_f(cfg) == 0.0
+    assert c._preempt_nudge_f(cfg) == cfg.tunables.preempt_warm_f

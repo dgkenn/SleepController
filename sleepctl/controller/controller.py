@@ -1058,13 +1058,11 @@ class SleepController:
             # off that is exactly neutral -- so the one moment the system knows this user has
             # woken, it did nothing about the cause they actually report. Answer an awakening
             # with warmth while the bed is at or below neutral.
+            # A bed already warmer than that is held, not cooled (ThermalController.resolve).
             self._recovery_warm = 0.0
             if not bool(getattr(cfg.tunables, "settle_cooling_allowed", True)):
-                warm = float(getattr(cfg.tunables, "wake_recovery_warm_f", 0.0) or 0.0)
-                neutral_f = getattr(self.thermal.profile, "neutral_f", None)
-                last = getattr(self, "_last_target_f", None)
-                if warm > 0 and (neutral_f is None or last is None or last <= float(neutral_f) + 1e-9):
-                    self._recovery_warm = warm
+                self._recovery_warm = max(
+                    0.0, float(getattr(cfg.tunables, "wake_recovery_warm_f", 0.0) or 0.0))
         elif state is ControllerState.WAKE_WINDOW:
             # Multi-signal orchestrator: fuse the calibrated P(wake) with stage to catch a real
             # light-sleep moment early, run the thermal dawn, escalate vibration silently, and
@@ -1783,9 +1781,9 @@ class SleepController:
         learner outright; on this user's nights the water it landed on (67 F) carried three
         times the per-tick awakening rate of 69 F."""
         if not bool(getattr(cfg.tunables, "settle_cooling_allowed", True)):
-            # Pre-emption may not COOL this user: 68F woke them (2026-09-19). Holding neutral is
-            # the whole move until the trial shows a direction that helps.
-            return 0.0
+            # Pre-emption may not COOL this user: 68F woke them (2026-09-19), and their
+            # awakenings are cold ones. The pre-empt warms instead, by the configured dose.
+            return max(0.0, float(getattr(cfg.tunables, "preempt_warm_f", 0.0) or 0.0))
         coldest = float(getattr(cfg.tunables, "preempt_settle_nudge_f", -2.0))
         learned = getattr(self.thermal, "settle_nudge_f", None)
         if learned is None:

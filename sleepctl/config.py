@@ -224,6 +224,13 @@ class Tunables:
     #: -- which, with settle cooling switched off, is exactly neutral. So the one moment the
     #: system knew they had woken, it did nothing at all about the stated cause.
     wake_recovery_warm_f: float = 0.5
+    #: ...and a PREDICTED awakening gets the same answer. The pre-empt resolved to SETTLE_COOL,
+    #: whose target is neutral: on 2026-09-21 the detector pre-empted on 310 of 1,241
+    #: maintenance ticks, and every one that fired while the bed sat warmer than neutral (REM
+    #: warmth, a held target) COOLED the bed -- by up to 1.5 F -- at the moment it believed an
+    #: awakening was building, in a user whose awakenings are cold ones. A settle now never
+    #: cools while cooling is off (see ThermalController.resolve), and a pre-empt warms by this.
+    preempt_warm_f: float = 0.5
     # A manual temperature change from the phone is an instruction, not interference: hold the
     # user's level for this long, then resume control with the floor/ceiling it implied.
     user_override_hold_min: float = 60.0

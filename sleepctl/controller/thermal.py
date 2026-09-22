@@ -332,10 +332,23 @@ class ThermalController:
         # prevent an awakening. Measured on 2026-08-29 and 2026-08-31: almost every pre-emption
         # episode that moved the bed at all moved it in the warm direction.
         nudge_now = (self.settle_nudge_f if settle_nudge_f is None else float(settle_nudge_f))
-        if not bool(getattr(self.cfg.tunables, "settle_cooling_allowed", True)):
+        cooling_allowed = bool(getattr(self.cfg.tunables, "settle_cooling_allowed", True))
+        if not cooling_allowed:
             nudge_now = max(0.0, nudge_now)
         if intent is ThermalIntent.SETTLE_COOL and nudge_now < 0:
             water = min(water, last)
+        # ...AND, WITH COOLING OFF, A SETTLE MUST NEVER COOL IT.
+        #
+        # The settle is a move toward neutral(+warmth). From a bed held WARMER than that -- REM
+        # warmth, or a target held since -- the same absolute target is a cooling command, and
+        # it fired exactly when an awakening was predicted or detected: 2026-09-21 replayed on
+        # the current profile cools 71.5 -> 70.0 F on every pre-empt that begins in REM. The
+        # hold is capped at the REM-warm target so a settle cannot trap the induction's warm
+        # opener into the night; the comfort clamp and release still bound it downstream.
+        if intent is ThermalIntent.SETTLE_COOL and not cooling_allowed and water < last:
+            p = self.profile
+            cap = p.neutral_f + max(float(p.rem_warm_offset_f or 0.0), nudge_now)
+            water = max(water, min(last, cap))
 
         slewed = self.slew_limit(last, water)
         capped = self.enforce_variability_cap(slewed)
