@@ -782,6 +782,11 @@ def _check_comfort_band_pinning(repo) -> dict:
         return _check("comfort_band", "Comfort-band pinning", "info",
                       "no personal comfort band learned yet", None)
     _neutral, cool_edge, warm_edge = float(prof[0] or 0), float(prof[1]), float(prof[2])
+    # The controller steers the band shifted by the comfort anchor (the sweep's reading moved
+    # by the morning reviews); judge the night against the band it actually ran.
+    anchor = _comfort_anchor_offset(repo, _neutral)
+    if anchor:
+        _neutral, cool_edge, warm_edge = _neutral + anchor, cool_edge + anchor, warm_edge + anchor
     try:
         row = repo.conn.execute(
             "SELECT night_date FROM raw_samples WHERE night_date IS NOT NULL "
@@ -2117,6 +2122,16 @@ def _check_calibration(repo) -> dict:
                   "in bed: POST /diag/action/self-test, then the comfort sweep from the "
                   "dashboard; log a check-in each morning (`sleepctl checkin`). Fix the water "
                   "loop first — both in-bed batteries need a loop that can move heat.")
+
+
+def _comfort_anchor_offset(repo, measured_neutral_f: float) -> float:
+    """The offset the daemon applies to the stored comfort band (0.0 when unavailable)."""
+    try:
+        from sleepctl.config import AppConfig
+        from sleepctl.learning.comfort_feedback import comfort_anchor
+        return float(comfort_anchor(repo, AppConfig.default(), measured_neutral_f)["offset_f"])
+    except Exception:
+        return 0.0
 
 
 def _settle_cooling_allowed() -> bool:

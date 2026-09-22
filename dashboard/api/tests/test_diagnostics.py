@@ -1614,7 +1614,11 @@ def test_a_night_held_at_neutral_is_not_pinned_at_the_ceiling():
     from app.diagnostics import _check_comfort_band_pinning
     c = _check_comfort_band_pinning(_ComfortRepo(67.0, 69.5, [_lvl(69.0)] * 100, neutral=69.0))
     assert c["status"] == "ok", c["detail"]
+    # The daemon steers the band re-anchored by comfort_neutral_offset_f (+1.0 F): 70.0 F is
+    # tonight's neutral, so holding there is not pinning either; the shifted ceiling is.
     c = _check_comfort_band_pinning(_ComfortRepo(67.0, 69.5, [_lvl(70.0)] * 100, neutral=69.0))
+    assert c["status"] == "ok", c["detail"]
+    c = _check_comfort_band_pinning(_ComfortRepo(67.0, 69.5, [_lvl(71.0)] * 100, neutral=69.0))
     assert c["status"] == "warn" and "WARM ceiling" in c["detail"]
 
 

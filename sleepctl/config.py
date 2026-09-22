@@ -206,6 +206,19 @@ class Tunables:
     #: every night, and on 2026-09-19 the user woke cold and set the bed to 80 F by hand.
     #: The cold side of the band stays exactly where the evidence put it.
     comfort_clamp_warm_allowance_f: float = 3.0
+    #: The night-time neutral sits this far above the comfort sweep's reading (see
+    #: sleepctl.learning.comfort_feedback). The sweep measured 69.0 F awake; asleep, the user
+    #: keeps waking cold there, and the pooled record runs 2.4 awakenings per 100 maintenance
+    #: ticks at 69 F against 0.7 at 70 F -- the lowest of any temperature with real exposure.
+    #: The whole band moves with it (settle, REM, deep bias, clamp, trial arms), so 70 F is
+    #: tonight's floor of normal operation rather than a single warmer target.
+    comfort_neutral_offset_f: float = 1.0
+    #: The morning review's temperature answer moves the anchor further, night by night:
+    #: too cold +1.0, a bit cold +0.5, right 0, a bit warm -0.5, too warm -1.0. The total offset
+    #: never goes below the measured neutral nor above it by more than ``comfort_feedback_max_f``.
+    comfort_feedback_enabled: bool = True
+    comfort_feedback_max_f: float = 4.0
+    comfort_feedback_since: str = "2026-09-22"
     #: An awakening while the bed sits at or below neutral is answered with warmth, not a hold.
     #: This user's reported reason for waking is cold, and WAKE_RECOVERY resolved to SETTLE_COOL
     #: -- which, with settle cooling switched off, is exactly neutral. So the one moment the

@@ -318,7 +318,9 @@ def test_live_comfort_calibration_sweeps_and_saves_neutral():
     assert d.comfort is None                          # sweep finished
     prof = repo.get_comfort_profile()
     assert prof and prof["neutral_f"] == 70.0
-    assert d.cycle.controller.thermal.profile.neutral_f == 70.0
+    # the sweep is stored as measured; the controller steers it re-anchored (see
+    # sleepctl.learning.comfort_feedback), since a sweep is taken awake
+    assert d.cycle.controller.thermal.profile.neutral_f == 70.0 + d.cfg.tunables.comfort_neutral_offset_f
 
 
 def test_live_comfort_cancel_stops_and_holds_off():
@@ -627,3 +629,30 @@ def test_an_armed_nap_holds_back_a_deploy_in_any_state(tmp_path, monkeypatch):
     with open(os.path.join(str(tmp_path), "session.state")) as fh:
         assert fh.read().strip() == "maintenance protect"
     d.nap_deadline = None
+
+
+def test_a_too_cold_morning_warms_the_next_session():
+    """2026-09-22: "the bed wakes me up in the middle of the night because it's so cold". The
+    morning review's temperature answer moves the neutral the NEXT "help me fall asleep" steers
+    around, re-read at session start (the review is filed after the close-out)."""
+    d, client, repo = _daemon()
+    repo.save_comfort_profile({"neutral_f": 69.0, "cool_edge_f": 67.0, "warm_edge_f": 69.5,
+                               "ratings": [], "source": "test"})
+    repo.conn.execute("DELETE FROM wake_review")
+    repo.conn.commit()
+    d._start_induce()
+    base = d.cycle.controller.thermal.profile.neutral_f
+    assert base == 69.0 + d.cfg.tunables.comfort_neutral_offset_f
+    assert d._comfort_anchor["neutral_f"] == base
+    try:
+        repo.conn.execute(
+            "INSERT OR REPLACE INTO wake_review (night_date, ts, temperature) VALUES (?, ?, ?)",
+            ("2099-01-01", "2099-01-02T07:00:00", "too_cold"))
+        repo.conn.commit()
+        d._start_induce()
+        assert d.cycle.controller.thermal.profile.neutral_f == base + 1.0
+        # the comfort band moved with it, so the clamp does not pull the warmer target back
+        assert d.cycle.controller.comfort_profile["cool_edge_f"] == 67.0 + (base + 1.0 - 69.0)
+    finally:
+        repo.conn.execute("DELETE FROM wake_review")
+        repo.conn.commit()

@@ -215,6 +215,9 @@ class LiveDashboardDaemon:
         self._induce_note = None
         self._onset_logged_ts = None
         self._apply_induce_deadline_awareness()
+        # Re-read the learned profiles so this morning's review (filed after the close-out
+        # that last attached them) sets tonight's comfort anchor.
+        self._attach_profiles(self.cycle.controller)
         self.cycle.controller.set_session("induce", keep_light=False)
         self._ensure_night_targets("induce")
         self._persist_session()
@@ -477,6 +480,23 @@ class LiveDashboardDaemon:
                 self._skip("comfort-band correction", exc)
             comfort = self.repo.get_comfort_profile()
             if comfort and comfort.get("neutral_f") is not None:
+                # The sweep's neutral was measured awake; the sleeper's mornings say where it
+                # sits asleep. Re-anchor the whole band on that (bounded, logged, reversible
+                # through the morning review) before anything below reads it.
+                try:
+                    from sleepctl.learning.comfort_feedback import comfort_anchor, shifted_profile
+                    anchor = comfort_anchor(self.repo, self.cfg, float(comfort["neutral_f"]))
+                    self._comfort_anchor = anchor
+                    if abs(float(anchor["offset_f"])) > 1e-9:
+                        comfort = shifted_profile(comfort, float(anchor["offset_f"]))
+                        self._log(f"comfort anchor: measured {anchor['measured_neutral_f']}F "
+                                  f"{float(anchor['offset_f']):+.1f}F -> neutral "
+                                  f"{anchor['neutral_f']}F (re-anchor "
+                                  f"{float(anchor['base_offset_f']):+.1f}, mornings "
+                                  f"{float(anchor['feedback_f']):+.1f} over "
+                                  f"{anchor['n_reviews']} reviews / {anchor['n_notes']} notes)")
+                except Exception as exc:
+                    self._skip("comfort anchor", exc)
                 # set_measured_neutral (not a bare assignment) so the controller KNOWS this
                 # neutral came from the user rather than the population default. Without that
                 # flag the hot-sleeper cool bias is stacked on top of a neutral already measured
@@ -1585,6 +1605,9 @@ class LiveDashboardDaemon:
                       "driving": self._driving_the_bed(),
                       "pod_guard": self._pod_guard_summary(),
                       "thermal_trial": self.thermal_trial_arm,
+                      # Where tonight's neutral sits and why: the sweep's reading, the fixed
+                      # re-anchor and what the morning reviews have added. No biometrics.
+                      "comfort_anchor": getattr(self, "_comfort_anchor", None),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
                       "data_quality": self.cycle.controller.data_quality_summary(),
