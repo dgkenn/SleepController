@@ -91,6 +91,11 @@ MAX_EXPERIMENTAL_FRACTION = 0.6
 # randomized; short/work/recovery nights need the plain, unexperimented default.
 _ELIGIBLE_NIGHT_TYPES = ("normal",)
 
+#: The local-hour window in which a "help me fall asleep" session is the start of a real night
+#: rather than a nap: 18:00 through 03:59.
+EVENING_START_HOUR = 18
+EVENING_END_HOUR = 4
+
 _SECONDARY_METRICS = ("deep_min", "sleep_efficiency", "hrv", "subjective_rating")
 
 
@@ -102,10 +107,27 @@ def is_eligible(context: dict) -> bool:
     full-length, in-bed-for-the-night session may be randomized. See that module for the
     rationale -- kept as a literal duplicate (not a shared import) so each trial module stays
     independently readable/auditable and a change to one trial's eligibility can never silently
-    change the other's."""
+    change the other's.
+
+    2026-09-22: an evening "help me fall asleep" IS a normal night for this user. Every night
+    since the trials were armed started that way, so session_mode read "induce", this gate
+    refused it, and neither trial randomized a single night -- the thermal trial reported 0
+    resolved nights after a week "enabled". An induce session started in the evening window is
+    a full-length night that merely opens with an onset program; a nap or a daytime induction
+    is still refused. ``started_hour`` is the local hour the session began; a caller that does
+    not supply it gets the old behaviour (induce refused), so nothing is admitted by accident.
+    """
     night_type = context.get("night_type")
     session_mode = context.get("session_mode", "night")
-    if session_mode != "night":
+    if session_mode == "induce":
+        hour = context.get("started_hour")
+        try:
+            hour = int(hour) if hour is not None else None
+        except (TypeError, ValueError):
+            hour = None
+        if hour is None or not (hour >= EVENING_START_HOUR or hour < EVENING_END_HOUR):
+            return False
+    elif session_mode != "night":
         return False
     return night_type in _ELIGIBLE_NIGHT_TYPES
 

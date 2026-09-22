@@ -59,6 +59,11 @@ MAX_SHAM_FRACTION = 0.25
 # deliberately excluded: those nights already need the FULL active policy, not an experiment.
 _ELIGIBLE_NIGHT_TYPES = ("normal",)
 
+#: The local-hour window in which a "help me fall asleep" session is the start of a real night
+#: rather than a nap: 18:00 through 03:59.
+EVENING_START_HOUR = 18
+EVENING_END_HOUR = 4
+
 _METRICS = ("wake_events", "deep_pct", "hrv", "efficiency")
 _LOWER_BETTER = {"wake_events"}
 
@@ -78,10 +83,26 @@ def is_eligible(context: dict) -> bool:
         only once the plan has actually classified the night as normal.
       * ``session_mode`` -- 'night' | 'induce' | 'nap' (daemon session kind). Only 'night'
         sessions are eligible; naps/inductions are excluded even if `night_type` is unset.
+
+    2026-09-22: an evening "help me fall asleep" IS a normal night for this user. Every night
+    since the trials were armed started that way, so session_mode read "induce", this gate
+    refused it, and neither trial randomized a single night -- the thermal trial reported 0
+    resolved nights after a week "enabled". An induce session started in the evening window is
+    a full-length night that merely opens with an onset program; a nap or a daytime induction
+    is still refused. ``started_hour`` is the local hour the session began; a caller that does
+    not supply it gets the old behaviour (induce refused), so nothing is admitted by accident.
     """
     night_type = context.get("night_type")
     session_mode = context.get("session_mode", "night")
-    if session_mode != "night":
+    if session_mode == "induce":
+        hour = context.get("started_hour")
+        try:
+            hour = int(hour) if hour is not None else None
+        except (TypeError, ValueError):
+            hour = None
+        if hour is None or not (hour >= EVENING_START_HOUR or hour < EVENING_END_HOUR):
+            return False
+    elif session_mode != "night":
         return False
     return night_type in _ELIGIBLE_NIGHT_TYPES
 

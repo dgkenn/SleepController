@@ -660,7 +660,8 @@ class LiveDashboardDaemon:
 
             from sleepctl.ml.thermal_trial import apply_trial_arm
             base = self.cycle.controller.thermal.profile
-            context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
+            context = {"night_type": self.context.night_type, "session_mode": self.session_mode,
+                       "started_hour": self._session_started_hour()}
             prof, info = apply_trial_arm(
                 self.repo, self.cfg, datetime.now().date().isoformat(), context, base)
             # The dose trial shifts neutral on purpose; every other caller keeps the measured one.
@@ -681,7 +682,8 @@ class LiveDashboardDaemon:
         try:
             from sleepctl.ml.efficacy_trial import apply_trial_arm
             base = self.cycle.controller.thermal.profile
-            context = {"night_type": self.context.night_type, "session_mode": self.session_mode}
+            context = {"night_type": self.context.night_type, "session_mode": self.session_mode,
+                       "started_hour": self._session_started_hour()}
             prof, info = apply_trial_arm(
                 self.repo, self.cfg, self.cycle.controller,
                 datetime.now().date().isoformat(), context, base)
@@ -1450,6 +1452,15 @@ class LiveDashboardDaemon:
                 fh.write(f"{state} protect" if self._restart_would_damage(state) else str(state))
         except Exception:
             pass
+
+    def _session_started_hour(self):
+        """Local hour this session began: bed entry when known, else now (the trials are
+        assigned as the session starts, so now is the start in practice)."""
+        try:
+            be = getattr(self.cycle.controller, "_bed_entry_time", None)
+            return int((be or datetime.now()).hour)
+        except Exception:
+            return None
 
     def _driving_the_bed(self) -> bool:
         """True when this controller is the thing setting the bed's temperature."""
