@@ -387,6 +387,7 @@ class SleepStager:
         *,
         smooth: bool = True,
         ibi_samples: Optional[Sequence[Sample]] = None,
+        total_minutes: Optional[float] = None,
     ) -> Optional[StageEstimate]:
         """Stage estimate from trailing ``(t_seconds, value)`` sample histories.
 
@@ -399,6 +400,11 @@ class SleepStager:
         at least :data:`MIN_IBI_FOR_HRV` intervals fall in the trailing 10 minutes, that
         variant is scored instead (see :meth:`select_variant`); otherwise the intervals
         are ignored and the estimate is exactly what the HR / HR+motion path returns.
+
+        ``total_minutes`` is the planned length of the night (bed entry to wake). Training
+        normalised the clock by each recording's TRUE length; inference assumed 480 min, so
+        on any night not eight hours long the ``clock_norm_*`` features sat off-distribution.
+        Pass it when a wake time is known; None keeps the nominal eight hours.
         """
         if not hr_samples or not self.available:
             return None
@@ -495,6 +501,7 @@ class SleepStager:
                                              hrv_sorted=hrv_sorted if use_hrv else None),
                 minutes_since_start=mss,
                 minutes_since_onset=mso,
+                total_minutes=total_minutes,
                 include_activity=use_motion,
                 ibi_samples=ibi[lo_ibi:ii] if use_hrv else None,
                 include_hrv=use_hrv,

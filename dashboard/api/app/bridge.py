@@ -223,21 +223,29 @@ def recent_rr_intervals(conn: sqlite3.Connection, minutes: float = 45.0,
             "SELECT source FROM rr_intervals WHERE ts >= ? ORDER BY id DESC LIMIT 1",
             (cutoff,)).fetchone()
         src = latest["source"] if latest is not None else None
+        # NEWEST rows when the cap bites (DESC, then reversed): an ASC LIMIT would silently
+        # drop the most recent beats, which are the ones every consumer is asking about.
         if src is None:
             rows = conn.execute(
-                "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? ORDER BY ts ASC LIMIT ?",
+                "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? ORDER BY ts DESC LIMIT ?",
                 (cutoff, int(max_rows))).fetchall()
         else:
             rows = conn.execute(
                 "SELECT ts, rr_ms FROM rr_intervals WHERE ts >= ? AND source = ? "
-                "ORDER BY ts ASC LIMIT ?", (cutoff, src, int(max_rows))).fetchall()
-        for r in rows:
+                "ORDER BY ts DESC LIMIT ?", (cutoff, src, int(max_rows))).fetchall()
+        for r in reversed(rows):
             try:
                 t = datetime.fromisoformat(r["ts"]).timestamp()
-                for v in json.loads(r["rr_ms"]):
-                    out.append((t, float(v)))
+                vals = [float(v) for v in json.loads(r["rr_ms"])]
             except Exception:
                 continue
+            # Each beat at its own time: the batch is stamped when it was POSTED, which is
+            # when its LAST beat ended, so walk the earlier ones back by their own lengths.
+            # (night_export already spreads them this way; windowed features need the same.)
+            back = sum(vals)
+            for v in vals:
+                back -= v
+                out.append((t - back / 1000.0, v))
     except Exception:
         return []
     return out

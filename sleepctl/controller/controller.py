@@ -817,9 +817,20 @@ class SleepController:
                    if self._bed_entry_time is not None else None)
             mso = ((now - self._sleep_onset_time).total_seconds() / 60.0
                    if self._sleep_onset_time is not None else None)
+            # The night's planned length, for the stager's clock normalisation: bed entry to
+            # the required wake time, when both are known and it is a plausible night.
+            planned = None
+            if self._bed_entry_time is not None and required_wake is not None:
+                try:
+                    planned = (required_wake - self._bed_entry_time).total_seconds() / 60.0
+                except Exception:
+                    planned = None
+                if planned is not None and not (120.0 <= planned <= 840.0):
+                    planned = None
             est = estimate_sleep_stage(
                 frame, sleep_hr_base, recent, cfg,
                 minutes_since_start=mss, minutes_since_onset=mso,
+                planned_night_min=planned,
                 # MEASURED resting HR (not the trailing pool) -- the absolute wake anchor. None
                 # until the resting baseline is learned, which disables that test on its own.
                 resting_hr=(self.resting_baseline or {}).get("hr"))

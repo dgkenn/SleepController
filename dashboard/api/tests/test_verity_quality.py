@@ -413,3 +413,23 @@ def test_one_artefact_in_a_tiny_batch_does_not_read_as_a_charger():
     out = assess_cardiac_quality(hr=60.0, rr=[1000.0, 1010.0], acc={"pim": 0.2},
                                  history=history, now=now, recent_rr_n=300, window_rmssd=237.0)
     assert out["not_worn"] is True
+
+
+def test_beats_in_one_batch_get_their_own_times(tmp_path):
+    """A batch is stamped when POSTED; its beats are walked back by their own lengths so
+    windowed HRV sees a real beat series rather than three beats at one instant."""
+    import sqlite3
+    from datetime import datetime, timezone
+    from app import bridge
+    from app.db import _DASHBOARD_DDL
+    conn = sqlite3.connect(str(tmp_path / "rr.db"))
+    conn.row_factory = sqlite3.Row
+    conn.executescript(_DASHBOARD_DDL)
+    ts = datetime.now(timezone.utc)
+    conn.execute("INSERT INTO rr_intervals (ts, rr_ms, source) VALUES (?, ?, ?)",
+                 (ts.isoformat(), "[1000, 900, 1100]", "verity"))
+    conn.commit()
+    got = bridge.recent_rr_intervals(conn, minutes=5)
+    t_end = ts.timestamp()
+    assert [round(t_end - t, 3) for t, _ in got] == [2.0, 1.1, 0.0]
+    assert [v for _, v in got] == [1000.0, 900.0, 1100.0]

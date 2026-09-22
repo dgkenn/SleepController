@@ -68,6 +68,52 @@ def _autonomic_assess(frame, minutes_since_onset):
     return out
 
 
+def _still_by_counts(frame, recent, cfg_t, window_s: float = 300.0) -> bool:
+    """True when the band's own counts show no movement burst over the last ``window_s``.
+    False when there are no counts: a deep call needs positive evidence of stillness."""
+    series = _activity_series(recent, frame)
+    if not series:
+        return False
+    t_end = max(t for t, _ in series)
+    vals = [v for t, v in series if t_end - window_s < t <= t_end]
+    if len(vals) < 20:
+        return False
+    return max(vals) < float(getattr(cfg_t, "est_stage_actigraphy_wake_pim", 5.0))
+
+
+def _autonomic_override(auto, stage, conf, frame, recent, t, minutes_since_onset):
+    """Apply the beat-interval evidence to the model's label, or None to keep it.
+
+    * REM VETO. A sustained vagal state (5-min median z(log LF/HF) <= -0.5 for 5+ min) is
+      NREM, whatever the clock features say. Not confidence-gated: the model's REM sits at the
+      0.7 cap, which is how 21-40% of REM minutes on 2026-09-19/20 sat in a clearly vagal state
+      with nothing able to question them. Measured effect: REM 55->43% and 48->29% on those
+      nights, 34->31% on 09-21 where REM already tracked LF/HF.
+    * BOUNDED DEEP. The bundled model essentially never emits deep for this user (mean p_deep
+      0.01-0.03 in the first three hours, whatever the clock). A vagal state held 10+ min, with
+      heart rate in the night's lowest quarter and no movement burst, in the first
+      ``autonomic_deep_window_min`` after onset, is called deep -- capped at 20% of assessed
+      epochs and at confidence 0.5, below every model label.
+    There is deliberately NO upgrade to REM on a sympathetic state any more. REM is the stage
+    this model already over-calls, and a high LF/HF is shared with arousals and N1; replayed on
+    2026-09-19..21 the upgrade added more REM than the veto removed.
+    """
+    cap = float(getattr(t, "autonomic_rescore_max_conf", 0.55))
+    sug = auto.get("suggest")
+    early = (minutes_since_onset is not None
+             and minutes_since_onset <= float(getattr(t, "autonomic_deep_window_min", 240.0)))
+    if (sug == "deep" and early and stage in (SleepStage.LIGHT, SleepStage.REM)
+            and _still_by_counts(frame, recent, t)):
+        try:
+            _RESCORER.note_deep()
+        except Exception:
+            pass
+        return (SleepStage.DEEP, round(min(max(conf, 0.45), 0.5), 3), "model+autonomic")
+    if stage is SleepStage.REM and auto.get("veto_rem"):
+        return (SleepStage.LIGHT, round(min(conf, cap), 3), "model+autonomic")
+    return None
+
+
 def _get_stager():
     global _STAGER, _STAGER_LOADED
     if not _STAGER_LOADED:
@@ -200,7 +246,7 @@ def _actigraphy_wake(frame, cfg) -> bool:
 
 def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                          minutes_since_start=None, minutes_since_onset=None,
-                         resting_hr=None):
+                         resting_hr=None, planned_night_min=None):
     """Best available coarse sleep-stage estimate for a stage-less (wearable) feed.
 
     Returns ``(SleepStage, confidence, source)`` or ``None``. Prefers the LEARNED wearable stager
@@ -234,11 +280,13 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                 # is flowing, it scores instead of the HR / HR+motion models (infer.select_variant).
                 ibi = getattr(frame, "rr_history", None) or None
                 try:
+                    kw = {"ibi_samples": ibi}
+                    if planned_night_min:
+                        kw["total_minutes"] = planned_night_min
                     est = stager.predict(
                         hr_samples, activity_samples=act,
                         minutes_since_start=minutes_since_start,
-                        minutes_since_onset=minutes_since_onset,
-                        ibi_samples=ibi)
+                        minutes_since_onset=minutes_since_onset, **kw)
                 except TypeError:
                     est = stager.predict(
                         hr_samples, activity_samples=act,
@@ -252,13 +300,15 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                     # Beat-interval HRV rescoring of REM vs deep (autonomic_rescoring): bounded
                     # to LOW-confidence sleep labels with strong, self-normalised evidence.
                     auto = _autonomic_assess(frame, minutes_since_onset)
-                    if (auto and auto.get("suggest")
-                            and getattr(t, "autonomic_rescoring_enabled", True)
-                            and stage in (SleepStage.LIGHT, SleepStage.DEEP, SleepStage.REM)
-                            and conf < float(getattr(t, "autonomic_rescore_max_conf", 0.55))):
-                        want = SleepStage.DEEP if auto["suggest"] == "deep" else SleepStage.REM
-                        if want is not stage:
-                            return (want, round(max(conf, 0.5), 3), "model+autonomic")
+                    vetoed = False
+                    if auto and getattr(t, "autonomic_rescoring_enabled", True):
+                        res = _autonomic_override(auto, stage, conf, frame, recent, t,
+                                                  minutes_since_onset)
+                        if res is not None and res[0] is not SleepStage.LIGHT:
+                            return res
+                        if res is not None:
+                            # A vetoed REM is LIGHT and goes on to the deep corroboration below.
+                            stage, conf, vetoed = res[0], res[1], True
                     # DEEP-SLEEP CORROBORATION. The learned stager leans heavily on its clock
                     # features, and deep sleep is front-loaded in its training data, so its deep
                     # emission decays to ~0 after the first ~100 min and it then reports deep for
@@ -289,6 +339,8 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                         if h is not None and h[0] is SleepStage.DEEP:
                             return (SleepStage.DEEP, round(min(conf, h[1]), 3), "model+deep")
                     variant = getattr(est, "variant", "hr")
+                    if vetoed:
+                        return (stage, round(conf, 3), "model+autonomic")
                     return (stage, round(conf, 3),
                             "model" if variant in ("hr", "hrmotion") else f"model:{variant}")
 

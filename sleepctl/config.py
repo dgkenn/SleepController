@@ -499,6 +499,9 @@ class Tunables:
     # Beat-interval HRV rescoring of REM vs deep (see controller.autonomic_rescoring): only a
     # low-confidence sleep label may be moved, and only on strong self-normalised evidence.
     autonomic_rescoring_enabled: bool = True
+    # Deep calls from the beat-interval evidence only in this many minutes after onset (deep
+    # is front-loaded; late in the night a vagal, still stretch is far more likely N2).
+    autonomic_deep_window_min: float = 240.0
     autonomic_rescore_max_conf: float = 0.55
     # Let the interpretable (clock-free) heuristic upgrade a model "light" to DEEP when it has
     # positive physiological evidence -- sustained stillness plus HR below the trailing sleep

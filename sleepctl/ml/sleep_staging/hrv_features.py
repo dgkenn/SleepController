@@ -234,18 +234,28 @@ def _tachogram(times_s: Sequence[float], ibis: Sequence[float]) -> Tuple[List[fl
 
 
 def _band_power(sig: Sequence[float], fs: float, lo: float, hi: float) -> float:
-    """Goertzel band power — O(n) per bin, no numpy (matches respiration.py's approach)."""
+    """Goertzel band power in ms^2 over the half-open band [lo, hi) -- O(n) per bin, no numpy.
+
+    Normalised as a one-sided Hann-windowed periodogram (2*sum|X_k|^2 / (n * sum w^2)), so the
+    value is physical power and does not grow with window length. The raw sum of |X_k|^2 it
+    used to return scaled with n^2 (the same 450 ms^2 oscillation read 1.3e7 over 2 min and
+    8.0e7 over 5 min), which only ratios survived. Half-open bands keep the 0.15 Hz bin out of
+    LF and HF at once."""
     n = len(sig)
     if n < 8:
         return 0.0
     mean = statistics.fmean(sig)
     x = [v - mean for v in sig]
     # Hann window: without it, spectral leakage smears the LF/HF split we care about
-    x = [v * (0.5 - 0.5 * math.cos(2 * math.pi * i / (n - 1))) for i, v in enumerate(x)]
+    w_hann = [0.5 - 0.5 * math.cos(2 * math.pi * i / (n - 1)) for i in range(n)]
+    x = [v * w for v, w in zip(x, w_hann)]
+    norm = n * sum(w * w for w in w_hann)
+    if norm <= 0:
+        return 0.0
     total = 0.0
     step = fs / n
-    k = max(1, int(lo / step))
-    kmax = min(n // 2, int(hi / step) + 1)
+    k = max(1, int(math.ceil(lo / step - 1e-9)))
+    kmax = min(n // 2, int(math.ceil(hi / step - 1e-9)) - 1)
     while k <= kmax:
         w = 2.0 * math.pi * k / n
         cw, sw = math.cos(w), math.sin(w)
@@ -258,7 +268,7 @@ def _band_power(sig: Sequence[float], fs: float, lo: float, hi: float) -> float:
         imag = s2 * sw
         total += real * real + imag * imag
         k += 1
-    return total
+    return 2.0 * total / norm
 
 
 def frequency_domain(times_s: Sequence[float], ibis: Sequence[float]) -> Dict[str, float]:
