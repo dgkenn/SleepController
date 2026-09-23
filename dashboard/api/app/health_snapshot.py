@@ -313,7 +313,13 @@ def _wake_light_block(repo) -> dict:
                "has_address": bool(cfg.get("ip") or cfg.get("on_url")),
                "tinytuya_installed": _svc._tinytuya() is not None}
         scan = _svc._last_scan(repo)
-        out["lan_scan"] = {"n_tuya_devices": len(scan),
+        try:
+            row = repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key='wake_plug_scan'").fetchone()
+            scanned_at = (json.loads(row[0]) or {}).get("ts") if row else None
+        except Exception:
+            scanned_at = None
+        out["lan_scan"] = {"scanned_at": scanned_at, "n_tuya_devices": len(scan),
                            "versions": sorted({str(d.get("version")) for d in scan
                                                if d.get("version")})}
     except Exception as exc:

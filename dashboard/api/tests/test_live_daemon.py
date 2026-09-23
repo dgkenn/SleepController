@@ -751,3 +751,34 @@ def test_the_lamp_comes_on_at_the_alarm_time_set_in_the_app():
     assert plug.calls[-1] is True
     d._stop_light_dose("manual")
     assert plug.calls[-1] is False
+
+
+def test_a_plug_set_up_from_the_phone_takes_effect_without_a_restart(monkeypatch):
+    """The plug refresh used to sit behind the Hue config's unchanged-signature early return,
+    so it ran once at startup and never again."""
+    import sys
+    import types
+    from app import services
+    d, client, repo = _daemon()
+    repo.conn.execute("DELETE FROM settings_kv WHERE key IN ('wake_plug_config', 'wake_plug_scan')")
+    repo.conn.commit()
+    scans = []
+    monkeypatch.setitem(sys.modules, "tinytuya", types.SimpleNamespace(find_device=lambda i: {}))
+    monkeypatch.setattr(services, "plug_scan", lambda r: scans.append(1) or {"devices": []})
+    d._plug_sig = None
+    d._plug_scan_mono = None
+    d._refresh_hue()
+    d._refresh_hue()                                   # Hue unchanged: plug still refreshed
+    import time as _t
+    for _ in range(50):
+        if scans:
+            break
+        _t.sleep(0.02)
+    assert scans, "the unconfigured plug was never looked for"
+    assert d.plug_driver is None
+    services.plug_config_update(repo, {"enabled": True, "backend": "http",
+                                       "config": {"on_url": "http://x/on", "off_url": "http://x/off"}})
+    d._refresh_hue()
+    assert d.plug_driver is not None
+    repo.conn.execute("DELETE FROM settings_kv WHERE key IN ('wake_plug_config', 'wake_plug_scan')")
+    repo.conn.commit()

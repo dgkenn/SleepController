@@ -1917,7 +1917,12 @@ class LiveDashboardDaemon:
 
     def _refresh_hue(self) -> None:
         """(Re)build the Hue dawn driver from the stored config; toggle the orchestrator's light
-        ramp accordingly. Rebuilds only when the config changes."""
+        ramp accordingly. Rebuilds only when the config changes.
+
+        The Wi-Fi plug is refreshed FIRST and unconditionally. It used to sit after the Hue
+        signature's early return, so it ran only when the Hue config changed: a plug set up from
+        the phone never took effect until a restart, and its LAN scan never ran at all."""
+        self._refresh_wake_plug()
         try:
             from app import services
             c = services._get_hue_config(self.repo)
@@ -1939,7 +1944,6 @@ class LiveDashboardDaemon:
             self.cycle.controller.set_dawn_light(bool(ready and c["target_ids"]))
         except Exception as exc:
             self._log(f"hue refresh skipped: {exc}")
-        self._refresh_wake_plug()
 
     def _refresh_wake_plug(self) -> None:
         """(Re)build the NON-Hue wake-therapy plug driver from its stored config.
