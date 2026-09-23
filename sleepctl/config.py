@@ -76,6 +76,14 @@ class Tunables:
     # many minutes AFTER you've surfaced, then stand them down. Dawn-simulation trials hold light
     # for ~20 min past wake to lock in alertness (Gabel 2014; SAD light-box dosing 30–60 min).
     post_wake_light_min: int = 20
+    # Pressing "I'm awake" starts a bright-light dose on the therapy lamp (smart plug / Hue
+    # therapy plug) for this long. 30 min at ~10,000 lux is the standard morning dose
+    # (Terman & Terman 2005). Only inside the morning window below: bright light before the
+    # core-temperature minimum shifts the body clock LATER, the opposite of the point, so an
+    # "I'm awake" at 03:00 gives no light. Naps never get it.
+    wake_light_dose_min: float = 30.0
+    wake_light_earliest_hour: float = 4.5
+    wake_light_latest_hour: float = 13.0
     # Active cool-snap on waking (OPT-IN): once you're CONFIRMED up, briefly run the bed cold to
     # kill residual sleepiness via a cool-skin alerting stimulus (Te Lindert & Van Someren 2018) —
     # the same lever that makes warm skin sleep-permissive, run in reverse. Plausibly well-suited

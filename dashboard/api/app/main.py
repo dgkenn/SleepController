@@ -367,6 +367,41 @@ def plug_test(on: bool = True, repo=Depends(repo_dep), user: str = AuthDep):
     return services.plug_test(repo, on)
 
 
+@app.post("/wake/plug/scan")
+def plug_scan(repo=Depends(repo_dep), user: str = AuthDep):
+    """Find Tuya-protocol plugs on the computer's network (~20 s)."""
+    return services.plug_scan(repo)
+
+
+class TuyaCloudBody(BaseModel):
+    region: str = "us"                  # us | eu | cn | in (the data centre of the cloud project)
+    api_key: str                        # Tuya IoT "Access ID / Client ID"
+    api_secret: str                     # Tuya IoT "Access Secret / Client Secret"
+    device_id: str | None = None        # to pick one when the account has several devices
+
+
+@app.post("/wake/plug/tuya-cloud")
+def plug_tuya_cloud(body: TuyaCloudBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """One-time: fetch the plug's local key from the Tuya developer cloud and configure it.
+    The developer credentials are used for this request only and never stored."""
+    return services.plug_tuya_cloud_setup(repo, body.region, body.api_key, body.api_secret,
+                                          body.device_id)
+
+
+class LightBody(BaseModel):
+    on: bool = True
+    minutes: float | None = None        # dose length when turning on (capped at 45)
+
+
+@app.post("/wake/light")
+def wake_light(body: LightBody, repo=Depends(repo_dep), user: str = AuthDep):
+    """Turn the therapy lamp on for a dose, or off now. The daemon owns the lamp, so this is a
+    command: it takes effect on the next control tick (seconds)."""
+    if body.on:
+        return _enqueue(repo, "light_on", {"minutes": body.minutes})
+    return _enqueue(repo, "light_off")
+
+
 @app.get("/wake/light/discover")
 def hue_discover(user: str = AuthDep):
     return services.hue_discover()
@@ -890,7 +925,8 @@ def get_wake_review(date: str | None = None, repo=Depends(repo_dep), user: str =
 def wake_up(repo=Depends(repo_dep), user: str = AuthDep):
     """End the session AND hand back the review to fill in. One button, one round trip."""
     from app import wake_review
-    out = _enqueue(repo, "end_session")
+    # "woke_up", not "end_session": this one also starts the morning light dose.
+    out = _enqueue(repo, "woke_up")
     payload = wake_review.review_payload(repo)
     return {**payload, "command": out}
 

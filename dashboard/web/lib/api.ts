@@ -851,6 +851,29 @@ export interface HueConfig {
   paired: boolean;
 }
 
+export interface PlugConfig {
+  enabled: boolean;
+  backend: string; // "tuya" (local Wi-Fi) | "http" (on/off URLs)
+  max_on_min: number;
+  config: Record<string, string>; // local_key comes back masked as "***"
+  configured: boolean;
+}
+
+export interface PlugScan {
+  ok: boolean;
+  devices: { ip: string; device_id: string; version?: string }[];
+  error?: string;
+  hint?: string | null;
+}
+
+export interface PlugCloudSetup {
+  ok: boolean;
+  error?: string;
+  choose?: { device_id: string; name?: string; on_lan: boolean }[];
+  plug?: { name: string; device_id: string; ip: string | null; version: string };
+  found_on_lan?: boolean;
+}
+
 export interface Backtest {
   nights: number;
   controller: Record<string, number>;
@@ -1078,6 +1101,22 @@ export const api = {
     ),
   hueLights: () => apiFetch<{ lights?: Record<string, string>; groups?: Record<string, string>; error?: string }>('/api/wake/light/lights'),
   hueTest: () => apiFetch<{ ok: boolean; error?: string }>('/api/wake/light/test', { method: 'POST' }),
+  // Wake light on a Wi-Fi smart plug (10k-lux therapy lamp)
+  plugConfig: () => apiFetch<PlugConfig>('/api/wake/plug/config'),
+  plugConfigUpdate: (values: Partial<Omit<PlugConfig, 'configured'>>) =>
+    apiFetch<PlugConfig>('/api/wake/plug/config', { method: 'PUT', body: JSON.stringify(values) }),
+  plugScan: () => apiFetch<PlugScan>('/api/wake/plug/scan', { method: 'POST' }),
+  plugTuyaCloud: (b: { region: string; api_key: string; api_secret: string; device_id?: string }) =>
+    apiFetch<PlugCloudSetup>('/api/wake/plug/tuya-cloud', { method: 'POST', body: JSON.stringify(b) }),
+  plugTest: (on: boolean) =>
+    apiFetch<{ ok: boolean; backend: string; commanded: boolean }>(`/api/wake/plug/test?on=${on}`, {
+      method: 'POST',
+    }),
+  wakeLight: (on: boolean, minutes?: number) =>
+    apiFetch<{ queued: string }>('/api/wake/light', {
+      method: 'POST',
+      body: JSON.stringify({ on, minutes: minutes ?? null }),
+    }),
   gymConfig: () => apiFetch<{ config: GymConfig }>('/api/gym/config'),
   gymConfigUpdate: (values: Partial<GymConfig>) =>
     apiFetch<{ config: GymConfig }>('/api/gym/config', {

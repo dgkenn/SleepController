@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 import json
 from datetime import datetime, timedelta
 from typing import Optional
@@ -154,6 +155,8 @@ class LiveDashboardDaemon:
         self._phone_fused = False  # was the phone sample fused on the last frame (presence-gated)
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
         self.plug_driver = None    # non-Hue Wi-Fi wake-therapy plug driver (best-effort)
+        self._light_dose_until = None  # a bright-light dose in progress ("I'm awake" / manual)
+        self._light_dose_why = None
         # True once the Pod has refused an alarm WRITE with 402/403 (subscription-gated).
         # Latched so we stop retrying a refusal no client can talk its way past, and so
         # the snapshot can say plainly that vibration is unavailable this night.
@@ -1130,6 +1133,18 @@ class LiveDashboardDaemon:
                     self._start_nap(p.get("duration_min"), p.get("wake_time"))
                 elif t == "end_session":
                     self._end_session()
+                elif t == "woke_up":
+                    # "I'm awake": end the session AND give the morning light dose. Separate
+                    # from end_session so ending a nap or abandoning a session never lights
+                    # the room.
+                    was_nap = self.session_mode == "nap"
+                    self._end_session()
+                    if not was_nap:
+                        self._start_light_dose("woke_up")
+                elif t == "light_on":
+                    self._start_light_dose("manual", minutes=p.get("minutes"), manual=True)
+                elif t == "light_off":
+                    self._stop_light_dose("manual")
                 elif t == "self_test":
                     await self._run_self_test(p.get("mode", "full"))
                 elif t == "self_test_cancel":
@@ -1608,6 +1623,8 @@ class LiveDashboardDaemon:
                       # Where tonight's neutral sits and why: the sweep's reading, the fixed
                       # re-anchor and what the morning reviews have added. No biometrics.
                       "comfort_anchor": getattr(self, "_comfort_anchor", None),
+                      # The wake light: configured, and whether a dose is running.
+                      "wake_light": self._wake_light_status(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
                       "data_quality": self.cycle.controller.data_quality_summary(),
@@ -1933,6 +1950,8 @@ class LiveDashboardDaemon:
         try:
             from app import services
             c = services._get_plug_config(self.repo)
+            self._maybe_relocate_plug(c)
+            self._maybe_scan_for_plug(c)
             sig = (c["enabled"], c["backend"], c["max_on_min"],
                    tuple(sorted((c["config"] or {}).items())))
             if sig == getattr(self, "_plug_sig", None):
@@ -1957,27 +1976,169 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._log(f"wake plug refresh skipped: {exc}")
 
+    #: How often the Tuya plug's LAN address is re-checked. Home routers hand out addresses by
+    #: DHCP, and a plug that moved would otherwise fail silently at the one moment it matters.
+    PLUG_RELOCATE_EVERY_S = 6 * 3600.0
+
+    def _maybe_relocate_plug(self, c: dict) -> None:
+        """Re-find a Tuya plug by its id in a background thread (the LAN listen takes ~20 s and
+        must never stall the control tick), and store its new address if it moved."""
+        cfg = c.get("config") or {}
+        if not (c.get("enabled") and c.get("backend") == "tuya" and cfg.get("device_id")):
+            return
+        mono = time.monotonic()
+        last = getattr(self, "_plug_relocate_mono", None)
+        if cfg.get("ip") and last is not None and mono - last < self.PLUG_RELOCATE_EVERY_S:
+            return
+        if getattr(self, "_plug_relocating", False):
+            return
+        if not cfg.get("ip") and last is not None and mono - last < 600.0:
+            return                                   # no address yet: retry every 10 min
+        self._plug_relocate_mono = mono
+        self._plug_relocating = True
+
+        def _run(device_id=cfg["device_id"], old_ip=cfg.get("ip"), old_ver=cfg.get("version")):
+            try:
+                import tinytuya
+                hit = tinytuya.find_device(device_id) or {}
+                ip, ver = hit.get("ip"), hit.get("version")
+                if ip and (ip != old_ip or (ver and str(ver) != str(old_ver))):
+                    from app import services as _svc
+                    cur = _svc._get_plug_config(self.repo)
+                    new_cfg = dict(cur.get("config") or {})
+                    if new_cfg.get("device_id") == device_id:
+                        new_cfg["ip"] = ip
+                        if ver:
+                            new_cfg["version"] = str(ver)
+                        _svc.plug_config_update(self.repo, {"config": new_cfg})
+                        self._log(f"wake plug found at a new address ({ip})")
+            except Exception as exc:
+                self._log(f"wake plug relocate skipped: {exc!r}")
+            finally:
+                self._plug_relocating = False
+
+        import threading
+        threading.Thread(target=_run, name="wake-plug-relocate", daemon=True).start()
+
+    def _maybe_scan_for_plug(self, c: dict) -> None:
+        """Until a plug is configured, listen for one on the LAN once a day in the background,
+        so the phone's setup screen (and the health report) already know what is there."""
+        if (c.get("config") or {}) or getattr(self, "_plug_scanning", False):
+            return
+        mono = time.monotonic()
+        last = getattr(self, "_plug_scan_mono", None)
+        if last is not None and mono - last < 24 * 3600.0:
+            return
+        try:
+            import tinytuya  # noqa: F401  (installed by the watchdog; skip quietly until then)
+        except Exception:
+            return
+        self._plug_scan_mono = mono
+        self._plug_scanning = True
+
+        def _run():
+            try:
+                from app import services as _svc
+                out = _svc.plug_scan(self.repo)
+                self._log(f"wake plug scan: {len(out.get('devices') or [])} Tuya device(s) on the LAN")
+            except Exception as exc:
+                self._log(f"wake plug scan skipped: {exc!r}")
+            finally:
+                self._plug_scanning = False
+
+        threading.Thread(target=_run, name="wake-plug-scan", daemon=True).start()
+
+    def _start_light_dose(self, why: str, minutes=None, manual: bool = False,
+                          now: "datetime | None" = None) -> bool:
+        """Turn the therapy lamp on for a morning dose. Returns whether it was started.
+
+        A manual request is honoured at any hour (the user asked, and can see the light). The
+        automatic "I'm awake" dose only runs inside the morning window: bright light before the
+        body's temperature minimum delays the clock -- the opposite of the point."""
+        now = now or self._clock_now()
+        t = self.cfg.tunables
+        if not manual:
+            hour = now.hour + now.minute / 60.0
+            lo = float(getattr(t, "wake_light_earliest_hour", 4.5))
+            hi = float(getattr(t, "wake_light_latest_hour", 13.0))
+            if not (lo <= hour < hi):
+                self._log(f"light dose skipped ({why}): {now:%H:%M} is outside the "
+                          f"{lo:g}-{hi:g}h morning window")
+                return False
+        try:
+            mins = float(minutes) if minutes is not None else float(
+                getattr(t, "wake_light_dose_min", 30.0))
+        except (TypeError, ValueError):
+            mins = float(getattr(t, "wake_light_dose_min", 30.0))
+        mins = max(1.0, min(mins, 45.0))          # the plug driver's own hard cap is 45 min
+        self._light_dose_until = now + timedelta(minutes=mins)
+        self._light_dose_why = why
+        self._log(f"light dose started ({why}) for {mins:.0f} min")
+        return True
+
+    def _clock_now(self) -> datetime:
+        try:
+            now = self.client.now()
+            if isinstance(now, datetime):
+                return now.replace(tzinfo=None) if now.tzinfo else now
+        except Exception:
+            pass
+        return datetime.now()
+
+    def _stop_light_dose(self, why: str) -> None:
+        if self._light_dose_until is not None:
+            self._log(f"light dose stopped ({why})")
+        self._light_dose_until = None
+        self._light_dose_why = None
+        # An explicit "off" must reach the lamp even if nothing else is driving it this tick.
+        plug = getattr(self, "plug_driver", None)
+        try:
+            if plug:
+                plug.set_therapy(False)
+            if self.hue_driver:
+                self.hue_driver.set_therapy(False)
+        except Exception as exc:
+            self._log(f"light off skipped: {exc}")
+
+    def _light_dose_active(self, now: "datetime | None" = None) -> bool:
+        until = getattr(self, "_light_dose_until", None)
+        if until is None:
+            return False
+        if (now or self._clock_now()) >= until:
+            self._light_dose_until = None
+            self._light_dose_why = None
+            return False
+        return True
+
+    def _wake_light_status(self) -> dict:
+        until = getattr(self, "_light_dose_until", None)
+        return {"configured": bool(getattr(self, "plug_driver", None) or self.hue_driver),
+                "on_until": until.isoformat() if until else None,
+                "why": getattr(self, "_light_dose_why", None)}
+
     def _drive_dawn(self, decision) -> None:
         plug = getattr(self, "plug_driver", None)
         if not self.hue_driver and not plug:
             return
         la = (decision.log_payload or {}).get("wake_action") if decision else None
         # The SAME wake decision drives both transports, so a Hue lamp and a generic Wi-Fi plug
-        # can never disagree about whether it is time to get up.
+        # can never disagree about whether it is time to get up. A dose started by "I'm awake"
+        # (or by hand) holds the lamp on alongside it.
         should = bool(la.get("should_wake")) if la else False
+        dose = bool(getattr(self, "_light_dose_active", lambda: False)())
         try:
             if self.hue_driver:
                 if la is None:                   # outside the wake window -> everything off
                     self.hue_driver.set_level(0.0)
-                    self.hue_driver.set_therapy(False)
+                    self.hue_driver.set_therapy(dose)
                 else:
                     self.hue_driver.set_level(float(la.get("light_level", 0.0)))  # sunrise ramp
-                    self.hue_driver.set_therapy(should)                           # therapy at wake
+                    self.hue_driver.set_therapy(should or dose)                   # therapy at wake
         except Exception as exc:
             self._log(f"hue drive skipped: {exc}")
         try:
             if plug:
-                plug.set_therapy(should)
+                plug.set_therapy(should or dose)
         except Exception as exc:
             self._log(f"wake plug drive skipped: {exc}")
 

@@ -656,3 +656,56 @@ def test_a_too_cold_morning_warms_the_next_session():
     finally:
         repo.conn.execute("DELETE FROM wake_review")
         repo.conn.commit()
+
+
+def test_im_awake_gives_the_morning_light_dose_and_naps_do_not():
+    """"I'm awake" ends the session and holds the therapy lamp on for the dose; ending a nap,
+    or an "I'm awake" in the small hours, never lights the room."""
+    from datetime import datetime, timedelta
+    d, client, repo = _daemon()
+
+    class _Plug:
+        def __init__(self):
+            self.calls = []
+
+        def set_therapy(self, on):
+            self.calls.append(bool(on))
+
+        def off(self):
+            self.calls.append(False)
+
+    plug = _Plug()
+    d.plug_driver = plug
+    morning = datetime(2026, 9, 23, 7, 5)
+    d._clock_now = lambda: morning
+    d.session_mode = "induce"
+    assert d._start_light_dose("woke_up") is True
+    d._drive_dawn(None)
+    assert plug.calls[-1] is True
+    assert d._wake_light_status()["on_until"] is not None
+    # the dose ends on its own
+    d._clock_now = lambda: morning + timedelta(minutes=d.cfg.tunables.wake_light_dose_min + 1)
+    d._drive_dawn(None)
+    assert plug.calls[-1] is False
+    # 03:00 is before the body clock's minimum: no automatic light
+    d._clock_now = lambda: datetime(2026, 9, 23, 3, 0)
+    assert d._start_light_dose("woke_up") is False
+    # ...but a manual request is honoured, and "off" reaches the lamp at once
+    assert d._start_light_dose("manual", minutes=10, manual=True) is True
+    d._stop_light_dose("manual")
+    assert plug.calls[-1] is False and d._light_dose_until is None
+
+
+def test_the_wake_up_command_lights_only_a_night_session():
+    d, client, repo = _daemon()
+    started = []
+    d._start_light_dose = lambda why, **k: started.append(why) or True
+    for mode, expect in (("nap", []), ("induce", ["woke_up"])):
+        started.clear()
+        d.session_mode = mode
+        repo.conn.execute("INSERT INTO commands (ts, type, payload, status) "
+                          "VALUES (datetime('now'), 'woke_up', '{}', 'pending')")
+        repo.conn.commit()
+        _run(d._apply_commands())
+        assert started == expect, mode
+        assert d.session_mode == "night"

@@ -195,7 +195,8 @@ def test_the_wake_button_ends_the_session_and_hands_back_the_review(auth_client)
     assert r.status_code == 200
     body = r.json()
     assert "night_date" in body and "awakenings" in body and "review" in body
-    assert body["command"]                      # the end_session command was enqueued
+    # "woke_up": ends the session AND starts the morning light dose
+    assert body["command"]["queued"] == "woke_up"
 
 
 def test_the_review_endpoints_round_trip(auth_client):

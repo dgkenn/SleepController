@@ -146,7 +146,8 @@ def test_the_daemon_drives_hue_from_the_wake_action():
     src = (Path(__file__).resolve().parent.parent
            / "dashboard" / "daemon" / "live_daemon.py").read_text()
     i = src.index("def _drive_dawn")
-    block = src[i:i + 900]
+    j = src.find("\n    def ", i + 1)
+    block = src[i:j if j > 0 else None]              # the whole method, however it grows
     assert "light_level" in block, "the sunrise ramp must drive the bulb level"
     assert "should_wake" in block, "the therapy lamp must fire on the wake signal"
     assert "set_level(0.0)" in block, "outside the window everything must be turned OFF"

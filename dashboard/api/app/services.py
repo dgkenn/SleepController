@@ -1127,6 +1127,12 @@ def plug_config_view(repo) -> dict:
 def plug_config_update(repo, values: dict) -> dict:
     import json as _json
     cur = _get_plug_config(repo)
+    new_cfg = values.get("config")
+    if isinstance(new_cfg, dict) and new_cfg.get("local_key") in ("***", None) \
+            and (cur.get("config") or {}).get("local_key"):
+        # The view masks the key as "***"; a client echoing the config back must not erase it.
+        values = dict(values)
+        values["config"] = {**new_cfg, "local_key": cur["config"]["local_key"]}
     for k in ("enabled", "backend", "max_on_min", "config"):
         if k in values and values[k] is not None:
             cur[k] = values[k]
@@ -1143,6 +1149,108 @@ def plug_test(repo, on: bool) -> dict:
     c = _get_plug_config(repo)
     ok = switch(c["backend"], c["config"], bool(on))
     return {"ok": bool(ok), "backend": c["backend"], "commanded": bool(on)}
+
+
+def _tinytuya():
+    try:
+        import tinytuya  # optional: installed on the box by the watchdog (Ensure-WakePlugDeps)
+        return tinytuya
+    except Exception:
+        return None
+
+
+_TUYA_MISSING = ("the plug library (tinytuya) is not installed on the computer yet -- it installs "
+                 "itself within a few minutes of this update; try again shortly")
+
+
+def plug_scan(repo) -> dict:
+    """Listen on the LAN for Tuya-protocol devices (~18 s) and remember what answered.
+
+    Settles which build of the plug this is. The YX-WS01 label has shipped as ESP- and
+    BL602-based Tuya plugs and, later, as Matter devices; only a Tuya one answers here. No key
+    is needed to be found -- only to be switched."""
+    import json as _json
+    tt = _tinytuya()
+    if tt is None:
+        return {"ok": False, "error": _TUYA_MISSING, "devices": []}
+    try:
+        found = tt.deviceScan(False, 20) or {}
+    except Exception as exc:
+        return {"ok": False, "error": f"scan failed: {exc!r}", "devices": []}
+    devices = [{"ip": ip, "device_id": d.get("gwId") or d.get("id"),
+                "version": d.get("version"), "product_key": d.get("productKey")}
+               for ip, d in found.items()]
+    record = {"ts": datetime.now(timezone.utc).isoformat(), "devices": devices}
+    repo.conn.execute(
+        "INSERT INTO settings_kv (key, value) VALUES ('wake_plug_scan', ?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (_json.dumps(record),))
+    repo.conn.commit()
+    return {"ok": True, "devices": devices,
+            "hint": (None if devices else
+                     "Nothing answered as a Tuya device. Check the plug is set up in the Smart "
+                     "Life app on the same Wi-Fi as the computer; if it is and still nothing "
+                     "answers, it is a newer Matter build -- use the on/off URL option.")}
+
+
+def _last_scan(repo) -> list:
+    import json as _json
+    try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key='wake_plug_scan'").fetchone()
+        return (_json.loads(row["value"]) or {}).get("devices") or [] if row else []
+    except Exception:
+        return []
+
+
+def plug_tuya_cloud_setup(repo, region: str, api_key: str, api_secret: str,
+                          device_id: str | None = None) -> dict:
+    """Fetch the plug's local key from the Tuya developer cloud ONCE, then run it locally.
+
+    The key is what lets the computer switch the plug over your own Wi-Fi with no cloud in the
+    path. The developer credentials are used for this one request and never stored. Returns
+    the list of plugs to choose from when there is more than one."""
+    tt = _tinytuya()
+    if tt is None:
+        return {"ok": False, "error": _TUYA_MISSING}
+    try:
+        cloud = tt.Cloud(apiRegion=(region or "us").strip().lower(), apiKey=api_key.strip(),
+                         apiSecret=api_secret.strip())
+        devs = cloud.getdevices(False)
+    except Exception as exc:
+        return {"ok": False, "error": f"Tuya cloud request failed: {exc!r}"}
+    if isinstance(devs, dict):          # tinytuya reports errors as {"Error": ...}
+        return {"ok": False, "error": str(devs.get("Error") or devs.get("Payload") or devs)[:300]}
+    devs = [d for d in (devs or []) if isinstance(d, dict) and d.get("id") and d.get("key")]
+    if not devs:
+        return {"ok": False, "error": "the Tuya account has no devices -- link your Smart Life "
+                                      "app to the cloud project (Devices > Link App Account)"}
+    scanned = {d["device_id"]: d for d in _last_scan(repo) if d.get("device_id")}
+    if device_id:
+        pick = [d for d in devs if d["id"] == device_id]
+    else:
+        plugs = [d for d in devs if str(d.get("category") or "") in ("cz", "pc")] or devs
+        on_lan = [d for d in plugs if d["id"] in scanned]
+        pick = on_lan if len(on_lan) == 1 else plugs
+    if len(pick) != 1:
+        return {"ok": False, "choose": [{"device_id": d["id"], "name": d.get("name"),
+                                         "on_lan": d["id"] in scanned} for d in pick],
+                "error": "more than one device -- pick the lamp's plug"}
+    d = pick[0]
+    lan = scanned.get(d["id"]) or {}
+    if not lan:
+        # Not in the last scan (or never scanned): look for it now.
+        try:
+            hit = tt.find_device(d["id"]) or {}
+            if hit.get("ip"):
+                lan = {"ip": hit.get("ip"), "version": hit.get("version")}
+        except Exception:
+            lan = {}
+    cfg = {"device_id": d["id"], "local_key": d["key"], "ip": lan.get("ip") or "",
+           "version": str(lan.get("version") or "3.3"), "name": d.get("name") or ""}
+    view = plug_config_update(repo, {"enabled": True, "backend": "tuya", "config": cfg})
+    return {"ok": True, "plug": {"name": cfg["name"], "device_id": cfg["device_id"],
+                                 "ip": cfg["ip"] or None, "version": cfg["version"]},
+            "found_on_lan": bool(cfg["ip"]), "config": view}
 
 
 def hue_config_view(repo) -> dict:

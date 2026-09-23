@@ -661,6 +661,22 @@ function Handle-BluetoothResetRequest {
     }
 }
 
+function Ensure-WakePlugDeps {
+    # The wake light's Wi-Fi plug is switched over the LAN with tinytuya. One-time install, same
+    # marker pattern as the Verity's bleak: no manual pip, never on the hot path afterwards. The
+    # API and daemon import it lazily, so neither needs a restart once it lands.
+    $depMarker = Join-Path $run "wakeplug-deps.ok"
+    if (Test-Path $depMarker) { return }
+    & $py -c "import tinytuya" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Log "installing 'tinytuya' for the wake-light smart plug (one-time)"
+        & $py -m pip install --quiet --disable-pip-version-check tinytuya 2>&1 | Out-Null
+        & $py -c "import tinytuya" 2>$null
+    }
+    if ($LASTEXITCODE -eq 0) { Set-Content -Path $depMarker -Value "ok" -Encoding ASCII }
+    else { Log "WARN: 'tinytuya' not importable yet; the wake-light plug will retry next cycle" }
+}
+
 function Ensure-Verity {
     if (-not (Verity-Enabled)) { return }
     $script = Join-Path $Root "scripts\verity_forwarder.py"
@@ -1307,6 +1323,7 @@ while ($true) {
     # same tick then relaunches it against the freshly-restarted Bluetooth stack.
     Handle-BluetoothResetRequest
     Ensure-Verity
+    Ensure-WakePlugDeps
 
     if (-not (Port-Alive 8000)) {
         if (Test-CanRestart "api") {

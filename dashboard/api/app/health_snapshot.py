@@ -295,8 +295,30 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "lan_url": _lan_url(run_dir),
         "wearable": _wearable_block(repo, run_dir),
         "controller": _controller_block(repo),
+        "wake_light": _wake_light_block(repo),
     }
     return scrub(snapshot)
+
+
+def _wake_light_block(repo) -> dict:
+    """Whether the wake light is set up, and what the last LAN scan found -- counts and
+    protocol versions only. No device ids, addresses or keys: this snapshot is public."""
+    out: dict = {}
+    try:
+        from app import services as _svc
+        c = _svc._get_plug_config(repo)
+        cfg = c.get("config") or {}
+        out = {"enabled": bool(c.get("enabled")), "backend": c.get("backend"),
+               "configured": bool(cfg),
+               "has_address": bool(cfg.get("ip") or cfg.get("on_url")),
+               "tinytuya_installed": _svc._tinytuya() is not None}
+        scan = _svc._last_scan(repo)
+        out["lan_scan"] = {"n_tuya_devices": len(scan),
+                           "versions": sorted({str(d.get("version")) for d in scan
+                                               if d.get("version")})}
+    except Exception as exc:
+        out["error"] = type(exc).__name__
+    return out
 
 
 def _controller_block(repo) -> dict:

@@ -14,6 +14,7 @@ import PreemptionCard from '@/components/PreemptionCard';
 import SafetyGuardrailCard from '@/components/SafetyGuardrailCard';
 import GymCard from '@/components/GymCard';
 import HueCard from '@/components/HueCard';
+import WakeLightCard from '@/components/WakeLightCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
 import ArmbandCard from '@/components/ArmbandCard';
 import Disclosure from '@/components/Disclosure';
@@ -373,6 +374,9 @@ function TonightContent() {
 
           {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
           {plan && <SleepPlanCard plan={plan} />}
+
+          {/* The morning therapy lamp: set up from here, then one tap to run a dose. */}
+          <WakeLightCard />
 
           {/* Advisory and setup cards: CBT-I guidance, gym call, dawn light, weather. */}
           <Disclosure title="More for tonight" summary="CBT-I · gym · dawn light · weather" storageKey="tonight-extras">

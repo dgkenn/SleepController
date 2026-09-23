@@ -25,6 +25,8 @@ VALID_COMMANDS = {
     "self_test", "self_test_cancel",
     # Interactive in-bed comfort mapping sweep
     "comfort_cal_start", "comfort_cal_rate", "comfort_cal_cancel",
+    # "I'm awake" (end the session + morning light dose) and the wake light by hand
+    "woke_up", "light_on", "light_off",
 }
 
 
