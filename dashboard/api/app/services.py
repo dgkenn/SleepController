@@ -1749,6 +1749,16 @@ RMSSD_IMPLAUSIBLY_HIGH_MS = 160.0
 # 105 bpm: that night the sleeping median was 78.
 STILL_HR_IMPLAUSIBLY_HIGH_BPM = 105.0
 
+# ...and without stillness at all. 2026-09-22 19:30-20:50 the band was on its charger and the
+# guards above let it through: whatever the accelerometer reported did not read as five minutes
+# of dead stillness, so none of the stillness-gated tests ran, and HR 72-151 bpm with a
+# windowed RMSSD of 207-303 ms was stored as the user's heart rate. A windowed RMSSD that
+# high is not a human in any state: worn and asleep it has never exceeded 136 ms here, and
+# the two charger episodes measured sit at 184-335 ms. Set just under the charger minimum and
+# well above anything worn, so it holds even while "moving" -- and the window, not one 2-second
+# batch, is what it judges.
+WINDOW_RMSSD_NEVER_HUMAN_MS = 180.0
+
 
 def _parse_epoch(ts) -> "float | None":
     """``ts`` (an epoch-seconds number or an ISO8601 string) -> epoch seconds, or None if
@@ -1850,7 +1860,11 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
     # positive) -- hence requiring BOTH a long stillness run and corroborating absent/flat RR,
     # not actigraphy stillness alone (which, by itself, describes ordinary deep sleep).
     not_worn = False
-    if pim is not None and pim <= STILLNESS_PIM_FLOOR:
+    if window_rmssd is not None and window_rmssd > WINDOW_RMSSD_NEVER_HUMAN_MS:
+        not_worn = True
+        reasons.append(f"windowed RMSSD {window_rmssd:.0f}ms is not a human heartbeat "
+                       f"(> {WINDOW_RMSSD_NEVER_HUMAN_MS:g}ms) -- device likely not worn")
+    elif pim is not None and pim <= STILLNESS_PIM_FLOOR:
         still_start = _stillness_run_start(history)
         # the current sample extends the run even if it's the first still reading seen
         run_start = still_start if still_start is not None else now_ts
@@ -2519,6 +2533,15 @@ def ingest_hr(repo, payload: dict) -> dict:
     quality = assess_cardiac_quality(hr, rr, acc if isinstance(acc, dict) else None,
                                      history, now=now_ts, recent_rr_n=recent_rr_n,
                                      window_rmssd=hrv_windowed)
+    # The band's own word: a fresh "charging" / "off the arm" report from the forwarder means
+    # whatever the optical sensor says is not the user's heart.
+    try:
+        off = bridge.read_wearable_off_arm(repo.conn)
+    except Exception:
+        off = None
+    if off and not quality["not_worn"]:
+        quality = {**quality, "not_worn": True, "usable": False,
+                   "reason": f"band reports {off['state']} -- not worn"}
     worn = not quality["not_worn"]
 
     bridge.write_cardiac_sample(repo.conn, {"hr": hr if worn else None,

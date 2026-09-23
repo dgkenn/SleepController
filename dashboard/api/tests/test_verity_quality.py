@@ -433,3 +433,31 @@ def test_beats_in_one_batch_get_their_own_times(tmp_path):
     t_end = ts.timestamp()
     assert [round(t_end - t, 3) for t, _ in got] == [2.0, 1.1, 0.0]
     assert [v for _, v in got] == [1000.0, 900.0, 1100.0]
+
+
+def test_charger_noise_is_caught_even_when_the_band_does_not_read_as_still():
+    """2026-09-22 19:30-20:50: HR 72-151 with a windowed RMSSD of 207-303 ms, and no five-minute
+    stillness run for the other guards to key on. That RMSSD is not a human in any state."""
+    from app.services import assess_cardiac_quality
+
+    now = 1_000_000.0
+    moving = _hist(now, [300.0, 200.0, 100.0], hr=120.0, pim=6.0)
+    out = assess_cardiac_quality(hr=146.0, rr=[400.0, 700.0], acc={"pim": 6.0},
+                                 history=moving, now=now, recent_rr_n=300, window_rmssd=229.0)
+    assert out["not_worn"] is True
+    # a worn, restless sleeper with a high-but-human RMSSD is left alone
+    out = assess_cardiac_quality(hr=70.0, rr=[900.0, 950.0], acc={"pim": 6.0},
+                                 history=moving, now=now, recent_rr_n=300, window_rmssd=120.0)
+    assert out["not_worn"] is False
+
+
+def test_a_band_that_reports_charging_is_not_worn(monkeypatch):
+    """The forwarder's own "charging" report outranks whatever the optical sensor says."""
+    from app import bridge, services
+    from app.db import get_repo
+    repo = get_repo()
+    monkeypatch.setattr(bridge, "read_wearable_off_arm",
+                        lambda conn, *a, **k: {"state": "charging", "age_s": 30.0})
+    out = services.ingest_hr(repo, {"hr": 72.0, "rr": [830.0, 840.0, 835.0],
+                                    "source": "verity-test-charging"})
+    assert out["not_worn"] is True and out["usable"] is False
