@@ -709,3 +709,45 @@ def test_the_wake_up_command_lights_only_a_night_session():
         _run(d._apply_commands())
         assert started == expect, mode
         assert d.session_mode == "night"
+
+
+def test_the_lamp_comes_on_at_the_alarm_time_set_in_the_app():
+    """The wake time the user set is when the light goes on -- once, not for a nap deadline,
+    not an hour late after a restart, and a toggled test is immediate."""
+    from datetime import datetime, timedelta
+    d, client, repo = _daemon()
+
+    class _Plug:
+        def __init__(self):
+            self.calls = []
+
+        def set_therapy(self, on):
+            self.calls.append(bool(on))
+
+        def off(self):
+            self.calls.append(False)
+
+    plug = _Plug()
+    d.plug_driver = plug
+    alarm = datetime(2026, 9, 23, 6, 45)
+    d.context.required_wake_time = alarm
+    d.session_mode = "induce"
+    assert d._maybe_alarm_light(alarm - timedelta(minutes=1)) is False       # not yet
+    assert d._maybe_alarm_light(alarm + timedelta(seconds=40)) is True       # the alarm
+    assert plug.calls[-1] is True                                            # at once
+    assert d._maybe_alarm_light(alarm + timedelta(minutes=2)) is False       # only once
+    # an alarm the daemon only sees long after it passed does not fire
+    d._alarm_light_fired = None
+    assert d._maybe_alarm_light(alarm + timedelta(minutes=60)) is False
+    # a nap's deadline is not an alarm for the lamp
+    d._alarm_light_fired = None
+    d.session_mode = "nap"
+    assert d._maybe_alarm_light(alarm + timedelta(minutes=1)) is False
+    # the test toggle: on is immediate, off is immediate
+    d.session_mode = "night"
+    d._stop_light_dose("test")
+    assert plug.calls[-1] is False
+    assert d._start_light_dose("manual", minutes=2, manual=True) is True
+    assert plug.calls[-1] is True
+    d._stop_light_dose("manual")
+    assert plug.calls[-1] is False

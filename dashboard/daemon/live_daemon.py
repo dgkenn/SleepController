@@ -2074,7 +2074,47 @@ class LiveDashboardDaemon:
         self._light_dose_until = now + timedelta(minutes=mins)
         self._light_dose_why = why
         self._log(f"light dose started ({why}) for {mins:.0f} min")
+        # Now, not on the next control tick: a test press should light the lamp while the
+        # user is looking at it, and an alarm dose should not wait a minute.
+        self._push_light(True)
         return True
+
+    def _push_light(self, on: bool) -> None:
+        plug = getattr(self, "plug_driver", None)
+        try:
+            if plug:
+                plug.set_therapy(bool(on))
+            if self.hue_driver:
+                self.hue_driver.set_therapy(bool(on))
+        except Exception as exc:
+            self._log(f"light {'on' if on else 'off'} skipped: {exc}")
+
+    #: The alarm dose starts if the daemon sees the alarm time within this long of it passing
+    #: (a tick that lands a minute late still fires; a restart an hour later does not).
+    ALARM_LIGHT_GRACE_MIN = 15.0
+
+    def _maybe_alarm_light(self, now: "datetime | None" = None) -> bool:
+        """Turn the lamp on at the alarm time set in the app. Returns whether it fired.
+
+        Follows ``required_wake_time`` -- the wake picked by hand (after any gym adjustment) or
+        the calendar's auto-wake -- whether or not a sleep session is running. Not a nap's
+        deadline. The user chose this time, so the morning-window rule for "I'm awake" does not
+        apply; pressing "I'm awake" first clears the alarm, so it never fires twice."""
+        w = getattr(self.context, "required_wake_time", None)
+        if w is None or self.session_mode == "nap":
+            return False
+        if not (getattr(self, "plug_driver", None) or self.hue_driver):
+            return False
+        now = now or self._clock_now()
+        try:
+            due = w <= now < w + timedelta(minutes=self.ALARM_LIGHT_GRACE_MIN)
+        except TypeError:                         # aware vs naive: compare on the wall clock
+            due = False
+        key = w.isoformat()
+        if not due or getattr(self, "_alarm_light_fired", None) == key:
+            return False
+        self._alarm_light_fired = key
+        return self._start_light_dose("alarm", manual=True, now=now)
 
     def _clock_now(self) -> datetime:
         try:
@@ -2091,14 +2131,7 @@ class LiveDashboardDaemon:
         self._light_dose_until = None
         self._light_dose_why = None
         # An explicit "off" must reach the lamp even if nothing else is driving it this tick.
-        plug = getattr(self, "plug_driver", None)
-        try:
-            if plug:
-                plug.set_therapy(False)
-            if self.hue_driver:
-                self.hue_driver.set_therapy(False)
-        except Exception as exc:
-            self._log(f"light off skipped: {exc}")
+        self._push_light(False)
 
     def _light_dose_active(self, now: "datetime | None" = None) -> bool:
         until = getattr(self, "_light_dose_until", None)
@@ -2114,7 +2147,8 @@ class LiveDashboardDaemon:
         until = getattr(self, "_light_dose_until", None)
         return {"configured": bool(getattr(self, "plug_driver", None) or self.hue_driver),
                 "on_until": until.isoformat() if until else None,
-                "why": getattr(self, "_light_dose_why", None)}
+                "why": getattr(self, "_light_dose_why", None),
+                "alarm_fired": getattr(self, "_alarm_light_fired", None)}
 
     def _drive_dawn(self, decision) -> None:
         plug = getattr(self, "plug_driver", None)
@@ -2335,6 +2369,7 @@ class LiveDashboardDaemon:
                                  {"from": self._prev_state.value, "to": decision.state.value})
             self._prev_state = decision.state
         self._last_decision = decision
+        self._maybe_alarm_light()         # the lamp at the alarm time set in the app
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
         snapshot = self._snapshot(decision, frame)
         bridge.write_runtime_state(self.repo.conn, snapshot)

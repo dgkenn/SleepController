@@ -4,8 +4,8 @@ import { useState } from 'react';
 import useSWR from 'swr';
 import { api, fetcher, PlugConfig, PlugScan, PlugCloudSetup } from '@/lib/api';
 
-/** The 10,000-lux therapy lamp on a Wi-Fi smart plug. It comes on when you press "I'm awake"
- *  (a 30-min morning dose) or when the smart alarm wakes you, and never during the night. */
+/** The 10,000-lux therapy lamp on a Wi-Fi smart plug. It comes on at the alarm time set in the
+ *  app or when you press "I'm awake" (a 30-min morning dose), and never during the night. */
 export default function WakeLightCard() {
   const { data: cfg, mutate } = useSWR<PlugConfig>('/api/wake/plug/config', fetcher, {
     refreshInterval: 60000,
@@ -20,6 +20,7 @@ export default function WakeLightCard() {
   const [urlMode, setUrlMode] = useState(false);
   const [onUrl, setOnUrl] = useState('');
   const [offUrl, setOffUrl] = useState('');
+  const [testOn, setTestOn] = useState(false);
 
   if (!cfg) return null;
   const ready = cfg.configured && cfg.enabled;
@@ -53,7 +54,7 @@ export default function WakeLightCard() {
         setApiSecret('');
         setMsg(
           r.found_on_lan
-            ? `Connected to “${r.plug?.name || 'plug'}”. Tap Test to check the lamp.`
+            ? `Connected to “${r.plug?.name || 'plug'}”. Tap “Test: turn on” to check the lamp.`
             : `Connected to “${r.plug?.name || 'plug'}”, but it wasn’t found on the Wi-Fi yet — the computer keeps looking every 10 minutes.`
         );
         mutate();
@@ -70,19 +71,25 @@ export default function WakeLightCard() {
         backend: 'http',
         config: { on_url: onUrl.trim(), off_url: offUrl.trim() },
       });
-      setMsg('Saved. Tap Test to check the lamp.');
+      setMsg('Saved. Tap “Test: turn on” to check the lamp.');
       mutate();
     });
 
-  const test = (on: boolean) =>
-    run(on ? 'Turning the lamp on…' : 'Turning the lamp off…', async () => {
-      const r = await api.plugTest(on);
-      setMsg(r.ok ? (on ? 'The lamp should be on now.' : 'Off.') : 'The plug did not answer.');
+  // Test goes through the computer that owns the lamp, so a forgotten "on" still switches
+  // itself off after 2 minutes.
+  const toggleTest = () => {
+    const on = !testOn;
+    return run(on ? 'Turning the lamp on…' : 'Turning the lamp off…', async () => {
+      await api.wakeLight(on, on ? 2 : undefined);
+      setTestOn(on);
+      setMsg(on ? 'Lamp on — it turns itself off after 2 minutes.' : 'Lamp off.');
     });
+  };
 
   const dose = (on: boolean) =>
     run(on ? 'Starting a 30-minute light dose…' : 'Turning the light off…', async () => {
       await api.wakeLight(on, on ? 30 : undefined);
+      setTestOn(on);
       setMsg(on ? 'Light on for 30 minutes.' : 'Light off.');
     });
 
@@ -112,25 +119,25 @@ export default function WakeLightCard() {
       </div>
 
       <p className="text-[11px] text-gray-500 leading-relaxed">
-        Your therapy lamp comes on for 30 minutes when you press “I’m awake” (between 4:30 am and 1 pm), or
-        when the smart alarm wakes you. It never comes on during the night, and shuts off after 45 minutes
-        at most.
+        Your therapy lamp comes on for 30 minutes at the alarm time you set in the app, or when you press
+        “I’m awake” (between 4:30 am and 1 pm), whichever comes first. It never comes on during the night,
+        and shuts off after 45 minutes at most.
       </p>
 
       {ready && (
-        <div className="flex flex-wrap gap-2">
-          <button onClick={() => dose(true)} disabled={busy} className={`${btn} bg-amber-500 text-black`}>
-            Light on (30 min)
-          </button>
+        <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={() => dose(false)}
+            onClick={toggleTest}
             disabled={busy}
-            className={`${btn} bg-surface-raised text-gray-200 border border-surface-border`}
+            aria-pressed={testOn}
+            className={`${btn} ${
+              testOn ? 'bg-amber-500 text-black' : 'bg-surface-raised text-gray-200 border border-surface-border'
+            }`}
           >
-            Off
+            {testOn ? 'Test: turn off' : 'Test: turn on'}
           </button>
-          <button onClick={() => test(true)} disabled={busy} className="text-[11px] text-brand">
-            Test
+          <button onClick={() => dose(true)} disabled={busy} className="text-[11px] text-brand">
+            Light on for 30 min
           </button>
         </div>
       )}
