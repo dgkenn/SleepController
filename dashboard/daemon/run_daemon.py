@@ -956,6 +956,19 @@ def main() -> None:
             _stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    # Beat from the first moment, from a thread of its own: start-up (profile loading, the
+    # device connect) can take minutes, and a daemon that only beat once its loop ran was killed
+    # by the watchdog after 45 s and failed every smoke test, so no build could stay deployed
+    # (2026-09-25). A live process is what the heartbeat proves; whether the loop makes progress
+    # is judged separately (runtime_state ticks), with a start-up allowance.
+    import threading
+
+    def _startup_beats() -> None:
+        while True:
+            _write_daemon_heartbeat()
+            time.sleep(10)
+
+    threading.Thread(target=_startup_beats, name="daemon-process-heartbeat", daemon=True).start()
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true",
                     help="drive the REAL Eight Sleep Pod (default: simulator)")

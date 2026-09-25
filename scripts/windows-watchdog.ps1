@@ -890,7 +890,16 @@ function Get-DaemonTickAgeSeconds {
         return $null
     }
 }
+# A daemon that has only just started has not completed a tick yet, so runtime_state.updated
+# still carries the PREVIOUS process's last tick. Judged on that, every fresh daemon looked
+# wedged the moment its grace ended and was killed after 45 s, over and over (2026-09-25: a
+# start-up that needed a few minutes never got them and the box stayed down for hours). A
+# fresh daemon gets this long to finish starting before tick progress is judged; it proves it
+# is alive meanwhile through the heartbeat run_daemon.py starts before anything slow.
+$script:daemonStartupAllowanceS = 600
+$script:daemonStartedAt = (Get-Date)
 function Daemon-Wedged {
+    if (((Get-Date) - $script:daemonStartedAt).TotalSeconds -lt $script:daemonStartupAllowanceS) { return $false }
     if ((Get-Date) -lt $script:daemonTickCheckAt) { return $false }   # not due -- default: not wedged
     $script:daemonTickCheckAt = (Get-Date).AddSeconds($script:daemonTickCheckEveryS)
     $age = Get-DaemonTickAgeSeconds
@@ -917,6 +926,7 @@ function Ensure-Daemon {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     Start-Sleep -Milliseconds 500
     Start-Daemon | Out-Null
+    $script:daemonStartedAt = (Get-Date)
     $script:daemonGraceUntil = (Get-Date).AddSeconds(45)  # don't re-judge until it can beat
 }
 
