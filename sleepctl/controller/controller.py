@@ -530,6 +530,15 @@ class SleepController:
             if getattr(frame, "wearable_off_arm", None):
                 self.last_bed_entry_block = "wearable reports it is off the arm"
                 return False
+            hold = getattr(self, "_bed_entry_hold_until", None)
+            ts = getattr(frame, "timestamp", None)
+            if hold is not None and ts is not None:
+                try:
+                    if ts.replace(tzinfo=None) < hold:
+                        self.last_bed_entry_block = "the user ended the session"
+                        return False
+                except Exception:
+                    pass
             need = int(getattr(t, "wearable_bed_entry_min_ticks", 5))
             lo = float(getattr(t, "wearable_bed_entry_hr_lo", 30.0))
             hi = float(getattr(t, "wearable_bed_entry_hr_hi", 120.0))
@@ -697,25 +706,10 @@ class SleepController:
                     # a wristband.
                     and (not wake_window_open or held_long)
                     and frame.presence is not True):
-                self.sm.state = ControllerState.IDLE
-                self.sm.reason = ("bed exit: " + ", ".join(bed_exit.reasons)
-                                  if bed_exit.reasons else "bed exit")
-                self._bed_entry_time = None
-                self._recovered_bed_entry = None     # the session it described is over
-                self._sleep_onset_time = None
-                self._cold_since = None
-                self._cold_relief_f = 0.0
-                self._reset_architecture()
+                self._reset_bed_session("bed exit: " + ", ".join(bed_exit.reasons)
+                                        if bed_exit.reasons else "bed exit")
                 self.bed_exit_events.append({
                     "ts": now.isoformat(), **bed_exit.to_dict()})
-                try:
-                    self.onset_detector.reset()
-                    self.bed_exit_detector.reset()
-                    self.hypnogram.reset()
-                    self._preempt_ticks_maint = 0
-                    self._maint_ticks = 0
-                except Exception:
-                    pass
         except Exception:
             # A detector fault must never take the control loop down with it.
             pass
@@ -1302,6 +1296,43 @@ class SleepController:
     def _round_opt(value, ndigits: int = 2):
         return round(value, ndigits) if value is not None else None
 
+    def _reset_bed_session(self, reason: str) -> None:
+        """IDLE, and forget everything that belonged to the bed session that just ended."""
+        self.sm.state = ControllerState.IDLE
+        self.sm.reason = reason
+        self._bed_entry_time = None
+        self._recovered_bed_entry = None     # the session it described is over
+        self._sleep_onset_time = None
+        self._cold_since = None
+        self._cold_relief_f = 0.0
+        self._reset_architecture()
+        try:
+            self.onset_detector.reset()
+            self.bed_exit_detector.reset()
+            self.hypnogram.reset()
+            self._preempt_ticks_maint = 0
+            self._maint_ticks = 0
+        except Exception:
+            pass
+
+    #: After the user ends a session by hand, a wearable "bed entry" may not reopen one for this
+    #: long: someone lying still in bed after pressing "I'm awake" looks exactly like someone
+    #: getting into bed.
+    ENDED_BY_USER_ENTRY_HOLD_MIN = 240.0
+
+    def end_bed_session(self, reason: str, now: Optional[datetime] = None) -> None:
+        """The user ended the session ("I'm awake", End, a nap reaching its deadline).
+
+        ``set_session("night")`` alone only relabelled the session: the state machine stayed in
+        INDUCTION/MAINTENANCE and kept driving the bed -- after "I'm awake" it went on writing the
+        Pod, and after a nap it carried on as a night session with no deadline. This is the same
+        reset a bed exit performs, plus a hold on wearable bed entry so the session cannot
+        reopen itself while the user is still lying there."""
+        self._reset_bed_session(reason)
+        self.set_session("night", keep_light=False)
+        now = now or datetime.now()
+        self._bed_entry_hold_until = now + timedelta(minutes=self.ENDED_BY_USER_ENTRY_HOLD_MIN)
+
     def set_session(self, mode: str, keep_light: Optional[bool] = None) -> None:
         """Select the session mode ('night' | 'induce' | 'nap_power' | 'nap_cycle'). Power
         naps keep the bed light so slow-wave sleep doesn't set in."""
@@ -1317,6 +1348,7 @@ class SleepController:
         # INDUCTION from IDLE/CALIBRATION so the onset thermal cascade runs open-loop right away;
         # confirmed onset (once physiology arrives) then hands off to MAINTENANCE as usual.
         if self.session_mode in ("induce", "nap_power", "nap_cycle"):
+            self._bed_entry_hold_until = None   # an explicit start outranks the hold
             # Tonight's bounds belong to tonight: a manual change from an earlier session or
             # from the day must not carry a floor or ceiling into this one.
             self.session_floor_f = None
