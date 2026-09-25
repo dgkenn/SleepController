@@ -109,7 +109,8 @@ CREATE TABLE IF NOT EXISTS context (
     routine_complete INTEGER,
     subjective_quality REAL,
     grogginess REAL,
-    daytime_performance REAL
+    daytime_performance REAL,
+    night_type TEXT
 );
 
 CREATE TABLE IF NOT EXISTS interventions (
@@ -428,6 +429,10 @@ _MIGRATIONS = [
     ("thermal_calibration", "warmback_lag_min", "REAL"),
     ("events", "data", "TEXT"),
     ("raw_samples", "sample_ts", "TEXT"),
+    # The night TYPE (normal / work / recovery / short). ContextRecord has always carried it,
+    # but the table had no column, so it read back None: recovery nights were never scored as
+    # RECOVERY and the per-mode learners only ever saw "normal".
+    ("context", "night_type", "TEXT"),
 ]
 
 

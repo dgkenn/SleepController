@@ -219,13 +219,19 @@ class Repository:
         excess rows. Defensive: returns 0 on any error rather than raising. Returns rows deleted."""
         try:
             cutoff = _iso(datetime.now() - timedelta(days=keep_days))
-            cur = self.conn.execute("DELETE FROM events WHERE ts < ?", (cutoff,))
+            # Ground-truth awake/asleep labels (marker gestures, review verdicts) are kept: the
+            # wake-truth learner looks back 30 nights and needs 10 of them, and this used to
+            # delete them at 14 days.
+            cur = self.conn.execute(
+                "DELETE FROM events WHERE ts < ? AND COALESCE(code, '') != 'marker_vs_stage'",
+                (cutoff,))
             deleted = cur.rowcount or 0
             total = self.conn.execute("SELECT COUNT(*) c FROM events").fetchone()["c"]
             if total > max_rows:
                 excess = total - max_rows
                 ids = [r["id"] for r in self.conn.execute(
-                    "SELECT id FROM events ORDER BY id ASC LIMIT ?", (excess,)).fetchall()]
+                    "SELECT id FROM events WHERE COALESCE(code, '') != 'marker_vs_stage' "
+                    "ORDER BY id ASC LIMIT ?", (excess,)).fetchall()]
                 if ids:
                     qmarks = ",".join("?" * len(ids))
                     cur2 = self.conn.execute(f"DELETE FROM events WHERE id IN ({qmarks})", ids)
@@ -267,13 +273,15 @@ class Repository:
     # LiveDashboardDaemon._maybe_close_out), NEVER on the per-tick hot path. (The fourth such
     # table, ``thermal_samples``, is a dashboard-layer table that doesn't exist in this engine
     # schema -- see ``app.bridge.prune_thermal_samples`` for its mirror-image helper.)
-    def prune_raw_samples(self, keep_days: int = 45) -> int:
+    # 90 days: longer than the longest learner lookback (wake_patterns, 60 nights), which used
+    # to outlive the 45-day retention of the very rows it reads.
+    def prune_raw_samples(self, keep_days: int = 90) -> int:
         return self._prune_ts_table("raw_samples", keep_days)
 
-    def prune_decisions(self, keep_days: int = 45) -> int:
+    def prune_decisions(self, keep_days: int = 90) -> int:
         return self._prune_ts_table("decisions", keep_days)
 
-    def prune_interventions(self, keep_days: int = 45) -> int:
+    def prune_interventions(self, keep_days: int = 90) -> int:
         return self._prune_ts_table("interventions", keep_days)
 
     def save_night_summary(self, ns: NightSummary) -> None:
@@ -321,35 +329,40 @@ class Repository:
         self.conn.commit()
 
     def save_context(self, ctx: ContextRecord) -> None:
+        """Upsert the night's context. A field left None does NOT erase a stored value: the
+        daemon saves its in-memory context at close-out, and a second close-out on the same
+        night (a morning nap before noon) used to wipe the morning check-in -- subjective
+        quality, caffeine and the rest went NULL."""
         self.conn.execute(
             """INSERT INTO context
-            (date, required_wake_time, work_start_time, first_commitment, outdoor_temp_f,
-             sleep_opportunity_min, is_short_sleep_day, schedule_variable, steps,
-             workout_timing, workout_intensity, resting_hr_trend, hr_recovery,
-             strain, caffeine, alcohol, screen_time_min, stress, travel, illness,
-             late_night_work, routine_complete, subjective_quality, grogginess,
-             daytime_performance)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (date, required_wake_time, work_start_time, first_commitment, outdoor_temp_f, sleep_opportunity_min, is_short_sleep_day, schedule_variable, steps, workout_timing, workout_intensity, resting_hr_trend, hr_recovery, strain, caffeine, alcohol, screen_time_min, stress, travel, illness, late_night_work, routine_complete, subjective_quality, grogginess, daytime_performance, night_type)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
-             required_wake_time=excluded.required_wake_time,
-             work_start_time=excluded.work_start_time,
-             first_commitment=excluded.first_commitment,
-             outdoor_temp_f=excluded.outdoor_temp_f,
-             sleep_opportunity_min=excluded.sleep_opportunity_min,
-             is_short_sleep_day=excluded.is_short_sleep_day,
-             schedule_variable=excluded.schedule_variable, steps=excluded.steps,
-             workout_timing=excluded.workout_timing,
-             workout_intensity=excluded.workout_intensity,
-             resting_hr_trend=excluded.resting_hr_trend,
-             hr_recovery=excluded.hr_recovery, strain=excluded.strain,
-             caffeine=excluded.caffeine, alcohol=excluded.alcohol,
-             screen_time_min=excluded.screen_time_min, stress=excluded.stress,
-             travel=excluded.travel, illness=excluded.illness,
-             late_night_work=excluded.late_night_work,
-             routine_complete=excluded.routine_complete,
-             subjective_quality=excluded.subjective_quality,
-             grogginess=excluded.grogginess,
-             daytime_performance=excluded.daytime_performance""",
+             required_wake_time=COALESCE(excluded.required_wake_time, context.required_wake_time),
+             work_start_time=COALESCE(excluded.work_start_time, context.work_start_time),
+             first_commitment=COALESCE(excluded.first_commitment, context.first_commitment),
+             outdoor_temp_f=COALESCE(excluded.outdoor_temp_f, context.outdoor_temp_f),
+             sleep_opportunity_min=COALESCE(excluded.sleep_opportunity_min, context.sleep_opportunity_min),
+             is_short_sleep_day=COALESCE(excluded.is_short_sleep_day, context.is_short_sleep_day),
+             schedule_variable=COALESCE(excluded.schedule_variable, context.schedule_variable),
+             steps=COALESCE(excluded.steps, context.steps),
+             workout_timing=COALESCE(excluded.workout_timing, context.workout_timing),
+             workout_intensity=COALESCE(excluded.workout_intensity, context.workout_intensity),
+             resting_hr_trend=COALESCE(excluded.resting_hr_trend, context.resting_hr_trend),
+             hr_recovery=COALESCE(excluded.hr_recovery, context.hr_recovery),
+             strain=COALESCE(excluded.strain, context.strain),
+             caffeine=COALESCE(excluded.caffeine, context.caffeine),
+             alcohol=COALESCE(excluded.alcohol, context.alcohol),
+             screen_time_min=COALESCE(excluded.screen_time_min, context.screen_time_min),
+             stress=COALESCE(excluded.stress, context.stress),
+             travel=COALESCE(excluded.travel, context.travel),
+             illness=COALESCE(excluded.illness, context.illness),
+             late_night_work=COALESCE(excluded.late_night_work, context.late_night_work),
+             routine_complete=COALESCE(excluded.routine_complete, context.routine_complete),
+             subjective_quality=COALESCE(excluded.subjective_quality, context.subjective_quality),
+             grogginess=COALESCE(excluded.grogginess, context.grogginess),
+             daytime_performance=COALESCE(excluded.daytime_performance, context.daytime_performance),
+             night_type=COALESCE(excluded.night_type, context.night_type)""",
             (
                 ctx.date,
                 _iso(ctx.required_wake_time),
@@ -376,6 +389,7 @@ class Repository:
                 ctx.subjective_quality,
                 ctx.grogginess,
                 ctx.daytime_performance,
+                getattr(ctx, "night_type", None),
             ),
         )
         self.conn.commit()
@@ -1033,6 +1047,7 @@ class Repository:
             subjective_quality=r["subjective_quality"],
             grogginess=r["grogginess"],
             daytime_performance=r["daytime_performance"],
+            night_type=(r["night_type"] if "night_type" in r.keys() else None),
         )
 
     # ---- runtime-state history: append-only trend of runtime_state snapshots (48h+ window) --

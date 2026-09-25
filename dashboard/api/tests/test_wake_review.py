@@ -321,3 +321,19 @@ def test_a_normal_morning_and_no_recent_session_keep_the_noon_cutoff(repo):
     assert wake_review.night_date_for(datetime(2026, 9, 22, 7, 10), repo) == "2026-09-21"
     assert wake_review.night_date_for(datetime(2026, 9, 24, 6, 0), repo) == "2026-09-23"
     assert wake_review.night_date_for(datetime(2026, 9, 24, 13, 0), repo) == "2026-09-24"
+
+
+def test_the_review_feeds_the_check_in_the_trial_and_the_note_parsers(repo):
+    repo.conn.execute("INSERT INTO thermal_trials (night_date, arm, offset_f) "
+                      "VALUES (?, '+0.50', 0.5)", (NIGHT,))
+    repo.conn.commit()
+    payload = {"night_date": NIGHT, "rested": 4, "temperature": "right",
+               "note": "woke 3:10, a bit cold"}
+    wake_review.save_review(repo, payload)
+    wake_review.save_review(repo, payload)                      # a re-save does not stack
+    assert repo.get_context(NIGHT).subjective_quality == 4.0
+    row = repo.conn.execute("SELECT subjective_rating FROM thermal_trials WHERE night_date=?",
+                            (NIGHT,)).fetchone()
+    assert row[0] == 4.0
+    notes = repo.conn.execute("SELECT date, text FROM notes").fetchall()
+    assert len(notes) == 1 and notes[0][0] == "2026-09-22" and "woke 3:10" in notes[0][1]

@@ -1389,6 +1389,12 @@ class LiveDashboardDaemon:
             fc = self.weather.overnight_forecast(from_dt=now)
             self.precomp = compute_precompensation(fc, self.cfg)
             self.cycle.controller.thermal.set_ambient_bias(self.precomp.get("bias_f", 0.0))
+            # ...and keep the overnight mean on the night's context, which is saved at
+            # close-out: the ML dataset and the trials read context.outdoor_temp_f as their
+            # ambient covariate, and the production daemon never wrote it (always NULL).
+            mean_f = self.precomp.get("overnight_mean_f")
+            if mean_f is not None:
+                self.context.outdoor_temp_f = round(float(mean_f), 1)
         except Exception as exc:
             self._skip("ambient precompensation", exc)
 

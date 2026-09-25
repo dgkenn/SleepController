@@ -188,9 +188,42 @@ def save_review(repo, payload: dict, now: Optional[datetime] = None) -> dict:
                     if isinstance(v, dict) and v.get("ts"))
     _clear_declared(repo, night_date, stale_ts)
     n_events = _record_declared(repo, night_date, verdicts)
+    _feed_learners(repo, night_date, rested, note, now)
     repo.conn.commit()
     return {"ok": True, "night_date": night_date, "verdicts": len(verdicts),
             "declared_instants": n_events}
+
+
+def _feed_learners(repo, night_date: str, rested, note, now: datetime) -> None:
+    """Hand the review's answers to what already consumes subjective data.
+
+    The review is the morning check-in now, but only its verdicts and temperature were read:
+    ``rested`` never reached ``context.subjective_quality`` (the ML reward and confounder
+    handling) or ``thermal_trials.subjective_rating`` (always NULL), and its note never reached
+    the note parsers that find declared awakenings ("woke 3:10") and cold/warm complaints."""
+    if rested is not None:
+        try:
+            from sleepctl.models import ContextRecord
+            ctx = repo.get_context(night_date) or ContextRecord(date=night_date)
+            ctx.subjective_quality = float(rested)
+            repo.save_context(ctx)
+        except Exception:
+            pass
+        try:
+            repo.conn.execute("UPDATE thermal_trials SET subjective_rating = ? "
+                              "WHERE night_date = ?", (float(rested), night_date))
+        except Exception:
+            pass
+    if note:
+        try:
+            # One note per review: a re-save replaces it rather than stacking copies.
+            tag = f"[wake review {night_date}] "
+            repo.conn.execute("DELETE FROM notes WHERE text LIKE ?", (tag + "%",))
+            nxt = (datetime.fromisoformat(night_date) + timedelta(days=1)).date().isoformat()
+            repo.conn.execute("INSERT INTO notes (date, text, created) VALUES (?, ?, ?)",
+                              (nxt, tag + note, now.isoformat()))
+        except Exception:
+            pass
 
 
 def _clear_declared(repo, night_date: str, legacy_ts: set) -> None:

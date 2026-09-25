@@ -107,15 +107,28 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
     """
     ns = NightSummary(date=night_date)
     try:
-        rows = repo.conn.execute(
-            "SELECT ts, stage, heart_rate, hrv, respiratory_rate, movement, "
-            "       commanded_level, controller_state, wake_event "
-            "FROM raw_samples WHERE night_date = ? ORDER BY id ASC",
-            (night_date,),
-        ).fetchall()
+        # Durations come from when each row was OBSERVED (sample_ts), not the Pod frame time:
+        # consecutive rows share one frame `ts`, so every other row got a zero-minute gap and
+        # 72 minutes of awake rows rolled up as waso=0, wake_events=0. `ts` is kept alongside
+        # for anything keyed on the recorded label (stage_by_ts).
+        try:
+            rows = repo.conn.execute(
+                "SELECT COALESCE(sample_ts, ts) AS obs_ts, ts, stage, heart_rate, hrv, "
+                "       respiratory_rate, movement, commanded_level, controller_state, "
+                "       wake_event "
+                "FROM raw_samples WHERE night_date = ? ORDER BY id ASC",
+                (night_date,),
+            ).fetchall()
+        except Exception:            # an older database without the sample_ts column
+            rows = repo.conn.execute(
+                "SELECT ts AS obs_ts, ts, stage, heart_rate, hrv, respiratory_rate, movement, "
+                "       commanded_level, controller_state, wake_event "
+                "FROM raw_samples WHERE night_date = ? ORDER BY id ASC",
+                (night_date,),
+            ).fetchall()
     except Exception:
         return ns
-    samples = [(t, r) for r in rows if (t := _parse(r["ts"])) is not None]
+    samples = [(t, r) for r in rows if (t := _parse(r["obs_ts"])) is not None]
     if not samples:
         return ns
 
@@ -133,7 +146,9 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
     ov = stage_by_ts or {}
 
     def _stage(t, r) -> str:
-        return ov.get(t.isoformat()) or r["stage"] or "unknown"
+        # Corrected labels are keyed by the recorded frame time (`ts`), not observation time.
+        ft = _parse(r["ts"]) if ov else None
+        return (ov.get(ft.isoformat()) if ft is not None else None) or r["stage"] or "unknown"
 
     # --- end the night at the last REAL EVIDENCE, not the last non-idle tick ------------------
     # The controller does not reliably return to IDLE when the user gets up: on 2026-08-24 it sat
