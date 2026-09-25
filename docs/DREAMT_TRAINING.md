@@ -10,6 +10,25 @@ DREAMT is **credentialed** data under the PhysioNet Restricted Health Data Use A
 the raw files and anything reduced from them stay on your machine and are never committed
 or published. Only the trained weight files (`*.json` under `weights/`) go into the repo.
 
+## 0. The automatic route (nothing to run)
+
+Once access is live, the box does all of this by itself: `scripts/dreamt_pipeline.py`, launched
+by the watchdog once a day (09:00-18:00, below-normal priority) until a model is installed.
+
+- It authenticates with the physionet.org entry already in your `.netrc` (it never reads out,
+  prints or asks for the password) and stops with a status if there is none or if the file
+  server answers 403.
+- A DREAMT ZIP already in Downloads (or on D:) is read in place instead of downloading.
+- Otherwise it streams `data_64Hz` one participant at a time into `D:\sleepctl-cache\dreamt`
+  (outside the repo), checks each file against `SHA256SUMS.txt`, reduces it and deletes the
+  raw file, so peak disk use is one ~150 MB CSV.
+- It trains, and installs the four HRV weight files into `.run\staging_weights` (local,
+  git-ignored) only when the held-out 4-class kappa clears 0.45 and beats the bundled model.
+  The daemon picks them up at its next restart.
+- Progress, counts and scores (never data) appear in the health snapshot under `dreamt`.
+
+The manual steps below do the same by hand.
+
 ## 1. Get access
 
 1. Log in to PhysioNet, open <https://physionet.org/content/dreamt/2.2.0/> and complete the

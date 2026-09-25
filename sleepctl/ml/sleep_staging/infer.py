@@ -68,6 +68,20 @@ MIN_IBI_FOR_HRV = 200
 HRV_RECENT_WINDOW_S = 600.0
 
 WEIGHTS_DIR = os.path.join(os.path.dirname(__file__), "weights")
+#: Locally trained beat-interval (DREAMT) variants, installed on the box by
+#: scripts/dreamt_pipeline.py only when they beat the bundled model. Local and git-ignored:
+#: DREAMT is credentialed data, and only weights ever leave the work folder.
+STAGING_WEIGHTS_DIR = os.environ.get(
+    "SLEEPCTL_STAGING_WEIGHTS",
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", ".run", "staging_weights"))
+
+
+def _hrv_weight_path(weights_dir: str, name: str) -> str:
+    """An installed local file wins over the bundled one, for the HRV variants only."""
+    local = os.path.normpath(os.path.join(STAGING_WEIGHTS_DIR, name))
+    if weights_dir == WEIGHTS_DIR and os.path.isfile(local):
+        return local
+    return os.path.join(weights_dir, name)
 
 STAGE4_LABELS = ["wake", "light", "deep", "rem"]
 EPOCH_S = 30.0
@@ -347,10 +361,10 @@ class SleepStager:
             hmm=hmm,
             smoothing_epochs=smoothing_epochs,
             # optional DREAMT-trained beat-interval variants (absent until trained locally)
-            wake_hrv=_load_model(os.path.join(weights_dir, "wake_hrv.json")),
-            stage4_hrv=_load_model(os.path.join(weights_dir, "stage4_hrv.json")),
-            wake_hrvonly=_load_model(os.path.join(weights_dir, "wake_hrvonly.json")),
-            stage4_hrvonly=_load_model(os.path.join(weights_dir, "stage4_hrvonly.json")),
+            wake_hrv=_load_model(_hrv_weight_path(weights_dir, "wake_hrv.json")),
+            stage4_hrv=_load_model(_hrv_weight_path(weights_dir, "stage4_hrv.json")),
+            wake_hrvonly=_load_model(_hrv_weight_path(weights_dir, "wake_hrvonly.json")),
+            stage4_hrvonly=_load_model(_hrv_weight_path(weights_dir, "stage4_hrvonly.json")),
         )
 
     def select_variant(self, has_activity: bool, n_recent_ibi: int) -> Optional[str]:

@@ -677,6 +677,47 @@ function Ensure-WakePlugDeps {
     else { Log "WARN: 'tinytuya' not importable yet; the wake-light plug will retry next cycle" }
 }
 
+function Ensure-DreamtModel {
+    # Hands-off DREAMT staging model (scripts\dreamt_pipeline.py): check PhysioNet access with the
+    # user's own .netrc, stream + reduce + train, install only if it beats the bundled model.
+    # Once a day, daytime only (training is CPU-heavy and must not compete with a night's
+    # control loop), at below-normal priority, until a model is installed. The pipeline never
+    # prints or handles credentials, keeps the data OUTSIDE the repo, and reports progress to
+    # .run\dreamt.status.json, which the health snapshot publishes as counts and scores only.
+    if (Test-Path (Join-Path $run "staging_weights\stage4_hrv.json")) { return }
+    $hour = (Get-Date).Hour
+    if ($hour -lt 9 -or $hour -ge 18) { return }
+    $last = Join-Path $run "dreamt.lastrun"
+    if ((Test-Path $last) -and (((Get-Date) - (Get-Item $last).LastWriteTime).TotalHours -lt 24)) { return }
+    $script = Join-Path $Root "scripts\dreamt_pipeline.py"
+    if (-not (Test-Path $script)) { return }
+    $depMarker = Join-Path $run "dreamt-deps.ok"
+    if (-not (Test-Path $depMarker)) {
+        & $py -c "import requests, numpy, sklearn" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Log "installing requests/numpy/scikit-learn for the DREAMT pipeline (one-time)"
+            & $py -m pip install --quiet --disable-pip-version-check requests numpy scikit-learn 2>&1 | Out-Null
+            & $py -c "import requests, numpy, sklearn" 2>$null
+        }
+        if ($LASTEXITCODE -eq 0) { Set-Content -Path $depMarker -Value "ok" -Encoding ASCII }
+        else { Log "WARN: DREAMT pipeline dependencies not importable yet; will retry"; return }
+    }
+    # The scheduled task may not run under the user's profile; the repo lives in it, so point
+    # the pipeline at that profile's .netrc (it only checks the physionet entry exists).
+    if ($Root -match '^([A-Za-z]:\\Users\\[^\\]+)\\') { $env:SLEEPCTL_NETRC_HOME = $Matches[1] }
+    Set-Content -Path $last -Value (Get-Date -Format o) -Encoding ASCII
+    Log "starting the DREAMT staging pipeline in the background (daily until a model is installed)"
+    try {
+        $p = Start-Process -FilePath $py -ArgumentList @("`"$script`"") -WorkingDirectory $Root `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $run "dreamt.log") `
+            -RedirectStandardError (Join-Path $run "dreamt.err.log")
+        try { $p.PriorityClass = 'BelowNormal' } catch { }
+    } catch {
+        Log "WARN: could not start the DREAMT pipeline: $_"
+    }
+}
+
 function Ensure-Verity {
     if (-not (Verity-Enabled)) { return }
     $script = Join-Path $Root "scripts\verity_forwarder.py"
@@ -1331,6 +1372,7 @@ while ($true) {
     Handle-BluetoothResetRequest
     Ensure-Verity
     Ensure-WakePlugDeps
+    Ensure-DreamtModel
 
     if (-not (Port-Alive 8000)) {
         if (Test-CanRestart "api") {

@@ -296,8 +296,24 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "wearable": _wearable_block(repo, run_dir),
         "controller": _controller_block(repo),
         "wake_light": _wake_light_block(repo),
+        "dreamt": _dreamt_block(run_dir),
     }
     return scrub(snapshot)
+
+
+def _dreamt_block(run_dir: str | None) -> dict | None:
+    """Progress of the on-box DREAMT staging pipeline: stage, counts and held-out scores only.
+    The status file never holds data or credentials; this copies only known scalar fields."""
+    if not run_dir:
+        return None
+    try:
+        with open(os.path.join(run_dir, "dreamt.status.json")) as fh:
+            st = json.load(fh)
+    except Exception:
+        return None
+    keep = ("stage", "source", "n_participants", "reduced", "failed", "of", "error",
+            "last_error", "updated", "started", "finished", "scores", "verdict", "participants")
+    return {k: st.get(k) for k in keep if k in st}
 
 
 def _wake_light_block(repo) -> dict:
