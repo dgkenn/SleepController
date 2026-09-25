@@ -76,12 +76,43 @@ def _f(v) -> Optional[float]:
 
 
 def participant_id(path: str) -> str:
-    base = os.path.basename(path)
+    base = os.path.basename(path.split(ZIP_SEP, 1)[-1])
     return base.split("_")[0].split(".")[0]
 
 
+#: Separator between a ZIP archive and a member inside it (``dreamt.zip!dreamt/data_64Hz/S002_whole_df.csv``).
+ZIP_SEP = "!"
+
+
+def _open_text(path: str):
+    """Open a participant CSV for streaming -- a plain file, or a member of the PhysioNet ZIP.
+
+    The DREAMT ZIP is 20 GB compressed and 113.7 GB unpacked; reading members straight out of
+    it means the box never needs room for the unpacked copy (only ~15 GB of it is used)."""
+    if ZIP_SEP in path and path.split(ZIP_SEP, 1)[0].lower().endswith(".zip"):
+        import io
+        import zipfile
+        archive, member = path.split(ZIP_SEP, 1)
+        zf = zipfile.ZipFile(archive)
+        raw = zf.open(member, "r")
+        text = io.TextIOWrapper(raw, encoding="utf-8", newline="")
+        text._zf = zf            # keep the archive open for as long as the stream lives
+        return text
+    return open(path, "r", newline="")
+
+
 def discover(data_dir: str) -> List[str]:
-    """Every participant CSV under data_dir (data_64Hz/ preferred, else any *.csv)."""
+    """Every participant CSV under data_dir (data_64Hz/ preferred, else any *.csv).
+
+    ``data_dir`` may also be the PhysioNet ZIP itself: its data_64Hz members are returned as
+    ``<zip>!<member>`` paths and streamed without extracting."""
+    if data_dir.lower().endswith(".zip") and os.path.isfile(data_dir):
+        import zipfile
+        with zipfile.ZipFile(data_dir) as zf:
+            names = [n for n in zf.namelist()
+                     if n.lower().endswith(".csv") and "/data_64hz/" in ("/" + n.lower())
+                     and not os.path.basename(n).lower().startswith("participant_info")]
+        return [f"{data_dir}{ZIP_SEP}{n}" for n in sorted(names)]
     cands = []
     for pat in ("data_64Hz/*.csv", "*/data_64Hz/*.csv", "*.csv"):
         cands = sorted(glob.glob(os.path.join(data_dir, pat)))
@@ -106,7 +137,7 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
     last_hr_sec: Optional[int] = None
     last_acc_slot: Optional[int] = None
     cur_epoch: Optional[int] = None
-    with open(path, "r", newline="") as fh:
+    with _open_text(path) as fh:
         rd = csv.DictReader(fh)
         fn = rd.fieldnames or []
         c_t = _find_col(fn, "TIMESTAMP", "timestamp", "time", "t")
@@ -227,7 +258,8 @@ def verify(out_dir: str) -> int:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--data-dir", help="folder holding data_64Hz/ (or the CSVs themselves)")
+    ap.add_argument("--data-dir", help="folder holding data_64Hz/ (or the CSVs themselves), "
+                                       "or the PhysioNet dreamt ZIP itself (streamed, never unpacked)")
     ap.add_argument("--out", required=True, help="reduced output folder (keep OUT of the repo)")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--participants", nargs="*", default=None, help="IDs to reduce (default all)")

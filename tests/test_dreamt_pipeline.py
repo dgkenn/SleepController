@@ -158,3 +158,25 @@ def test_a_still_wrist_still_gets_an_activity_line(tmp_path):
     for r in rows[:2]:
         assert float(r[1]) == 0.0 and int(r[6]) == 960  # pim 0 over the full 32 Hz epoch
     assert float(rows[2][1]) > 0.0 and int(rows[2][6]) == 960
+
+
+def test_the_physionet_zip_is_streamed_without_unpacking(tmp_path):
+    """The DREAMT ZIP is 20 GB packed and 113.7 GB unpacked: the reducer reads its data_64Hz
+    members in place, and produces exactly what reducing the unpacked files does."""
+    import zipfile
+    import dreamt_reduce as R
+    raw = tmp_path / "raw" / "data_64Hz"
+    raw.mkdir(parents=True)
+    write_synthetic_night(raw / "S009_whole_df.csv", minutes=12, seed=3)
+    z = tmp_path / "dreamt.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.write(raw / "S009_whole_df.csv", "dreamt/2.2.0/data_64Hz/S009_whole_df.csv")
+        zf.writestr("dreamt/2.2.0/participant_info.csv", "SID\nS009\n")
+    found = R.discover(str(z))
+    assert len(found) == 1 and R.participant_id(found[0]) == "S009"
+    out_zip, out_dir = tmp_path / "from_zip", tmp_path / "from_dir"
+    R.reduce_file(found[0], str(out_zip), verbose=False)
+    R.reduce_file(str(raw / "S009_whole_df.csv"), str(out_dir), verbose=False)
+    for name in ("S009_heartrate.txt", "S009_labeled_sleep.txt", "S009_ibi.txt",
+                 "activity/S009_activity.txt"):
+        assert (out_zip / name).read_text() == (out_dir / name).read_text()

@@ -33,6 +33,16 @@ wget -N --user <physionet-username> --ask-password https://physionet.org/files/d
 That leaves `D:\dreamt\data_64Hz\S002_whole_df.csv ...` (one ~150 MB CSV per participant).
 The AWS route on the project page works the same once your AWS account is linked.
 
+### Or: the ZIP, without unpacking it
+
+The project page's "Download the ZIP file" (20.3 GB) also works, and needs no wget: download
+it in the browser on the box, then point the reducer AT the ZIP. It streams each participant's
+64 Hz CSV straight out of the archive, so the 113.7 GB unpacked copy never touches the disk:
+
+```
+python scripts\dreamt_reduce.py --data-dir D:\Downloads\dreamt-2.2.0.zip --out D:\dreamt\reduced
+```
+
 ## 3. Reduce (streams each file; ~1 minute per participant)
 
 ```
