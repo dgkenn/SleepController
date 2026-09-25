@@ -210,3 +210,11 @@ def test_parallel_workers_reduce_the_same_as_one(tmp_path):
         assert sorted(seen) == [(f"S{k:03d}", None) for k in range(4)]
         outs[w] = {p.relative_to(out).as_posix(): p.read_text() for p in out.rglob("*.txt")}
     assert outs[1] == outs[3] and len(outs[1]) == 16
+
+
+def test_the_install_bar_includes_the_bidsleep_retrain():
+    """The shipped HR / HR+motion weights are the BIDSleep + sleep-accel retrain (held-out
+    HR+motion kappa 0.471): a DREAMT HRV model must beat THAT, not the older 0.44 report."""
+    assert P._better_than_bundled({"hrv": {"sm": {"kappa4": 0.46}}})["install"] is False
+    v = P._better_than_bundled({"hrv": {"sm": {"kappa4": 0.49}}})
+    assert v["install"] is True and v["bundled_kappa4"] >= 0.47

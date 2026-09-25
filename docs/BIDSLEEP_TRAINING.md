@@ -134,26 +134,14 @@ sleep-accel-only weights stay in git history.
 
 ## 4. On the user's own nights (replay harness)
 
-`staging_audit/replay_new.py` (fixed clock) was run over the three exported nights. It
-replays the whole live path: HR+motion stager, autonomic rescoring, deep corroboration,
-hypnogram constraint and stage hold. "final" is what the controller would have acted on.
-"model" counts only the ticks the learned stager itself produced, before the
-post-processing. Deep and REM are % of sleep; wake is % of ticks.
+`staging_audit/replay_new.py` (fixed clock) replays the whole live path over recorded nights:
+HR+motion stager, autonomic rescoring, deep corroboration, hypnogram constraint and stage hold.
+It was run over three of the user's nights with the old and the new weights. The per-night
+results are personal sleep data and are deliberately not kept in the repository; in outline:
 
-| night | weights | wake % | light % | deep % | REM % | model-only deep % | model-only REM % |
-|---|---|---|---|---|---|---|---|
-| 2026-09-19 | bundled | 16.2 | 62.8 | 4.2 | 33.0 | 8.9 | 53.4 |
-| 2026-09-19 | BIDSleep | 31.9 | 61.6 | 10.4 | 28.0 | 19.7 | 39.2 |
-| 2026-09-20 | bundled | 7.7 | 56.5 | 5.6 | 37.9 | 14.0 | 41.0 |
-| 2026-09-20 | BIDSleep | 13.5 | 49.4 | 7.3 | 43.3 | 19.3 | 43.7 |
-| 2026-09-21 | bundled | 8.4 | 69.7 | 3.0 | 27.2 | 7.5 | 41.5 |
-| 2026-09-21 | BIDSleep | 14.2 | 74.8 | 10.7 | 14.5 | 20.3 | 19.3 |
-
-* **Deep.** The stager's own deep share goes from 7.5-14% to 19-20%, in line with the
-  corpus. The controller-facing share only reaches 7-11%, so the rest of the gap comes from
-  the post-processing downstream of the model, not from the weights.
-* **REM.** REM falls on two nights. 2026-09-20 stays at about 43%.
-* **Wake.** The extra wake sits almost entirely in the first hour. The new model does not
-  call sustained sleep until 74 / 28 / 18 min after bed entry; the bundled model did so at
-  0 / 0 / 15 min. The recorded onset events were 84 and 102 min after bed entry on
-  2026-09-19 and 2026-09-20, so the later calls fit the recorded onsets better.
+* **Deep.** The stager's own deep share rises to about the corpus level. The share the
+  controller acts on rises less, so the remaining gap is in the post-processing downstream of
+  the model, not in the weights.
+* **REM.** Falls on most nights; not on all.
+* **Wake.** The extra wake sits almost entirely in the first hour: the new model waits longer
+  before calling sustained sleep, which fits the recorded sleep-onset events better.

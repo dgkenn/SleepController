@@ -409,6 +409,20 @@ def _better_than_bundled(report: dict) -> Dict[str, object]:
                 continue
     except Exception:
         pass
+    # The shipped HR / HR+motion weights are now the BIDSleep + sleep-accel retrain: its held-out
+    # kappas (HR 0.454, HR+motion 0.471) are the bar too, not just the older cv_report's.
+    try:
+        from sleepctl.ml.sleep_staging.infer import WEIGHTS_DIR
+        with open(os.path.join(os.path.dirname(WEIGHTS_DIR), "cv_report_bidsleep.json")) as fh:
+            bid = json.load(fh)
+        picked = bid["gate"]["picked"]
+        for k in (f"{picked}/hr_dense", str(bid["gate"].get("motion_variant", ""))):
+            try:
+                base = max(base, float(bid["new_cv_on_bidsleep"][k]["sm"]["kappa4"]))
+            except Exception:
+                continue
+    except Exception:
+        pass
     ok = cand >= MIN_KAPPA4 and cand > base
     return {"install": ok, "candidate_kappa4": round(cand, 3), "bundled_kappa4": round(base, 3),
             "why": ("beats the bundled model" if ok else
