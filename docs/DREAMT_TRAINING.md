@@ -19,9 +19,15 @@ by the watchdog once a day (09:00-18:00, below-normal priority) until a model is
   prints or asks for the password) and stops with a status if there is none or if the file
   server answers 403.
 - A DREAMT ZIP already in Downloads (or on D:) is read in place instead of downloading.
-- Otherwise it streams `data_64Hz` one participant at a time into `D:\sleepctl-cache\dreamt`
-  (outside the repo), checks each file against `SHA256SUMS.txt`, reduces it and deletes the
-  raw file, so peak disk use is one ~150 MB CSV.
+- Otherwise it reads the project ZIP on physionet.org in place, over HTTP range requests:
+  only the `data_64Hz` members' compressed bytes cross the network (a fraction of the ~15 GB
+  unpacked), nothing raw is written to disk, and each member's CRC-32 is checked as it streams.
+  A dropped connection resumes at the same byte. If the server won't do range reads it falls
+  back to downloading each `data_64Hz` CSV into `D:\sleepctl-cache\dreamt` (outside the repo),
+  checking it against `SHA256SUMS.txt`, reducing it and deleting it.
+- Three participants are reduced at once (`--workers N` or `SLEEPCTL_DREAMT_WORKERS` to
+  change it). Each worker streams one night and holds ~35 MB, so three add ~100 MB of RAM
+  while overlapping network waits and parsing. An 8-hour night reduces in ~4 s of CPU.
 - It trains, and installs the four HRV weight files into `.run\staging_weights` (local,
   git-ignored) only when the held-out 4-class kappa clears 0.45 and beats the bundled model.
   The daemon picks them up at its next restart.
@@ -62,7 +68,7 @@ it in the browser on the box, then point the reducer AT the ZIP. It streams each
 python scripts\dreamt_reduce.py --data-dir D:\Downloads\dreamt-2.2.0.zip --out D:\dreamt\reduced
 ```
 
-## 3. Reduce (streams each file; ~1 minute per participant)
+## 3. Reduce (streams each file; a few seconds per participant)
 
 ```
 python scripts\dreamt_reduce.py --data-dir D:\dreamt --out D:\dreamt\reduced

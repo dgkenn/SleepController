@@ -63,14 +63,11 @@ def _find_col(fieldnames, *cands) -> Optional[str]:
 
 
 def _f(v) -> Optional[float]:
-    if v is None:
-        return None
-    v = str(v).strip()
-    if not v or v.lower() in ("nan", "none", "null"):
-        return None
+    """A finite float, or None for blanks, "nan"/"none"/"null", junk and infinities. float()
+    already strips whitespace and rejects the words, so this is one call on the hot path."""
     try:
         x = float(v)
-    except ValueError:
+    except (TypeError, ValueError):
         return None
     return x if math.isfinite(x) else None
 
@@ -122,8 +119,11 @@ def discover(data_dir: str) -> List[str]:
     return cands
 
 
-def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, object]:
-    """Stream one DREAMT CSV into the four reduced files. Returns a small summary."""
+def reduce_file(path: str, out_dir: str, verbose: bool = True, stream=None) -> Dict[str, object]:
+    """Stream one DREAMT CSV into the four reduced files. Returns a small summary.
+
+    ``stream`` is an already-open text stream to read instead of opening ``path`` (the remote
+    ZIP reader passes one); ``path`` still names the participant."""
     pid = participant_id(path)
     os.makedirs(os.path.join(out_dir, "activity"), exist_ok=True)
     t0 = time.time()
@@ -137,9 +137,13 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
     last_hr_sec: Optional[int] = None
     last_acc_slot: Optional[int] = None
     cur_epoch: Optional[int] = None
-    with _open_text(path) as fh:
-        rd = csv.DictReader(fh)
-        fn = rd.fieldnames or []
+    # Plain csv.reader with column indices (not DictReader) and lazy parsing: a column is only
+    # converted to float when its value can matter -- HR once per second, ACC once per 32 Hz slot,
+    # IBI only on the rows carrying a beat, the stage string only when it changes. Same output,
+    # a fraction of the per-row work; memory stays one epoch of samples plus the 1 Hz series.
+    with (stream if stream is not None else _open_text(path)) as fh:
+        rd = csv.reader(fh)
+        fn = next(rd, None) or []
         c_t = _find_col(fn, "TIMESTAMP", "timestamp", "time", "t")
         c_hr = _find_col(fn, "HR", "heart_rate", "heartrate")
         c_ibi = _find_col(fn, "IBI", "ibi", "rr")
@@ -148,6 +152,13 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
         c_st = _find_col(fn, "Sleep_Stage", "sleep_stage", "stage", "label")
         if c_t is None or c_st is None:
             raise ValueError(f"{path}: no TIMESTAMP / Sleep_Stage column among {fn[:12]}")
+        i_t, i_st = fn.index(c_t), fn.index(c_st)
+        i_hr = fn.index(c_hr) if c_hr is not None else None
+        i_ibi = fn.index(c_ibi) if c_ibi is not None else None
+        i_acc = ((fn.index(c_x), fn.index(c_y), fn.index(c_z))
+                 if c_x is not None and c_y is not None and c_z is not None else None)
+        width = len(fn)
+        acc_div = int(ROW_HZ / ACC_SOURCE_HZ)
 
         def _flush_epoch(k: int) -> None:
             trip = acc_epoch.pop(k, None)
@@ -156,9 +167,16 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
             c = pmd.actigraphy_counts(trip)
             act_lines.append(f"{k * EPOCH_S:.0f},{c['pim']},{c['zcm']},{c['mad']},{c['std']},{c['pmax']},{c['n']}")
 
+        last_st_raw: Optional[str] = None
+        last_code = -1
+        votes: Optional[Dict[int, int]] = None
         for row in rd:
+            if not row:                           # blank line: DictReader skipped these too
+                continue
             n_rows += 1
-            t = _f(row.get(c_t))
+            if len(row) < width:                  # a short row: pad like DictReader did
+                row = row + [""] * (width - len(row))
+            t = _f(row[i_t])
             if t is None:
                 continue
             k = int(t // EPOCH_S)
@@ -166,28 +184,36 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
                 cur_epoch = k
             elif k != cur_epoch:
                 # epochs are contiguous in time; flush everything older than the new one
-                for old in [e for e in list(acc_epoch) if e < k]:
+                for old in [e for e in acc_epoch if e < k]:
                     _flush_epoch(old)
                 cur_epoch = k
+                votes = None
             # label: majority of the rows in the epoch (they are constant per epoch anyway)
-            st = str(row.get(c_st) or "").strip().upper()
-            if st:
-                code = STAGE_CODES.get(st, STAGE_CODES.get(st.replace(" ", ""), -1))
-                votes = label_votes.setdefault(k, {})
-                votes[code] = votes.get(code, 0) + 1
+            st_raw = row[i_st]
+            if st_raw != last_st_raw:
+                last_st_raw = st_raw
+                st = st_raw.strip().upper()
+                last_code = (STAGE_CODES.get(st, STAGE_CODES.get(st.replace(" ", ""), -1))
+                             if st else None)
+            if last_code is not None:
+                if votes is None:
+                    votes = label_votes.setdefault(k, {})
+                votes[last_code] = votes.get(last_code, 0) + 1
             # HR: one sample per second
-            if c_hr is not None:
+            if i_hr is not None:
                 sec = int(t)
                 if sec != last_hr_sec:
-                    hr = _f(row.get(c_hr))
+                    hr = _f(row[i_hr])
                     if hr is not None and 25.0 <= hr <= 220.0:
                         hr_rows.append((float(sec), hr))
                         last_hr_sec = sec
             # IBI: only rows carrying a beat
-            if c_ibi is not None:
-                ibi = _f(row.get(c_ibi))
-                if ibi is not None and ibi > 0:
-                    ibi_rows.append((t, ibi))
+            if i_ibi is not None:
+                v = row[i_ibi]
+                if v:
+                    ibi = _f(v)
+                    if ibi is not None and ibi > 0:
+                        ibi_rows.append((t, ibi))
             # ACC: 32 Hz values repeated at 64 Hz -> keep ONE row per 32 Hz sample slot.
             #
             # BUG FIXED (audit 2026-09-25): this used to drop a row whenever its value equalled
@@ -197,11 +223,11 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
             # night, i.e. deep sleep, vanished from the training counts instead of reading
             # pim=0. The slot comes from the source TIMESTAMP (the 64 Hz row index, halved), so
             # the dedupe no longer depends on what the value is.
-            if c_x is not None and c_y is not None and c_z is not None:
-                x, y, z = _f(row.get(c_x)), _f(row.get(c_y)), _f(row.get(c_z))
-                if x is not None and y is not None and z is not None:
-                    slot = int(round(t * ROW_HZ)) // int(ROW_HZ / ACC_SOURCE_HZ)
-                    if slot != last_acc_slot:
+            if i_acc is not None:
+                slot = int(round(t * ROW_HZ)) // acc_div
+                if slot != last_acc_slot:
+                    x, y, z = _f(row[i_acc[0]]), _f(row[i_acc[1]]), _f(row[i_acc[2]])
+                    if x is not None and y is not None and z is not None:
                         trip = (x / ACC_UNITS_PER_G, y / ACC_UNITS_PER_G, z / ACC_UNITS_PER_G)
                         acc_epoch.setdefault(k, []).append(trip)
                         last_acc_slot = slot
@@ -221,11 +247,13 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
         fh.write("".join(f"{t:.0f},{v:.2f}\n" for t, v in hr_rows))
     with open(os.path.join(out_dir, f"{pid}_labeled_sleep.txt"), "w") as fh:
         fh.write("".join(f"{k * EPOCH_S:.0f} {labels[k]}\n" for k in sorted(labels)))
-    with open(os.path.join(out_dir, f"{pid}_ibi.txt"), "w") as fh:
-        fh.write("".join(f"{t:.3f},{v:.1f}\n" for t, v in ibi_rows))
     with open(os.path.join(out_dir, "activity", f"{pid}_activity.txt"), "w") as fh:
         fh.write("# epoch_start_s,pim,zcm,mad,std,pmax,n  (DREAMT E4 wrist, g units)\n")
         fh.write("\n".join(act_lines) + ("\n" if act_lines else ""))
+    # written LAST: the pipeline treats <ID>_ibi.txt as "this participant is done", so an
+    # interrupted reduce never leaves a participant that looks complete but is missing a file
+    with open(os.path.join(out_dir, f"{pid}_ibi.txt"), "w") as fh:
+        fh.write("".join(f"{t:.3f},{v:.1f}\n" for t, v in ibi_rows))
     dist: Dict[int, int] = {}
     for c in labels.values():
         dist[c] = dist.get(c, 0) + 1
