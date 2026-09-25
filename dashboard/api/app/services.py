@@ -2331,7 +2331,13 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
         "not_connected": "power the band on and keep it within range of the box",
         "streaming_partial": "a power-cycle usually brings the missing stream back (the PMD service is re-discovered on a fresh connect)",
         "streaming_unused": "see the failing check -- the data is arriving but the controller is not consuming it",
-        "off_arm": "put the band on before bed; the forwarder reconnects on its own once it is worn",
+        # 2026-09-25: the band kept answering "in charger" (PMD code 13) for 70 h while worn,
+        # until it was power-cycled with the phone's Bluetooth off. Say so, not just "put it on".
+        "off_arm": ("put the band on before bed; the forwarder reconnects on its own once it is "
+                    "worn. If it IS on your arm and still shows as on the charger, it is stuck in "
+                    "charger mode: hold its button until it switches off, turn it back on, and "
+                    "close the Polar phone app (or turn the phone's Bluetooth off) until it "
+                    "streams"),
     }.get(verdict)
 
     return {
