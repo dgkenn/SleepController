@@ -88,6 +88,7 @@ The honest claim is "three independent channels agreeing", not "validated accura
 
 from __future__ import annotations
 
+import bisect
 import math
 import statistics
 from dataclasses import dataclass, field
@@ -322,13 +323,16 @@ def windows_from_ibis(rr: Sequence[Tuple[float, float]], epoch_s: float = 60.0,
     if not rr:
         return [], []
     rr = sorted(rr, key=lambda x: x[0])
+    keys = [x[0] for x in rr]
     t0, t1 = rr[0][0], rr[-1][0]
     starts: List[float] = []
     feats: List[Dict[str, float]] = []
     t = t0
     while t <= t1:
         lo = t - window_s
-        win = [(ts, v) for ts, v in rr if lo <= ts <= t]
+        # A bisected slice of the sorted series: rescanning every beat for every epoch made a
+        # night's export quadratic (~10 s of a 37 s export on 8 h of beats).
+        win = rr[bisect.bisect_left(keys, lo):bisect.bisect_right(keys, t)]
         starts.append(t)
         feats.append(hrv_features([w[0] for w in win], [w[1] for w in win]) if len(win) >= 8
                      else {})

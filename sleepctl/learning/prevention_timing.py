@@ -44,6 +44,7 @@ Pure functions over rows + a ``from_repo`` reader. No I/O in the analysis path.
 
 from __future__ import annotations
 
+import bisect
 import statistics
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -442,23 +443,24 @@ def from_repo(repo, nights: int = 30, search_min: float = ARRIVAL_SEARCH_MIN
     except Exception:
         return PreventionTimingReport(detail="pre-cool ledger unavailable")
 
-    events: List[PreventionEvent] = []
+    # Each event's window reaches back a little BEFORE the pre-cool so there is a reference
+    # reading for the temperature the bed was holding when cooling was commanded.
+    windows = []
     for r in rows:
         t0 = _as_dt(r["ts"])
-        if t0 is None:
-            continue
-        try:
-            samples = repo.conn.execute(
-                "SELECT ts, bed_temp_f, wake_event FROM raw_samples "
-                "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC",
-                # Reach back a little BEFORE the pre-cool so there is a reference reading for the
-                # temperature the bed was holding when cooling was commanded.
-                ((t0 - timedelta(minutes=10)).isoformat(),
-                 (t0 + timedelta(minutes=float(search_min))).isoformat()),
-            ).fetchall()
-        except Exception:
-            samples = []
-        samples = [dict(s) for s in samples]
+        if t0 is not None:
+            windows.append((r, t0, (t0 - timedelta(minutes=10)).isoformat(),
+                            (t0 + timedelta(minutes=float(search_min))).isoformat()))
+    # ONE read of raw_samples covering every window, then each window is a bisected slice.
+    # raw_samples.ts has no index, so the per-event query this replaces scanned and sorted the
+    # whole table once per pre-cool: ~13 s for a month of events on a 90-day table.
+    trace = _sample_trace(repo, windows)
+    keys = [s["ts"] for s in trace]
+
+    events: List[PreventionEvent] = []
+    for r, t0, lo, hi in windows:
+        samples = [dict(s) for s in
+                   trace[bisect.bisect_left(keys, lo):bisect.bisect_right(keys, hi)]]
 
         # Prefer the thermometer; fall back to the water-side level when it is absent (no
         # membership, or the first 15-30 min of a night before the session opens).
@@ -482,6 +484,23 @@ def from_repo(repo, nights: int = 30, search_min: float = ARRIVAL_SEARCH_MIN
             wake_min=None if prevented else first_wake_min(samples, t0, search_min=search_min),
         ))
     return analyze(events)
+
+
+def _sample_trace(repo, windows) -> List[dict]:
+    """The ``raw_samples`` rows spanning every ``(row, t0, lo, hi)`` window, in ``ts`` order (ties
+    in insertion order, as the per-window ``ORDER BY ts`` returned them). [] when unreadable."""
+    if not windows:
+        return []
+    try:
+        rows = repo.conn.execute(
+            "SELECT ts, bed_temp_f, wake_event FROM raw_samples "
+            "WHERE ts >= ? AND ts <= ? ORDER BY ts ASC, id ASC",
+            (min(w[2] for w in windows), max(w[3] for w in windows)),
+        ).fetchall()
+    except Exception:
+        return []
+    return [{"ts": s[0], "bed_temp_f": s[1], "wake_event": s[2]} for s in rows
+            if isinstance(s[0], str)]
 
 
 def _level_samples(repo, t0: datetime, search_min: float) -> List[dict]:

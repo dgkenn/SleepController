@@ -7,6 +7,7 @@ windows via ``recent_nights`` / ``recent_interventions`` / ``latest_baselines``.
 
 from __future__ import annotations
 
+import bisect
 import json
 import sqlite3
 from datetime import datetime, timedelta
@@ -41,6 +42,54 @@ def _dt(value) -> Optional[datetime]:
     if value is None or value == "":
         return None
     return datetime.fromisoformat(value)
+
+
+class _DecisionTargets:
+    """Every non-null ``decisions.target_temp_f``, sorted by ``ts``, for per-event lookups.
+
+    Answers exactly what the per-event SQL did, with the same TEXT comparison on ``ts``:
+    ``last_at_or_before`` is the target of the highest-id row with ``ts <= t`` (``ORDER BY id
+    DESC LIMIT 1``, which is not always the latest ts -- a DST fall-back repeats an hour), and
+    ``window`` is ``MIN``/``MAX``/``COUNT`` over ``lo < ts <= hi``."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        rows = sorted((r[1], r[0], r[2]) for r in conn.execute(
+            "SELECT id, ts, target_temp_f FROM decisions WHERE target_temp_f IS NOT NULL")
+            if isinstance(r[1], str))
+        self._ts = [r[0] for r in rows]
+        self._target = [r[2] for r in rows]
+        # _best[i]: the target of the highest-id row among the first i+1 in ts order.
+        self._best: list = []
+        best_id, best_t = None, None
+        for _ts, rid, tgt in rows:
+            if best_id is None or rid > best_id:
+                best_id, best_t = rid, tgt
+            self._best.append(best_t)
+
+    def last_at_or_before(self, t: str):
+        i = bisect.bisect_right(self._ts, t)
+        return self._best[i - 1] if i else None
+
+    def window(self, lo: str, hi: str) -> tuple:
+        """``(min, max, count)`` of targets with ``lo < ts <= hi``."""
+        a, b = bisect.bisect_right(self._ts, lo), bisect.bisect_right(self._ts, hi)
+        if b <= a:
+            return None, None, 0
+        seg = self._target[a:b]
+        return min(seg), max(seg), b - a
+
+
+def _sorted_ts(conn: sqlite3.Connection, where: str, windows, lo_inclusive: bool = False) -> list:
+    """Sorted ``raw_samples.ts`` matching ``where`` across the span of every ``(id, lo, hi, ...)``
+    window: one scan for a whole batch of per-event windows, then a bisect per window. ``where``
+    is always a fixed condition from this module, never user input."""
+    if not windows:
+        return []
+    op = ">=" if lo_inclusive else ">"
+    rows = conn.execute(
+        f"SELECT ts FROM raw_samples WHERE {where} AND ts {op} ? AND ts <= ?",
+        (min(w[1] for w in windows), max(w[2] for w in windows)))
+    return sorted(r[0] for r in rows if isinstance(r[0], str))
 
 
 def _b2i(value: Optional[bool]) -> Optional[int]:
@@ -533,7 +582,7 @@ class Repository:
         rows = self.conn.execute(
             "SELECT id, ts, eta_min FROM precool_events WHERE resolved = 0"
         ).fetchall()
-        resolved = 0
+        due = []
         for r in rows:
             t0 = _dt(r["ts"])
             if t0 is None:
@@ -541,13 +590,18 @@ class Repository:
             end = t0 + timedelta(minutes=float(r["eta_min"]) + tail_buffer_min)
             if datetime.now() < end:
                 continue  # window hasn't fully passed yet
-            hit = self.conn.execute(
-                "SELECT COUNT(*) c FROM raw_samples WHERE wake_event = 1 AND ts >= ? AND ts <= ?",
-                (_iso(t0), _iso(end)),
-            ).fetchone()["c"]
+            due.append((r["id"], _iso(t0), _iso(end)))
+        # Read every window's wake ticks in ONE pass, BEFORE the first UPDATE opens a write
+        # transaction: a COUNT per event over the unindexed raw_samples.ts is a full scan each,
+        # and running them between UPDATEs held the write lock for the whole backlog -- long
+        # enough for another process's write to time out on "database is locked".
+        wakes = _sorted_ts(self.conn, "wake_event = 1", due, lo_inclusive=True)
+        resolved = 0
+        for rid, lo, hi in due:
+            hit = bisect.bisect_right(wakes, hi) - bisect.bisect_left(wakes, lo)
             self.conn.execute(
                 "UPDATE precool_events SET prevented = ?, resolved = 1 WHERE id = ?",
-                (0 if hit else 1, r["id"]),
+                (0 if hit else 1, rid),
             )
             resolved += 1
         if resolved:
@@ -577,7 +631,7 @@ class Repository:
         rows = self.conn.execute(
             "SELECT id, ts, horizon_min, maneuver FROM steer_events WHERE resolved = 0"
         ).fetchall()
-        resolved = 0
+        due = []
         for r in rows:
             t0 = _dt(r["ts"])
             if t0 is None:
@@ -586,22 +640,26 @@ class Repository:
             if datetime.now() < end:
                 continue  # horizon hasn't fully passed yet
             target_stage = "rem" if r["maneuver"] == "rem_warm" else "deep"
-            deepened = self.conn.execute(
-                "SELECT COUNT(*) c FROM raw_samples WHERE stage = 'deep' AND ts > ? AND ts <= ?",
-                (_iso(t0), _iso(end)),
-            ).fetchone()["c"]
-            succeeded = deepened if target_stage == "deep" else self.conn.execute(
-                "SELECT COUNT(*) c FROM raw_samples WHERE stage = ? AND ts > ? AND ts <= ?",
-                (target_stage, _iso(t0), _iso(end)),
-            ).fetchone()["c"]
-            woke = self.conn.execute(
-                "SELECT COUNT(*) c FROM raw_samples WHERE wake_event = 1 AND ts > ? AND ts <= ?",
-                (_iso(t0), _iso(end)),
-            ).fetchone()["c"]
+            due.append((r["id"], _iso(t0), _iso(end), target_stage))
+        # One read per signal for the whole backlog, before any UPDATE takes the write lock (see
+        # resolve_precool_events). Each window is (t0, end], as the per-event COUNTs were.
+        by_stage = {"deep": _sorted_ts(self.conn, "stage = 'deep'", due)}
+        if any(d[3] == "rem" for d in due):
+            by_stage["rem"] = _sorted_ts(self.conn, "stage = 'rem'", due)
+        wakes = _sorted_ts(self.conn, "wake_event = 1", due)
+
+        def _count(keys, lo, hi):
+            return bisect.bisect_right(keys, hi) - bisect.bisect_right(keys, lo)
+
+        resolved = 0
+        for rid, lo, hi, target_stage in due:
+            deepened = _count(by_stage["deep"], lo, hi)
+            succeeded = _count(by_stage[target_stage], lo, hi)
+            woke = _count(wakes, lo, hi)
             self.conn.execute(
                 "UPDATE steer_events SET deepened = ?, succeeded = ?, caused_wake = ?, "
                 "resolved = 1 WHERE id = ?",
-                (1 if deepened else 0, 1 if succeeded else 0, 1 if woke else 0, r["id"]),
+                (1 if deepened else 0, 1 if succeeded else 0, 1 if woke else 0, rid),
             )
             resolved += 1
         if resolved:
@@ -640,13 +698,19 @@ class Repository:
             (maneuver, int(nights) * 40),     # several events per night
         ).fetchall()
         out = []
+        # ONE pass over the decision log for every event. Per event, the delivery check used to
+        # run two range queries on decisions.ts, which has no index, so each one read the whole
+        # table (a ~3 KB payload per tick, all day): 2,870 events on a 90-day log took 450 s,
+        # and the health snapshot, the learning page and daemon start-up all ask for this.
+        targets = (_DecisionTargets(self.conn)
+                   if any(r["applied"] in (1, None) for r in rows) else None)
         for r in rows:
             ctx = self.get_context(r["night_date"]) if hasattr(self, "get_context") else None
             succeeded = r["succeeded"]
             if succeeded is None:                       # back-compat: deepen rows pre-`succeeded`
                 succeeded = r["deepened"]
             applied = 1 if r["applied"] in (1, None) else 0
-            delivered = self._steer_event_delivered(r) if applied else None
+            delivered = self._steer_event_delivered(r, targets) if applied else None
             # An actuated maneuver whose water never moved is a CONTROL condition, whatever the
             # steerer intended. Through 2026-09-07 every "deepen" resolved against a bed pinned
             # at neutral by the learned-setpoint bug, so the learner was comparing two arms of
@@ -668,14 +732,26 @@ class Repository:
     #: inside its response horizon (deepen) -- one device step, the smallest real cooling.
     STEER_DELIVERED_MIN_DROP_F = 0.5
 
-    def _steer_event_delivered(self, row) -> Optional[bool]:
+    def _steer_event_delivered(self, row, targets: "Optional[_DecisionTargets]" = None
+                               ) -> Optional[bool]:
         """Did the bed actually move for this steer event? None when it cannot be judged (no
-        decisions recorded around it, e.g. events older than the decision log)."""
+        decisions recorded around it, e.g. events older than the decision log).
+
+        ``targets`` answers the same questions from one pre-read of the decision log; without
+        it each call queries the table directly (fine for one event, a full scan per event)."""
         try:
             t0 = _dt(row["ts"])
             if t0 is None:
                 return None
             end = t0 + timedelta(minutes=float(row["horizon_min"] or 20.0))
+            if targets is not None:
+                start_f = targets.last_at_or_before(_iso(t0))
+                lo_f, hi_f, n = targets.window(_iso(t0), _iso(end))
+                if start_f is None or not n:
+                    return None
+                if row["maneuver"] == "rem_warm":
+                    return (float(hi_f) - float(start_f)) >= self.STEER_DELIVERED_MIN_DROP_F
+                return (float(start_f) - float(lo_f)) >= self.STEER_DELIVERED_MIN_DROP_F
             before = self.conn.execute(
                 "SELECT target_temp_f FROM decisions WHERE ts <= ? AND target_temp_f IS NOT NULL "
                 "ORDER BY id DESC LIMIT 1", (_iso(t0),)).fetchone()

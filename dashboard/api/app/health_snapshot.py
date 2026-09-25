@@ -193,11 +193,17 @@ def _log_tails(run_dir: str | None) -> dict:
             run_dir = os.path.join(os.path.dirname(db) if db else os.getcwd(), ".run")
     if not run_dir:
         return out
+    try:
+        from app.diagnostics import read_tail_lines
+    except Exception:
+        def read_tail_lines(path, n):
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                return fh.readlines()[-n:]
     for label, name, n in _LOG_TAILS:
         path = os.path.join(run_dir, name)
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                lines = fh.readlines()[-n:]
+            # Only the end of the file: daemon.log grows for as long as the daemon runs.
+            lines = read_tail_lines(path, n)
             text = [ln.rstrip("\n") for ln in lines if ln.strip()]
             if text:
                 out[label] = text

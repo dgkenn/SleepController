@@ -25,6 +25,7 @@ with fake heartbeat/log files.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -123,10 +124,36 @@ def _file_age_s(path: str, now: float) -> float | None:
         return None
 
 
-def _tail_lines(path: str, n: int) -> list[str] | None:
-    try:
+def read_tail_lines(path: str, n: int, block: int = 65536) -> list[str]:
+    """``readlines()[-n:]`` of a UTF-8 text file, reading only as much of its end as needed.
+
+    daemon.log is redirected stdout that is never rotated while the daemon runs, and the battery
+    plus the health snapshot tail it several times per publish; reading it whole each time cost
+    seconds and memory proportional to the daemon's uptime. The read starts just after a ``\\n``
+    byte, which is always a line boundary (it ends ``\\n`` and ``\\r\\n`` alike, and never occurs
+    inside a UTF-8 sequence), so the lines returned are exactly the whole-file ones. Raises like
+    ``open`` does."""
+    if n <= 0:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             return fh.readlines()[-n:]
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        pos = fh.tell()
+        data = b""
+        while pos > 0 and data.count(b"\n") <= n:
+            step = min(block, pos)
+            pos -= step
+            fh.seek(pos)
+            data = fh.read(step) + data
+    if pos > 0:
+        data = data[data.index(b"\n") + 1:]
+    text = io.TextIOWrapper(io.BytesIO(data), encoding="utf-8", errors="replace")
+    return text.readlines()[-n:]
+
+
+def _tail_lines(path: str, n: int) -> list[str] | None:
+    try:
+        return read_tail_lines(path, n)
     except FileNotFoundError:
         return None
     except Exception:

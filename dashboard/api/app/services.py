@@ -1510,9 +1510,11 @@ def learning_phases(repo) -> dict:
     from sleepctl.learning.deepening import (
         deepening_records, learn_deepening, lightening_records, learn_lightening)
     from sleepctl.learning.wake_causation import awakening_precursor_profile, wake_causation_audit
-    deepen_pol = {"pooled": learn_deepening(deepening_records(repo)).to_dict()}
+    # Read once: every per-mode policy is learned from the same rows (the learner only filters).
+    deepen_recs = deepening_records(repo)
+    deepen_pol = {"pooled": learn_deepening(deepen_recs).to_dict()}
     for m in modes:
-        deepen_pol[m] = learn_deepening(deepening_records(repo), mode=m).to_dict()
+        deepen_pol[m] = learn_deepening(deepen_recs, mode=m).to_dict()
     lighten_pol = learn_lightening(lightening_records(repo)).to_dict()
     precursor = awakening_precursor_profile(repo)
     wake_audit = wake_causation_audit(repo)
