@@ -945,6 +945,63 @@ def post_wake_review(body: WakeReviewBody, repo=Depends(repo_dep), user: str = A
     return wake_review.save_review(repo, data)
 
 
+# EEG-headband ground truth: upload a scored hypnogram, compare, calibrate the stager to it.
+# The file is the raw request body; ``date`` may be "auto" to file it under the controller night
+# it overlaps. See app/hypnogram_upload.py and sleepctl/eval/hypnogram_import.py for formats.
+def _hypnogram_call(fn, *args, **kw):
+    from app.hypnogram_upload import UploadError
+    try:
+        return fn(*args, **kw)
+    except UploadError as exc:
+        raise HTTPException(exc.status, str(exc))
+
+
+@app.post("/nights/{date}/hypnogram")
+async def upload_hypnogram(date: str, request: Request, source: str = "", filename: str = "",
+                           format: str = "auto", tz: str = "", start: str = "",
+                           numeric_scheme: str = "auto", epoch_s: float = 30.0,
+                           restage: bool = True, repo=Depends(repo_dep), user: str = AuthDep):
+    from app import hypnogram_upload
+    body = await request.body()
+    return await run_in_threadpool(
+        _hypnogram_call, hypnogram_upload.upload, repo, body, date=date, source=source,
+        filename=filename, fmt=format, tz=tz, start=start, numeric_scheme=numeric_scheme,
+        epoch_s=epoch_s, restage=restage)
+
+
+@app.get("/nights/{date}/hypnogram")
+def hypnogram_report(date: str, restage: bool = True, repo=Depends(repo_dep),
+                     user: str = AuthDep):
+    """The agreement report: EEG vs what the controller recorded and vs today's restaging."""
+    from app import hypnogram_upload
+    return _hypnogram_call(hypnogram_upload.report, repo, date, restage=restage)
+
+
+@app.delete("/nights/{date}/hypnogram")
+def hypnogram_delete(date: str, repo=Depends(repo_dep), user: str = AuthDep):
+    from app import hypnogram_upload
+    return _hypnogram_call(hypnogram_upload.delete, repo, date)
+
+
+@app.get("/hypnograms")
+def hypnogram_nights(repo=Depends(repo_dep), user: str = AuthDep):
+    from app import hypnogram_upload
+    return hypnogram_upload.nights(repo)
+
+
+@app.get("/staging/calibration")
+def staging_calibration(repo=Depends(repo_dep), user: str = AuthDep):
+    from app import hypnogram_upload
+    return hypnogram_upload.calibration(repo)
+
+
+@app.post("/staging/calibration")
+def staging_calibrate(repo=Depends(repo_dep), user: str = AuthDep):
+    """Fit the personal calibration on every imported night (leave-one-night-out validated)."""
+    from app import hypnogram_upload
+    return hypnogram_upload.calibrate(repo)
+
+
 @app.get("/checkin/status")
 def checkin_status(repo=Depends(repo_dep), user: str = AuthDep):
     return services.checkin_status(repo)

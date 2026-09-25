@@ -653,6 +653,18 @@ class LiveDashboardDaemon:
                               f"({self._hmm_priors.get('n_nights', 0)} nights)")
             except Exception as exc:
                 self._skip("staging personalisation", exc)
+            # EEG-headband calibration (learning.eeg_calibration): fitted on imported scored
+            # nights and stored enabled only when it beat the unadjusted stager on held-out
+            # nights. Applied last, so its ground-truth transitions supersede the self-labelled
+            # ones above. Its own guard: a bad profile must never cost the rest of start-up.
+            try:
+                from sleepctl.controller.state_estimator import _get_stager
+                from sleepctl.learning.eeg_calibration import apply_stored_calibration
+                applied = apply_stored_calibration(self.repo, _get_stager())
+                if applied:
+                    self._log(f"staging calibration (EEG nights): {applied}")
+            except Exception as exc:
+                self._skip("EEG staging calibration", exc)
         except Exception as exc:
             self._skip("learned profile load", exc)
         # Apply tonight's active experiment arm on top of the learned setpoint (closes the

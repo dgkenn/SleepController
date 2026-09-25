@@ -16,6 +16,7 @@ conclusion before the error was caught.
   * NAIVE LOCAL -- written with ``datetime.now()``:
         raw_samples, decisions, state_history, thermal_samples, precool_events,
         steer_events, events, interventions   (the engine/daemon tables)
+        eeg_hypnogram.epoch_ts                (with the unambiguous instant in epoch_unix)
 
   * AWARE UTC -- written with ``datetime.now(timezone.utc)``:
         sensor_samples, rr_intervals, actigraphy, live_cardiac, live_sensor,
@@ -417,6 +418,35 @@ CREATE TABLE IF NOT EXISTS state_history (
     extra TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_state_history_ts ON state_history(ts);
+
+-- Scored hypnograms imported from an EEG sleep headband worn alongside the arm band
+-- (sleepctl.eval.hypnogram_import): the only personal ground truth the stager can be measured
+-- and calibrated against. One row per scored epoch. ``epoch_unix`` (UTC seconds) is the key and
+-- what alignment uses: the naive-local ``epoch_ts`` repeats itself across a DST fall-back hour,
+-- and a key on it would silently drop an hour of the night. ``epoch_ts`` is kept beside it in
+-- the engine tables' naive-LOCAL convention so a row reads directly against raw_samples.ts.
+CREATE TABLE IF NOT EXISTS eeg_hypnogram (
+    night_date TEXT NOT NULL,
+    epoch_unix REAL NOT NULL,      -- epoch START, UTC seconds
+    epoch_ts TEXT NOT NULL,        -- the same instant, naive LOCAL
+    epoch_s REAL NOT NULL DEFAULT 30,
+    stage TEXT NOT NULL,           -- awake | light | deep | rem | unknown (controller classes)
+    raw_stage TEXT,                -- the label as the device exported it
+    source TEXT,                   -- device / export name
+    imported_ts TEXT,
+    PRIMARY KEY (night_date, epoch_unix)
+);
+
+-- Personal stager calibration fitted on the imported EEG nights (singleton;
+-- sleepctl.learning.eeg_calibration). ``profile`` is the JSON fit + its leave-one-night-out
+-- validation; ``enabled`` is set only when the fit beat the unadjusted stager on held-out nights.
+CREATE TABLE IF NOT EXISTS staging_calibration (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    ts TEXT,
+    enabled INTEGER DEFAULT 0,
+    n_nights INTEGER,
+    profile TEXT
+);
 """
 
 
