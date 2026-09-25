@@ -148,8 +148,16 @@ function Stop-ComponentProcesses([string]$component) {
             Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
                 Where-Object { $_.CommandLine -and $_.CommandLine -match 'run_daemon\.py' } |
                 ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+            Clear-DaemonHeartbeat
         }
     }
+}
+# A daemon we just killed leaves a heartbeat a few seconds old, which reads as "alive" for the
+# next 90 s: Ensure-Daemon waited that long before starting a replacement, and the smoke test 40 s
+# after a restart judged the DEAD process's heartbeat and then saw the replacement start mid-test.
+# Removing it lets Ensure-Daemon start the new daemon on the same tick.
+function Clear-DaemonHeartbeat {
+    Remove-Item -Path (Join-Path $run "daemon.heartbeat") -Force -ErrorAction SilentlyContinue
 }
 # --- watchdog self-restart --------------------------------------------------------------------
 # The per-component restart above can cycle api/web/daemon but NOT the supervisor itself, so a
@@ -211,6 +219,7 @@ function Handle-RestartRequest {
             # safety net (Invoke-DeployRollback, via $script:pendingRollback) actually get checked.
             $script:smokeTestAt = (Get-Date).AddSeconds(40)
             $script:smokeTestDone = $false
+            $script:smokeProbe = $null
             Log "restart=all: re-arming smoke test (will re-verify ~40s from now)"
         }
         "api"      { Stop-ComponentProcesses "api" }
@@ -237,9 +246,10 @@ $script:updateRequestFile = Join-Path $run "update.request"
 $script:updateResultFile = Join-Path $run "update.result"
 $script:updateBranchAllowlist = '^[A-Za-z0-9._/-]+$'
 # Auto-rollback bookkeeping: set (below) after a self-update's git reset + restart-request
-# succeed, to @{ priorSha; branch }; cleared as soon as it's acted on (rollback attempted) or the
-# post-restart smoke test PASSES. Invoke-SmokeTest checks this on FAILURE and rolls back to
-# priorSha -- see Invoke-DeployRollback.
+# succeed, to @{ priorSha; branch; deployedSha }; cleared as soon as it's acted on (rollback
+# attempted) or the post-restart smoke test PASSES. Invoke-SmokeTest checks this on FAILURE and
+# rolls back to the last-known-good commit (priorSha when none is recorded) -- see
+# Invoke-DeployRollback.
 $script:pendingRollback = $null
 # PERSISTED because a self-update that changes THIS script now restarts the watchdog, and the
 # rollback arming lives in process memory -- a fresh process would come up with no idea a deploy
@@ -375,8 +385,8 @@ function Handle-UpdateRequest {
             }
             # Arm the rollback safety net. Handle-RestartRequest's "all" case (below, same tick)
             # re-arms the one-shot smoke test, which will check $script:pendingRollback on FAILURE
-            # and revert to $priorSha -- see Invoke-DeployRollback.
-            $script:pendingRollback = @{ priorSha = $priorSha; branch = $branch }
+            # and revert to the last-known-good commit (else $priorSha) -- see Invoke-DeployRollback.
+            $script:pendingRollback = @{ priorSha = $priorSha; branch = $branch; deployedSha = (Get-HeadSha) }
             Save-PendingRollback $script:pendingRollback
             $summary = "update to '$branch' succeeded (validate=$validateVerdict) -- restart requested"
             Log "self-update: $summary"
@@ -561,6 +571,7 @@ try {
             Log "cleaned up stale daemon process $($_.ProcessId)"
         }
 } catch {}
+Clear-DaemonHeartbeat   # no daemon runs yet; a leftover beat would delay the first start by 90 s
 
 # --- one-time prep: DB + login user, and a PRODUCTION web build if missing ---
 Log "preparing database + login user"
@@ -874,21 +885,35 @@ function Daemon-Alive {
 $script:daemonTickStaleSeconds = 300
 $script:daemonTickCheckEveryS = 60
 $script:daemonTickCheckAt = (Get-Date)
-function Get-DaemonTickAgeSeconds {
-    # Returns the age (seconds) of runtime_state.updated, or $null if it can't be determined
-    # (DB missing/locked, python error, no row yet) -- callers MUST treat $null as "unknown", never
-    # as "stale", so a transient read hiccup can never itself trigger a restart.
+function Get-DaemonTickStamp {
+    # Returns runtime_state.updated as the raw ISO string, or $null if it can't be determined
+    # (DB missing/locked, python error, no row yet). The smoke test and the last-known-good
+    # tracker compare successive stamps to see ticks ADVANCE, not merely one fresh value.
     try {
         $out = & $py -c "from app.db import connect; from app.bridge import read_runtime_state; rt = read_runtime_state(connect(), 10**9); print(rt.get('updated') or 'NONE')" 2>$null
         if ($LASTEXITCODE -ne 0 -or -not $out) { return $null }
         $line = ($out | Select-Object -Last 1).ToString().Trim()
         if (-not $line -or $line -eq "NONE") { return $null }
-        $ts = [datetime]::Parse($line, [System.Globalization.CultureInfo]::InvariantCulture,
+        return $line
+    } catch {
+        return $null
+    }
+}
+function Get-TickStampAgeSeconds([string]$stamp) {
+    if (-not $stamp) { return $null }
+    try {
+        $ts = [datetime]::Parse($stamp, [System.Globalization.CultureInfo]::InvariantCulture,
                                  [System.Globalization.DateTimeStyles]::RoundtripKind)
         return [int]((Get-Date).ToUniversalTime() - $ts.ToUniversalTime()).TotalSeconds
     } catch {
         return $null
     }
+}
+function Get-DaemonTickAgeSeconds {
+    # Returns the age (seconds) of runtime_state.updated, or $null if it can't be determined
+    # (DB missing/locked, python error, no row yet) -- callers MUST treat $null as "unknown", never
+    # as "stale", so a transient read hiccup can never itself trigger a restart.
+    return (Get-TickStampAgeSeconds (Get-DaemonTickStamp))
 }
 # A daemon that has only just started has not completed a tick yet, so runtime_state.updated
 # still carries the PREVIOUS process's last tick. Judged on that, every fresh daemon looked
@@ -1164,7 +1189,38 @@ function Ensure-Tailscale {
 # Handle-UpdateRequest, both of which re-arm $script:smokeTestAt/$script:smokeTestDone), on
 # whichever supervise pass first crosses the armed deadline, so it never blocks the loop with an
 # up-front sleep.
+#
+# The daemon is judged on TICKS, not on its heartbeat alone. run_daemon.py beats from process
+# start, so a fresh heartbeat proves only that the process is alive, not that its control loop
+# ever runs. The test re-checks every $smokeRecheckS until runtime_state.updated has ADVANCED
+# twice (the first change can be run_daemon.py's one start-up stamp, which is not a tick) or the
+# start-up allowance since the daemon was launched runs out. A slow start-up gets its full
+# allowance (2026-09-25: a start-up of several minutes failed a 40 s smoke test and every build,
+# the fix included, was rolled back); a daemon that dies (heartbeat stale), is restarted by
+# Ensure-Daemon mid-test (it died or wedged) or never ticks still FAILS. api/web failures fail at
+# once, since waiting cannot fix them.
+$script:smokeProbe = $null
+$script:smokeRecheckS = 20
+function Test-SmokeDaemonTicks {
+    # "" = ticking; "wait" = not yet, still inside the start-up allowance; anything else = failure
+    $p = $script:smokeProbe
+    if ($null -eq $p) {
+        $script:smokeProbe = @{ startedAt = $script:daemonStartedAt; stamp = (Get-DaemonTickStamp); changes = 0; logged = $false }
+        return "wait"
+    }
+    if ($p.startedAt -ne $script:daemonStartedAt) {
+        return "daemon was restarted during the smoke test (it died or wedged)"
+    }
+    $stamp = Get-DaemonTickStamp
+    if ($stamp -and $stamp -ne $p.stamp) { $p.changes = $p.changes + 1; $p.stamp = $stamp }
+    if ($p.changes -ge 2) { return "" }
+    if (((Get-Date) - $script:daemonStartedAt).TotalSeconds -ge $script:daemonStartupAllowanceS) {
+        return "daemon made no tick progress within ${script:daemonStartupAllowanceS}s of starting"
+    }
+    return "wait"
+}
 function Invoke-SmokeTest {
+    $script:smokeTestDone = $true
     $failures = @()
     try {
         $resp = Invoke-RestMethod -Uri "http://localhost:8000/health" -TimeoutSec 5 -ErrorAction Stop
@@ -1172,8 +1228,25 @@ function Invoke-SmokeTest {
     } catch {
         $failures += "api /health unreachable: $($_.Exception.Message)"
     }
-    if (-not (Daemon-Alive)) { $failures += "daemon heartbeat stale/missing" }
     if (-not (Port-Alive 3000)) { $failures += "web not listening on port 3000" }
+    $waiting = $false
+    if (-not (Daemon-Alive)) {
+        $failures += "daemon heartbeat stale/missing"
+    } else {
+        $tick = Test-SmokeDaemonTicks
+        if ($tick -eq "wait") { $waiting = $true }
+        elseif ($tick) { $failures += $tick }
+    }
+    if ($waiting -and $failures.Count -eq 0) {
+        $script:smokeTestDone = $false
+        $script:smokeTestAt = (Get-Date).AddSeconds($script:smokeRecheckS)
+        if (-not $script:smokeProbe.logged) {
+            Log "smoke test: api and web up, daemon alive; waiting for its control loop to tick (up to ${script:daemonStartupAllowanceS}s from its start)"
+            $script:smokeProbe.logged = $true
+        }
+        return
+    }
+    $script:smokeProbe = $null
 
     $resultPath = Join-Path $run "smoke.result"
     if ($failures.Count -eq 0) {
@@ -1181,42 +1254,146 @@ function Invoke-SmokeTest {
         Log "smoke test: SMOKE PASS"
         $script:pendingRollback = $null   # this deploy is verified good -- nothing to roll back
         Save-PendingRollback $null
+        # A commit that failed once and now passes (a manual update, or the retry window) may be
+        # auto-deployed again.
+        $df = Read-DeployFailed
+        if ($df -and $df.sha -eq (Get-HeadSha)) {
+            Remove-Item -Path $script:deployFailedFile -Force -ErrorAction SilentlyContinue
+        }
     } else {
         $msg = "SMOKE FAIL: " + ($failures -join "; ")
         Set-Content -Path $resultPath -Value $msg -Encoding ASCII
         Log "smoke test: $msg"
         Write-Alert $msg
-        if ($script:pendingRollback -ne $null) { Invoke-DeployRollback }
+        if ($script:pendingRollback -ne $null) { Invoke-DeployRollback $msg }
     }
 }
+
+# --- last-known-good commit ---------------------------------------------------------------------
+# A rollback to "the previous HEAD" is only as good as that HEAD, and on 2026-09-25 it was not: the
+# fix deployed at 14:51 failed its smoke test and was reverted to 81897bd, which had the very
+# start-up stall the fix removed, so the box stayed down. A commit is recorded as known-good only
+# once it has RUN healthy -- api and web listening, daemon heartbeat fresh AND runtime_state.updated
+# advancing between checks -- for $lkgHealthyMinutes without a break, and never while a deploy is
+# still on probation. Invoke-DeployRollback reverts to that commit. Persisted in
+# .run\last-known-good.json (a commit hash and a time, nothing else) so it survives restarts.
+$script:lkgFile = Join-Path $run "last-known-good.json"
+$script:lkgHealthyMinutes = 15
+$script:lkgCheckEveryS = 60
+$script:lkgTickFreshS = 180
+$script:lkgCheckAt = (Get-Date).AddSeconds(60)
+$script:lkgSha = $null           # the HEAD whose healthy run is being timed
+$script:lkgHealthySince = $null
+$script:lkgLastStamp = $null
+$script:lkgRecordedSha = $null   # HEAD already recorded; the check is free from then on
+function Get-HeadSha {
+    try {
+        $s = (& git -C $Root rev-parse HEAD 2>$null | Select-Object -First 1)
+        if ($s -and $s.Trim() -match '^[0-9a-fA-F]{40}$') { return $s.Trim() }
+    } catch {}
+    return $null
+}
+function Read-ShaRecord([string]$path) {
+    try {
+        if (Test-Path $path) {
+            $j = (Get-Content -Path $path -Raw -Encoding UTF8 | ConvertFrom-Json)
+            if ($j -and $j.sha -and ([string]$j.sha) -match '^[0-9a-fA-F]{7,40}$') { return $j }
+        }
+    } catch {}
+    return $null
+}
+function Read-LastKnownGood { return (Read-ShaRecord $script:lkgFile) }
+function Update-LastKnownGood {
+    if ((Get-Date) -lt $script:lkgCheckAt) { return }
+    $script:lkgCheckAt = (Get-Date).AddSeconds($script:lkgCheckEveryS)
+    try {
+        $head = Get-HeadSha
+        if (-not $head -or $head -eq $script:lkgRecordedSha) { return }
+        if ($head -ne $script:lkgSha) {
+            $script:lkgSha = $head; $script:lkgHealthySince = $null; $script:lkgLastStamp = $null
+        }
+        $healthy = ($null -eq $script:pendingRollback) -and (Port-Alive 8000) -and (Port-Alive 3000) -and (Daemon-Alive)
+        $stamp = $null
+        if ($healthy) {
+            # an unreadable stamp restarts the clock: known-good needs evidence, not its absence
+            $stamp = Get-DaemonTickStamp
+            $age = Get-TickStampAgeSeconds $stamp
+            $healthy = [bool]($stamp -and $stamp -ne $script:lkgLastStamp -and $null -ne $age -and $age -le $script:lkgTickFreshS)
+        }
+        $script:lkgLastStamp = $stamp
+        if (-not $healthy) { $script:lkgHealthySince = $null; return }
+        if ($null -eq $script:lkgHealthySince) { $script:lkgHealthySince = Get-Date; return }
+        $mins = ((Get-Date) - $script:lkgHealthySince).TotalMinutes
+        if ($mins -lt $script:lkgHealthyMinutes) { return }
+        $cur = Read-LastKnownGood
+        if (-not ($cur -and $cur.sha -eq $head)) {
+            (@{ sha = $head; recorded = (Get-Date -Format o) } | ConvertTo-Json) |
+                Set-Content -Path $script:lkgFile -Encoding UTF8
+            Log ("last-known-good: recorded {0} (api, web and daemon ticks healthy for {1} min)" -f $head, [int]$mins)
+        }
+        $script:lkgRecordedSha = $head
+    } catch { Log "WARN: last-known-good check failed: $_" }
+}
+
+# A commit that failed its smoke test and was rolled back. Without this Check-AutoUpdate saw
+# origin ahead again and redeployed the same commit ten minutes later: a restart into the same
+# failure, then another rollback, all night. Retried after $deployFailedRetryHours (a failure can
+# be environmental), or at once when origin moves on; a manual update is never blocked.
+$script:deployFailedFile = Join-Path $run "deploy-failed.json"
+$script:deployFailedRetryHours = 6
+function Read-DeployFailed { return (Read-ShaRecord $script:deployFailedFile) }
 
 # --- deploy rollback: undo a self-update that fails its post-restart smoke test -----------------
 # Handle-UpdateRequest captured the pre-update commit ($priorSha) and armed $script:pendingRollback
 # BEFORE resetting to the new branch; if the smoke test that follows the resulting restart fails,
-# revert to that exact commit and restart once more so the box lands back on the last-known-good
-# deploy instead of serving a broken one until a human notices. Never retries more than once per
-# update (pendingRollback is cleared unconditionally below) -- a rollback target that ALSO fails
-# its smoke test just logs CRITICAL again on that next pass rather than bouncing forever.
-function Invoke-DeployRollback {
+# revert to the LAST-KNOWN-GOOD commit (see Update-LastKnownGood), or to the pre-update commit
+# when none is recorded (or it is gone from the repository), and restart once more. The target is
+# never the commit that is failing: if it would be, this alerts and leaves the tree alone rather
+# than reset onto itself. Never retries more than once per update (pendingRollback is cleared
+# unconditionally below) -- a rollback target that ALSO fails its smoke test just logs CRITICAL
+# again on that next pass rather than bouncing forever.
+function Invoke-DeployRollback([string]$why) {
     $rb = $script:pendingRollback
     $script:pendingRollback = $null
     Save-PendingRollback $null
-    if (-not $rb -or -not $rb.priorSha) {
+    $failing = Get-HeadSha
+    if (-not $failing -and $rb -and $rb.deployedSha) { $failing = [string]$rb.deployedSha }
+    $branch = if ($rb) { $rb.branch } else { "" }
+    if ($failing) {
+        try {
+            (@{ sha = $failing; branch = $branch; at = (Get-Date -Format o); reason = $why } | ConvertTo-Json) |
+                Set-Content -Path $script:deployFailedFile -Encoding UTF8
+        } catch { Log "WARN: could not record the failed deploy: $_" }
+    }
+    $target = $null; $source = $null
+    $lkg = Read-LastKnownGood
+    if ($lkg) {
+        & git -C $Root cat-file -e "$($lkg.sha)^{commit}" 2>$null
+        if ($LASTEXITCODE -eq 0) { $target = [string]$lkg.sha; $source = "last-known-good commit" }
+        else { Log "WARN: last-known-good $($lkg.sha) is not in the repository -- falling back to the pre-update commit" }
+    }
+    if (-not $target -and $rb -and $rb.priorSha) { $target = [string]$rb.priorSha; $source = "pre-update commit" }
+    if (-not $target) {
         Log "CRITICAL: smoke test failed after self-update but no prior commit was captured -- cannot auto-rollback; needs manual attention"
         Write-Alert "smoke test FAILED after self-update; no prior SHA captured -- manual rollback needed"
         return
     }
-    Log "CRITICAL: smoke test FAILED after self-update to '$($rb.branch)' -- rolling back to prior commit $($rb.priorSha)"
+    if ($failing -and $target -eq $failing) {
+        Log "CRITICAL: smoke test FAILED on $failing, which is also the rollback target ($source) -- not resetting onto the failing commit; needs manual attention"
+        Write-Alert "smoke test FAILED on $failing and the rollback target ($source) is that same commit -- no rollback, needs manual attention"
+        return
+    }
+    Log "CRITICAL: smoke test FAILED after self-update to '$branch' ($failing) -- rolling back to the $source $target"
     try {
-        $resetOut = & git -C $Root reset --hard $rb.priorSha 2>&1
+        $resetOut = & git -C $Root reset --hard $target 2>&1
         $resetOk = ($LASTEXITCODE -eq 0)
         ($resetOut | Out-String) -split "`n" | Where-Object { $_.Trim() } | ForEach-Object { Log "rollback git: $_" }
         if (-not $resetOk) {
-            Log "CRITICAL: rollback 'git reset --hard $($rb.priorSha)' FAILED -- system is left on the broken deploy"
-            Write-Alert "auto-rollback FAILED (git reset to $($rb.priorSha) failed) -- system is on a broken deploy, needs manual attention"
+            Log "CRITICAL: rollback 'git reset --hard $target' FAILED -- system is left on the broken deploy"
+            Write-Alert "auto-rollback FAILED (git reset to $target failed) -- system is on a broken deploy, needs manual attention"
             return
         }
-        Write-Alert "auto-rolled-back self-update (branch '$($rb.branch)') after smoke test failure -- reverted to $($rb.priorSha)"
+        Write-Alert "auto-rolled-back self-update (branch '$branch') after smoke test failure -- reverted to the $source $target"
         # reuse the EXISTING restart.request protocol -- never kill a process directly here
         Set-Content -Path $script:restartRequestFile -Value "all" -Encoding ASCII
         Log "rollback: restart requested to bring the reverted build up (smoke test re-arms automatically)"
@@ -1341,6 +1518,18 @@ function Check-AutoUpdate {
         if (-not $head -or -not $remote) { return }
         $head = $head.Trim(); $remote = $remote.Trim()
         if ($head -eq $remote) { return }   # already current
+        # Not the commit that just failed its smoke test and was rolled back (see Read-DeployFailed).
+        $failed = Read-DeployFailed
+        if ($failed -and $failed.sha -eq $remote) {
+            $failedAgeH = ((Get-Date) - (Get-Item $script:deployFailedFile).LastWriteTime).TotalHours
+            if ($failedAgeH -lt $script:deployFailedRetryHours) {
+                if ($script:deployFailedLoggedSha -ne $remote) {
+                    Log ("auto-update: origin/{0} ({1}) failed its smoke test and was rolled back -- not redeploying it for {2} h unless origin moves on" -f $script:deployBranch, $remote, $script:deployFailedRetryHours)
+                    $script:deployFailedLoggedSha = $remote
+                }
+                return
+            }
+        }
         # Prefer a clean fast-forward: HEAD must be an ANCESTOR of origin/<branch>. A divergent
         # local tree (someone committed locally) used to just stop here forever, silently, until a
         # human noticed and intervened by hand -- observed in practice: this checkout is a pure
@@ -1414,10 +1603,11 @@ while ($true) {
     Ensure-LanAccess
     Ensure-Tailscale
 
+    # Invoke-SmokeTest marks itself done, or re-arms a short re-check while the daemon starts.
     if (-not $script:smokeTestDone -and (Get-Date) -ge $script:smokeTestAt) {
         Invoke-SmokeTest
-        $script:smokeTestDone = $true
     }
+    Update-LastKnownGood
 
     # --- off-box dead-man's-switch (e.g. healthchecks.io) ---------------------------------------
     # If ALL supervised components (api, daemon, web) are healthy THIS cycle, ping HEALTHCHECKS_URL
