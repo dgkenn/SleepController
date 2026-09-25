@@ -241,9 +241,16 @@ def _band_power(sig: Sequence[float], fs: float, lo: float, hi: float) -> float:
     used to return scaled with n^2 (the same 450 ms^2 oscillation read 1.3e7 over 2 min and
     8.0e7 over 5 min), which only ratios survived. Half-open bands keep the 0.15 Hz bin out of
     LF and HF at once."""
+    return _band_spectrum(sig, fs, lo, hi)[0]
+
+
+def _band_spectrum(sig: Sequence[float], fs: float, lo: float,
+                   hi: float) -> Tuple[float, List[float], List[float]]:
+    """:func:`_band_power` plus the per-bin frequencies and raw powers it summed, so the
+    respiratory peak can be read off the HF band at no extra Goertzel cost."""
     n = len(sig)
     if n < 8:
-        return 0.0
+        return 0.0, [], []
     mean = statistics.fmean(sig)
     x = [v - mean for v in sig]
     # Hann window: without it, spectral leakage smears the LF/HF split we care about
@@ -251,8 +258,10 @@ def _band_power(sig: Sequence[float], fs: float, lo: float, hi: float) -> float:
     x = [v * w for v, w in zip(x, w_hann)]
     norm = n * sum(w * w for w in w_hann)
     if norm <= 0:
-        return 0.0
+        return 0.0, [], []
     total = 0.0
+    freqs: List[float] = []
+    powers: List[float] = []
     step = fs / n
     k = max(1, int(math.ceil(lo / step - 1e-9)))
     kmax = min(n // 2, int(math.ceil(hi / step - 1e-9)) - 1)
@@ -266,9 +275,12 @@ def _band_power(sig: Sequence[float], fs: float, lo: float, hi: float) -> float:
             s2, s1 = s1, s0
         real = s1 - s2 * cw
         imag = s2 * sw
-        total += real * real + imag * imag
+        p = real * real + imag * imag
+        total += p
+        freqs.append(k * step)
+        powers.append(p)
         k += 1
-    return 2.0 * total / norm
+    return 2.0 * total / norm, freqs, powers
 
 
 def frequency_domain(times_s: Sequence[float], ibis: Sequence[float]) -> Dict[str, float]:
@@ -279,23 +291,267 @@ def frequency_domain(times_s: Sequence[float], ibis: Sequence[float]) -> Dict[st
         return {}
     vlf = _band_power(sig, fs, *VLF_BAND)
     lf = _band_power(sig, fs, *LF_BAND)
-    hf = _band_power(sig, fs, *HF_BAND)
+    hf, hf_freqs, hf_powers = _band_spectrum(sig, fs, *HF_BAND)
     total = vlf + lf + hf
     if total <= 0:
         return {}
-    return {
+    out = {
         "ibi_vlf": vlf, "ibi_lf": lf, "ibi_hf": hf, "ibi_total_power": total,
         "ibi_lf_hf": (lf / hf) if hf else 0.0,
         "ibi_lf_nu": lf / (lf + hf) if (lf + hf) else 0.0,
         "ibi_hf_nu": hf / (lf + hf) if (lf + hf) else 0.0,
         "ibi_vlf_frac": vlf / total,
     }
+    peak = rsa_peak(hf_freqs, hf_powers)
+    if peak is not None:
+        out["ibi_resp_rate"] = 60.0 * peak[0]
+        out["ibi_resp_conc"] = peak[1]
+    return out
+
+
+# ------------------------------------------------------------------ respiration (RSA)
+# Breathing modulates the heart period (respiratory sinus arrhythmia), so the respiratory rhythm
+# rides on the tachogram: the IBI lengthens on expiration and shortens on inspiration. Deep (N3)
+# sleep breathes slowly and very regularly, REM irregularly (Douglas et al., Thorax 1982;
+# Redmond & Heneghan, IEEE TBME 2006), which is what makes the breathing pattern a deep-vs-REM
+# discriminator HR summaries do not carry. Two complementary estimators:
+#
+#   * SPECTRAL: the RSA peak of the HF band (the band's own Goertzel bins, so free) -> the
+#     dominant breathing rate, plus how concentrated the band power is around it (a narrow peak
+#     is steady breathing, a smeared one is not). Same concentration definition and interior-peak
+#     rule as ``sleepctl.controller.respiration``, which was validated on this user's nights.
+#   * CYCLE COUNTING: the "advanced counting" method of Schaefer & Kratky (Ann Biomed Eng 2008;
+#     36:476) -- band-pass the tachogram, take its extrema, discard swings smaller than 0.3x the
+#     upper quartile -- yields individual breaths, hence breath-to-breath variability (CV of
+#     cycle durations) and the peak-to-trough RSA amplitude per breath (the band-passed analogue
+#     of Grossman's peak-valley RSA, Psychophysiology 1990), neither of which a single spectrum
+#     can give.
+
+#: half-width of the "near the peak" band the concentration is measured over (Hz)
+RESP_CONC_HALFWIDTH_HZ = 0.03
+#: tachogram rate for cycle counting: 5+ samples per cycle at the 0.40 Hz band top is ample
+#: once extrema are refined parabolically, and half the 4 Hz grid's filtering cost
+_RESP_GRID_HZ = 2.0
+#: band-pass corners (2nd-order Butterworth high- and low-pass, run forward-backward). The
+#: pair passes 0.79-0.86 of the amplitude over 0.2-0.3 Hz (12-18 breaths/min) and 0.21 of a
+#: 0.1 Hz Mayer wave. A 0.12 Hz corner let a 60 ms Mayer wave push a regular breath's cycle
+#: CV from 0.04 to 0.18 -- as "irregular" as a 15%-jittered rate -- on synthetic tachograms.
+_RESP_HP_HZ = 0.14
+_RESP_LP_HZ = 0.50
+#: a beat-time gap longer than this is not interpolated across; the tachogram is split there
+#: and no cycle may straddle it. An ectopic beat and its compensatory pause, both rejected by
+#: :func:`_filter_ibis`, leave ~3 s at 60 bpm -- most of a breath, and bridging it doubled the
+#: cycle CV of a regular breather at 1-3% ectopy (synthetic; 3.0 s let it through, 2.5 s not).
+RESP_GAP_S = 2.5
+#: shortest contiguous stretch worth filtering (a few breaths)
+_RESP_MIN_SEG_S = 20.0
+#: odd-reflection padding at each segment end, so the filter's start-up transient falls outside
+_RESP_PAD_S = 15.0
+#: extremum pairs closer than this fraction of the upper-quartile swing are noise, not breaths
+RESP_SWING_FRAC = 0.3
+#: plausible breath-cycle durations (s): 5-30 breaths/min
+RESP_CYCLE_S = (2.0, 12.0)
+#: fewest cycles for a window's breathing summary
+RESP_MIN_CYCLES = 4
+
+
+def rsa_peak(freqs: Sequence[float], powers: Sequence[float]
+             ) -> Optional[Tuple[float, float]]:
+    """``(peak_hz, concentration)`` of the respiratory peak in an HF-band spectrum, or None.
+
+    The peak must be the largest INTERIOR local maximum: a maximum pinned to the band edge is
+    LF (Mayer-wave) leakage, not breathing. Its frequency is refined by a parabola through the
+    log-power of the three bins around it (a Hann main lobe is near-Gaussian, so this is
+    accurate to a small fraction of a bin). Concentration is the share of band power within
+    :data:`RESP_CONC_HALFWIDTH_HZ` of the peak.
+    """
+    n = len(powers)
+    if n < 3:
+        return None
+    total = 0.0
+    for p in powers:
+        total += p
+    if total <= 0:
+        return None
+    best, best_p = -1, 0.0
+    for i in range(1, n - 1):
+        p = powers[i]
+        if p > powers[i - 1] and p >= powers[i + 1] and p > best_p:
+            best, best_p = i, p
+    if best < 0:
+        return None
+    f = freqs[best]
+    a, b, c = powers[best - 1], powers[best], powers[best + 1]
+    if a > 0 and c > 0:
+        la, lb, lc = math.log(a), math.log(b), math.log(c)
+        den = la - 2.0 * lb + lc
+        if den < 0:
+            f += 0.5 * (la - lc) / den * (freqs[best + 1] - freqs[best])
+    near = 0.0
+    for fk, p in zip(freqs, powers):
+        if abs(fk - f) <= RESP_CONC_HALFWIDTH_HZ:
+            near += p
+    return f, near / total
+
+
+def _biquad(kind: str, fc: float, fs: float) -> Tuple[float, float, float, float, float]:
+    """2nd-order Butterworth (Q = 1/sqrt 2) section via the bilinear transform (RBJ cookbook),
+    normalised to a0 = 1: ``(b0, b1, b2, a1, a2)``."""
+    w0 = 2.0 * math.pi * fc / fs
+    cw = math.cos(w0)
+    alpha = math.sin(w0) / math.sqrt(2.0)
+    a0 = 1.0 + alpha
+    if kind == "hp":
+        b0, b1 = (1.0 + cw) / 2.0, -(1.0 + cw)
+    else:
+        b0, b1 = (1.0 - cw) / 2.0, 1.0 - cw
+    return b0 / a0, b1 / a0, b0 / a0, -2.0 * cw / a0, (1.0 - alpha) / a0
+
+
+_RESP_SECTIONS = (_biquad("hp", _RESP_HP_HZ, _RESP_GRID_HZ),
+                  _biquad("lp", _RESP_LP_HZ, _RESP_GRID_HZ))
+
+
+def _sosfilt(x: List[float]) -> List[float]:
+    """Both band-pass sections in one pass (transposed direct form II, zero initial state)."""
+    (b0, b1, b2, a1, a2), (c0, c1, c2, d1, d2) = _RESP_SECTIONS
+    z1 = z2 = u1 = u2 = 0.0
+    out = []
+    for v in x:
+        y = b0 * v + z1
+        z1 = b1 * v - a1 * y + z2
+        z2 = b2 * v - a2 * y
+        o = c0 * y + u1
+        u1 = c1 * y - d1 * o + u2
+        u2 = c2 * y - d2 * o
+        out.append(o)
+    return out
+
+
+def _segment_extrema(ts: Sequence[float], vs: Sequence[float]
+                     ) -> List[Tuple[float, float, bool]]:
+    """Alternating raw extrema ``(t, value, is_max)`` of the band-passed tachogram of one
+    gap-free run of beats."""
+    t0 = ts[0]
+    n = int((ts[-1] - t0) * _RESP_GRID_HZ) + 1
+    sig, j = [], 0
+    for k in range(n):
+        x = t0 + k / _RESP_GRID_HZ
+        while j + 2 < len(ts) and ts[j + 1] < x:
+            j += 1
+        ta, tb = ts[j], ts[j + 1]
+        sig.append(vs[j] if tb == ta else vs[j] + (vs[j + 1] - vs[j]) * (x - ta) / (tb - ta))
+    mean = statistics.fmean(sig)
+    sig = [v - mean for v in sig]
+    pad = min(n - 1, int(_RESP_PAD_S * _RESP_GRID_HZ))
+    # odd reflection about each end keeps level and slope continuous, as scipy's filtfilt does
+    head = [2.0 * sig[0] - sig[i] for i in range(pad, 0, -1)]
+    tail = [2.0 * sig[-1] - sig[-1 - i] for i in range(1, pad + 1)]
+    y = _sosfilt(head + sig + tail)
+    y = _sosfilt(y[::-1])[::-1][pad:pad + n]    # forward-backward: zero phase, so no lag
+    out: List[Tuple[float, float, bool]] = []
+    for k in range(1, n - 1):
+        a, b, c = y[k - 1], y[k], y[k + 1]
+        is_max = b > a and b >= c
+        if not (is_max or (b < a and b <= c)):
+            continue
+        den = a - 2.0 * b + c
+        d = 0.5 * (a - c) / den if den else 0.0
+        out.append((t0 + (k + d) / _RESP_GRID_HZ, b - 0.25 * (a - c) * d, is_max))
+    return out
+
+
+def breath_cycles(times_s: Sequence[float], ibis: Sequence[float]
+                  ) -> List[Tuple[float, float, float]]:
+    """Individual breaths from an (already cleaned) beat-interval series, by advanced counting.
+
+    Returns ``(t_end, duration_s, swing_ms)`` per cycle: every peak-to-peak AND trough-to-trough
+    span between confirmed extrema, with the peak-to-trough swing that closes it. The series is
+    split at beat gaps over :data:`RESP_GAP_S` (a dropout or rejected ectopic run) and each run
+    filtered on its own, so no cycle is ever interpolated across missing data.
+    """
+    n = len(ibis)
+    if n < 8:
+        return []
+    segs: List[List[Tuple[float, float, bool]]] = []
+    i0 = 0
+    for i in range(1, n + 1):
+        if i == n or times_s[i] - times_s[i - 1] > RESP_GAP_S:
+            if times_s[i - 1] - times_s[i0] >= _RESP_MIN_SEG_S and i - i0 >= 8:
+                segs.append(_segment_extrema(times_s[i0:i], ibis[i0:i]))
+            i0 = i
+    swings = sorted(abs(s[k][1] - s[k - 1][1]) for s in segs for k in range(1, len(s)))
+    if len(swings) < 4:
+        return []
+    h = RESP_SWING_FRAC * swings[(3 * len(swings)) // 4]
+    lo_s, hi_s = RESP_CYCLE_S
+    cycles: List[Tuple[float, float, float]] = []
+    for ext in segs:
+        # zig-zag: an extremum is confirmed once the signal has reversed from it by >= h; a
+        # smaller wiggle is dropped and a further same-direction extremum extends the candidate
+        conf: List[Tuple[float, float, bool]] = []
+        cand = None
+        for e in ext:
+            if cand is None or e[2] == cand[2]:
+                if cand is None or (e[1] > cand[1] if e[2] else e[1] < cand[1]):
+                    cand = e
+            elif abs(e[1] - cand[1]) >= h:
+                conf.append(cand)
+                cand = e
+        for k in range(2, len(conf)):
+            dur = conf[k][0] - conf[k - 2][0]
+            if lo_s <= dur <= hi_s:
+                cycles.append((conf[k][0], dur, abs(conf[k][1] - conf[k - 1][1])))
+    cycles.sort()
+    return cycles
+
+
+def breath_summary(cycles: Sequence[Tuple[float, float, float]], start: float,
+                   stop: float) -> Dict[str, float]:
+    """Breathing features over the cycles that lie wholly inside ``[start, stop]``.
+
+    ``ibi_breath_rate`` breaths/min from the median cycle; ``ibi_breath_cv`` the coefficient of
+    variation of cycle duration (breath-to-breath irregularity); ``ibi_rsa_amp`` the median
+    peak-to-trough swing (ms) and ``ibi_rsa_amp_cv`` its variability; ``ibi_breath_cov`` the
+    fraction of the window spanned by counted breaths (each breath appears twice, peak-to-peak
+    and trough-to-trough, hence the halving). ``{}`` below :data:`RESP_MIN_CYCLES`.
+    """
+    durs, amps = [], []
+    for t_end, dur, amp in cycles:
+        if t_end - dur >= start and t_end <= stop:
+            durs.append(dur)
+            amps.append(amp)
+    if len(durs) < RESP_MIN_CYCLES or stop <= start:
+        return {}
+    return {
+        "ibi_breath_rate": 60.0 / statistics.median(durs),
+        "ibi_breath_cv": _cv(durs),
+        "ibi_rsa_amp": statistics.median(amps),
+        "ibi_rsa_amp_cv": _cv(amps),
+        "ibi_breath_cov": min(1.0, 0.5 * sum(durs) / (stop - start)),
+    }
+
+
+def _cv(v: Sequence[float]) -> float:
+    """Population coefficient of variation in plain float arithmetic (``statistics.pstdev``
+    is exact-rational and ~20x slower, which matters at 20 epochs per daemon tick)."""
+    m = math.fsum(v) / len(v)
+    if m <= 0:
+        return 0.0
+    return math.sqrt(max(0.0, math.fsum((x - m) * (x - m) for x in v) / len(v))) / m
+
+
+def respiration(times_s: Sequence[float], ibis: Sequence[float]) -> Dict[str, float]:
+    """Cycle-counting breathing features for one window of cleaned beat intervals."""
+    if len(ibis) < 8:
+        return {}
+    return breath_summary(breath_cycles(times_s, ibis), times_s[0], times_s[-1])
 
 
 # ------------------------------------------------------------------ public entry point
 def hrv_features(times_s: Sequence[float], ibis: Sequence[float],
                  clean: bool = True, *, sampen: bool = True,
-                 spectral: bool = True) -> Dict[str, float]:
+                 spectral: bool = True, breathing: bool = True) -> Dict[str, float]:
     """All HRV features for one window of inter-beat intervals.
 
     ``times_s`` are the beat timestamps in seconds (same length as ``ibis``). Returns ``{}`` when
@@ -304,7 +560,10 @@ def hrv_features(times_s: Sequence[float], ibis: Sequence[float],
 
     ``sampen`` / ``spectral`` switch off the two super-linear blocks (sample entropy is O(n^2),
     the Goertzel band powers O(n * bins) with bins growing with n) for callers that score long
-    windows many times per tick; the default computes everything.
+    windows many times per tick; ``breathing`` the cycle-counting block (:func:`respiration`),
+    for callers that count breaths once over a longer span and slice it themselves. The spectral
+    respiratory peak (``ibi_resp_rate`` / ``ibi_resp_conc``) comes with ``spectral``. The
+    default computes everything.
     """
     if clean:
         times_s, ibis = _filter_ibis(times_s, ibis)
@@ -315,5 +574,7 @@ def hrv_features(times_s: Sequence[float], ibis: Sequence[float],
     feats.update(nonlinear(ibis, sampen=sampen))
     if spectral:
         feats.update(frequency_domain(times_s, ibis))
+    if breathing:
+        feats.update(respiration(times_s, ibis))
     feats["ibi_n"] = float(len(ibis))
     return feats

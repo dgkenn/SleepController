@@ -32,7 +32,10 @@ The HRV block (v3) is computed from a history of ``(t_seconds, ibi_ms)`` beat in
 lagged contrasts, and causal per-night normalisation of the key summaries against the
 distribution of 2-minute bucket values seen so far in the night. It exists because the HR
 series a wearable reports is already smoothed, which destroys exactly the beat-to-beat
-dispersion and LF/HF structure the autonomic staging literature relies on.
+dispersion and LF/HF structure the autonomic staging literature relies on. Its last columns
+are BREATHING read from respiratory sinus arrhythmia (rate, regularity and RSA amplitude over
+the 2/5/10 min windows): breathing is slow and very regular in deep sleep and irregular in
+REM, a contrast the HR summaries do not carry.
 
 Normalization stats are passed in as an argument so that training and inference share one
 code path; :func:`compute_norm_stats` derives them from a plain HR history (the controller
@@ -46,7 +49,7 @@ import math
 import statistics
 from typing import Dict, List, Optional, Sequence, Tuple, Union
 
-from .hrv_features import _filter_ibis, hrv_features
+from .hrv_features import _filter_ibis, breath_cycles, breath_summary, hrv_features
 
 # --- window geometry -------------------------------------------------------------------
 WINDOWS_MIN: Tuple[float, ...] = (2.0, 5.0, 10.0, 30.0)
@@ -108,6 +111,22 @@ HRV_SPECTRAL_KEYS: Tuple[str, ...] = ("lf_hf", "hf_nu", "lf_nu", "log_hf", "log_
 #: summaries contrasted across scales (short window minus long window)
 HRV_DELTA_KEYS: Tuple[str, ...] = ("hr", "sdnn", "rmssd", "pnn50", "sd1_sd2")
 HRV_DELTA_SPECTRAL_KEYS: Tuple[str, ...] = ("lf_hf", "hf_nu")
+#: windows that get the breathing (RSA respiration) block -- the spectral ones, since the
+#: respiratory peak is read off the same HF-band spectrum
+HRV_RESP_WINDOWS_MIN: Tuple[float, ...] = HRV_SPECTRAL_WINDOWS_MIN
+#: breathing summaries per window: (feature suffix, hrv_features key). ``resp_*`` come from the
+#: spectral RSA peak, ``breath_*`` / ``rsa_*`` from cycle counting (see hrv_features.py)
+HRV_RESP_KEYS: Tuple[Tuple[str, str], ...] = (
+    ("resp_rate", "ibi_resp_rate"),
+    ("resp_conc", "ibi_resp_conc"),
+    ("breath_rate", "ibi_breath_rate"),
+    ("breath_cv", "ibi_breath_cv"),
+    ("rsa_amp", "ibi_rsa_amp"),
+    ("rsa_amp_cv", "ibi_rsa_amp_cv"),
+    ("breath_cov", "ibi_breath_cov"),
+)
+#: breathing summaries contrasted across scales (2 min minus 10 min)
+HRV_DELTA_RESP_KEYS: Tuple[str, ...] = ("resp_rate", "breath_cv", "rsa_amp")
 
 
 def _wtag(w: float) -> str:
@@ -255,6 +274,14 @@ def _hrv_names() -> List[str]:
             f"hrvn_{k}_rank2",       # same for the 2 min value
             f"hrvn_{k}_minus_p50",   # 5 min value - night p50, in the key's own units
         ]
+    # Breathing from respiratory sinus arrhythmia. APPENDED after everything above so the
+    # older columns keep their positions (weights address features by name, so older files
+    # that never list these simply never read them).
+    for w in HRV_RESP_WINDOWS_MIN:
+        t = _wtag(w)
+        names += [f"hrv_{k}_w{t}" for k, _src in HRV_RESP_KEYS]
+    for k in HRV_DELTA_RESP_KEYS:
+        names.append(f"hrv_{k}_d2_10")
     return names
 
 
@@ -412,7 +439,8 @@ def hrv_bucket_summaries(
         while j < n and ct[j] < b1:
             j += 1
         if j - i >= HRV_MIN_BEATS:
-            f = hrv_features(ct[i:j], cv[i:j], clean=False, sampen=False, spectral=True)
+            f = hrv_features(ct[i:j], cv[i:j], clean=False, sampen=False, spectral=True,
+                             breathing=False)
             if f:
                 out.append((b1, {k: float(f.get(src, 0.0)) for k, src in HRV_NORM_KEYS}))
         i = j
@@ -687,7 +715,8 @@ def _hrv_block(
         tw, vw = _slice(start, stop)
         if len(vw) < HRV_MIN_BEATS:
             return {}
-        return hrv_features(tw, vw, clean=False, sampen=sampen, spectral=spectral)
+        return hrv_features(tw, vw, clean=False, sampen=sampen, spectral=spectral,
+                            breathing=False)
 
     per: Dict[float, Dict[str, float]] = {}
     for w in HRV_WINDOWS_MIN:
@@ -743,6 +772,27 @@ def _hrv_block(
         feats[f"hrv_drmssd{tag}"] = _delta(rmssd5, lr)
         feats[f"hrv_lag{tag}_hr"] = lh if lh is not None else 0.0
         feats[f"hrv_dhr{tag}"] = _delta(hr5, lh)
+
+    # --- breathing (RSA respiration) ----------------------------------------------------
+    # Breaths are counted ONCE over the longest breathing window and each window summarises
+    # the cycles lying wholly inside it: one band-pass pass per epoch instead of one per window.
+    wmax = max(HRV_RESP_WINDOWS_MIN)
+    bt, bv = _slice(end - 60.0 * wmax, end)
+    cycles = breath_cycles(bt, bv) if len(bv) >= HRV_MIN_BEATS else []
+    resp: Dict[float, Dict[str, float]] = {}
+    for w in HRV_RESP_WINDOWS_MIN:
+        tag = _wtag(w)
+        f = dict(per.get(w) or {})      # the spectral peak rides on the window's HF spectrum
+        f.update(breath_summary(cycles, end - 60.0 * w, end))
+        resp[w] = f
+        for k, src in HRV_RESP_KEYS:
+            feats[f"hrv_{k}_w{tag}"] = float(f.get(src, 0.0))
+    resp_src = dict(HRV_RESP_KEYS)
+    for k in HRV_DELTA_RESP_KEYS:
+        a = resp[min(HRV_RESP_WINDOWS_MIN)].get(resp_src[k])
+        b = resp[wmax].get(resp_src[k])
+        feats[f"hrv_{k}_d2_10"] = _delta(None if a is None else float(a),
+                                         None if b is None else float(b))
 
     # --- causal per-night normalisation of the key summaries ---------------------------
     have = bool(ns) and "hrv_n" in ns
