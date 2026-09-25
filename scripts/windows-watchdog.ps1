@@ -700,7 +700,7 @@ function Ensure-DreamtModel {
     if (Test-Path (Join-Path $run "staging_weights\stage4_hrv.json")) { return }
     try {
         $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction Stop |
-            Where-Object { $_.CommandLine -like "*dreamt_pipeline.py*" }
+            Where-Object { $_.CommandLine -like "*dreamt_pipeline.py*" -or $_.CommandLine -like "*mesa_pipeline.py*" }
         if ($running) { return }
     } catch { }
     $last = Join-Path $run "dreamt.lastrun"
@@ -731,6 +731,62 @@ function Ensure-DreamtModel {
         try { $p.PriorityClass = 'BelowNormal' } catch { }
     } catch {
         Log "WARN: could not start the DREAMT pipeline: $_"
+    }
+}
+
+function Ensure-MesaModel {
+    # Hands-off MESA staging model (scripts\mesa_pipeline.py): check NSRR access with the user's
+    # own token, stream + reduce + train, install only if it beats every shipped and installed
+    # model. Nothing happens until the user has put an NSRR token on the box. Started at most
+    # once a day, at below-normal priority, never while it or the DREAMT pipeline is running
+    # (both train in memory), and never again once a run has trained (.run\mesa.done). The
+    # pipeline never prints or logs the token, keeps the data OUTSIDE the repo, and reports
+    # progress to .run\mesa.status.json as counts and scores only.
+    if (Test-Path (Join-Path $run "mesa.done")) { return }
+    $script = Join-Path $Root "scripts\mesa_pipeline.py"
+    if (-not (Test-Path $script)) { return }
+    # The scheduled task may not run under the user's profile; the repo lives in it, so look
+    # for the token file there too (only its existence is checked here, never its content).
+    $prof = $null
+    if ($Root -match '^([A-Za-z]:\\Users\\[^\\]+)\\') { $prof = $Matches[1] }
+    $hasToken = [bool]($env:SLEEPCTL_NSRR_TOKEN -or $env:NSRR_TOKEN -or $env:SLEEPCTL_NSRR_TOKEN_FILE)
+    foreach ($h in @($HOME, $env:USERPROFILE, $prof)) {
+        if (-not $h) { continue }
+        foreach ($n in @("nsrr_token.txt", ".nsrr_token", ".nsrr-token")) {
+            if (Test-Path (Join-Path $h $n)) { $hasToken = $true }
+        }
+    }
+    if (Test-Path "D:\sleepctl-cache\nsrr_token.txt") { $hasToken = $true }
+    if (-not $hasToken) { return }
+    try {
+        $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -like "*mesa_pipeline.py*" -or $_.CommandLine -like "*dreamt_pipeline.py*" }
+        if ($running) { return }
+    } catch { }
+    $last = Join-Path $run "mesa.lastrun"
+    if ((Test-Path $last) -and (((Get-Date) - (Get-Item $last).LastWriteTime).TotalHours -lt 24)) { return }
+    $depMarker = Join-Path $run "mesa-deps.ok"
+    if (-not (Test-Path $depMarker)) {
+        & $py -c "import requests, numpy, sklearn, truststore" 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Log "installing requests/numpy/scikit-learn/truststore for the MESA pipeline (one-time)"
+            & $py -m pip install --quiet --disable-pip-version-check requests numpy scikit-learn truststore 2>&1 | Out-Null
+            & $py -c "import requests, numpy, sklearn, truststore" 2>$null
+        }
+        if ($LASTEXITCODE -eq 0) { Set-Content -Path $depMarker -Value "ok" -Encoding ASCII }
+        else { Log "WARN: MESA pipeline dependencies not importable yet; will retry"; return }
+    }
+    if ($prof) { $env:SLEEPCTL_NETRC_HOME = $prof }
+    Set-Content -Path $last -Value (Get-Date -Format o) -Encoding ASCII
+    Log "starting the MESA staging pipeline in the background (daily until it has trained)"
+    try {
+        $p = Start-Process -FilePath $py -ArgumentList @("`"$script`"") -WorkingDirectory $Root `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput (Join-Path $run "mesa.log") `
+            -RedirectStandardError (Join-Path $run "mesa.err.log")
+        try { $p.PriorityClass = 'BelowNormal' } catch { }
+    } catch {
+        Log "WARN: could not start the MESA pipeline: $_"
     }
 }
 
@@ -1577,6 +1633,7 @@ while ($true) {
     Ensure-Verity
     Ensure-WakePlugDeps
     Ensure-DreamtModel
+    Ensure-MesaModel
 
     if (-not (Port-Alive 8000)) {
         if (Test-CanRestart "api") {

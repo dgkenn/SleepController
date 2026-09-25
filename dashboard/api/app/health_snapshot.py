@@ -306,6 +306,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "controller": _controller_block(repo),
         "wake_light": _wake_light_block(repo),
         "dreamt": _dreamt_block(run_dir),
+        "mesa": _mesa_block(run_dir),
     }
     return scrub(snapshot)
 
@@ -321,7 +322,25 @@ def _dreamt_block(run_dir: str | None) -> dict | None:
     except Exception:
         return None
     keep = ("stage", "source", "n_participants", "reduced", "failed", "of", "error",
-            "last_error", "updated", "started", "finished", "scores", "verdict", "participants")
+            "last_error", "updated", "started", "finished", "scores", "verdict", "participants",
+            "workers", "gb_read", "minutes", "zip_gb", "transfer_gb")
+    return {k: st.get(k) for k in keep if k in st}
+
+
+def _mesa_block(run_dir: str | None) -> dict | None:
+    """Progress of the on-box MESA (NSRR) staging pipeline, like ``_dreamt_block``: stage,
+    counts and held-out scores only. The pipeline scrubs its token from every message; this
+    still copies only known fields."""
+    if not run_dir:
+        return None
+    try:
+        with open(os.path.join(run_dir, "mesa.status.json")) as fh:
+            st = json.load(fh)
+    except Exception:
+        return None
+    keep = ("stage", "source", "n_records", "of", "reduced", "failed", "skipped",
+            "transfer_gb", "gb_downloaded", "error", "last_error", "updated", "started",
+            "finished", "scores", "verdict", "participants")
     return {k: st.get(k) for k in keep if k in st}
 
 

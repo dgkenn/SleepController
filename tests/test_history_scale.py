@@ -206,7 +206,10 @@ def test_resolvers_match_per_event_counts_and_read_before_writing(tmp_path):
 def test_hrv_windows_match_the_rescan_and_stay_linear():
     rng = random.Random(2)
     rr, t = [], 1_700_000_000.0
-    while len(rr) < 30000:                     # ~8 h of beats, a few duplicate stamps
+    # ~2.7 h of beats, a few duplicate stamps. The per-window HRV work (now with the
+    # respiration features) is linear but not free; the old per-epoch rescan of every beat was
+    # quadratic, so the bound below still catches it without flaking on a loaded CI box.
+    while len(rr) < 10000:
         rr.append((t, 900.0 + rng.random() * 200))
         t += 0.0 if rng.random() < 0.01 else 0.9 + rng.random() * 0.2
     rng.shuffle(rr)

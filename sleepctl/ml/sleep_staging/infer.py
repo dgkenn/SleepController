@@ -340,6 +340,13 @@ class SleepStager:
     def set_wake_bias(self, bias: float) -> None:
         self.wake_bias = max(0.5, min(2.0, float(bias or 1.0)))
 
+    #: Personal wake threshold on p_wake, fitted from EEG-headband nights (see
+    #: sleepctl.learning.eeg_calibration). None keeps the default 0.5 rule unchanged.
+    wake_threshold: Optional[float] = None
+
+    def set_wake_threshold(self, t) -> None:
+        self.wake_threshold = None if t is None else min(0.9, max(0.1, float(t)))
+
     def set_personal_hmm(self, trans, prior=None) -> None:
         """Replace the smoothing model's transitions (and prior) with a personalised blend
         (see learning.hypnogram_priors). No-op when no HMM is bundled."""
@@ -557,8 +564,15 @@ class SleepStager:
         probs = {lbl: float(post[i]) for i, lbl in enumerate(STAGE4_LABELS)}
         p_wake = probs["wake"] if smoothed else float(p_wake_last)
         stage_label = max(STAGE4_LABELS, key=lambda l: probs[l])
-        if p_wake >= 0.5:
-            stage_label = "wake"
+        th = self.wake_threshold
+        if th is None:
+            if p_wake >= 0.5:
+                stage_label = "wake"
+        else:
+            # a calibrated threshold decides wake vs sleep both ways; below it, the most likely
+            # SLEEP stage (matches eeg_calibration.decide)
+            stage_label = ("wake" if p_wake >= th
+                           else max(STAGE4_LABELS[1:], key=lambda l: probs[l]))
         confidence = max(0.0, min(1.0, probs[stage_label]))
         return StageEstimate(
             stage_label=stage_label,

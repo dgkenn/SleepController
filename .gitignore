@@ -30,3 +30,7 @@ scratch_data/
 # Sleep creds) once `make up`/the operator fills them in — only .env.example is tracked.
 deploy/.env
 .env
+
+# Downloaded / reduced research datasets (PhysioNet DREAMT, NSRR MESA, BIDSleep) and their
+# training caches. DREAMT and MESA are data-use-agreement data: they must never be committed.
+cache/
