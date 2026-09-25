@@ -13,6 +13,11 @@ Model variants under ``weights/``:
   * HR + HRV      ``wake_hrvonly.json``,   ``stage4_hrvonly.json``   -- beat intervals, no motion
   * ``hmm.json``  4x4 transition matrix + class order + start/prior distributions
 
+The HR / HR+motion weights and ``hmm.json`` are trained on PhysioNet BIDSleep v1.0.1 (253
+Apple Watch nights, ODC-By 1.0, doi:10.13026/rees-1092) plus sleep-accel, with
+subject-grouped CV (``scripts/train_bidsleep.py``, ``cv_report_bidsleep.json``). The
+HR+motion model uses only the scale-free motion features.
+
 The HRV variants are trained on the PhysioNet DREAMT corpus (``scripts/train_dreamt.py``)
 and are OPTIONAL: when their files are absent nothing about the HR / HR+motion path changes.
 When present, :meth:`SleepStager.predict` prefers them whenever the caller supplies a beat

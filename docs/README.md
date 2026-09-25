@@ -45,6 +45,7 @@ The physical devices, their data paths, and field-debugging notes.
 
 | Doc | What it covers |
 |---|---|
+| [BIDSLEEP_TRAINING.md](BIDSLEEP_TRAINING.md) | **New.** The shipped HR / HR+motion stager is now trained on PhysioNet BIDSleep (253 Apple Watch nights, ODC-By 1.0) plus sleep-accel: how to download, reduce and retrain (`scripts/bidsleep_reduce.py`, `scripts/train_bidsleep.py`), attribution, and the comparison with the old sleep-accel-only weights on held-out subjects (smoothed κ 0.361 → 0.454, deep recall 0.41 → 0.70), plus replays of the user's own nights. This supersedes the model metrics quoted in WHAT_THE_STAGER_IS_FOR.md. |
 | [WHAT_THE_STAGER_IS_FOR.md](WHAT_THE_STAGER_IS_FOR.md) | Why the wearable stager should be optimized for wake-vs-sleep and deep-vs-not-deep, not 4-class kappa (with a concrete case where chasing 4-class kappa picked a worse model). Includes the current shipped model's metrics (4-class κ 0.436, wake κ 0.450, deep-minutes MAE 23.0 min, onset MAE 5.4 min, leave-subjects-out) and the `state_estimator` overlay that lets a stage-less wearable feed drive the controller. |
 | [PERSONALIZATION_FINDINGS.md](PERSONALIZATION_FINDINGS.md) | A measured negative result: label-free per-person adaptation of the stager doesn't help (and some mechanisms actively hurt). Explains why raw RR/actigraphy persistence (see VERITY_RESEARCH.md) exists — it's what a real across-nights personalization test needs, and it can't be recovered retroactively. Includes the open-dataset survey (BOAS, DOD-H, BIDSleep, etc.). |
 

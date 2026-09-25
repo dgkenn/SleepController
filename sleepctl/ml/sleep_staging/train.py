@@ -229,7 +229,11 @@ def _label_night(emissions, pw_raw, hmm, smoothing_epochs: int, temper: float,
 
 
 def estimate_hmm(y4: Sequence[int], groups: Sequence[str], times: Sequence[float]) -> dict:
-    """4x4 transition matrix at 30 s epochs, plus start and prior distributions."""
+    """4x4 transition matrix at 30 s epochs, plus start and prior distributions.
+
+    ``groups`` keys one continuous recording each (pass night IDs, not subject IDs, when a
+    subject contributes several nights -- their relative times overlap).
+    """
     n = 4
     trans = np.ones((n, n)) * 0.5  # light Laplace smoothing
     prior = np.ones(n) * 1.0
@@ -267,8 +271,13 @@ def _subject_index(night_ids: Sequence[str], times: Sequence[float], rows: Seque
 
 def cv_emissions_multi(ds: StagingDataset, feature_names: Sequence[str], spec: dict,
                        *, test_sets: Optional[Dict[str, StagingDataset]] = None,
-                       n_folds: int = N_FOLDS, seed: int = 0) -> Dict[str, dict]:
+                       n_folds: int = N_FOLDS, seed: int = 0,
+                       fit_stride: int = 1) -> Dict[str, dict]:
     """Fit each grouped CV fold once and cache the held-out predictions per test variant.
+
+    ``fit_stride > 1`` fits the classifier heads on every Nth training row only (consecutive
+    30 s epochs are near-duplicates, so a large corpus loses little); the fold's HMM is
+    still estimated from ALL training rows, because it needs the 30 s transitions.
 
     One (expensive) round of fits can then score e.g. dense-HR *and* decimated-HR test rows.
     Each cache is ``{"nights": [{subject, y_true, times, p4, pw_balanced, pw_natural, hmm}]}``
@@ -280,6 +289,9 @@ def cv_emissions_multi(ds: StagingDataset, feature_names: Sequence[str], spec: d
     yw = np.asarray(ds.y_wake, dtype=int)
     groups = list(ds.groups)
     times = list(ds.times)
+    # transitions are counted within one NIGHT: a multi-night subject (BIDSleep) or a dense +
+    # decimated copy of the same night must not be interleaved into one time-sorted sequence
+    seqs = list(ds.night_ids) if len(ds.night_ids) == len(groups) else groups
     n_folds = min(n_folds, len(set(groups)))
 
     prepared = {}
@@ -296,9 +308,10 @@ def cv_emissions_multi(ds: StagingDataset, feature_names: Sequence[str], spec: d
 
     gkf = GroupKFold(n_splits=n_folds)
     for tr_idx, te_idx in gkf.split(X, y4, groups=groups):
-        hmm = estimate_hmm(y4[tr_idx], [groups[i] for i in tr_idx],
+        hmm = estimate_hmm(y4[tr_idx], [seqs[i] for i in tr_idx],
                            [times[i] for i in tr_idx])
-        wake_bal, wake_nat, stage_m = _fit_heads(spec, X[tr_idx], y4[tr_idx], yw[tr_idx],
+        fit_idx = tr_idx[::fit_stride] if fit_stride > 1 else tr_idx
+        wake_bal, wake_nat, stage_m = _fit_heads(spec, X[fit_idx], y4[fit_idx], yw[fit_idx],
                                                  seed=seed, both_wake=True)
         test_subjects = {groups[i] for i in te_idx}
         for name, P in prepared.items():
@@ -326,7 +339,7 @@ def cv_emissions_multi(ds: StagingDataset, feature_names: Sequence[str], spec: d
                     pw_natural=[float(pw_nat[j]) for j in js],
                     hmm=hmm,
                 ))
-    hmm_full = estimate_hmm(y4, groups, times)
+    hmm_full = estimate_hmm(y4, seqs, times)
     for name in out:
         out[name]["hmm_full"] = hmm_full
         out[name]["n_rows"] = sum(len(n["y_true"]) for n in out[name]["nights"])
