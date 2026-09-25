@@ -56,6 +56,13 @@ def wake_truth_profile(repo, nights: int = 30, min_markers: int = MIN_MARKERS) -
     for _ts, st in declared:
         n += 1
         awake += 1 if st == "awake" else 0
+        # Same semantics as a marker: a note-declared awakening the stager held as sleep is a
+        # MISS. 2026-09-25 audit: these counted toward n and never toward misses, so every note
+        # diluted the miss rate -- 12 nights of noted awakenings the stager held as 'light'
+        # read agreement 0.0 yet miss_rate 0.0 and bias 0.7, the floor: the detector missing
+        # every one of them was taken as proof it should see LESS wake (now 1.0 / 1.6).
+        if st != "awake":
+            misses += 1
     n_notes = n - n_markers
     src = f"{n_markers} gesture(s) + {n_notes} from morning notes"
     if n_denied:

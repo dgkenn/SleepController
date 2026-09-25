@@ -75,10 +75,67 @@ def _manual_override_counts(repo: Repository) -> dict[str, int]:
     return {r["night_date"]: r["c"] for r in rows}
 
 
+#: Fewest NEUTRAL-intent maintenance decisions a night needs before their mean target is taken
+#: as the neutral it actually ran (~5 minutes of ticks; below that it is a fragment).
+MIN_APPLIED_NEUTRAL_TICKS = 10
+
+
+def _applied_neutral_by_night(repo: Repository) -> dict[str, float]:
+    """Mean commanded target over each night's NEUTRAL-intent maintenance decisions -- the
+    temperature the bed actually steered around while holding the sleeper asleep."""
+    try:
+        rows = repo.conn.execute(
+            "SELECT night_date, AVG(target_temp_f) AS t, COUNT(*) AS c FROM decisions "
+            "WHERE state='maintenance' AND thermal_intent='neutral' "
+            "AND target_temp_f IS NOT NULL AND night_date IS NOT NULL GROUP BY night_date"
+        ).fetchall()
+    except Exception:
+        return {}
+    return {r[0]: float(r[1]) for r in rows if r[1] is not None and r[2] >= MIN_APPLIED_NEUTRAL_TICKS}
+
+
+def _trial_offsets_by_night(repo: Repository) -> dict[str, float]:
+    try:
+        rows = repo.conn.execute(
+            "SELECT night_date, offset_f FROM thermal_trials WHERE offset_f IS NOT NULL"
+        ).fetchall()
+    except Exception:
+        return {}
+    return {r[0]: float(r[1]) for r in rows}
+
+
+def _applied_neutral_f(night_date: str, sp, applied: dict, trial_offsets: dict) -> Optional[float]:
+    """The neutral the night actually RAN, best effort, not the stored setpoint version's.
+
+    2026-09-25 audit: ``neutral_f`` was read from the setpoint version the night was tagged
+    with, but since 2026-09-20 nothing overnight runs that number unchanged -- the thermal
+    trial shifts it by up to +2.0 F, the measured comfort neutral replaces it, and the morning
+    comfort anchor moves that. Four trial nights at offsets +2.0/+1.0/+1.5/0.0 all exported
+    ``neutral_f`` 70.0, so the model was trained on a knob that looked constant while the
+    temperature that produced the outcome varied by two degrees.
+
+    In order of preference:
+      1. the mean commanded target of the night's NEUTRAL-intent maintenance decisions (at
+         least ``MIN_APPLIED_NEUTRAL_TICKS``) -- what the bed was actually told, after the
+         trial offset, the comfort anchor and the ambient bias;
+      2. the setpoint version's neutral plus that night's ``thermal_trials.offset_f`` -- the
+         one shift that is recorded per night;
+      3. the setpoint version's neutral, as before.
+    """
+    if night_date in applied:
+        return round(applied[night_date], 2)
+    base = getattr(sp, "neutral_f", None)
+    if base is None:
+        return None
+    return round(float(base) + trial_offsets.get(night_date, 0.0), 2)
+
+
 def build_feature_rows(repo: Repository) -> list[FeatureRow]:
     nights = repo.all_nights()
     setpoints = repo.setpoints_by_version()
     manual_counts = _manual_override_counts(repo)
+    applied = _applied_neutral_by_night(repo)
+    trial_offsets = _trial_offsets_by_night(repo)
     rows: list[FeatureRow] = []
     for n in nights:
         sp = setpoints.get(n.setpoint_version) if n.setpoint_version is not None else None
@@ -94,7 +151,7 @@ def build_feature_rows(repo: Repository) -> list[FeatureRow]:
         rows.append(FeatureRow(
             date=n.date,
             setpoint_version=n.setpoint_version,
-            neutral_f=getattr(sp, "neutral_f", None),
+            neutral_f=_applied_neutral_f(n.date, sp, applied, trial_offsets),
             deep_bias_f=getattr(sp, "deep_bias_f", None),
             rem_warm_offset_f=getattr(sp, "rem_warm_offset_f", None),
             wake_ramp_f=getattr(sp, "wake_ramp_f", None),

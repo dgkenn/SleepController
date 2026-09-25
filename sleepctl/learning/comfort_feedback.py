@@ -34,8 +34,12 @@ REVIEW_STEP_F = {"too_cold": 1.0, "bit_cold": 0.5, "right": 0.0,
                  "bit_warm": -0.5, "too_warm": -1.0}
 #: A note is a weaker signal than an explicit answer.
 NOTE_WEIGHT = 0.5
-#: Reviews older than this are history, not tonight's evidence.
-LOOKBACK_NIGHTS = 60
+# There is deliberately NO rolling lookback window. It used to be 60 nights, and because this
+# is an integrator that meant earned warmth silently fell off the back: 3 "too cold" mornings
+# from 2026-09-22 followed by 87 "just right" ones read neutral 73.0 on 2026-11-21 and 70.0 on
+# 2026-11-25 (audit 2026-09-25) -- the bed went three degrees colder with no complaint at all,
+# exactly the drift "just right holds it" promises not to do. The integral runs from
+# ``comfort_feedback_since``; moving that date is the way to start it over.
 #: Default first night the loop counts. Everything said before it is already priced into the
 #: fixed re-anchor; counting it again would move the bed twice for one complaint.
 FEEDBACK_SINCE = "2026-09-22"
@@ -59,7 +63,11 @@ def note_vote(text: str) -> Optional[str]:
 def _night_votes(repo, now: datetime,
                  first_night: str = FEEDBACK_SINCE) -> List[Tuple[str, str, float]]:
     """``(night_date, source, step_f)`` oldest first: one per night, review over note."""
-    since = max((now - timedelta(days=LOOKBACK_NIGHTS)).date().isoformat(), first_night or "")
+    since = first_night or ""
+    # The night ``now`` falls in, by the noon cutoff every other night key uses. A note may only
+    # credit a night that has already ENDED (strictly before this one): tonight has not been
+    # slept, so nothing written about it yet can be a verdict on it.
+    current_night = (now.date() if now.hour >= 12 else now.date() - timedelta(days=1)).isoformat()
     votes: Dict[str, Tuple[str, float]] = {}
     try:
         rows = repo.conn.execute(
@@ -76,18 +84,31 @@ def _night_votes(repo, now: datetime,
             "SELECT date, text FROM notes WHERE date >= ? ORDER BY id ASC", (since,)).fetchall()
     except Exception:
         notes = []
+    # One vote per note DATE, not per note. 2026-09-25 audit: two "cold" notes written the same
+    # morning each took a night -- the first the night before, the second spilled onto that
+    # evening's night, which had not been slept yet -- so one cold morning warmed the bed twice.
+    # All of a day's notes are read together: they agree, or (cold and warm both) they are no vote.
+    by_date: Dict[object, set] = {}
     for date, text in notes:
         vote = note_vote(str(text or ""))
         if vote is None:
             continue
-        # A note filed the morning after belongs to the night before; the evening's own date
-        # is the night itself. Prefer the night before; a night that already has a review is
-        # answered, and the note is not moved onto a night it may not describe.
         try:
             d = datetime.fromisoformat(str(date)).date()
         except Exception:
             continue
+        by_date.setdefault(d, set()).add(vote)
+    for d in sorted(by_date):
+        kinds = by_date[d]
+        if len(kinds) != 1:
+            continue
+        vote = next(iter(kinds))
+        # A note filed the morning after belongs to the night before; the evening's own date
+        # is the night itself. Prefer the night before; a night that already has a review is
+        # answered, and the note is not moved onto a night it may not describe.
         for night in ((d - timedelta(days=1)).isoformat(), d.isoformat()):
+            if night >= current_night:
+                break                                  # not slept yet: not this note's night
             if night in votes and votes[night][0] == "review":
                 break                                  # the explicit answer wins
             if night not in votes:

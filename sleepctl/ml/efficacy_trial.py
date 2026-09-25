@@ -123,6 +123,24 @@ def _seed_fraction(date_str: str, salt: str = "sleepctl-efficacy-micro-trial") -
     return n / float(16 ** 15)
 
 
+# --------------------------------------------------------------------------- randomized-only rows
+
+
+def randomized_rows(rows) -> List[dict]:
+    """Only the rows of nights that were actually RANDOMIZED (``eligible`` = 1).
+
+    2026-09-25 audit: every night gets an ``efficacy_trials`` row -- ineligible ones too,
+    forced to 'active' for the audit trail -- and the auto-stop guardrail and ``analyze_trials``
+    pooled them all. Work/short/recovery nights can only ever be 'active', never 'sham', so the
+    active arm soaked up the hardest nights: a 60-night replay (odd nights 'constrained' with 4
+    wakes, normal nights 1) read active n=51 mean 2.77 vs sham n=9 mean 1.00 -- "sham beats the
+    controller by 1.8 wakes/night", entirely night type. Kept as a literal duplicate of
+    ``thermal_trial.randomized_rows`` for the same reason ``is_eligible`` is. Rows with no
+    ``eligible`` key (hand-built dicts) are kept -- only an explicit 0 excludes a row.
+    """
+    return [r for r in rows if ("eligible" not in r) or bool(r.get("eligible"))]
+
+
 # --------------------------------------------------------------------------- auto-stop guardrail
 
 
@@ -133,12 +151,14 @@ def _auto_stop_triggered(repo, cfg) -> bool:
     mean to exceed the active mean by ``auto_stop_threshold`` extra wake_events/night.
 
     Returns False (never auto-stop) if there isn't a repo to check history against, or not
-    enough data yet -- the guardrail only ever acts on real evidence, never a hunch."""
+    enough data yet -- the guardrail only ever acts on real evidence, never a hunch. Only
+    RANDOMIZED nights count (``randomized_rows``)."""
     if repo is None:
         return False
     min_n = max(1, int(getattr(cfg, "auto_stop_min_n", 6)))
     threshold = float(getattr(cfg, "auto_stop_threshold", 1.0))
-    rows = [r for r in repo.efficacy_trial_rows(resolved_only=True) if r.get("wake_events") is not None]
+    rows = [r for r in randomized_rows(repo.efficacy_trial_rows(resolved_only=True))
+            if r.get("wake_events") is not None]
     active = [r["wake_events"] for r in rows if r.get("arm") == ACTIVE]
     sham = [r["wake_events"] for r in rows if r.get("arm") == SHAM]
     if len(active) < min_n or len(sham) < min_n:
@@ -353,6 +373,11 @@ def analyze_trials(rows: List[dict], min_nights_before_verdict: int = 10) -> dic
     a CI excluding 0 means the controller is genuinely reducing awakenings. With too few nights,
     the verdict says so plainly instead of implying a result.
     """
+    # Randomized nights only -- see ``randomized_rows`` (2026-09-25: forced-active work nights
+    # were being compared against randomized sham nights, confounding the verdict by night type).
+    all_rows = list(rows)
+    rows = randomized_rows(all_rows)
+    n_excluded = len(all_rows) - len(rows)
     by_arm = {ACTIVE: {m: [] for m in _METRICS}, SHAM: {m: [] for m in _METRICS}}
     for r in rows:
         arm = r.get("arm")
@@ -383,6 +408,7 @@ def analyze_trials(rows: List[dict], min_nights_before_verdict: int = 10) -> dic
 
     return {
         "n_active": n_active, "n_sham": n_sham,
+        "n_excluded_ineligible": n_excluded,
         "min_nights_before_verdict": min_nights_before_verdict,
         "enough_data": enough,
         "wake_events": metrics_out["wake_events"],

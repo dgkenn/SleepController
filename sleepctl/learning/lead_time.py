@@ -69,31 +69,44 @@ def _parse_ts(value) -> Optional[datetime]:
 
 def learn_response_lag(repo, lookback: int = 6000, drop_f: float = 0.8) -> Optional[float]:
     """Median minutes from a COOLING command to a >= ``drop_f`` bed-temp drop, from the
-    user's own ``raw_samples`` (commanded_level decreases -> bed_temp_f falls)."""
+    user's own ``raw_samples`` (commanded_level decreases -> bed_temp_f falls).
+
+    Reads the NEWEST ``lookback`` rows. 2026-09-25 audit: this was ``ORDER BY id ASC LIMIT``,
+    i.e. the OLDEST 6000 rows forever -- once the table outgrew the lookback, nothing recorded
+    afterwards could move the lag. A replay of 6000 old rows at a 2-min lag followed by 6000
+    recent rows at 8 min still learned 2.0. A command and its response are also only paired
+    inside one ``night_date``: the last command of one night and the first reading of the next
+    are not a response."""
     try:
         rows = repo.conn.execute(
-            "SELECT ts, bed_temp_f, commanded_level FROM raw_samples "
+            "SELECT ts, bed_temp_f, commanded_level, night_date FROM raw_samples "
             "WHERE bed_temp_f IS NOT NULL AND commanded_level IS NOT NULL "
-            "ORDER BY id ASC LIMIT ?",
+            "ORDER BY id DESC LIMIT ?",
             (lookback,),
         ).fetchall()
     except Exception:
         return None
+    rows = list(rows)[::-1]                     # back to chronological order
 
     samples = []
     for r in rows:
         ts = _parse_ts(r["ts"] if hasattr(r, "keys") else r[0])
         bed = r["bed_temp_f"] if hasattr(r, "keys") else r[1]
         lvl = r["commanded_level"] if hasattr(r, "keys") else r[2]
+        night = r["night_date"] if hasattr(r, "keys") else r[3]
         if ts is not None and bed is not None and lvl is not None:
-            samples.append((ts, float(bed), int(lvl)))
+            samples.append((ts, float(bed), int(lvl), night))
 
     lags: List[float] = []
     for i in range(1, len(samples)):
+        if samples[i][3] != samples[i - 1][3]:
+            continue                            # a night boundary is not a command
         # a cooling command = commanded level dropped vs the previous sample
         if samples[i][2] < samples[i - 1][2] - 2:
             t0, bed0 = samples[i][0], samples[i][1]
             for j in range(i + 1, min(i + 60, len(samples))):
+                if samples[j][3] != samples[i][3]:
+                    break                       # the response must land on the same night
                 if samples[j][1] <= bed0 - drop_f:
                     lags.append((samples[j][0] - t0).total_seconds() / 60.0)
                     break

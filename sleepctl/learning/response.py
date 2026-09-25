@@ -9,6 +9,7 @@ overfitting; everything is explainable (sign + magnitude + n + confidence).
 from __future__ import annotations
 
 import statistics
+from datetime import timedelta
 from typing import Optional
 
 from sleepctl.models import CorrectionAction, Intervention, NightSummary
@@ -32,6 +33,23 @@ def _effect(with_vals: list[float], without_vals: list[float]) -> dict:
     return {"effect_size": raw * confidence, "n": n, "confidence": round(confidence, 2)}
 
 
+def _night_date(iv) -> str:
+    """The night an intervention belongs to, keyed the way ``NightSummary.date`` is.
+
+    2026-09-25 audit: this used the intervention's CALENDAR date, but nights are keyed by the
+    date they STARTED with a noon cutoff (``CycleRunner.night_date``, which is also what the
+    ``interventions.night_date`` column holds). Every cooling move made after midnight was
+    credited to the NEXT night, so a night with no cooling could read as "cooled" and the night
+    that was cooled as not. An explicit ``night_date`` on the record wins; otherwise the same noon-cutoff rule the
+    column was written with (the only writer, ``CycleRunner.act``, stores
+    ``night_date(now)`` alongside ``timestamp=now``) recovers it exactly.
+    """
+    explicit = getattr(iv, "night_date", None)
+    if explicit:
+        return str(explicit)
+    return (iv.timestamp - timedelta(hours=12)).date().isoformat()
+
+
 class ResponseEstimator:
     """Builds simple, robust response signals from history."""
 
@@ -42,7 +60,7 @@ class ResponseEstimator:
     ) -> dict:
         # Map a night_date -> whether a cooling/stabilizing intervention happened.
         cooling_dates = {
-            iv.timestamp.date().isoformat()
+            _night_date(iv)
             for iv in interventions
             if iv.action in (CorrectionAction.COOLER, CorrectionAction.ESCALATE)
         }

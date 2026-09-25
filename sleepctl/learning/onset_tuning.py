@@ -78,8 +78,13 @@ def learn_onset(records: List[dict], base_f: float = 1.0, min_nights: int = 8,
     """records: [{'onset_warm_f': float, 'onset_latency_min': float, 'night_type': str}, ...].
     Returns the warm-nudge magnitude that gave you the fastest onset (shrunk toward the default,
     clamped). When ``mode`` is given and has enough nights, learns for that mode specifically."""
+    # Only CREDIBLE latencies -- see _MIN_CREDIBLE_ONSET_LATENCY_MIN. 2026-09-25 audit: the
+    # warm-pulse A/B already dropped the ~1-min restart artifacts, but this learner did not, so
+    # a restart night "fell asleep in 1 min" at whatever nudge it happened to run and pulled the
+    # learned best toward it -- the fastest bucket was the one with the most restarts.
     pool = [r for r in records
-            if r.get("onset_latency_min") is not None and r.get("onset_warm_f") is not None]
+            if r.get("onset_latency_min") is not None and r.get("onset_warm_f") is not None
+            and float(r["onset_latency_min"]) >= _MIN_CREDIBLE_ONSET_LATENCY_MIN]
     usable = _filter_mode(pool, mode, min_nights)
     n = len(usable)
     if n < min_nights:
@@ -119,9 +124,11 @@ def learn_cold_settle(records: List[dict], base_f: float = 60.0, min_nights: int
     """records: [{'onset_cold_settle_f': float, 'onset_latency_min': float, 'night_type': str}].
     Returns the really-cold opener depth that gave you the fastest onset (shrunk toward the default,
     clamped). When ``mode`` is given and has enough nights, learns for that mode specifically."""
+    # Only CREDIBLE latencies (2026-09-25; same restart artifact as ``learn_onset``).
     pool = [r for r in records
             if r.get("onset_latency_min") is not None
-            and r.get("onset_cold_settle_f") is not None]
+            and r.get("onset_cold_settle_f") is not None
+            and float(r["onset_latency_min"]) >= _MIN_CREDIBLE_ONSET_LATENCY_MIN]
     usable = _filter_mode(pool, mode, min_nights)
     n = len(usable)
     if n < min_nights:

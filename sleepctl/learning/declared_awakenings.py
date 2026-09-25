@@ -136,7 +136,14 @@ def declared_instants(repo, nights: int = 30) -> List[Tuple[str, Optional[str]]]
     for date, text in rows:
         if not text:
             continue
+        # Every interval the note declares counts, under ONE night. 2026-09-25 audit: the
+        # ``break`` used to sit inside the interval loop, so it left only that loop -- a note
+        # declaring "awake 0:15-0:25, woke 3:10, awake 5:00-5:20" yielded one instant, not
+        # three, and the note was then tried again under the other candidate night, where the
+        # same words could match a second time. Now: collect every matched interval under a
+        # candidate night, and stop trying other nights once any matched.
         for night in _candidate_nights(str(date)):
+            matched: List[Tuple[str, Optional[str]]] = []
             for iv in declared_intervals(night, [str(text)]):
                 s, e = datetime.fromisoformat(iv["start"]), datetime.fromisoformat(iv["end"])
                 mid = s + (e - s) / 2
@@ -149,8 +156,10 @@ def declared_instants(repo, nights: int = 30) -> List[Tuple[str, Optional[str]]]
                 except Exception:
                     row = None
                 if row is not None:
-                    out.append((mid.isoformat(), str(row[0])))
-                    break            # matched under one night's samples: do not double count
+                    matched.append((mid.isoformat(), str(row[0])))
+            if matched:
+                out.extend(matched)
+                break                # matched under one night's samples: do not double count
     return out
 
 

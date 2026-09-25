@@ -37,6 +37,31 @@ def _dedupe_epochs(rows) -> List[tuple]:
     return out
 
 
+def _night_rows(repo, night_date: str) -> List[tuple]:
+    """``(tick_time, stage, confidence)`` for a night's steady-state ticks, keyed on WHEN THE
+    DAEMON TICKED (``sample_ts``), not on ``ts``.
+
+    2026-09-25 audit: ``ts`` is the pod's frame time and only refreshes about every 60 s, so the
+    two ticks of consecutive 30-s epochs share a ``ts`` -- deduping on it kept one epoch in two.
+    Half the transitions vanished and the gaps that remained were 60 s, so a 5-night replay of a
+    hypnogram changing stage every 4 epochs counted 2400 of 4800 epochs and learned
+    P(light->light) 0.59 instead of 0.75. ``sample_ts`` (see ``sleepctl.storage.schema``) is
+    the tick's own clock; rows written before that column existed fall back to ``ts``, and a
+    database that predates the column entirely falls back to the old query.
+    """
+    where = ("FROM raw_samples WHERE night_date = ? AND "
+             "controller_state IN ('maintenance','wake_recovery','wake_window') "
+             "AND stage IS NOT NULL ")
+    try:
+        return repo.conn.execute(
+            "SELECT COALESCE(sample_ts, ts) AS t, stage, stage_confidence " + where +
+            "ORDER BY t ASC", (night_date,)).fetchall()
+    except Exception:
+        return repo.conn.execute(
+            "SELECT ts, stage, stage_confidence " + where + "ORDER BY ts ASC",
+            (night_date,)).fetchall()
+
+
 def learn_transitions(repo, population: dict, nights: int = 14, min_nights: int = MIN_NIGHTS,
                       min_conf: float = 0.55) -> dict:
     """``{"trans": 4x4, "prior": 4, "n_nights", "n_epochs", "personalized", "rationale"}``.
@@ -57,10 +82,7 @@ def learn_transitions(repo, population: dict, nights: int = 14, min_nights: int 
     n_epochs = 0
     used_nights = 0
     for d in dates:
-        rows = repo.conn.execute(
-            "SELECT ts, stage, stage_confidence FROM raw_samples WHERE night_date = ? AND "
-            "controller_state IN ('maintenance','wake_recovery','wake_window') AND stage IS NOT NULL "
-            "ORDER BY ts ASC", (d,)).fetchall()
+        rows = _night_rows(repo, d)
         rows = [(r[0], r[1], r[2]) for r in rows if r[1] in _IDX and (r[2] is None or float(r[2]) >= min_conf)]
         ep = _dedupe_epochs(rows)
         if len(ep) < 60:

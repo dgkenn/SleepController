@@ -264,26 +264,35 @@ def _block_offset(date_str: str, key: str, cfg) -> float:
     return pool[perm[position]]
 
 
+# --------------------------------------------------------------------------- randomized-only rows
+
+
+def randomized_rows(rows) -> List[dict]:
+    """Only the rows of nights that were actually RANDOMIZED (``eligible`` = 1).
+
+    2026-09-25 audit: every night gets a ``thermal_trials`` row -- ineligible ones too, forced
+    to control for the audit trail (see ``apply_trial_arm``) -- and both the auto-stop guardrail
+    and ``analyze_dose_response`` pooled them all. For this shift worker that is exactly the
+    confounder the block design exists to remove: work/short/recovery nights ALWAYS land in the
+    control arm and never in an experimental one. A 60-night replay (odd nights 'constrained'
+    with 4 wakes, normal nights 1) read the control arm as n=48, mean 2.88 wake_events against
+    +0.50's 1.00 -- a "significant" -1.9/night benefit that was pure night type; restricted to
+    randomized nights control was n=18, mean 1.00, i.e. no difference at all. Rows with no
+    ``eligible`` key at all (hand-built dicts) are kept -- only an explicit 0 excludes a row.
+    """
+    return [r for r in rows if ("eligible" not in r) or bool(r.get("eligible"))]
+
+
 # --------------------------------------------------------------------------- auto-stop guardrail
 
 
-def _auto_stopped_arms(repo, cfg) -> set:
-    """The set of formatted arm labels currently trending CLEARLY worse than control on
-    wake_events, past a minimum per-arm sample -- these must resolve to control until the trend
-    clears. Mirrors ``efficacy_trial._auto_stop_triggered`` but per-arm (this trial has several
-    experimental arms, not one sham arm, so only the specific offset that's underperforming is
-    suspended -- the others keep running). Conservative by design: requires BOTH control and the
-    candidate arm to have >= ``cfg.auto_stop_min_n`` resolved nights, and the arm's mean
-    wake_events to exceed control's by >= ``cfg.auto_stop_threshold``.
-
-    Returns an empty set (never auto-stop) if there's no repo to check history against, or not
-    enough data yet -- the guardrail only ever acts on real evidence.
-    """
-    if repo is None:
-        return set()
+def _auto_stopped_from_rows(rows, cfg) -> set:
+    """The auto-stop decision as a pure function of resolved trial ``rows`` -- shared by
+    ``_auto_stopped_arms`` (which reads the repo) and ``analyze_dose_response`` (which is handed
+    rows), so the two can never disagree about which arms are suspended."""
     min_n = max(1, int(getattr(cfg, "auto_stop_min_n", 6)))
     threshold = float(getattr(cfg, "auto_stop_threshold", 1.0))
-    rows = [r for r in repo.thermal_trial_rows(resolved_only=True) if r.get("wake_events") is not None]
+    rows = [r for r in randomized_rows(rows) if r.get("wake_events") is not None]
     control_label = _format_arm(_clamp_offset(getattr(cfg, "control_offset_f", 0.0), cfg))
 
     by_arm: Dict[str, List[float]] = {}
@@ -303,6 +312,24 @@ def _auto_stopped_arms(repo, cfg) -> set:
         if (mean_arm - mean_control) >= threshold:
             bad.add(arm)
     return bad
+
+
+def _auto_stopped_arms(repo, cfg) -> set:
+    """The set of formatted arm labels currently trending CLEARLY worse than control on
+    wake_events, past a minimum per-arm sample -- these must resolve to control until the trend
+    clears. Mirrors ``efficacy_trial._auto_stop_triggered`` but per-arm (this trial has several
+    experimental arms, not one sham arm, so only the specific offset that's underperforming is
+    suspended -- the others keep running). Conservative by design: requires BOTH control and the
+    candidate arm to have >= ``cfg.auto_stop_min_n`` resolved nights, and the arm's mean
+    wake_events to exceed control's by >= ``cfg.auto_stop_threshold``.
+
+    Returns an empty set (never auto-stop) if there's no repo to check history against, or not
+    enough data yet -- the guardrail only ever acts on real evidence. Only RANDOMIZED nights
+    count (``randomized_rows``): a forced-control work night is not evidence about any arm.
+    """
+    if repo is None:
+        return set()
+    return _auto_stopped_from_rows(repo.thermal_trial_rows(resolved_only=True), cfg)
 
 
 def _log_auto_stop(repo, date_str: str, arm_label: str, cfg) -> None:
@@ -562,6 +589,12 @@ def analyze_dose_response(rows: List[dict], cfg=None, min_nights_per_arm: Option
     if min_n is None:
         min_n = int(getattr(cfg, "min_nights_before_verdict", 8)) if cfg is not None else 8
 
+    # Randomized nights only -- see ``randomized_rows`` (2026-09-25: forced-control work nights
+    # were being compared against randomized ones, confounding every arm by night type).
+    all_rows = list(rows)
+    rows = randomized_rows(all_rows)
+    n_excluded = len(all_rows) - len(rows)
+
     by_arm: Dict[str, Dict[str, List[float]]] = {}
     for r in rows:
         arm = r.get("arm")
@@ -607,17 +640,33 @@ def analyze_dose_response(rows: List[dict], cfg=None, min_nights_per_arm: Option
 
     trend = _trend_readout(arms_out, arms_present)
 
-    underpowered = [a for a in arms_present if arms_out[a]["n"] and arms_out[a]["n"] < min_n]
+    # An arm that can never GROW must not hold the verdict hostage. 2026-09-25 audit: the
+    # auto-stop suspends an arm at n=6 (``auto_stop_min_n``) and every later draw of it resolves
+    # to control, so it stays at n=6 < 8 for good -- and "every arm with n>0 must reach n>=8"
+    # then kept ``confident`` False forever ("short: +2.00 (n=6)") however many nights the
+    # other arms banked. Same for an arm the ladder no longer carries (re-centred 2026-09-20
+    # and again 2026-09-21; a retired arm keeps its few old nights and never gets another).
+    # Both stay in ``arms``/``comparisons`` for the record, flagged, but are not waited on.
+    stopped = _auto_stopped_from_rows(rows, cfg)
+    ladder = {_format_arm(o) for o in _clamped_ladder(cfg)} if cfg is not None else None
+    for a in arms_present:
+        arms_out[a]["auto_stopped"] = a in stopped
+        arms_out[a]["off_ladder"] = bool(ladder is not None and a not in ladder)
+    frozen = {a for a in arms_present if a != control_label
+              and (arms_out[a]["auto_stopped"] or arms_out[a]["off_ladder"])}
+    underpowered = [a for a in arms_present
+                    if arms_out[a]["n"] and arms_out[a]["n"] < min_n and a not in frozen]
     have_control = len(control_vals) >= min_n
     have_experimental = any(a != control_label and arms_out[a]["n"] >= min_n for a in arms_present)
     confident = bool(have_control and have_experimental and not underpowered)
 
-    verdict = _verdict(arms_out, comparisons, control_label, min_n, confident)
+    verdict = _verdict(arms_out, comparisons, control_label, min_n, confident, frozen)
 
     return {
         "control_arm": control_label,
         "min_nights_per_arm": min_n,
         "confident": confident,
+        "n_excluded_ineligible": n_excluded,
         "arms": arms_out,
         "comparisons": comparisons,
         "trend": trend,
@@ -626,9 +675,10 @@ def analyze_dose_response(rows: List[dict], cfg=None, min_nights_per_arm: Option
 
 
 def _verdict(arms_out: dict, comparisons: dict, control_label: str, min_n: int,
-            confident: bool) -> str:
+            confident: bool, frozen=frozenset()) -> str:
     if not confident:
-        short = [f"{a} (n={arms_out[a]['n']})" for a in arms_out if arms_out[a]["n"] < min_n]
+        short = [f"{a} (n={arms_out[a]['n']})" for a in arms_out
+                 if arms_out[a]["n"] < min_n and a not in frozen]
         missing_control = control_label not in arms_out or arms_out[control_label]["n"] < min_n
         detail = ", ".join(short) if short else ("control" if missing_control else "an arm")
         return (f"Not enough data yet for a dose-response verdict (need >= {min_n} nights/arm; "
