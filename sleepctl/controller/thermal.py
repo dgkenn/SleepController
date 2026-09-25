@@ -188,7 +188,21 @@ class ThermalController:
                 nudge = max(-cap, min(cap, float(settle_nudge_f)))
             if not bool(getattr(t, "settle_cooling_allowed", True)):
                 nudge = max(0.0, nudge)   # 2026-09-20: a settle may not cool this user
-            target = neutral + nudge
+            if not bool(getattr(t, "settle_cooling_allowed", True)) and nudge > 0:
+                # A WARM RESCUE IS MEASURED FROM THE PERSONAL NEUTRAL, NOT FROM A COOLED ONE.
+                # With cooling off, the settle is the answer to a cold awakening: warmth above
+                # the temperature this user sleeps at. Anchoring it on neutral + bias let a warm-
+                # forecast bias eat it -- at -1 F the +0.5 F rescue landed at 69.5 F, under the
+                # 70.0 F bed it was meant to warm, and the never-cool hold below turned it into a
+                # hold: the one tick the system knows the user woke, it did nothing. A negative
+                # (cooling) ambient bias is ignored here; a positive (cold-night) one still
+                # counts, as does the hot-sleeper prior, which only applies to an unmeasured
+                # neutral. Not anchored on the last command, which would ratchet +nudge per
+                # tick; a bed already warmer than this is held by resolve(), and the comfort
+                # clamp and session bounds still bound the result downstream.
+                target = p.neutral_f + hot_bias + max(0.0, self.ambient_bias_f) + nudge
+            else:
+                target = neutral + nudge
         elif intent is ThermalIntent.ONSET_WARM:
             # Small WARM nudge to induce onset (cutaneous warming speeds sleep onset). Bounded
             # by the comfort cap so a hot sleeper is never overheated; the controller cools

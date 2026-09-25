@@ -48,12 +48,21 @@ def test_the_gap_threshold_sits_between_the_two():
     assert 60.0 < ARCHITECTURE_GAP_RESET_MIN < 720.0
 
 
-def test_a_backwards_clock_resets_rather_than_accruing():
+def test_a_backwards_clock_skips_the_step_rather_than_accruing_or_resetting():
+    """A backward step is the DST fall-back on a naive local clock (2026-11-01 01:59:30 EDT ->
+    01:00 EST), not a different night. It used to reset -- zeroing 60 min of deep and 40 of REM
+    at 02:00 mid-night. Now it accrues nothing, keeps the totals, and re-anchors."""
     c = _c()
     t = datetime(2026, 9, 1, 5, 0)
     c._arch_last_ts = t
-    c._accrue_architecture(t - timedelta(hours=2), SleepStage.LIGHT)
-    assert c._arch_rem_min == 0.0
+    back = t - timedelta(hours=1)
+    c._accrue_architecture(back, SleepStage.LIGHT)
+    assert c._arch_rem_min == 97.9
+    assert c._arch_deep_min == 30.3
+    assert c._arch_light_min == 242.9          # nothing accrued for the negative step
+    assert c._arch_last_ts == back             # re-anchored, so the next tick accrues normally
+    c._accrue_architecture(back + timedelta(minutes=1), SleepStage.LIGHT)
+    assert 243.8 < c._arch_light_min < 244.0
 
 
 def test_normal_accrual_still_adds():

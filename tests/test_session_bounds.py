@@ -19,12 +19,14 @@ def _c():
     return c, cfg
 
 
-def test_the_maintenance_floor_holds_in_maintenance_and_recovery_only():
+def test_the_maintenance_floor_holds_in_the_sleep_states_but_not_induction():
     c, cfg = _c()
     assert cfg.tunables.maintenance_floor_f == 69.0
     t, lv = c._apply_session_bounds(ControllerState.MAINTENANCE, 67.0, c.thermal.to_level(67.0))
     assert t == 69.0 and lv == c.thermal.to_level(69.0)
     t, _ = c._apply_session_bounds(ControllerState.WAKE_RECOVERY, 66.0, 0)
+    assert t == 69.0
+    t, _ = c._apply_session_bounds(ControllerState.WAKE_WINDOW, 68.0, 0)
     assert t == 69.0
     t, _ = c._apply_session_bounds(ControllerState.INDUCTION, 67.0, 0)   # the onset dip survives
     assert t == 67.0
@@ -52,8 +54,20 @@ def test_a_cooler_override_lowers_the_ceiling():
 def test_the_bounds_are_cleared_when_the_session_resets():
     c, cfg = _c()
     c.note_user_override(68.3, warmer=True)
-    c._reset_architecture()
+    c._reset_bed_session("test: session ended")
     assert c.session_floor_f is None and c.user_overrides == []
+
+
+def test_an_architecture_reset_alone_keeps_tonights_bounds():
+    """_reset_architecture also fires mid-session (a long accrual gap); the floor a user set by
+    hand after waking cold must outlive it and end only with the session."""
+    c, cfg = _c()
+    c.note_user_override(68.3, warmer=True)
+    c.note_user_override(73.0, warmer=False)
+    c._reset_architecture()
+    assert c.session_floor_f == 69.3
+    assert c.session_ceiling_f == 72.0
+    assert len(c.user_overrides) == 2
 
 
 def test_deep_sleep_no_longer_cools_below_the_measured_neutral():

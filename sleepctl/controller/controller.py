@@ -135,6 +135,16 @@ class SleepController:
         #: Bed entry recovered from persisted data after a restart (see restore_bed_entry).
         #: Consumed the first time bed entry is established, then cleared.
         self._recovered_bed_entry: Optional[datetime] = None
+        #: True when `_bed_entry_time` came from a recovered/restored anchor rather than a live
+        #: IDLE tick -- the session-start re-stamp (see decide) must keep those.
+        self._bed_entry_recovered = False
+        #: The smart-wake window chosen for tonight (set_wake_window). None = the tunable. Every
+        #: consumer -- state machine, orchestrator, alarm spec, steering standoff -- reads it
+        #: through ``effective_wake_window_min`` so they cannot disagree about when it opens.
+        self.wake_window_min: Optional[int] = None
+        #: Wall-clock time of the previous decide() tick, to detect the clock running BACKWARDS
+        #: (DST fall-back on a naive local clock) -- see ``_absorb_clock_step``.
+        self._last_decide_at: Optional[datetime] = None
         self._sleep_onset_time: Optional[datetime] = None  # accurate fall-asleep time
         # The onset cascade (cold-settle -> warm pulse -> cool) runs on a clock that starts when
         # INDUCTION begins -- NOT bed-entry. Pressing "help me fall asleep" after lying awake a
@@ -258,6 +268,11 @@ class SleepController:
                 return None, None
 
             held_min = (now - self._cold_since).total_seconds() / 60.0
+            if held_min < 0:
+                # Backward clock step (see _absorb_clock_step): restart the dwell clock at now
+                # rather than let a negative dwell hold relief off for the length of the step.
+                self._cold_since = now
+                held_min = 0.0
             if held_min < limit:
                 return None, None
 
@@ -335,6 +350,16 @@ class SleepController:
                 ControllerState.IDLE, ControllerState.INDUCTION, ControllerState.CALIBRATION):
             return
         self._sleep_onset_time = onset_ts
+        # ...and the bed entry that onset belongs to. Leaving it unset let the first tick's
+        # bed-entry block stamp `now` and, as it does for a fresh entry, clear the onset it had
+        # just been handed: a restart at 02:00 resumed MAINTENANCE with no onset at all, so the
+        # hypnogram constraint demoted every DEEP/REM estimate as "before sleep onset" for the
+        # rest of the night. A recovered entry is used when it describes this session;
+        # otherwise the onset itself is the best lower bound on the bed-entry clock.
+        if self._bed_entry_time is None:
+            self._bed_entry_time = self._usable_recovered_bed_entry(onset_ts) or onset_ts
+            self._recovered_bed_entry = None
+            self._bed_entry_recovered = True
         self.onset_detector.mark_confirmed(onset_ts)
         self.last_onset_event = self.onset_detector._confirmed
         self.sm.state = ControllerState.MAINTENANCE
@@ -498,6 +523,12 @@ class SleepController:
             if last is None:
                 return False
             quiet_min = (now - last).total_seconds() / 60.0
+            if quiet_min < 0:
+                # An anchor in the future (a backward clock step the caller did not route
+                # through decide) re-anchors here: zero quiet time, never a negative clock
+                # that holds the settle for as long as the step was.
+                self._last_settle_at = now
+                quiet_min = 0.0
             if quiet_min < float(getattr(t, "settle_release_after_min", 20.0)):
                 return False
             neutral = self.thermal.profile.neutral_f + getattr(self.thermal, "ambient_bias_f", 0.0)
@@ -585,6 +616,8 @@ class SleepController:
         objective = self._objective(context)
         required_wake = context.required_wake_time if context else None
         current_f = frame.bed_temp_f if frame.bed_temp_f is not None else self._last_target_f
+        self._absorb_clock_step(now)
+        wake_window_min = self.effective_wake_window_min()
 
         # --- stale-data guard: never act on stale/low-confidence data -----------
         # THE WAKE DEADLINE OUTRANKS EVERY DATA-QUALITY HOLD.
@@ -606,7 +639,7 @@ class SleepController:
         # transition itself.
         wake_window_open = False
         if required_wake is not None:
-            lead_min = float(getattr(self.wake_orch.cfg, "window_min", 30) or 30)
+            lead_min = wake_window_min
             # Bounded at BOTH ends, for the same reason the state machine's own window is (see
             # SleepStateMachine.transition). Every safety rule below stands down while this flag
             # is set -- the stale-data guard, the data-quality hold, the abandoned-session
@@ -638,25 +671,32 @@ class SleepController:
             self._last_physio_at = self._recovered_physio_at or now
             self._recovered_physio_at = None
         abandon_min = float(getattr(cfg.tunables, "session_abandon_min", 60.0) or 0.0)
+        # AN ARMED ALARM KEEPS THE SESSION ALIVE. IDLE has no path to WAKE_WINDOW -- the state
+        # machine only enters the window from INDUCTION/MAINTENANCE/WAKE_RECOVERY -- so ending
+        # the session here throws the alarm away with it. That is 2026-08-06 over again by a
+        # different route: the wearable dropped at 00:01, the abandon rule ended the session at
+        # 01:00, and nothing fired for the 08:30 wake. The deadline is a clock and needs no
+        # sensor; the session is held until the window has had its chance to close. Bounded to
+        # a deadline within one plausible night, so a wake armed for tomorrow cannot pin a
+        # dead afternoon session open for a day (the 2026-08-26 failure this rule exists for).
+        deadline_pending = False
+        if required_wake is not None:
+            close_min = float(getattr(cfg.tunables, "wake_window_close_min", 60.0))
+            to_deadline_h = (required_wake - now).total_seconds() / 3600.0
+            deadline_pending = (to_deadline_h <= self.ABANDON_DEFER_MAX_H
+                                and now <= required_wake + timedelta(minutes=close_min))
         if (abandon_min > 0
                 and self.sm.state is not ControllerState.IDLE
                 and not wake_window_open
+                and not deadline_pending
                 and frame.presence is not True
                 and frame.heart_rate is None):
-            gap_min = (now - self._last_physio_at).total_seconds() / 60.0
+            gap_min = max(0.0, (now - self._last_physio_at).total_seconds() / 60.0)
             if gap_min >= abandon_min:
-                self.sm.state = ControllerState.IDLE
-                self.sm.reason = f"session abandoned: no physiology for {gap_min:.0f} min"
-                self._bed_entry_time = None
-                self._recovered_bed_entry = None     # the session it described is over
-                self._sleep_onset_time = None
-                self._reset_architecture()
-                self._cold_since = None
-                self._cold_relief_f = 0.0
-                try:
-                    self.onset_detector.reset()
-                except Exception:
-                    pass
+                # The FULL session reset, not a partial one: this used to set IDLE before
+                # `state_before` was captured below, so the IDLE-transition reset never ran and
+                # the wake orchestrator's "confirmed up" carried into the next night.
+                self._reset_bed_session(f"session abandoned: no physiology for {gap_min:.0f} min")
 
         # --- BED EXIT on wearable evidence -----------------------------------------------
         # The abandon rule above only fires when the physiology STOPS. It cannot see the other
@@ -959,10 +999,18 @@ class SleepController:
             # and losing it is what the comment above measures at REM 27% -> 0% with the whole
             # hypnogram collapsing onto LIGHT. A restart was silently degrading the staging for
             # the rest of the night.
-            self._bed_entry_time = self._usable_recovered_bed_entry(now) or now
+            recovered = self._usable_recovered_bed_entry(now)
+            self._bed_entry_time = recovered or now
+            self._bed_entry_recovered = recovered is not None
             self._recovered_bed_entry = None
-            self.onset_detector.reset()
-            self._sleep_onset_time = None
+            # A fresh bed entry restarts onset tracking -- but only for a session that has not
+            # reached onset yet. From MAINTENANCE onward the onset is a fact about this night
+            # (e.g. one restored after a restart, see restore_session_state) and wiping it
+            # would reclassify the rest of the night as "before sleep onset".
+            if self.sm.state in (ControllerState.IDLE, ControllerState.INDUCTION,
+                                 ControllerState.CALIBRATION):
+                self.onset_detector.reset()
+                self._sleep_onset_time = None
         onset_confirmed = None
         if self._sleep_onset_time is None and self.sm.state in (
             ControllerState.INDUCTION, ControllerState.IDLE, ControllerState.CALIBRATION,
@@ -978,7 +1026,33 @@ class SleepController:
         state_before = self.sm.state
         state = self.sm.transition(frame, now, wake_detected, required_wake,
                                    onset_confirmed=onset_confirmed,
-                                   wearable_bed_entry=self._wearable_bed_entry(frame, recent, cfg))
+                                   wearable_bed_entry=self._wearable_bed_entry(frame, recent, cfg),
+                                   wake_window_min=wake_window_min)
+
+        # --- the session STARTS here, so bed entry is stamped here -----------------------------
+        # The block above stamps bed entry on any IDLE tick that clears the data-quality gate,
+        # and with the band worn all day the first such tick is the first idle tick of the
+        # morning. The stamp then sat there until the evening's bed entry: the 2026-09-25 audit
+        # replay opened its session at 22:50 with a 09:00 anchor, and the stager's
+        # minutes-since-start read 832 on the first in-bed tick -- a clock fourteen hours fast on a model that uses it to
+        # place deep sleep and REM. So a stamp older than a few minutes is replaced on the
+        # IDLE/CALIBRATION -> session edge. An anchor recovered across a restart is kept: it
+        # was never an idle-tick stamp, and re-anchoring it is the failure restore_bed_entry
+        # exists to prevent.
+        if (state_before in (ControllerState.IDLE, ControllerState.CALIBRATION)
+                and state not in (ControllerState.IDLE, ControllerState.CALIBRATION)):
+            stamp = self._bed_entry_time
+            stale = (stamp is None
+                     or (not self._bed_entry_recovered
+                         and (now - stamp) > timedelta(minutes=self.BED_ENTRY_RESTAMP_MIN)))
+            if stale:
+                recovered = self._usable_recovered_bed_entry(now)
+                self._bed_entry_time = recovered or now
+                self._bed_entry_recovered = recovered is not None
+                self._recovered_bed_entry = None
+                if self._sleep_onset_time is None or self._sleep_onset_time < self._bed_entry_time:
+                    self.onset_detector.reset()
+                    self._sleep_onset_time = None
 
         minutes_in_bed = (
             (now - self._bed_entry_time).total_seconds() / 60.0
@@ -1019,15 +1093,7 @@ class SleepController:
             # clearing it unconditionally here would wipe the anchor a moment after it was set --
             # including one recovered across a restart.
             if state_before is not ControllerState.IDLE:
-                self._bed_entry_time = None
-                self._recovered_bed_entry = None     # the session it described is over
-                self._sleep_onset_time = None
-                self.onset_detector.reset()
-                self.wake_orch.reset()
-                self._reset_architecture()
-                self.hypnogram.reset()
-                self._preempt_ticks_maint = 0
-                self._maint_ticks = 0
+                self._reset_session_state()
             intent = ThermalIntent.NEUTRAL
             self._induction_entered_at = None  # left induction -> next entry restarts the cascade
         elif state is ControllerState.INDUCTION:
@@ -1080,11 +1146,12 @@ class SleepController:
             action = self.wake_orch.evaluate(
                 now, frame, recent, required_wake,
                 hr_base=sleep_hr_base, hrv_base=sleep_hrv_base, data_stale=stale,
-                debt_min=self.wake_debt_min)
+                debt_min=self.wake_debt_min, window_min=wake_window_min)
             self.last_wake_action = action
             intent, self.should_wake = action.thermal_intent, action.should_wake
             # Program the device's native vibration+heat smart alarm as the hardware backstop.
-            self.pending_wake_alarm = self.smart_wake.alarm_spec(now, required_wake)
+            self.pending_wake_alarm = self.smart_wake.alarm_spec(now, required_wake,
+                                                                 window_min=wake_window_min)
             if self.pending_wake_alarm is not None and action.vibration_power:
                 self.pending_wake_alarm.vibration_power = action.vibration_power
         else:
@@ -1132,7 +1199,7 @@ class SleepController:
         # FLOORS. The maintenance floor (config) and the floor/ceiling the user's own hand on
         # the phone implied tonight (note_user_override) both outrank every intent above: a
         # bed that woke this user cold may not be commanded there again.
-        target_f, level = self._apply_session_bounds(state, target_f, level)
+        target_f, level = self._apply_session_bounds(state, target_f, level, intent=intent)
 
         # --- correction action vs current bed temp -----------------------------
         action = self._action_for(current_f, target_f)
@@ -1300,18 +1367,111 @@ class SleepController:
         """IDLE, and forget everything that belonged to the bed session that just ended."""
         self.sm.state = ControllerState.IDLE
         self.sm.reason = reason
+        self._reset_session_state()
+
+    def _reset_session_state(self) -> None:
+        """Forget everything that belonged to the session that just ended -- ONE list for every
+        way a session ends (the state machine reaching IDLE, a bed exit, the abandon rule, the
+        user pressing End).
+
+        There used to be three lists. The bed-exit and abandon paths set IDLE themselves, before
+        decide() captured `state_before`, so the IDLE-transition reset never ran for them and
+        each carried its own partial copy. The one they both missed was the wake orchestrator.
+        In the 2026-09-25 audit replay the alarm was confirmed at 06:50, the band went on the
+        charger at 06:53 (bed exit -> IDLE), and the next night's alarm opened already
+        "confirmed up -- alarm stood down", reporting should_wake from the first tick of the
+        window without ever vibrating.
+        The ordinary IDLE transition, in turn, missed the bed-exit detector, whose lying-HR
+        baseline (52 bpm) then judged the next evening's settling-in (72 bpm) as an orthostatic
+        rise and ended that session before it began.
+        """
         self._bed_entry_time = None
+        self._bed_entry_recovered = False
         self._recovered_bed_entry = None     # the session it described is over
         self._sleep_onset_time = None
         self._cold_since = None
         self._cold_relief_f = 0.0
+        self._last_settle_at = None
+        self._settle_release = False
+        self._arousal_started = None
         self._reset_architecture()
+        self._reset_session_bounds()
+        self._preempt_ticks_maint = 0
+        self._maint_ticks = 0
+        # Stage hysteresis: last night's held stage must not gate tonight's first estimate.
+        self._stage_held = None
+        self._stage_pending = None
+        self._stage_pending_n = 0
+        self._stage_hold_suppressed = 0
+        for part in ("onset_detector", "wake_orch", "bed_exit_detector", "hypnogram"):
+            try:
+                getattr(self, part).reset()
+            except Exception:
+                pass
         try:
-            self.onset_detector.reset()
-            self.bed_exit_detector.reset()
-            self.hypnogram.reset()
-            self._preempt_ticks_maint = 0
-            self._maint_ticks = 0
+            self.sm._asleep_streak = 0
+            self.sm._stable_streak = 0
+            self.sm._recovery_started = None
+        except Exception:
+            pass
+
+    #: An idle-tick bed-entry stamp older than this is replaced when the session starts.
+    BED_ENTRY_RESTAMP_MIN = 10.0
+
+    #: The abandon rule defers to an armed alarm only when the deadline is within one plausible
+    #: night (the stager's own planned-night bound is 840 min).
+    ABANDON_DEFER_MAX_H = 14.0
+
+    #: A nap's wake window is at most this long. The night's 30-minute window is sized to find
+    #: a light-sleep moment in a 90-minute cycle; applied to a 20-minute power nap it opened
+    #: twelve minutes in -- before the sleeper had even reached onset -- and woke them there.
+    NAP_WAKE_WINDOW_MAX_MIN = 5.0
+
+    def effective_wake_window_min(self) -> float:
+        """Tonight's smart-wake window in minutes: the chosen one (set_wake_window) or the
+        tunable, capped at ``NAP_WAKE_WINDOW_MAX_MIN`` for a nap session."""
+        chosen = getattr(self, "wake_window_min", None)
+        if chosen is None:
+            chosen = getattr(self.cfg.tunables, "wake_window_min", 30) or 30
+        window = float(chosen)
+        if getattr(self, "session_mode", "night") in ("nap_power", "nap_cycle"):
+            window = min(window, self.NAP_WAKE_WINDOW_MAX_MIN)
+        return max(1.0, window)
+
+    def _absorb_clock_step(self, now: datetime) -> None:
+        """Keep elapsed-time clocks honest when the wall clock runs BACKWARDS.
+
+        The daemon ticks on naive local time, so the DST fall-back (2026-11-01 02:00 EDT ->
+        01:00 EST) replays an hour. Every "how long since X" in the controller then went
+        negative for that hour: in the audit replay of that night an awakening at 01:56 held
+        WAKE_RECOVERY for 80 real minutes
+        (its 20-minute clock could not elapse until 01:56 came round again), and the settle
+        release, the cold-dwell relief and the abandon rule all stalled with it. A backward
+        step shifts each running anchor by the same amount, so the durations they measure
+        carry straight across it. Timestamps that are REPORTED (bed entry, onset) are left as
+        recorded.
+        """
+        last = getattr(self, "_last_decide_at", None)
+        self._last_decide_at = now
+        if last is None:
+            return
+        try:
+            step = now - last
+        except Exception:
+            return
+        if step >= timedelta(0):
+            return
+        for name in ("_last_settle_at", "_cold_since", "_arousal_started", "_last_physio_at",
+                     "_induction_entered_at", "_stab_last_move_at"):
+            ts = getattr(self, name, None)
+            if ts is not None:
+                try:
+                    setattr(self, name, ts + step)
+                except Exception:
+                    pass
+        try:
+            if self.sm._recovery_started is not None:
+                self.sm._recovery_started = self.sm._recovery_started + step
         except Exception:
             pass
 
@@ -1494,7 +1654,7 @@ class SleepController:
             minutes_since_onset=mso, est_sleep_min=est,
             deep_min_so_far=self._arch_deep_min, rem_min_so_far=self._arch_rem_min,
             current_stage=frame.stage, targets=self.night_targets, risk_low=risk_low,
-            minutes_to_wake=mins_to_wake)
+            minutes_to_wake=mins_to_wake, wake_window_min=self.effective_wake_window_min())
         self.last_steer = steer
         deepen = steer.deepen
         # n-of-1 control: ACTUATE only on 'act' nights; on 'observe'/disabled nights the steerer
@@ -1651,16 +1811,30 @@ class SleepController:
             "floor_f": getattr(self, "session_floor_f", None),
             "ceiling_f": getattr(self, "session_ceiling_f", None)}]
 
-    def _apply_session_bounds(self, state, target_f: float, level: int):
-        """Clamp a resolved target to the maintenance floor and tonight's user-implied bounds."""
+    def _apply_session_bounds(self, state, target_f: float, level: int, intent=None):
+        """Clamp a resolved target to the maintenance floor and tonight's user-implied bounds.
+
+        WAKE_WINDOW gets the FLOORS too. It was exempt as a whole, on the reasoning that the
+        window owns a deliberately warm ramp -- but the window opens 30 minutes before the
+        deadline and spends its first stretch on NEUTRAL (the ramp starts at the dawn lead),
+        and NEUTRAL is neutral + ambient bias. On a warm-forecast night (bias -2 F against a
+        70 F neutral) that commanded 68 F to a sleeper in their last REM cycle, a degree under
+        the maintenance floor and at the temperature that woke this user cold on 2026-09-19.
+        The warm ramp is never below a floor, so flooring costs it nothing; the ceiling is not
+        applied there (it would blunt the ramp), and the opt-in post-wake WAKE_COLD_SNAP is
+        exempt because a cool stimulus after confirmed wake is its whole purpose."""
         try:
-            if state not in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY):
+            in_window = state is ControllerState.WAKE_WINDOW
+            if in_window:
+                if intent is ThermalIntent.WAKE_COLD_SNAP:
+                    return target_f, level
+            elif state not in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY):
                 return target_f, level
             lo = float(getattr(self.cfg.tunables, "maintenance_floor_f", 0.0) or 0.0)
             sf = getattr(self, "session_floor_f", None)
             if sf is not None:
                 lo = max(lo, float(sf))
-            hi = getattr(self, "session_ceiling_f", None)
+            hi = None if in_window else getattr(self, "session_ceiling_f", None)
             new = target_f
             if lo and new < lo:
                 new = lo
@@ -1673,10 +1847,16 @@ class SleepController:
         except Exception:
             return target_f, level
 
-    def _reset_architecture(self) -> None:
+    def _reset_session_bounds(self) -> None:
+        """Clear tonight's user-implied floor/ceiling. Only a session ending does this -- NOT an
+        architecture reset, which also fires on a long accrual gap mid-session and, before the
+        DST fix below, on the 2026-11-01 fall-back: the floor a user set by hand after waking
+        cold (note_user_override) vanished at 02:00 with the night still running."""
         self.session_floor_f = None
         self.session_ceiling_f = None
         self.user_overrides = []
+
+    def _reset_architecture(self) -> None:
         self._arch_deep_min = self._arch_rem_min = self._arch_light_min = 0.0
         self._arch_last_ts = None
         self._deepen_active = False
@@ -1697,7 +1877,14 @@ class SleepController:
         """
         if self._arch_last_ts is not None:
             gap = (now - self._arch_last_ts).total_seconds() / 60.0
-            if gap > ARCHITECTURE_GAP_RESET_MIN or gap < 0:
+            if gap < 0:
+                # The clock ran BACKWARDS -- the DST fall-back on the daemon's naive local
+                # clock (2026-11-01 01:59:30 EDT -> 01:00 EST). That is not a different night;
+                # treating it as one zeroed 60 min of deep and 40 of REM at 02:00 and left the
+                # steerer chasing a deficit that did not exist. Skip this step and re-anchor.
+                self._arch_last_ts = now
+                return
+            if gap > ARCHITECTURE_GAP_RESET_MIN:
                 self._reset_architecture()
         if self._arch_last_ts is not None and stage is not None:
             dt = (now - self._arch_last_ts).total_seconds() / 60.0
@@ -1746,8 +1933,17 @@ class SleepController:
         self.induction.set_warm_pulse_arm(on)
 
     def set_wake_window(self, minutes: int) -> None:
-        """The time selector sets the per-night smart-wake window ceiling (choose_wake_window)."""
-        self.wake_orch.cfg.window_min = max(1, int(minutes))
+        """The time selector sets the per-night smart-wake window ceiling (choose_wake_window).
+
+        Stored on the controller, not only on the orchestrator. It used to set just
+        ``wake_orch.cfg.window_min``, while the state machine (which decides when WAKE_WINDOW
+        starts), the native alarm spec and the steering standoff all read
+        ``tunables.wake_window_min``. A 45-minute pick therefore opened the window at T-30, and a
+        15-minute pick entered WAKE_WINDOW at T-30 with the orchestrator idling for fifteen
+        minutes while the stale-data guard -- which read the orchestrator's 15 -- held the
+        machine frozen in between. Every consumer now reads ``effective_wake_window_min``."""
+        self.wake_window_min = max(1, int(minutes))
+        self.wake_orch.cfg.window_min = self.wake_window_min
 
     def set_dawn_light(self, enabled: bool) -> None:
         """Tell the orchestrator a smart-bulb sunrise is wired up, so it actually computes a

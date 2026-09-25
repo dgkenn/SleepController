@@ -246,7 +246,11 @@ class WakeOrchestrator:
     # -------------------------------------------------------------- main
     def evaluate(self, now: datetime, frame: SensorFrame, recent: List[SensorFrame],
                  required_wake: Optional[datetime], *, hr_base=None, hrv_base=None,
-                 data_stale: bool = False, debt_min: float = 0.0) -> WakeAction:
+                 data_stale: bool = False, debt_min: float = 0.0,
+                 window_min: Optional[float] = None) -> WakeAction:
+        """``window_min`` overrides ``cfg.window_min`` for this tick -- the controller passes the
+        window the state machine is using (tonight's pick, capped for a nap) so the two agree
+        on when the window opened."""
         c = self.cfg
         if required_wake is None:
             self.reset()
@@ -258,7 +262,8 @@ class WakeOrchestrator:
         # Sleep-debt adaptation: in debt, protect total sleep — narrow the early window and demand
         # a stronger surfacing signal; well-rested, keep the full window for a zero-inertia wake.
         debt_factor = max(0.0, min(1.0, debt_min / 360.0))
-        eff_window = c.window_min * (1.0 - c.debt_window_shrink * debt_factor)
+        base_window = float(window_min) if window_min is not None else float(c.window_min)
+        eff_window = base_window * (1.0 - c.debt_window_shrink * debt_factor)
         p_liftable = min(0.95, c.p_wake_liftable + c.debt_threshold_raise * debt_factor)
         window_start = required_wake - timedelta(minutes=eff_window)
         # Dawn warm-up starts at the configured lead, but never later than the MEASURED warm-up

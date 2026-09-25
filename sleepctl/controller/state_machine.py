@@ -37,10 +37,17 @@ class SleepStateMachine:
         required_wake_time: Optional[datetime],
         onset_confirmed: Optional[bool] = None,
         wearable_bed_entry: bool = False,
+        wake_window_min: Optional[float] = None,
     ) -> ControllerState:
         prev = self.state
         s = self.state
-        wake_window = timedelta(minutes=self.cfg.tunables.wake_window_min)
+        # The caller's window when it has one. The controller passes the window chosen for
+        # tonight (set_wake_window) -- capped for a nap -- and this used to read the tunable
+        # regardless, so a 45-minute pick still opened at T-30 and a 20-minute power nap's
+        # 30-minute window opened twelve minutes in, before sleep onset.
+        if wake_window_min is None:
+            wake_window_min = self.cfg.tunables.wake_window_min
+        wake_window = timedelta(minutes=float(wake_window_min))
         # The window has to CLOSE. Without an upper bound `now >= required_wake - window` stays
         # true for the whole rest of the day, and WAKE_WINDOW below is written to "remain until
         # the user leaves the bed" -- where leaving the bed means `presence is False`, which on
@@ -113,6 +120,12 @@ class SleepStateMachine:
                     self._stable_streak += 1
                 else:
                     self._stable_streak = 0
+                # A recovery clock that reads NEGATIVE means the wall clock stepped backwards
+                # (DST fall-back on a naive local clock): re-anchor it rather than hold the
+                # state until the replayed hour catches up -- 80 real minutes of WAKE_RECOVERY
+                # for a 20-minute rule on the 2026-11-01 replay.
+                if self._recovery_started is not None and self._recovery_started > now:
+                    self._recovery_started = now
                 recovered = (
                     self._recovery_started is not None
                     and now - self._recovery_started

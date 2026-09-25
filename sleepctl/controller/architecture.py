@@ -117,11 +117,14 @@ class ArchitectureSteering:
             rem_back_q=_f(t.steer_rem_back_q, 1.6),
         )
 
-    def prewake_standoff_min(self) -> float:
+    def prewake_standoff_min(self, wake_window_min: Optional[float] = None) -> float:
         """How long before the wake deadline the steerer stops deepening and yields to the wake-up
-        trajectory: the smart-wake window plus a guard (~a cycle)."""
+        trajectory: the smart-wake window plus a guard (~a cycle). ``wake_window_min`` is
+        tonight's chosen window when the controller has one (set_wake_window); the tunable is
+        only the default -- a 45-minute pick must stand the steerer down 45 + guard out."""
         t = self.cfg.tunables
-        return _f(t.wake_window_min, 30.0) + _f(t.steer_prewake_guard_min, 45.0)
+        window = wake_window_min if wake_window_min is not None else t.wake_window_min
+        return _f(window, 30.0) + _f(t.steer_prewake_guard_min, 45.0)
 
     def evaluate(
         self,
@@ -134,6 +137,7 @@ class ArchitectureSteering:
         targets,
         risk_low: bool,
         minutes_to_wake: Optional[float] = None,
+        wake_window_min: Optional[float] = None,
     ) -> SteerDecision:
         """Decide whether to nudge deeper (the workhorse), warm for a late REM-unblock (optional,
         off by default), or hold. This is the in-night thermal arbiter, with a strict precedence
@@ -166,12 +170,13 @@ class ArchitectureSteering:
 
         # (2) Wake-up handoff: stand down as the deadline approaches so the wake-up trajectory can
         # surface you from LIGHT sleep — never deepen you into pre-wake inertia.
+        standoff = self.prewake_standoff_min(wake_window_min)
         near_wake = (minutes_to_wake is not None
-                     and minutes_to_wake <= self.prewake_standoff_min())
+                     and minutes_to_wake <= standoff)
         if near_wake:
             return SteerDecision(
                 "hold", deep_def, rem_def, frac, on_curve, risk_low,
-                f"within {self.prewake_standoff_min():.0f} min of wake -> stand down for the "
+                f"within {standoff:.0f} min of wake -> stand down for the "
                 f"wake-up ramp (avoid deep-sleep inertia)")
 
         # --- (3a) ACQUIRE: the deepen workhorse. Light-but-should-be-deep, early, real deficit. -
