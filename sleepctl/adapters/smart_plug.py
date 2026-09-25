@@ -116,14 +116,28 @@ class SmartPlugTherapyDriver:
         if ok:
             self._on = on
             self._on_since = self._clock() if on else None
+            # Whether WE energised the lamp (as opposed to "possibly on", the fail-safe belief
+            # after an OFF that did not land).
+            self._energised_by_us = bool(on)
         elif on:
             # Failed to turn ON: nothing is energised, so record OFF and let the caller retry.
             self._on = False
             self._on_since = None
         else:
             # Failed to turn OFF -- the dangerous direction. Leave the state as "possibly on" so
-            # the next tick tries again rather than concluding the job is done.
+            # the next tick tries again rather than concluding the job is done. But back off:
+            # every attempt blocks the control tick for the full network timeout, and a plug
+            # that is simply unreachable (never known to be on) was retried on every tick
+            # forever. A lamp WE switched on is retried within 30 s; an unknown one backs off
+            # to 10 minutes.
+            known_on = bool(getattr(self, "_energised_by_us", False))
+            prev = getattr(self, "_off_backoff_s", 0.0) or 0.0
+            self._off_backoff_s = 30.0 if known_on else min(600.0, max(30.0, prev * 2))
+            self._off_retry_at = self._clock() + self._off_backoff_s
             self._on = True
+        if ok:
+            self._off_backoff_s = 0.0
+            self._off_retry_at = None
         return ok
 
     # -- public ------------------------------------------------------------------------------
@@ -144,6 +158,9 @@ class SmartPlugTherapyDriver:
                 return                      # cap latched; cleared when the caller asks for OFF
             if not on:
                 self._capped = False
+                retry_at = getattr(self, "_off_retry_at", None)
+                if retry_at is not None and self._clock() < retry_at:
+                    return                  # a failed OFF is being backed off
             if on == self._on:
                 return
             self._command(on)

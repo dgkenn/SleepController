@@ -95,11 +95,28 @@ def test_the_cap_clears_once_the_caller_asks_for_off(monkeypatch):
 def test_a_failed_off_is_retried_because_off_is_the_safe_direction(monkeypatch):
     """Failing to turn a lamp OFF is the dangerous failure. The driver must keep believing it may
     still be energised so the next tick tries again, rather than concluding it is done."""
-    d, calls, _ = _driver(monkeypatch, fail_off=True)
+    d, calls, clock = _driver(monkeypatch, fail_off=True)
     d.set_therapy(True)
     d.set_therapy(False)
+    d.set_therapy(False)                 # the next tick: backing off, not blocking the loop
+    assert calls == [True, False]
+    clock.advance_min(0.6)               # a lamp we switched on is retried within 30 s
     d.set_therapy(False)
     assert calls == [True, False, False], "a failed OFF must be retried"
+
+
+def test_an_unreachable_plug_of_unknown_state_backs_off(monkeypatch):
+    """At startup the state is unknown; an unreachable plug used to be retried (a 4 s blocking
+    call) on every control tick forever."""
+    d, calls, clock = _driver(monkeypatch, fail_off=True)
+    for _ in range(10):
+        d.set_therapy(False)
+    assert calls == [False]
+    clock.advance_min(1)
+    d.set_therapy(False)                 # after the first 30 s backoff: retried
+    clock.advance_min(0.5)
+    d.set_therapy(False)                 # doubled to 60 s: not yet
+    assert calls == [False, False]
 
 
 def test_a_failed_on_does_not_start_the_on_timer(monkeypatch):

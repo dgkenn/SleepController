@@ -313,13 +313,18 @@ class IcsCalendarSource(CalendarSource):
     def refresh(self, force: bool = False) -> List[IcsEvent]:
         """Re-fetch + re-parse if the cache is stale (or ``force``); fails soft on error."""
         now = time.time()
-        if not force and self._cached_events and (now - self._fetched_at) < self.cache_seconds:
+        # An EMPTY feed is a valid answer, and a failed fetch is cached too (for a shorter
+        # spell): this runs on the daemon's control tick, and with either condition it used to
+        # re-fetch every tick -- an 8-second blocking request each time the feed was down.
+        wait = self.cache_seconds if self._last_error is None else min(self.cache_seconds, 300.0)
+        if not force and self._fetched_at and (now - self._fetched_at) < wait:
             return self._cached_events
         try:
             text = self._fetch_text()
             events = parse_ics(text)
         except Exception as exc:  # network error, bad URL, malformed feed — never raise upward
             self._last_error = str(exc)
+            self._fetched_at = now
             return self._cached_events
         self._cached_events = events
         self._fetched_at = now

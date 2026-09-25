@@ -782,3 +782,98 @@ def test_a_plug_set_up_from_the_phone_takes_effect_without_a_restart(monkeypatch
     assert d.plug_driver is not None
     repo.conn.execute("DELETE FROM settings_kv WHERE key IN ('wake_plug_config', 'wake_plug_scan')")
     repo.conn.commit()
+
+
+# ------------------------------------------------------------ 2026-09-25 audit regressions
+def test_im_awake_actually_ends_the_session_and_the_alarm():
+    """It only relabelled the session: the controller stayed in INDUCTION writing the Pod."""
+    from datetime import datetime, timedelta
+    from sleepctl.models import ControllerState
+    d, client, repo = _daemon()
+    d.wake = {"wake_time": "07:00"}
+    d.context.required_wake_time = datetime.now() + timedelta(hours=8)
+    d._start_induce()
+    assert d.cycle.controller.sm.state is not ControllerState.IDLE
+    d._end_session("user is awake", clear_alarm=True)
+    assert d.cycle.controller.sm.state is ControllerState.IDLE
+    assert d.context.required_wake_time is None and d.wake is None
+    assert d.session_mode == "night" and d.mode == "auto"
+
+
+def test_a_nap_hands_the_night_alarm_back():
+    from datetime import datetime, timedelta
+    d, client, repo = _daemon()
+    alarm = datetime.now() + timedelta(hours=10)
+    d.wake = {"wake_time": alarm.strftime("%H:%M")}
+    d.context.required_wake_time = alarm
+    d._start_nap(duration_min=20)
+    assert d.context.required_wake_time != alarm         # the nap's deadline, for now
+    d._end_session("nap deadline reached")
+    assert d.context.required_wake_time == alarm and d.wake
+
+
+def test_a_passed_alarm_is_cleared_in_memory_and_on_disk():
+    from datetime import datetime, timedelta
+    d, client, repo = _daemon()
+    past = datetime.now() - timedelta(hours=3)
+    d.wake = {"wake_time": past.strftime("%H:%M")}
+    d.context.required_wake_time = past
+    d._persist_wake()
+    d._expire_passed_wake(datetime.now())      # the simulator's clock is synthetic
+    assert d.wake is None and d.context.required_wake_time is None
+    row = repo.conn.execute("SELECT value FROM settings_kv WHERE key=?",
+                            (d._WAKE_KV_KEY,)).fetchone()
+    assert not row or not row[0]
+
+
+def test_emergency_stop_survives_a_restart():
+    d, client, repo = _daemon()
+    d.power_on, d.paused = False, True
+    d._persist_power_state()
+    d2, _, _ = _daemon()
+    d2._restore_power_state()
+    assert d2.power_on is False and d2.paused is True
+    d2.power_on, d2.paused = True, False
+    d2._persist_power_state()                  # leave the shared DB as the other tests expect
+
+
+def test_light_off_by_hand_holds_against_the_wake_orchestrator():
+    d, client, repo = _daemon()
+
+    class _Plug:
+        def __init__(self):
+            self.calls = []
+
+        def set_therapy(self, on):
+            self.calls.append(bool(on))
+
+    class _Dec:
+        log_payload = {"wake_action": {"should_wake": True, "light_level": 1.0}}
+
+    d.plug_driver = _Plug()
+    d._drive_dawn(_Dec())
+    assert d.plug_driver.calls[-1] is True
+    repo.conn.execute("INSERT INTO commands (ts, type, payload, status) "
+                      "VALUES (datetime('now'), 'light_off', '{}', 'pending')")
+    repo.conn.commit()
+    _run(d._apply_commands())
+    d._drive_dawn(_Dec())
+    assert d.plug_driver.calls[-1] is False
+
+
+def test_away_is_left_alone_outside_a_session():
+    d, client, repo = _daemon()
+    calls = []
+
+    async def is_away():
+        return True
+
+    async def set_away_mode(v):
+        calls.append(("away", v))
+
+    client.is_away = is_away
+    client.set_away_mode = set_away_mode
+    d.dry_run = False
+    assert not d._session_running()
+    _run(d._heal_away())
+    assert calls == []

@@ -121,6 +121,7 @@ class LiveDashboardDaemon:
         self.wake = None
         self.session_mode = "night"
         self.nap_plan = None          # NapPlan.to_dict() (dashboard-facing) when a nap is active
+        self._night_wake_before_nap = None  # the night's alarm while a nap borrows the deadline
         self.nap_deadline = None      # CURRENT operative deadline fed to required_wake_time
         # Time-anchoring bookkeeping for the active nap (see sleepctl.controller.nap): the actual
         # NapPlan object (kept internally so it can be re-planned once onset is known), when the
@@ -156,6 +157,7 @@ class LiveDashboardDaemon:
         self.hue_driver = None     # Philips Hue dawn-light driver (best-effort)
         self.plug_driver = None    # non-Hue Wi-Fi wake-therapy plug driver (best-effort)
         self._light_dose_until = None  # a bright-light dose in progress ("I'm awake" / manual)
+        self._light_off_until = None   # "Light off" by hand holds against the wake orchestrator
         self._light_dose_why = None
         # True once the Pod has refused an alarm WRITE with 402/403 (subscription-gated).
         # Latched so we stop retrying a refusal no client can talk its way past, and so
@@ -222,6 +224,13 @@ class LiveDashboardDaemon:
         # that last attached them) sets tonight's comfort anchor.
         self._attach_profiles(self.cycle.controller)
         self.cycle.controller.set_session("induce", keep_light=False)
+        self._last_session_kind = "night"
+        # _attach_profiles just re-set the setpoints, which overwrote any trial arm applied at
+        # set_wake -- the arm stayed on record while the bed ran the control dose. Re-apply
+        # (assignment is idempotent per night) so the dose on record is the dose delivered, and
+        # nights started without an alarm get an arm at all.
+        self._apply_efficacy_micro_trial()
+        self._apply_thermal_dose_trial()
         self._ensure_night_targets("induce")
         self._persist_session()
 
@@ -290,8 +299,12 @@ class LiveDashboardDaemon:
         self.nap_hard_deadline = hard_deadline
         self._nap_replanned = False
         self._induce_note = None
+        # The nap's deadline stands in for the night's alarm only while the nap runs.
+        if getattr(self, "_night_wake_before_nap", None) is None and self.wake:
+            self._night_wake_before_nap = self.context.required_wake_time
         self.context.required_wake_time = deadline
         self.cycle.controller.set_session(ctrl_mode, keep_light=plan.keep_light)
+        self._last_session_kind = "nap"
         self._persist_session()
 
     def _maybe_replan_nap(self) -> None:
@@ -358,16 +371,42 @@ class LiveDashboardDaemon:
         except Exception as exc:
             self._skip("onset event log", exc)
 
-    def _end_session(self) -> None:
+    def _end_session(self, reason: str = "session ended by user",
+                     clear_alarm: bool = False) -> None:
+        """End the current session: the controller goes IDLE (not just relabelled) and stays
+        there until the next explicit start.
+
+        The NIGHT's alarm survives unless the user says they are up (``clear_alarm``, from
+        "I'm awake"): ending a nap restores the alarm the nap temporarily replaced, and ending
+        an induce session early (getting up for a while) leaves the morning alarm armed. It
+        used to be wiped on every path, so a nap silently cancelled the next morning's wake."""
+        was_nap = self.session_mode == "nap"
         self.session_mode = "night"
         self.nap_plan, self.nap_deadline = None, None
         self._nap_plan_obj, self.nap_start = None, None
         self.nap_hard_deadline, self._nap_replanned = None, False
         self._induce_note = None
         self._onset_logged_ts = None
-        self.context.required_wake_time = None
-        self.cycle.controller.set_session("night", keep_light=False)
+        # A manual temperature or a phone override belonged to the session that just ended.
+        self.mode = "auto"
+        self._user_override = None
+        if clear_alarm:
+            self.wake = None
+            self.context.required_wake_time = None
+        elif was_nap:
+            night = getattr(self, "_night_wake_before_nap", None)
+            self.context.required_wake_time = (
+                night if night is not None and night > datetime.now() else None)
+            if self.context.required_wake_time is None:
+                self.wake = None
+        self._night_wake_before_nap = None
+        try:
+            self.cycle.controller.end_bed_session(reason)
+        except Exception as exc:
+            self._skip("controller session end", exc)
+            self.cycle.controller.set_session("night", keep_light=False)
         self._persist_session_clear()
+        self._persist_wake()
 
     # ------------------------------------------------------------------ helpers
     def _log(self, msg: str) -> None:
@@ -685,8 +724,10 @@ class LiveDashboardDaemon:
             base = self.cycle.controller.thermal.profile
             context = {"night_type": self.context.night_type, "session_mode": self.session_mode,
                        "started_hour": self._session_started_hour()}
+            # Keyed by NIGHT (noon cutoff), the date its outcome is recorded under at
+            # close-out. The calendar date filed a post-midnight start under the next day.
             prof, info = apply_trial_arm(
-                self.repo, self.cfg, datetime.now().date().isoformat(), context, base)
+                self.repo, self.cfg, self.cycle.night_date(datetime.now()), context, base)
             # The dose trial shifts neutral on purpose; every other caller keeps the measured one.
             self.cycle.controller.set_setpoints(prof, keep_measured_neutral=False)
             self.thermal_trial_arm = info
@@ -709,7 +750,7 @@ class LiveDashboardDaemon:
                        "started_hour": self._session_started_hour()}
             prof, info = apply_trial_arm(
                 self.repo, self.cfg, self.cycle.controller,
-                datetime.now().date().isoformat(), context, base)
+                self.cycle.night_date(datetime.now()), context, base)
             self.cycle.controller.set_setpoints(prof)
             self.efficacy_trial_arm = info
             self._log(f"efficacy micro-trial: tonight is {info['arm']} "
@@ -1132,19 +1173,23 @@ class LiveDashboardDaemon:
                 elif t == "start_nap":
                     self._start_nap(p.get("duration_min"), p.get("wake_time"))
                 elif t == "end_session":
-                    self._end_session()
+                    self._end_session("session ended by user")
                 elif t == "woke_up":
                     # "I'm awake": end the session AND give the morning light dose. Separate
                     # from end_session so ending a nap or abandoning a session never lights
-                    # the room.
+                    # the room. The user is up, so tonight's alarm is done with.
                     was_nap = self.session_mode == "nap"
-                    self._end_session()
+                    self._end_session("user is awake", clear_alarm=not was_nap)
                     if not was_nap:
                         self._start_light_dose("woke_up")
                 elif t == "light_on":
+                    self._light_off_until = None
                     self._start_light_dose("manual", minutes=p.get("minutes"), manual=True)
                 elif t == "light_off":
                     self._stop_light_dose("manual")
+                    # Latch past the orchestrator's post-wake window (window close + margin).
+                    close_min = float(getattr(self.cfg.tunables, "wake_window_close_min", 60.0))
+                    self._light_off_until = datetime.now() + timedelta(minutes=close_min + 30)
                 elif t == "self_test":
                     await self._run_self_test(p.get("mode", "full"))
                 elif t == "self_test_cancel":
@@ -1168,7 +1213,48 @@ class LiveDashboardDaemon:
                         "set_temp", "stop", "self_test"):
                     self._emit_event("device", "info", t, f"device command applied: {t}", p)
             bridge.mark_applied(self.repo.conn, cmd["id"])
+        if changed:
+            self._persist_power_state()
         return changed
+
+    _POWER_KV_KEY = "daemon_power_state"
+
+    def _persist_power_state(self) -> None:
+        """Emergency Stop, Power Off, Pause, Away and manual mode survive a restart. They lived
+        only in memory, so a restart after an Emergency Stop came back powered on, resumed the
+        restored session and turned the side back on."""
+        try:
+            payload = {"power_on": bool(self.power_on), "paused": bool(self.paused),
+                       "away": bool(self.away), "mode": self.mode,
+                       "manual_target_f": self.manual_target_f,
+                       "ts": datetime.now().isoformat()}
+            self.repo.conn.execute(
+                "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (self._POWER_KV_KEY, json.dumps(payload)))
+            self.repo.conn.commit()
+        except Exception as exc:
+            self._skip("power-state persistence", exc)
+
+    def _restore_power_state(self) -> None:
+        try:
+            row = self.repo.conn.execute(
+                "SELECT value FROM settings_kv WHERE key=?", (self._POWER_KV_KEY,)).fetchone()
+            if not row or not row[0]:
+                return
+            d = json.loads(row[0])
+            self.power_on = bool(d.get("power_on", True))
+            self.paused = bool(d.get("paused", False))
+            self.away = bool(d.get("away", False))
+            if d.get("mode") in ("auto", "manual"):
+                self.mode = d["mode"]
+            if d.get("manual_target_f") is not None:
+                self.manual_target_f = float(d["manual_target_f"])
+            if not self.power_on or self.paused or self.away:
+                self._log(f"restored power state after restart: power_on={self.power_on} "
+                          f"paused={self.paused} away={self.away}")
+        except Exception as exc:
+            self._skip("power-state restore", exc)
 
     async def _run_self_test(self, mode: str) -> None:
         """Run the on-bed self-test / thermal-calibration battery. Pauses normal control (the
@@ -1424,7 +1510,9 @@ class LiveDashboardDaemon:
         # never runs once self.wake is set, and never touches self.context.required_wake_time
         # in that case. Night shifts intentionally get no morning alarm here (calendar_effective_
         # wake returns None) — the banking/anchor-sleep plan above already covers those.
-        if self.wake is None:
+        # ...and never during a nap: the nap's deadline IS the wake, and replacing it every
+        # tick with tomorrow's calendar alarm left the nap with no wake ramp at all.
+        if self.wake is None and self.session_mode != "nap" and self.nap_deadline is None:
             try:
                 from app import services as _svc
                 auto_wake = _svc.calendar_effective_wake(self.repo)
@@ -1717,7 +1805,7 @@ class LiveDashboardDaemon:
         except Exception:
             return None
 
-    def _persist_session(self) -> None:
+    def _persist_session(self, started: "str | None" = None) -> None:
         """Persist the ACTIVE session (induce / nap) across a daemon restart.
 
         The wake time was already persisted; the session was not -- so any restart dropped the
@@ -1739,7 +1827,7 @@ class LiveDashboardDaemon:
             if self.session_mode in ("induce", "nap"):
                 payload = {
                     "session_mode": self.session_mode,
-                    "started": datetime.now().isoformat(),
+                    "started": started or datetime.now().isoformat(),
                     "nap_plan": self.nap_plan,
                     "nap_deadline": (self.nap_deadline.isoformat()
                                      if self.nap_deadline else None),
@@ -1773,6 +1861,10 @@ class LiveDashboardDaemon:
                     self._log(f"persisted {mode} session is {age_h:.1f}h old; not restoring")
                     self._persist_session_clear()
                     return
+            if mode == "nap" and (not self.power_on or self.paused):
+                self._log("persisted nap not restored: the bed was powered off / paused")
+                self._persist_session_clear()
+                return
             if mode == "nap":
                 # A nap is anchored to a deadline; without one there is nothing to restore to.
                 dl = data.get("nap_deadline")
@@ -1792,8 +1884,15 @@ class LiveDashboardDaemon:
                 keep_light = bool((self.nap_plan or {}).get("keep_light"))
                 ctrl_mode = "nap_power" if keep_light else "nap_cycle"
                 self.cycle.controller.set_session(ctrl_mode, keep_light=keep_light)
+            elif not self.power_on or self.paused:
+                self._log("persisted induce session not restored: the bed was powered off / paused")
+                self._persist_session_clear()
+                return
             else:
                 self._start_induce()
+                # Keep the ORIGINAL start: re-stamping it on every restore meant a session
+                # that restarts often enough could never age out.
+                self._persist_session(started=started)
             self._log(f"restored {mode} session after daemon restart")
         except Exception as exc:
             self._skip("session restore", exc)
@@ -2052,6 +2151,21 @@ class LiveDashboardDaemon:
 
         threading.Thread(target=_run, name="wake-plug-scan", daemon=True).start()
 
+    #: A manual level is re-sent at most this often when it has not changed (the timed Pod
+    #: override lasts pod_write_duration_s; this renews it well inside that).
+    MANUAL_KEEPALIVE_S = 1800.0
+
+    async def _set_manual_level(self) -> None:
+        """Manual mode writes on a CHANGE (or a keepalive), not every tick: each write is three
+        cloud requests plus a commit, and every control and command tick used to make one."""
+        level = self.cycle.controller.thermal.to_level(self.manual_target_f)
+        mono = time.monotonic()
+        last = getattr(self, "_manual_written", None)
+        if last and last[0] == level and mono - last[1] < self.MANUAL_KEEPALIVE_S:
+            return
+        await self._set_level(level)
+        self._manual_written = (level, mono)
+
     def _start_light_dose(self, why: str, minutes=None, manual: bool = False,
                           now: "datetime | None" = None) -> bool:
         """Turn the therapy lamp on for a morning dose. Returns whether it was started.
@@ -2096,6 +2210,29 @@ class LiveDashboardDaemon:
     #: The alarm dose starts if the daemon sees the alarm time within this long of it passing
     #: (a tick that lands a minute late still fires; a restart an hour later does not).
     ALARM_LIGHT_GRACE_MIN = 15.0
+
+    def _expire_passed_wake(self, now: "datetime | None" = None) -> None:
+        """Clear a night alarm once its wake window has closed.
+
+        It used to stay set forever: the next night had no alarm while the app still showed
+        one, the calendar auto-wake (which only runs with no wake set) was blocked for good,
+        and the persisted copy disagreed with memory. Never a nap's deadline -- the nap ends
+        itself at its deadline."""
+        w = getattr(self.context, "required_wake_time", None)
+        if w is None or self.session_mode == "nap" or self.nap_deadline is not None:
+            return
+        now = now or self._clock_now()
+        close_min = float(getattr(self.cfg.tunables, "wake_window_close_min", 60.0))
+        try:
+            passed = now > w + timedelta(minutes=close_min)
+        except TypeError:
+            return
+        if not passed:
+            return
+        self._log(f"wake time {w:%H:%M} has passed; clearing it")
+        self.wake = None
+        self.context.required_wake_time = None
+        self._persist_wake()
 
     def _maybe_alarm_light(self, now: "datetime | None" = None) -> bool:
         """Turn the lamp on at the alarm time set in the app. Returns whether it fired.
@@ -2163,6 +2300,14 @@ class LiveDashboardDaemon:
         # can never disagree about whether it is time to get up. A dose started by "I'm awake"
         # (or by hand) holds the lamp on alongside it.
         should = bool(la.get("should_wake")) if la else False
+        # "Light off" by hand wins over the orchestrator for the rest of this wake: it keeps
+        # should_wake true through its ~20-minute post-wake dose, so the next control tick
+        # switched the lamp straight back on.
+        if should and getattr(self, "_light_off_until", None) is not None:
+            if datetime.now() < self._light_off_until:
+                should = False
+            else:
+                self._light_off_until = None
         dose = bool(getattr(self, "_light_dose_active", lambda: False)())
         try:
             if self.hue_driver:
@@ -2259,6 +2404,10 @@ class LiveDashboardDaemon:
         No-op in dry-run and for clients without away introspection (e.g. simulator)."""
         if self.dry_run or self.away:
             return  # user-commanded away is honored; dry-run never writes
+        # Outside a session the bed is the user's (idle_pod_writes=False): Away set in the
+        # Eight Sleep app while travelling is theirs to keep.
+        if not self._session_running():
+            return
         if not hasattr(self.client, "is_away"):
             return
         mono = asyncio.get_event_loop().time()
@@ -2307,7 +2456,7 @@ class LiveDashboardDaemon:
             self._maybe_replan_nap()
             self._maybe_log_onset()
             if self.mode == "manual" and self.manual_target_f is not None:
-                await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
+                await self._set_manual_level()
             elif self.mode == "auto":
                 if getattr(self, "_last_commanded_level", None) is None:
                     await self._guard_pod(frame, now)     # first look: adopt a manual level first
@@ -2374,6 +2523,7 @@ class LiveDashboardDaemon:
             self._prev_state = decision.state
         self._last_decision = decision
         self._maybe_alarm_light()         # the lamp at the alarm time set in the app
+        self._expire_passed_wake()        # an alarm that has passed is over, in memory and on disk
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
         snapshot = self._snapshot(decision, frame)
         bridge.write_runtime_state(self.repo.conn, snapshot)
@@ -2386,7 +2536,7 @@ class LiveDashboardDaemon:
         # losing it to an end-of-session reset that would wipe required_wake_time out from under
         # this same tick (which would previously drop the deadline-crossing wake action).
         if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
-            self._end_session()
+            self._end_session("nap deadline reached")
 
     async def command_tick(self) -> bool:
         """Fast path for realtime control: apply queued overrides and snapshot now.
@@ -2411,7 +2561,7 @@ class LiveDashboardDaemon:
             self._maybe_replan_nap()
             self._maybe_log_onset()
             if self.mode == "manual" and self.manual_target_f is not None:
-                await self._set_level(self.cycle.controller.thermal.to_level(self.manual_target_f))
+                await self._set_manual_level()
         self._last_decision = decision
         snapshot = self._snapshot(decision, frame)
         bridge.write_runtime_state(self.repo.conn, snapshot)
@@ -2435,12 +2585,45 @@ class LiveDashboardDaemon:
         self._record_state_history(snapshot)
         self.blackbox.record(self._blackbox_entry(self._last_decision, frame))
 
+    def _session_went_idle(self) -> None:
+        """The controller left the session on its own (bed exit, band off the arm, abandon, or
+        after the user ended it). An "induce" label left behind was persisted and resurrected
+        the session on the next restart, onto an empty bed."""
+        if self.session_mode == "induce":
+            self.session_mode = "night"
+            self._persist_session_clear()
+        elif self.session_mode == "nap":
+            # A nap that ended without reaching its deadline (bed exit): close it properly but
+            # without the user-ended bed-entry hold -- the controller is already IDLE.
+            self.session_mode = "night"
+            self.nap_plan, self.nap_deadline = None, None
+            self._nap_plan_obj, self.nap_start = None, None
+            self.nap_hard_deadline, self._nap_replanned = None, False
+            night = getattr(self, "_night_wake_before_nap", None)
+            self.context.required_wake_time = (
+                night if night is not None and night > datetime.now() else None)
+            self._night_wake_before_nap = None
+            self.cycle.controller.set_session("night", keep_light=False)
+            self._persist_session_clear()
+            self._persist_wake()
+
     async def _maybe_close_out(self, decision, now) -> None:
         if decision.state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY,
                               ControllerState.WAKE_WINDOW):
             self._saw_sleep = True
         left_bed = (decision.state is ControllerState.IDLE
                     and self._prev_state is not ControllerState.IDLE)
+        ended_kind = None
+        if left_bed:
+            self._session_went_idle()
+            ended_kind = getattr(self, "_last_session_kind", None)
+            self._last_session_kind = None      # the next session declares its own kind
+        if left_bed and self._saw_sleep and ended_kind == "nap":
+            # A nap is not the night. Its close-out used to save a nightly summary under
+            # tonight's date, move setpoints and baselines, and record trial outcomes.
+            self._log("nap ended: skipping the nightly close-out (a nap is not the night)")
+            self._saw_sleep = False
+            return
         if left_bed and self._saw_sleep:
             night_date = self.cycle.night_date(now)
             self.context.date = night_date
@@ -2585,6 +2768,8 @@ class LiveDashboardDaemon:
         # the watchdog restarts this process on its own, and losing the alarm silently is the
         # worst possible failure for the one thing the night is planned around.
         self._restore_wake()
+        # Power first: a restored session must not undo an Emergency Stop / Power Off.
+        self._restore_power_state()
         # ...and the SESSION itself. Without this a restart dropped a live night to IDLE, which
         # this Pod can never leave on its own (presence has never once read True), so the rest of
         # the night ran uncontrolled and the morning wake -- which only fires from inside a
