@@ -13,7 +13,9 @@ or published. Only the trained weight files (`*.json` under `weights/`) go into 
 ## 0. The automatic route (nothing to run)
 
 Once access is live, the box does all of this by itself: `scripts/dreamt_pipeline.py`, launched
-by the watchdog once a day (09:00-18:00, below-normal priority) until a model is installed.
+by the watchdog at most once a day, at any hour, at below-normal priority (never two at once)
+until a model is installed. To stop a run, end the `python ... dreamt_pipeline.py` process in
+Task Manager; the next run skips every participant already reduced.
 
 - It authenticates with the physionet.org entry already in your `.netrc` (it never reads out,
   prints or asks for the password) and stops with a status if there is none or if the file

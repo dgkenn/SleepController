@@ -680,13 +680,18 @@ function Ensure-WakePlugDeps {
 function Ensure-DreamtModel {
     # Hands-off DREAMT staging model (scripts\dreamt_pipeline.py): check PhysioNet access with the
     # user's own .netrc, stream + reduce + train, install only if it beats the bundled model.
-    # Once a day, daytime only (training is CPU-heavy and must not compete with a night's
-    # control loop), at below-normal priority, until a model is installed. The pipeline never
-    # prints or handles credentials, keeps the data OUTSIDE the repo, and reports progress to
-    # .run\dreamt.status.json, which the health snapshot publishes as counts and scores only.
+    # Started at most once a day, at ANY hour (the user asked for no time window and stops it by
+    # hand if it runs into the night), at below-normal priority so the control loop always wins
+    # the CPU, until a model is installed. Never a second copy while one is still running. The
+    # pipeline never prints or handles credentials, keeps the data OUTSIDE the repo, and reports
+    # progress to .run\dreamt.status.json, which the health snapshot publishes as counts and
+    # scores only.
     if (Test-Path (Join-Path $run "staging_weights\stage4_hrv.json")) { return }
-    $hour = (Get-Date).Hour
-    if ($hour -lt 9 -or $hour -ge 18) { return }
+    try {
+        $running = Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -like "*dreamt_pipeline.py*" }
+        if ($running) { return }
+    } catch { }
     $last = Join-Path $run "dreamt.lastrun"
     if ((Test-Path $last) -and (((Get-Date) - (Get-Item $last).LastWriteTime).TotalHours -lt 24)) { return }
     $script = Join-Path $Root "scripts\dreamt_pipeline.py"
