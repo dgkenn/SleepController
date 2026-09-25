@@ -944,7 +944,14 @@ function Ensure-LanAccess {
             $rules += ("{0}={1}/{2}/{3}" -f $name.Replace("SleepController 3000", "3000"), $prof, $en, $act)
             if ($en -eq "True" -and $act -eq "Allow") {
                 foreach ($c in $cats) {
-                    if ($prof -match "Any" -or $prof -match $c) { $covered = $true }
+                    # A firewall rule's Profile says "Domain" ("Domain, Private"), while a
+                    # connection profile's NetworkCategory says "DomainAuthenticated" -- so
+                    # "Domain, Private" -match "DomainAuthenticated" was false and a box on a
+                    # domain network always reported covered=false, even with the rule this
+                    # function itself creates for Private+Domain (audit 2026-09-25). Match on the
+                    # firewall's name for the category.
+                    $fwProf = if ($c -eq "DomainAuthenticated") { "Domain" } else { $c }
+                    if ($prof -match "Any" -or $prof -match $fwProf) { $covered = $true }
                 }
             }
         }

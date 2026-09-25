@@ -166,7 +166,16 @@ ERROR_NAMES = {
 # bit 7 clear would have been silently run through the delta decoder instead of being rejected
 # as an unsupported (not implemented here) raw layout. See
 # test_acc_frame_type_0x02_without_compression_bit_is_not_delta.
+#
+# BUG FIXED (audit 2026-09-25): the uncompressed layouts were BOTH decoded as int16, so a type-0
+# frame -- 8-bit samples, 3 bytes each (Table 7) -- came out as garbage: six (1, -2, 63) samples
+# decoded as three (-511, 319, 16382) "milliG" triples, or were rejected when the byte count was
+# not a multiple of 6. Each raw layout now has its own sample width, and any other layout id is
+# rejected rather than guessed at.
 FRAME_TYPE_UNCOMPRESSED = (0x00, 0x01)
+#: Bytes per axis for each uncompressed ACC layout: 0 = int8 (Table 7), 1 = int16 (Table 8).
+#: (2 = 24-bit, Table 9, is deliberately not implemented: nothing here asks for it.)
+ACC_UNCOMPRESSED_AXIS_BYTES = {0x00: 1, 0x01: 2}
 FRAME_TYPE_COMPRESSED_BIT = 0x80
 MEAS_TYPE_MASK = 0x3F  # measurement-type id lives in the low six bits of data byte 0
 
@@ -453,7 +462,8 @@ def _clamp_i16(value: int) -> int:
 def parse_acc_frame(data: bytes | bytearray) -> tuple[int, int, list[tuple[int, int, int]]]:
     """Parse an ACC data frame -> ``(timestamp_ns, frame_type, [(x, y, z), ...])`` in **milliG**.
 
-    Handles both the uncompressed layout (6 bytes/sample: int16 LE x, y, z) and the
+    Handles the uncompressed layouts -- frame type 0: 3 bytes/sample, int8 x, y, z (Polar
+    Table 7); frame type 1: 6 bytes/sample, int16 LE x, y, z (Table 8) -- and the
     delta-compressed layout (an int16 reference sample followed by blocks of
     ``[delta_bit_width][sample_count]`` + bit-packed signed deltas, 3 axes per sample,
     LSB-first and continuous across byte boundaries; each block restarts on a byte boundary --
@@ -494,14 +504,18 @@ def parse_acc_frame(data: bytes | bytearray) -> tuple[int, int, list[tuple[int, 
     if frame_type & FRAME_TYPE_COMPRESSED_BIT:
         return timestamp_ns, frame_type, _parse_delta_payload(payload, channels=3)
 
-    if frame_type in FRAME_TYPE_UNCOMPRESSED:
-        if len(payload) % 6:
+    width = ACC_UNCOMPRESSED_AXIS_BYTES.get(frame_type)
+    if width is not None:
+        step = 3 * width
+        if len(payload) % step:
             raise PmdParseError(
-                f"uncompressed ACC payload not a multiple of 6 bytes ({len(payload)})")
+                f"uncompressed ACC type {frame_type} payload not a multiple of {step} bytes "
+                f"({len(payload)})")
         samples = []
-        for off in range(0, len(payload), 6):
+        for off in range(0, len(payload), step):
             samples.append(tuple(
-                int.from_bytes(payload[off + 2 * a:off + 2 * a + 2], "little", signed=True)
+                int.from_bytes(payload[off + width * a:off + width * a + width], "little",
+                               signed=True)
                 for a in range(3)
             ))
         return timestamp_ns, frame_type, samples

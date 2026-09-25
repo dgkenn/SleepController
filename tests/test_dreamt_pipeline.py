@@ -133,3 +133,28 @@ def test_rows_carry_the_hrv_block_and_a_tiny_model_trains_and_infers(reduced, tm
     assert est2 is not None and est2.variant == "hrvonly"
     est3 = st.predict(hr, act, ibi_samples=ibi[:50])       # a stale trickle of beats: HR path
     assert est3 is not None and est3.variant == "hr"
+
+
+def test_a_still_wrist_still_gets_an_activity_line(tmp_path):
+    """Regression (audit 2026-09-25): the 32 Hz repeats were dropped by VALUE, so a motionless
+    wrist -- the same quantised 1/64 g reading for minutes -- collapsed to one sample per epoch
+    and got no activity line at all. The stillest epochs (deep sleep) vanished instead of
+    reading pim=0."""
+    p = tmp_path / "S009_whole_df.csv"
+    random.seed(0)
+    with open(p, "w", newline="") as fh:
+        fh.write("TIMESTAMP,ACC_X,ACC_Y,ACC_Z,HR,IBI,Sleep_Stage\n")
+        acc = (10, -20, 60)
+        for i in range(FS * 90):                       # 90 s at 64 Hz
+            t = i / FS
+            if t >= 60 and i % 2 == 0:                  # epoch 2 moves (32 Hz, repeated)
+                acc = (10 + random.randint(-3, 3), -20, 60)
+            fh.write(f"{t:.6f},{acc[0]},{acc[1]},{acc[2]},60,,N3\n")
+    out = tmp_path / "out"
+    dreamt_reduce.reduce_file(str(p), str(out), verbose=False)
+    rows = [l.strip().split(",") for l in open(out / "activity" / "S009_activity.txt")
+            if l.strip() and not l.startswith("#")]
+    assert [r[0] for r in rows] == ["0", "30", "60"]    # every epoch, still ones included
+    for r in rows[:2]:
+        assert float(r[1]) == 0.0 and int(r[6]) == 960  # pim 0 over the full 32 Hz epoch
+    assert float(rows[2][1]) > 0.0 and int(rows[2][6]) == 960

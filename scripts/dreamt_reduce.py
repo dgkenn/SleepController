@@ -45,6 +45,9 @@ STAGE_CODES = {"W": 0, "P": 0, "N1": 1, "N2": 2, "N3": 3, "R": 5, "REM": 5, "MIS
 #: DREAMT documents IBI in ms; some exports carry seconds. Below this median the unit is s.
 IBI_SECONDS_IF_MEDIAN_BELOW = 5.0
 ACC_UNITS_PER_G = 64.0
+#: DREAMT rows are 64 Hz; the E4 accelerometer is 32 Hz, each sample repeated on two rows.
+ROW_HZ = 64.0
+ACC_SOURCE_HZ = 32.0
 
 
 def _find_col(fieldnames, *cands) -> Optional[str]:
@@ -101,7 +104,7 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
     acc_epoch: Dict[int, List[Tuple[float, float, float]]] = {}
     act_lines: List[str] = []
     last_hr_sec: Optional[int] = None
-    last_acc: Optional[Tuple[float, float, float]] = None
+    last_acc_slot: Optional[int] = None
     cur_epoch: Optional[int] = None
     with open(path, "r", newline="") as fh:
         rd = csv.DictReader(fh)
@@ -154,14 +157,23 @@ def reduce_file(path: str, out_dir: str, verbose: bool = True) -> Dict[str, obje
                 ibi = _f(row.get(c_ibi))
                 if ibi is not None and ibi > 0:
                     ibi_rows.append((t, ibi))
-            # ACC: 32 Hz values repeated at 64 Hz -> drop consecutive duplicates
+            # ACC: 32 Hz values repeated at 64 Hz -> keep ONE row per 32 Hz sample slot.
+            #
+            # BUG FIXED (audit 2026-09-25): this used to drop a row whenever its value equalled
+            # the previous one. A still wrist reads the SAME quantised value (1/64 g) for
+            # minutes, so a motionless epoch collapsed to a single sample, fell under
+            # MIN_EPOCH_SAMPLES and got no activity line at all -- the stillest epochs of every
+            # night, i.e. deep sleep, vanished from the training counts instead of reading
+            # pim=0. The slot comes from the source TIMESTAMP (the 64 Hz row index, halved), so
+            # the dedupe no longer depends on what the value is.
             if c_x is not None and c_y is not None and c_z is not None:
                 x, y, z = _f(row.get(c_x)), _f(row.get(c_y)), _f(row.get(c_z))
                 if x is not None and y is not None and z is not None:
-                    trip = (x / ACC_UNITS_PER_G, y / ACC_UNITS_PER_G, z / ACC_UNITS_PER_G)
-                    if trip != last_acc:
+                    slot = int(round(t * ROW_HZ)) // int(ROW_HZ / ACC_SOURCE_HZ)
+                    if slot != last_acc_slot:
+                        trip = (x / ACC_UNITS_PER_G, y / ACC_UNITS_PER_G, z / ACC_UNITS_PER_G)
                         acc_epoch.setdefault(k, []).append(trip)
-                        last_acc = trip
+                        last_acc_slot = slot
         for old in sorted(acc_epoch):
             _flush_epoch(old)
 

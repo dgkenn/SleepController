@@ -153,6 +153,12 @@ def _redact(url: str) -> str:
     return re.sub(r"(token=)[^&\s]+", r"<redacted>", url or "")
 
 
+def _carries_data(payload: dict) -> bool:
+    """True when a POST body carries physiology (hr, rr or accelerometer counts), as opposed to
+    a status-only body (battery_pct, link state)."""
+    return bool(payload.get("hr") is not None or payload.get("rr") or payload.get("acc"))
+
+
 def _post(url: str, payload: dict, timeout: float = 5.0):
     """POST a batch and RETURN the parsed response.
 
@@ -173,10 +179,18 @@ def _post(url: str, payload: dict, timeout: float = 5.0):
     # session actually produce physiology" signal the recovery ladder escalates on. An attempt
     # that threw must not look productive, and neither must one the API answered with
     # {"ok": false} -- sixteen hours of rejected HR=0 batches looked like a healthy session.
+    #
+    # ...and only a batch that CARRIES physiology counts as productive (``data_posts``). The
+    # battery reading and the link-state posts go through here too, and both are accepted by the
+    # API -- so counting every accepted POST made each connect look productive on its own: the
+    # battery post at connect time reset the barren ladder every session and logged a false
+    # "recovered after N barren session(s)" for a band that then streamed nothing (audit
+    # 2026-09-25). ``posts`` stays as the raw count of accepted POSTs for the logs.
     rejected = isinstance(parsed, dict) and parsed.get("ok") is False
     if not rejected:
         _STATS["posts"] += 1
-        if payload.get("hr") is not None or payload.get("rr") or payload.get("acc"):
+        if _carries_data(payload):
+            _STATS["data_posts"] = int(_STATS.get("data_posts", 0) or 0) + 1
             _STATS["last_data_at"] = time.monotonic()
         _reset_repeat_log()
     else:
@@ -287,6 +301,57 @@ _MAX_SESSION_BACKOFF_S = 300.0
 #: the backoff. The PMD path is the one actually used in production.
 _RELEASE = {"run": 0, "until": 0.0}
 
+#: The release deadline, persisted as a WALL-CLOCK epoch time (monotonic time means nothing to
+#: the next process). ``_RELEASE["until"]`` used to live in process memory only, and the process
+#: does not survive the night it is protecting: a band on its charger answers every connect with
+#: "device in charger" (code 13), each backoff minute used to count as a barren session, the
+#: ladder asked for a Bluetooth adapter reset, and the watchdog's bthserv restart killed and
+#: relaunched this forwarder -- which then had forgotten the backoff and reconnected straight
+#: away to the band it had just released (audit 2026-09-25). Read on start; ignored once past.
+_RELEASE_UNTIL_FILE = "verity-release-until"
+
+#: What ``_run_once`` returns when no session was attempted because the release backoff is
+#: still running, and when the session ended because the band is charging / not worn. Neither
+#: is a barren session: nothing is wrong with the link, the band was LET GO on purpose, and
+#: counting it escalated a band on its charger all the way to an adapter reset.
+_OUTCOME_BACKOFF = "backoff"
+_OUTCOME_RELEASED = "released"
+
+
+def _release(why: str) -> None:
+    """Let go of the band for ``_NOT_WORN_BACKOFF_S``, in memory AND on disk."""
+    _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
+    _RELEASE["off_arm"] = why
+    try:
+        run_dir = _repo_root() / ".run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / _RELEASE_UNTIL_FILE).write_text(
+            f"{time.time() + _NOT_WORN_BACKOFF_S:.3f}", encoding="ascii")
+    except Exception:
+        pass
+
+
+def _load_release(root: Path) -> float:
+    """Resume a release backoff a previous process started. Returns the seconds still to wait
+    (0.0 when there is none, it has already passed, or the file is unreadable)."""
+    try:
+        until_wall = float((root / ".run" / _RELEASE_UNTIL_FILE).read_text(encoding="ascii").strip())
+    except Exception:
+        return 0.0
+    remaining = until_wall - time.time()
+    if not math.isfinite(remaining) or remaining <= 0.0:
+        return 0.0
+    # Never longer than one backoff: a clock step (or a hand-edited file) must not park the
+    # forwarder for hours.
+    remaining = min(remaining, _NOT_WORN_BACKOFF_S)
+    _RELEASE["until"] = max(float(_RELEASE.get("until") or 0.0), time.monotonic() + remaining)
+    return remaining
+
+
+def _releasing() -> bool:
+    """True while the band has been let go and must be left alone."""
+    return float(_RELEASE.get("until") or 0.0) > time.monotonic()
+
 #: --- redundancy layer 3: escalating RECOVERY across repeated barren sessions ----------------
 #: ``fails`` in the reconnect loop only ever counted EXCEPTIONS, and a session that connects,
 #: yields nothing and disconnects cleanly is not an exception -- it resets the counter. So the
@@ -295,7 +360,9 @@ _RELEASE = {"run": 0, "until": 0.0}
 #: DATA instead, and escalate through qualitatively different recoveries rather than just waiting
 #: longer: try the other transport, then stop trusting the cached address, then ask for the
 #: Bluetooth stack itself to be reset.
-_STATS = {"posts": 0, "last_seen_at": 0.0, "acc_rung": 0, "last_data_at": 0.0}
+#: ``data_posts`` counts only accepted POSTs that carried hr/rr/acc -- the productivity signal;
+#: ``posts`` counts every accepted POST, status-only ones (battery, link) included.
+_STATS = {"posts": 0, "data_posts": 0, "last_seen_at": 0.0, "acc_rung": 0, "last_data_at": 0.0}
 
 # --- accelerometer rate ladder -------------------------------------------------------------
 # Every PMD session since 2026-08-31 on the Windows box started PPI and ACC successfully and
@@ -482,9 +549,10 @@ _STALL_TIMEOUT_S = 120.0
 #:
 #: Deliberately beats even while deliberately idle -- during the not-worn release backoff the
 #: forwarder is doing exactly the right thing by holding off, and killing it then would restart a
-#: fresh process that rescans immediately and reconnects to a band that is trying to charge
-#: (the backoff lives in process memory and does not survive a restart). Liveness and data flow
-#: are different questions: data freshness is already measured at the ingest side.
+#: fresh process that rescans immediately and reconnects to a band that is trying to charge.
+#: (The backoff is also persisted to .run\verity-release-until -- see _RELEASE_UNTIL_FILE --
+#: because a bthserv restart kills this process regardless.) Liveness and data flow are
+#: different questions: data freshness is already measured at the ingest side.
 def _beat(root: Path) -> None:
     try:
         run_dir = root / ".run"
@@ -555,6 +623,18 @@ def _grant_pmd_retry(stall: "dict | None") -> "float | None":
     return _FORCED_HR_RETRY_PMD_S
 
 
+def _refund_pmd_retry() -> None:
+    """Give back a retry granted for a session that never OPENED a connection.
+
+    The budget is for "HR-only sessions that ran and then dropped the link to try PMD again".
+    Granting it before the scan charged it for every "device not found" as well: in HR-led mode
+    two scans that never saw the band spent both retries, and the session that finally
+    connected was left HR-only all night (audit 2026-09-25)."""
+    used = int(_STATS.get("pmd_retries", 0) or 0)
+    if used > 0:
+        _STATS["pmd_retries"] = used - 1
+
+
 def _request_adapter_reset(root: Path, barren: int) -> None:
     """Ask the watchdog to restart the Bluetooth stack (flag file, same protocol as
     update.request / restart.request).
@@ -588,8 +668,7 @@ def _note_worn_state(resp) -> bool:
         return False
     _log(f"not worn for {_RELEASE['run']} consecutive batches -- releasing the band so it can "
          f"idle/charge; reconnecting in {_NOT_WORN_BACKOFF_S / 60:.0f} min")
-    _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
-    _RELEASE["off_arm"] = "off_arm"
+    _release("off_arm")
     _RELEASE["run"] = 0
     return True
 
@@ -827,7 +906,9 @@ async def _hr_session(client, args) -> None:
         t0 = time.monotonic()
         link_epoch = 0
         max_s = getattr(args, "hr_session_max_s", None)
-        posts0 = int(_STATS.get("posts", 0) or 0)
+        # DATA posts, not all posts: the connect-time battery/link posts are accepted too, and
+        # counting them let a session that never streamed a beat look "productive" here.
+        posts0 = int(_STATS.get("data_posts", 0) or 0)
         role_next_check = _ROLE_CHECK_S
         while client.is_connected:
             await asyncio.sleep(args.batch_seconds)
@@ -840,7 +921,8 @@ async def _hr_session(client, args) -> None:
             # A fallback HR-only session is dropped on purpose after a while so the next one can
             # lead with PMD again (see _FORCED_HR_RETRY_PMD_S). Only once the session has been
             # productive: an unproductive one ends by the stall guard below anyway.
-            if max_s is not None and elapsed >= float(max_s) and _STATS["posts"] > posts0:
+            if (max_s is not None and elapsed >= float(max_s)
+                    and int(_STATS.get("data_posts", 0) or 0) > posts0):
                 _log(f"HR-only session was a fallback after barren attempts; dropping the link "
                      f"after {elapsed / 60:.0f} min to try the accelerometer/PPI again")
                 return
@@ -955,8 +1037,7 @@ async def _pmd_command(client, responses: "asyncio.Queue", cmd: bytes, what: str
         # data -- and it is exactly the state we must not hold a connection through, because
         # doing so is what kept the Verity awake on its charger until the battery died mid-night.
         if resp.get("error_code") == pmd.ERROR_DEVICE_IN_CHARGER:
-            _RELEASE["until"] = time.monotonic() + _NOT_WORN_BACKOFF_S
-            _RELEASE["off_arm"] = "charging"
+            _release("charging")
             _log(f"device reports it is IN THE CHARGER -- releasing it for "
                  f"{_NOT_WORN_BACKOFF_S / 60:.0f} min so it can actually charge")
         return None
@@ -1018,8 +1099,11 @@ async def _pmd_session(client, args) -> bool:
     last_hr: dict = {"v": None, "t": 0.0}
     ok_ppi: "deque[tuple]" = deque(maxlen=64)   # (monotonic, ms) accepted beat intervals
     fresh = _Freshness()
-    stats = {"blocked": 0, "bad_frames": 0}
+    stats = {"blocked": 0, "bad_frames": 0, "no_contact": 0}
     frames = {"acc": 0, "ppi": 0}
+    # Skin contact over this batch's PPI samples (only those whose flags say the sensor CAN
+    # report contact), forwarded as a 0..1 fraction so the server can see "off the arm" directly.
+    skin = {"n": 0, "on": 0}
     acc_cap = max(int(args.acc_rate * 300), 1000)  # ~5 min of samples; bounds memory if POSTs fail
     # SEPARATE rolling window for accelerometer-derived respiration. The per-batch `acc_mags`
     # above is cleared every --batch-seconds (~2 s = ~104 samples), which is nowhere near enough
@@ -1075,6 +1159,22 @@ async def _pmd_session(client, args) -> bool:
                 frames["ppi"] += 1
                 _now_m = time.monotonic()
                 for s in samples:
+                    # A sample the band itself flags as unreliable -- the blocker bit, or a
+                    # sensor that can detect skin contact reporting NONE -- is not a heartbeat.
+                    # Its 8-bit HR used to be taken as-is and to refresh the stall guard, so a
+                    # band lying on its charger kept a session "fresh" and posting a heart rate
+                    # built from optical noise (audit 2026-09-25: hr=121/118 posted from samples
+                    # with blocker=1, skin_contact=0). Such samples are now counted, not used.
+                    if s.get("skin_contact_supported"):
+                        skin["n"] += 1
+                        skin["on"] += 1 if s.get("skin_contact") else 0
+                    no_contact = bool(s.get("blocker")) or (
+                        bool(s.get("skin_contact_supported")) and not s.get("skin_contact"))
+                    if no_contact:
+                        stats["blocked"] += 1
+                        if not s.get("blocker"):
+                            stats["no_contact"] += 1
+                        continue
                     if s["hr"]:
                         last_hr["v"] = s["hr"]
                         last_hr["t"] = _now_m
@@ -1254,9 +1354,18 @@ async def _pmd_session(client, args) -> bool:
             # In-session accelerometer probe: an ACC stream that started and then sent nothing
             # is stepped down HERE, on the live link, rather than after a two-minute stall and
             # a reconnect. 52 Hz -> 26 Hz -> off, one rung per probe; the rung persists.
+            #
+            # ...but only when the accelerometer is SPECIFICALLY what failed: PPI delivered
+            # while ACC delivered nothing. With both at zero the LINK is dead (or PPI is still
+            # in its ~25 s warm-up), and stepping the rate down for that persisted "off" for a
+            # radio drop -- the same mistake _next_acc_rung already refuses to make after a
+            # stall (2026-09-20 22:36). Then the rung is left alone and the probe re-armed; the
+            # live-link restart and the stall guard below own a dead link.
             if acc_probe_at is not None and time.monotonic() >= acc_probe_at:
                 acc_probe_at = None
-                if frames["acc"] == 0:
+                if frames["acc"] == 0 and frames["ppi"] == 0:
+                    acc_probe_at = time.monotonic() + _ACC_PROBE_S
+                elif frames["acc"] == 0:
                     try:
                         await _pmd_command(client, responses, pmd.build_stop_command(pmd.MEAS_ACC),
                                            "stop silent ACC", args.control_timeout)
@@ -1417,6 +1526,11 @@ async def _pmd_session(client, args) -> bool:
                     except Exception:
                         pass    # telemetry extra must never break the forwarder
                 payload["acc"] = counts
+            # Skin contact rides along with a batch that carries data (never on its own: a
+            # contact-only body is status, and the API rejects it as "no usable hr/rr").
+            if skin["n"] and len(payload) > 1:
+                payload["skin_contact"] = round(skin["on"] / skin["n"], 3)
+            skin["n"] = skin["on"] = 0
             if len(payload) > 1:  # more than the source tag -> something worth sending
                 try:
                     resp = _post(args.url, payload)
@@ -1468,19 +1582,28 @@ async def _pmd_session(client, args) -> bool:
             pass
         _log("PMD: frames this session " + " ".join(f"{k}={v}" for k, v in frames.items()))
         if stats["blocked"] or stats["bad_frames"]:
-            _log(f"PMD: {stats['blocked']} blocked/implausible PPI, "
+            _log(f"PMD: {stats['blocked']} blocked/implausible PPI "
+                 f"({stats['no_contact']} without skin contact), "
                  f"{stats['bad_frames']} malformed frames this session")
 
 
-async def _run_once(args, env) -> None:
-    from bleak import BleakClient, BleakScanner  # lazy: only needed at runtime
-
+async def _run_once(args, env) -> "str | None":
+    """One scan/connect/stream cycle. Returns ``_OUTCOME_BACKOFF`` when it only waited out a
+    release backoff, ``_OUTCOME_RELEASED`` when the session ended by letting go of the band
+    (charging / not worn), else None -- so the reconnect loop can tell "the band was let go on
+    purpose" from "the session was barren". Only the latter is a transport problem."""
     # Honour a release backoff BEFORE scanning. Reconnecting immediately would put the band
     # straight back into streaming and undo the whole point of letting go.
     remaining = _RELEASE["until"] - time.monotonic()
     if remaining > 0:
         await asyncio.sleep(min(remaining, 60.0))
-        return
+        return _OUTCOME_BACKOFF
+    await _connect_and_stream(args, env)
+    return _OUTCOME_RELEASED if _releasing() else None
+
+
+async def _connect_and_stream(args, env) -> None:
+    from bleak import BleakClient, BleakScanner  # lazy: only needed at runtime
 
     _STATS["via_last_resort"] = False
     _STATS["session_opened"] = False
@@ -1611,15 +1734,28 @@ async def _main_async(args, env) -> None:
     # it drive the alternation is how 2026-09-18 ran HR-only all night (see _FORCED_HR_RETRY_PMD_S).
     opened_barren = 0
     _STATS["pmd_retries"] = 0
+    # A release backoff started by a previous process (killed by a bthserv restart, a deploy,
+    # a crash) is still owed to the band -- see _RELEASE_UNTIL_FILE.
+    resumed = _load_release(_repo_root())
+    if resumed > 0.0:
+        _log(f"resuming the release backoff from before the restart -- leaving the band alone "
+             f"for another {resumed / 60:.0f} min")
     while True:
+        granted = False
         try:
             _beat(_repo_root())
             _STATS["session_opened"] = False
+            # While the band is released (charging / not worn) there is nothing to recover: no
+            # transport choice, no retry budget and no adapter reset applies to a wait.
+            backing_off = _releasing()
             # Escalate through qualitatively different recoveries, not just a longer wait.
             args.mode = _effective_mode(preferred_mode, opened_barren)
             args.hr_session_max_s = None
-            if args.mode == "hr" and preferred_mode != "hr":
+            if args.mode == "hr" and preferred_mode != "hr" and not backing_off:
+                # Granted here so the log can say what this session will do, but refunded
+                # below unless a connection actually opens -- see _refund_pmd_retry.
                 args.hr_session_max_s = _grant_pmd_retry(None)
+                granted = args.hr_session_max_s is not None
                 _log(f"leading with the generic HR service this session ({opened_barren} "
                      f"connected-but-silent session(s) in a row)"
                      + (f"; will retry PMD after {_FORCED_HR_RETRY_PMD_S / 60:.0f} min of streaming"
@@ -1640,11 +1776,20 @@ async def _main_async(args, env) -> None:
             # is simply not there.
             _last_data = float(_STATS.get("last_data_at") or 0.0)
             recent_data = _last_data > 0.0 and (time.monotonic() - _last_data) < _RECENT_DATA_S
-            if barren >= (_ADAPTER_RESET_AFTER_RECENT if recent_data else _ADAPTER_RESET_AFTER):
+            # NEVER while the band is released. A band on its charger refuses every session
+            # with "device in charger"; counted as barren, that asked for an adapter reset every
+            # minute from streak 5, and the watchdog's bthserv restart killed this process and
+            # the in-memory backoff with it (audit 2026-09-25).
+            if (not backing_off
+                    and barren >= (_ADAPTER_RESET_AFTER_RECENT if recent_data
+                                   else _ADAPTER_RESET_AFTER)):
                 _request_adapter_reset(_repo_root(), barren)
 
-            before = _STATS["posts"]
-            await _run_once(args, env)
+            before = int(_STATS.get("data_posts", 0) or 0)
+            outcome = await _run_once(args, env)
+            if granted and not _STATS.get("session_opened"):
+                _refund_pmd_retry()
+                granted = False
             stall = _STATS.pop("pmd_stall", None)
             streamed = float(_STATS.pop("pmd_streamed_s", 0.0) or 0.0)
             # A rate refused mid-session is out of the ladder from here on, so rebuild it
@@ -1662,11 +1807,15 @@ async def _main_async(args, env) -> None:
                 _save_acc_rate(_repo_root(), ladder[nxt])
             if streamed > 0.0:
                 _STATS["pmd_retries"] = 0  # PMD produced frames: the retry budget is fresh
-            if _STATS["posts"] > before:
+            if int(_STATS.get("data_posts", 0) or 0) > before:
                 if barren:
                     _log(f"recovered after {barren} barren session(s)")
                 barren = 0
                 opened_barren = 0
+            elif outcome in (_OUTCOME_BACKOFF, _OUTCOME_RELEASED):
+                # The band was let go on purpose (or we are still waiting it out): not a
+                # barren session, and not evidence against the transport or the adapter.
+                pass
             else:
                 barren += 1
                 if _STATS.get("session_opened"):
@@ -1675,10 +1824,13 @@ async def _main_async(args, env) -> None:
                      f"next transport: {_effective_mode(preferred_mode, opened_barren)})")
             fails = 0
         except Exception as exc:
+            if granted and not _STATS.get("session_opened"):
+                _refund_pmd_retry()
             fails += 1
-            barren += 1
-            if _STATS.get("session_opened"):
-                opened_barren += 1
+            if not _releasing():     # a session that errored while letting go is not barren
+                barren += 1
+                if _STATS.get("session_opened"):
+                    opened_barren += 1
             delay = min(args.retry_seconds * (2 ** min(fails - 1, 5)), _MAX_SESSION_BACKOFF_S)
             # If we saw the band this cycle, it is present and something transient is in the way.
             # Same if it was streaming to us minutes ago: a mid-night drop is retried promptly.

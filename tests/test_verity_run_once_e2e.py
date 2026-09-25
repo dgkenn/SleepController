@@ -130,6 +130,8 @@ def harness(monkeypatch, tmp_path):
     def fake_post(url, payload, timeout=5.0):
         posts.append(payload)
         vf._STATS["posts"] += 1          # what the real _post does on an accepted batch
+        if vf._carries_data(payload):    # ...and only a batch with hr/rr/acc is productive
+            vf._STATS["data_posts"] += 1
         return {"ok": True}
 
     monkeypatch.setattr(vf, "_post", fake_post)
@@ -139,7 +141,7 @@ def harness(monkeypatch, tmp_path):
     monkeypatch.setattr(vf, "_FORCED_HR_RETRY_PMD_S", 0.1)
     monkeypatch.setattr(vf, "_ROLE_CHECK_S", 0.05)
     monkeypatch.setattr(vf, "_PMD_MISSING_BEFORE_STEPUP_S", 0.05)
-    for k, v in (("posts", 0), ("acc_rung", 0), ("pmd_retries", 0), ("last_data_at", 0.0),
+    for k, v in (("posts", 0), ("data_posts", 0), ("acc_rung", 0), ("pmd_retries", 0), ("last_data_at", 0.0),
                  ("session_opened", False), ("acc_unsupported", set())):
         monkeypatch.setitem(vf._STATS, k, v)
     monkeypatch.setitem(vf._RELEASE, "until", 0.0)

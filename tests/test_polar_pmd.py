@@ -23,9 +23,16 @@ def _frame(meas_type: int, timestamp_ns: int, frame_type: int, payload: bytes) -
 
 
 def _acc_uncompressed(samples, timestamp_ns=1234567890123456789) -> bytes:
+    """Uncompressed 16-bit ACC: frame type 0x01 (Polar Table 8). Type 0x00 is the 8-bit layout."""
     payload = b"".join(
         b"".join(int(v).to_bytes(2, "little", signed=True) for v in s) for s in samples
     )
+    return _frame(pmd.MEAS_ACC, timestamp_ns, 0x01, payload)
+
+
+def _acc_uncompressed_8bit(samples, timestamp_ns=77) -> bytes:
+    """Uncompressed 8-bit ACC: frame type 0x00 (Polar Table 7), 3 bytes per sample."""
+    payload = b"".join(bytes(int(v) & 0xFF for v in s) for s in samples)
     return _frame(pmd.MEAS_ACC, timestamp_ns, 0x00, payload)
 
 
@@ -241,8 +248,27 @@ def test_acc_uncompressed_round_trip():
     samples = [(100, -200, 1000), (0, 0, -1), (-32768, 32767, 5)]
     ts, frame_type, decoded = pmd.parse_acc_frame(_acc_uncompressed(samples, timestamp_ns=99))
     assert ts == 99
-    assert frame_type == 0x00
+    assert frame_type == 0x01
     assert decoded == samples
+
+
+def test_acc_frame_type_0_is_8bit_three_bytes_per_sample():
+    """Regression (audit 2026-09-25): frame type 0x00 is the 8-bit layout (Polar Table 7). It was
+    decoded as int16, so six (1, -2, 63) samples came out as three (-511, 319, 16382)."""
+    samples = [(1, -2, 63)] * 6 + [(-128, 127, 0)]
+    ts, frame_type, decoded = pmd.parse_acc_frame(_acc_uncompressed_8bit(samples))
+    assert (ts, frame_type) == (77, 0x00)
+    assert decoded == samples
+    # an 18-byte payload is six 8-bit samples, never three 16-bit ones
+    assert len(pmd.parse_acc_frame(_acc_uncompressed_8bit([(0, 0, 0)] * 6))[2]) == 6
+    # 16-bit layout (type 0x01) must be a multiple of 6 bytes; 8-bit a multiple of 3
+    with pytest.raises(pmd.PmdParseError):
+        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x01, b"\x01\x02\x03"))
+    with pytest.raises(pmd.PmdParseError):
+        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x00, b"\x01\x02\x03\x04"))
+    # an unknown raw layout is rejected, not guessed at
+    with pytest.raises(pmd.PmdParseError):
+        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x03, b"\x00" * 6))
 
 
 def test_acc_frame_header_is_little_endian_uint64():
@@ -312,7 +338,7 @@ def test_acc_malformed_frames_raise_parse_error():
     with pytest.raises(pmd.PmdParseError):
         pmd.parse_acc_frame(b"\x02\x00\x00")                       # truncated header
     with pytest.raises(pmd.PmdParseError):
-        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x00, b"\x01\x02\x03"))  # not a multiple of 6
+        pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x01, b"\x01\x02\x03"))  # not a multiple of 6
     with pytest.raises(pmd.PmdParseError):
         pmd.parse_acc_frame(_frame(pmd.MEAS_ACC, 1, 0x80, b"\x01\x02"))      # short reference
     with pytest.raises(pmd.PmdParseError):
@@ -627,6 +653,38 @@ def test_pmd_degrades_to_ppi_only_when_acc_is_refused():
     stops = {w.hex() for w in client.written if w[0] == pmd.OP_STOP_MEASUREMENT}
     assert stops == {"0303"}          # only the stream we actually started is stopped
     assert HR_UUID not in client.notify  # PPI is live, so no generic-HR fallback needed
+
+
+def test_ppi_samples_without_skin_contact_are_not_a_heart_rate():
+    """Regression (audit 2026-09-25): PPI samples flagged blocked, or reporting no skin contact
+    on a sensor that can detect it, still set the heart rate and refreshed the stall guard --
+    hr=121/118 was posted from a band whose every sample said blocker=1, skin_contact=0."""
+    # blocker + contact-supported, no contact: the charger-noise shape from the audit
+    client = _FakeBleClient()
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", _acc_uncompressed([(0, 0, 1000 + 5 * i) for i in range(8)])),
+        ("data", _ppi([(121, 496, 40, 0b101), (118, 510, 40, 0b101)])),
+    ])
+    assert ok is True
+    assert "hr" not in posted[0] and "rr" not in posted[0]
+    assert posted[0]["skin_contact"] == 0.0            # the batch says: off the arm
+    assert posted[0]["acc"]["n"] == 8
+
+    # no contact WITHOUT the blocker bit is not a beat either; a good sample next to it is
+    client = _FakeBleClient()
+    ok, posted = _run_pmd_session(client, feed=[
+        ("data", _ppi([(60, 1000, 5, 0b110), (121, 496, 40, 0b100)])),
+    ])
+    assert posted[0]["hr"] == 60.0
+    assert posted[0]["rr"] == [1000.0]
+    assert posted[0]["skin_contact"] == 0.5
+
+    # only no-contact PPI and no accelerometer: nothing worth posting at all
+    client = _FakeBleClient(errors={pmd.MEAS_ACC: 3})
+    ok, posted = _run_pmd_session(client, until_posted=False, feed=[
+        ("data", _ppi([(121, 496, 40, 0b101), (118, 900, 40, 0b100)])),
+    ])
+    assert posted == []
 
 
 def test_pmd_degrades_to_acc_plus_generic_hr_when_ppi_is_refused():

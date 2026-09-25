@@ -33,6 +33,7 @@ def _quiet(monkeypatch, tmp_path):
     monkeypatch.setattr(vf, "_load_acc_rate", lambda root: "")
     monkeypatch.setattr(vf, "_post_link", lambda *a, **k: None)
     monkeypatch.setitem(vf._STATS, "posts", 0)
+    monkeypatch.setitem(vf._STATS, "data_posts", 0)
     monkeypatch.setitem(vf._STATS, "acc_rung", 0)
     monkeypatch.setitem(vf._STATS, "session_opened", False)
     logs = []
@@ -53,7 +54,7 @@ def _drive(monkeypatch, sessions):
             fn = next(it)
         except StopIteration:
             raise _Stop()
-        fn(args)
+        return fn(args)     # a session may return an outcome (backoff / released)
 
     monkeypatch.setattr(vf, "_run_once", fake_run_once)
     with pytest.raises(_Stop):
@@ -72,6 +73,7 @@ def _opened_silent(args):
 def _opened_streamed_hr(args):
     vf._STATS["session_opened"] = True
     vf._STATS["posts"] += 10
+    vf._STATS["data_posts"] += 10
 
 
 def test_failed_connects_do_not_flip_the_transport(monkeypatch):
@@ -121,7 +123,7 @@ def test_the_hr_session_ends_itself_after_the_limit(monkeypatch, _quiet):
         is_connected = True
 
     monkeypatch.setattr(vf, "_post", lambda url, payload, timeout=5.0: vf._STATS.__setitem__(
-        "posts", vf._STATS["posts"] + 1) or {"ok": True})
+        "data_posts", vf._STATS["data_posts"] + 1) or {"ok": True})
     args = _args()
     args.hr_session_max_s = 0.02
     args.hr_max_age = 100.0
@@ -190,3 +192,128 @@ def test_the_adapter_reset_waits_when_the_band_has_been_away(monkeypatch):
     monkeypatch.setitem(vf._STATS, "last_data_at", 0.0)
     _drive(monkeypatch, [_not_found] * 3)
     assert not requests
+
+
+# ---------------------------------------------------------------- audit 2026-09-25
+def test_a_charging_band_never_escalates_to_an_adapter_reset(monkeypatch, _quiet):
+    """Regression: while the band is released ("device in charger", code 13) every backoff
+    minute counted as a barren session, a Bluetooth adapter reset was requested from streak 5
+    every minute, and the watchdog's bthserv restart killed the forwarder and its backoff."""
+    import time as _t
+    requests = []
+    monkeypatch.setattr(vf, "_request_adapter_reset", lambda root, n: requests.append(n))
+    monkeypatch.setitem(vf._STATS, "last_data_at", _t.monotonic())   # worst case: rung 2
+    monkeypatch.setitem(vf._RELEASE, "until", _t.monotonic() + 900.0)
+
+    def backoff(args):
+        return vf._OUTCOME_BACKOFF
+
+    def charging(args):
+        vf._STATS["session_opened"] = True
+        return vf._OUTCOME_RELEASED
+
+    modes = _drive(monkeypatch, [backoff] * 8 + [charging] * 8)
+    assert not requests, "an adapter reset was requested for a band left alone to charge"
+    assert not any("barren" in m for m in _quiet), _quiet
+    assert set(modes) == {"auto"}, "a released band drove the transport alternation"
+
+
+def test_the_real_run_once_reports_a_backoff_instead_of_a_barren_session(monkeypatch):
+    import time as _t
+    monkeypatch.setitem(vf._RELEASE, "until", _t.monotonic() + 900.0)
+
+    async def nosleep(_s):
+        return None
+    monkeypatch.setattr(vf.asyncio, "sleep", nosleep)
+    assert asyncio.run(vf._run_once(_args(), {})) == vf._OUTCOME_BACKOFF
+
+
+def test_the_release_backoff_survives_a_restart(monkeypatch, tmp_path):
+    """Regression: the backoff lived in process memory, so a bthserv restart (or a deploy) that
+    relaunched the forwarder reconnected at once to the band it had just released."""
+    import time as _t
+    monkeypatch.setitem(vf._RELEASE, "until", 0.0)
+    vf._release("charging")
+    vf._RELEASE.pop("off_arm", None)
+    assert (tmp_path / ".run" / vf._RELEASE_UNTIL_FILE).exists()
+    vf._RELEASE["until"] = 0.0                       # a fresh process: memory is gone
+    remaining = vf._load_release(tmp_path)
+    assert 0.9 * vf._NOT_WORN_BACKOFF_S < remaining <= vf._NOT_WORN_BACKOFF_S
+    assert vf._releasing()
+    # a deadline already in the past is ignored
+    (tmp_path / ".run" / vf._RELEASE_UNTIL_FILE).write_text(f"{_t.time() - 5:.3f}")
+    vf._RELEASE["until"] = 0.0
+    assert vf._load_release(tmp_path) == 0.0 and not vf._releasing()
+    # ...and so is garbage
+    (tmp_path / ".run" / vf._RELEASE_UNTIL_FILE).write_text("not a time")
+    assert vf._load_release(tmp_path) == 0.0
+
+
+def test_main_resumes_a_persisted_backoff_without_counting_it(monkeypatch, tmp_path, _quiet):
+    import time as _t
+    monkeypatch.setitem(vf._RELEASE, "until", 0.0)
+    (tmp_path / ".run").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".run" / vf._RELEASE_UNTIL_FILE).write_text(f"{_t.time() + 600:.3f}")
+    seen = []
+
+    def backoff(args):
+        seen.append(vf._releasing())
+        return vf._OUTCOME_BACKOFF
+    _drive(monkeypatch, [backoff])
+    assert seen == [True]
+    assert any("resuming the release backoff" in m for m in _quiet)
+
+
+def test_status_only_posts_do_not_count_as_data(monkeypatch):
+    """Regression: the battery and link posts are accepted by the API, and each one counted as
+    a productive POST -- so every connect reset the barren ladder and logged a false
+    "recovered"."""
+    import io
+    import json
+
+    class _Resp(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            pass
+    monkeypatch.setattr(vf.urllib.request, "urlopen",
+                        lambda req, timeout=5: _Resp(json.dumps({"ok": True}).encode()))
+    monkeypatch.setitem(vf._STATS, "last_data_at", 0.0)
+    vf._post("http://x", {"source": "verity", "battery_pct": 100})
+    vf._post("http://x", {"source": "verity", "link": "charging"})
+    assert vf._STATS["posts"] == 2                 # accepted...
+    assert vf._STATS["data_posts"] == 0            # ...but not data
+    assert vf._STATS["last_data_at"] == 0.0
+    vf._post("http://x", {"source": "verity", "hr": 58.0})
+    vf._post("http://x", {"source": "verity", "acc": {"pim": 1.0}})
+    assert vf._STATS["data_posts"] == 2 and vf._STATS["last_data_at"] > 0.0
+
+
+def test_a_session_that_only_posted_its_battery_is_still_barren(monkeypatch, _quiet):
+    def battery_only(args):
+        vf._STATS["session_opened"] = True
+        vf._STATS["posts"] += 1            # the connect-time battery post, accepted
+
+    modes = _drive(monkeypatch, [battery_only, battery_only, battery_only])
+    assert not any("recovered" in m for m in _quiet), _quiet
+    assert any("barren streak: 2" in m for m in _quiet), _quiet
+    assert modes[:3] == ["auto", "auto", "hr"]    # the ladder escalated as it should
+
+
+def test_scans_that_never_find_the_band_do_not_spend_the_pmd_retry_budget(monkeypatch):
+    """Regression: in HR-led mode the retry was granted before every scan, so scans that never
+    found the band spent the budget and the session that finally connected stayed HR-only all
+    night."""
+    limits = []
+
+    def remember_limit(args):
+        limits.append(getattr(args, "hr_session_max_s", None))
+        _opened_streamed_hr(args)
+
+    def away(args):
+        return None                          # scanned, nothing opened
+
+    _drive(monkeypatch, [_opened_silent, _opened_silent, _not_found, _not_found, away, away,
+                         remember_limit])
+    assert limits == [vf._FORCED_HR_RETRY_PMD_S]
