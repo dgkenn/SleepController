@@ -289,6 +289,43 @@ def reconstruct_night_summary(repo, night_date: str, stage_by_ts=None) -> NightS
     return ns
 
 
+def rollup_night(repo, night_date: str, cfg=None) -> NightSummary:
+    """The night's STORED summary, as the nightly close-out persists it.
+
+    The live labels in ``raw_samples`` come from a causal filter that, at every tick, could see
+    only the past. With ``offline_night_staging`` on, the summary (and the reports built from
+    it) is scored from :func:`sleepctl.loop.restage.restage_night_offline` instead: the same
+    emissions and HMM, smoothed with the night after each tick too, with the live
+    post-processing on top. ``raw_samples`` itself is never touched -- it stays the record of
+    what the controller believed while it acted.
+
+    Off (the default), or on any failure, or for a night that cannot be replayed, this is
+    exactly :func:`reconstruct_night_summary` on the recorded labels. When the offline path was
+    tried, ``temp_profile_summary["staging"]`` says which one produced the numbers.
+    """
+    t = getattr(cfg, "tunables", cfg)
+    if not bool(getattr(t, "offline_night_staging", False)):
+        return reconstruct_night_summary(repo, night_date)
+    labels = None
+    try:
+        from sleepctl.loop.restage import restage_night_offline
+        labels = restage_night_offline(repo, night_date, cfg) or None
+    except Exception:
+        labels = None
+    if labels:
+        try:
+            ns = reconstruct_night_summary(repo, night_date, stage_by_ts=labels)
+            ns.temp_profile_summary = dict(ns.temp_profile_summary or {})
+            ns.temp_profile_summary["staging"] = "offline"
+            return ns
+        except Exception:
+            pass
+    ns = reconstruct_night_summary(repo, night_date)
+    if ns.temp_profile_summary:              # a bare (row-less) summary stays bare
+        ns.temp_profile_summary["staging"] = "recorded"
+    return ns
+
+
 def merge_night_summary(base: NightSummary, override) -> NightSummary:
     """Overlay any non-``None`` scalar field of ``override`` onto ``base``.
 

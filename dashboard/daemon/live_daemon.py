@@ -2692,9 +2692,10 @@ class LiveDashboardDaemon:
                 # which made nightly.run() throw here every single night -- silently, via the
                 # except below -- leaving `nightly_summaries` permanently EMPTY and starving
                 # every learner, efficacy trial and report downstream of it.
-                from sleepctl.loop.night_rollup import (merge_night_summary,
-                                                        reconstruct_night_summary)
-                night = reconstruct_night_summary(self.repo, night_date)
+                # rollup_night: the recorded labels, or (offline_night_staging) the night restaged
+                # with hindsight, falling back to the recorded labels on any error.
+                from sleepctl.loop.night_rollup import merge_night_summary, rollup_night
+                night = rollup_night(self.repo, night_date, self.cfg)
                 try:
                     night = merge_night_summary(
                         night, await self.client.fetch_night_summary(night_date))

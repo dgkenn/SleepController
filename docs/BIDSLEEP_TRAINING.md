@@ -145,3 +145,44 @@ results are personal sleep data and are deliberately not kept in the repository;
 * **REM.** Falls on most nights; not on all.
 * **Wake.** The extra wake sits almost entirely in the first hour: the new model waits longer
   before calling sustained sleep, which fits the recorded sleep-onset events better.
+
+## 5. Offline (morning) staging
+
+`sleepctl/ml/sleep_staging/offline.py` smooths the same per-epoch emissions with the same HMM,
+but non-causally, for the night summary. Evaluated on held-out BIDSleep subjects: per-fold
+models (5 subject-grouped folds, BIDSleep + sleep-accel, the shipped recipe) scored only the
+subjects their fold held out; a model scores raw κ 0.453 on its held-out nights against 0.526 on
+nights it trained on, so the split holds. All rows below include the hypnogram constraints.
+
+HR-only, dense HR (253 nights; truth deep 21.1% / REM 29.3% of sleep):
+
+| smoother | 4-class κ | wake κ | recall W / L / D / R | deep % | REM % | deep / REM min MAE |
+|---|---|---|---|---|---|---|
+| live forward filter (20 epochs) | 0.456 | 0.662 | 0.60 / 0.64 / 0.68 / 0.58 | 21.4 | 30.1 | 30.3 / 45.3 |
+| **live window + 5-epoch lookahead** | **0.475** | **0.681** | 0.61 / 0.60 / 0.71 / 0.66 | 22.2 | 34.6 | 30.7 / 49.8 |
+| whole-night posterior marginals | 0.464 | 0.686 | 0.59 / 0.49 / 0.74 / 0.76 | 24.0 | 42.7 | 34.0 / 69.3 |
+| whole-night Viterbi | 0.425 | 0.681 | 0.57 / 0.46 / 0.73 / 0.72 | 24.7 | 43.3 | 37.6 / 80.2 |
+
+HR + motion: κ 0.471 -> 0.492, wake κ 0.681 -> 0.700. Sparse HR: κ 0.420 -> 0.439. The
+lookahead version is better than the live filter on 70-75% of nights.
+
+* **Marginals beat Viterbi** everywhere, but over the whole night both call far too much REM.
+  The class-balanced heads lean to REM and consecutive, near-duplicate epochs compound the lean;
+  the live filter's short window, restarted from the start distribution, caps it. Keeping that
+  window and adding a lookahead keeps the cap. The lookahead of 5 is what `tune_smoothing`'s rule
+  picks (best mean of 4-class and wake κ, ties to the least deep error), on all three variants.
+* **The stage hold** costs 0.003-0.006 κ on either windowed smoother; the offline path
+  leaves it out.
+* **Minutes do not improve.** The lookahead places stages better, but it still calls more REM
+  and deep than the live filter, so per-night stage minutes get worse (REM MAE 45 -> 50 min).
+  Per-class decision weights fitted by nested CV bring the minutes back to parity with a
+  similar κ gain, but they sit at the edge of their grid and would not transfer to the HRV
+  variants or a personal HMM, so they are not used.
+
+Because the stored summary holds minutes, the rollup keeps the recorded labels by default:
+`offline_night_staging` (off) switches it to `restage_night_offline`, which replays the night
+through the live estimator twice (once to collect the emissions, once to run the live
+post-processing on the offline stage) and falls back to the recorded labels on any error.
+The autonomic rescoring, deep corroboration and accelerometer wake test run downstream of the
+offline stage unchanged, but BIDSleep has no beat intervals or armband counts, so they are not
+part of this evaluation.

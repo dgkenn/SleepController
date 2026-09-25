@@ -534,6 +534,12 @@ class Tunables:
     # minutes_since_onset moved max p_deep 0.008 -> 0.558), while the heuristic scored deep 17.7%
     # on the same night, inside the 15-20% literature range. Set False to trust the model alone.
     deep_corroboration: bool = True
+    # Score the STORED night summary from non-causal staging (loop.restage.restage_night_offline:
+    # the live window plus a 2.5 min lookahead) instead of the labels recorded live. OFF: on
+    # held-out BIDSleep subjects it places stages better (4-class kappa +0.02, wake kappa +0.02,
+    # deep and REM recall up) but calls more REM and deep, so per-night stage MINUTES -- what the
+    # summary stores and the learners read -- get worse (REM error 45 -> 50 min/night).
+    offline_night_staging: bool = False
 
     # Absolute-anchor wake test (see state_estimator._absolute_wake). Every other wake test is
     # relative to a TRAILING baseline, which a sustained HR elevation defeats -- the baseline just
