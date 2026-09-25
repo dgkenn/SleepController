@@ -37,6 +37,19 @@ wake responsiveness is untouched.
      REM/AWAKE oscillation, and it is a fact about sleep architecture rather than a smoothing
      trick.
 
+HOW THEY WERE TUNED (2026-09-25)
+--------------------------------
+Held-out BIDSleep nights replayed through the live path (``scripts/eval_live_staging.py``,
+``docs/LIVE_STAGING_EVAL.md``) showed two of these erasing more truth than error:
+
+  * Rule 1 waited for the onset DETECTOR, which confirms late and back-dates; everything scored
+    meanwhile was relabelled. That was the first-cycle deep sleep: 2,498 EEG-deep ticks. A held
+    run of adopted sleep (``provisional_onset_min``) now stands in for onset until then, and
+    rules 1 and 2 count from its start.
+  * Rule 3 fired on every AWAKE tick, and a movement burst reads AWAKE for ~3 ticks. It now
+    needs an awakening: AWAKE held ``reentry_min_awake_min``, or back within
+    ``reentry_recurrent_awake_min`` of the last one, which still catches R A R A.
+
 Reclassified epochs keep their timing and are labelled LIGHT with reduced confidence, so a night
 that trips these rules reads as "light sleep we are unsure about" rather than as a confident
 REM night that never happened.
@@ -72,34 +85,56 @@ class HypnogramConstraint:
     """Applies the timing rules above. One instance per controller; reset between nights."""
 
     def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
         self._last_awake_at: Optional[datetime] = None
         self._seen_light_since_awake_at: Optional[datetime] = None
         self._last_adopted: Optional[SleepStage] = None
         self._light_run_start: Optional[datetime] = None
+        self._sleep_run_start: Optional[datetime] = None
+        self._awake_run_start: Optional[datetime] = None
+        self._awake_run_last: Optional[datetime] = None
+        self._awake_run_recurrent = False
+        self._prev_awake_end: Optional[datetime] = None
         self.reclassified: dict = {}
         self.last_reason: Optional[str] = None
 
-    def reset(self) -> None:
-        self._last_awake_at = None
-        self._seen_light_since_awake_at = None
-        self._last_adopted = None
-        self._light_run_start = None
-        self.reclassified = {}
-        self.last_reason = None
-
-    def observe(self, stage: SleepStage, now: datetime) -> None:
-        """Record the ADOPTED stage, so re-entry is judged on what the night actually shows."""
+    def observe(self, stage: SleepStage, now: datetime, cfg=None) -> None:
+        """Record the ADOPTED stage, so re-entry is judged on what the night actually shows.
+        Without ``cfg`` every AWAKE tick counts as an awakening (the strict rule)."""
+        t = getattr(cfg, "tunables", cfg)
         if stage is SleepStage.AWAKE:
-            self._last_awake_at = now
-            self._seen_light_since_awake_at = None
-        elif stage is SleepStage.LIGHT and self._seen_light_since_awake_at is None:
-            self._seen_light_since_awake_at = now
+            if self._last_adopted is not SleepStage.AWAKE:
+                window = float(getattr(t, "reentry_recurrent_awake_min", 0.0) or 0.0)
+                self._awake_run_start = now
+                self._awake_run_recurrent = (
+                    self._prev_awake_end is not None
+                    and (now - self._prev_awake_end).total_seconds() / 60.0 <= window)
+            self._awake_run_last = now
+            # An AWAKENING arms the re-entry rule; a lone movement burst does not. It must be
+            # held, or come back within minutes of the last one -- the R A R A pattern.
+            need = float(getattr(t, "reentry_min_awake_min", 0.0) or 0.0)
+            held = (now - self._awake_run_start).total_seconds() / 60.0
+            if held >= need - 1e-9 or self._awake_run_recurrent:
+                self._last_awake_at = now
+                self._seen_light_since_awake_at = None
+        else:
+            if self._last_adopted is SleepStage.AWAKE and stage is not SleepStage.UNKNOWN:
+                self._prev_awake_end = self._awake_run_last
+            if stage is SleepStage.LIGHT and self._seen_light_since_awake_at is None:
+                self._seen_light_since_awake_at = now
         # Continuous LIGHT run, for the deep re-entry rule below.
         if stage is SleepStage.LIGHT:
             if self._light_run_start is None:
                 self._light_run_start = now
         elif stage is not SleepStage.UNKNOWN:
             self._light_run_start = None
+        # Continuous adopted SLEEP run: the provisional onset while the detector deliberates.
+        if stage is SleepStage.AWAKE:
+            self._sleep_run_start = None
+        elif stage is not SleepStage.UNKNOWN and self._sleep_run_start is None:
+            self._sleep_run_start = now
         if stage is not SleepStage.UNKNOWN:
             self._last_adopted = stage
 
@@ -116,6 +151,11 @@ class HypnogramConstraint:
             return HypnogramVerdict(stage, confidence)
 
         reason = None
+        if sleep_onset_time is None:
+            prov = float(getattr(t, "provisional_onset_min", 0.0) or 0.0)
+            run = self._sleep_run_start
+            if prov > 0 and run is not None and (now - run).total_seconds() / 60.0 >= prov:
+                sleep_onset_time = run
         if sleep_onset_time is None:
             reason = "before_sleep_onset"
         else:

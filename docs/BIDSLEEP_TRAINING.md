@@ -186,3 +186,8 @@ post-processing on the offline stage) and falls back to the recorded labels on a
 The autonomic rescoring, deep corroboration and accelerometer wake test run downstream of the
 offline stage unchanged, but BIDSleep has no beat intervals or armband counts, so they are not
 part of this evaluation.
+
+That "stager's own" share was read after deep corroboration, whose heuristic upgrades supplied
+most of it. The follow-up, `docs/LIVE_STAGING_EVAL.md`, scores the whole live path against EEG
+on held-out BIDSleep subjects, finds what erased deep and REM (the hypnogram waiting for the
+onset detector, and the re-entry rule firing on movement bursts), and retunes it.

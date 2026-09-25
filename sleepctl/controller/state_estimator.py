@@ -327,6 +327,10 @@ def estimate_sleep_stage(frame, sleep_hr_base, recent, cfg, *,
                     # heuristic cannot judge -- it has no REM class), and the heuristic's own
                     # lower confidence is carried so downstream consumers can see this is the
                     # weaker path. The model still owns REM, which the heuristic cannot supply.
+                    #
+                    # OFF by default since the BIDSleep retrain: that stager emits deep at about
+                    # the EEG rate, and on held-out nights only 7% of these upgrades were EEG
+                    # deep (58% light, 26% REM). See `deep_corroboration` in config.
                     if stage is SleepStage.LIGHT and getattr(t, "deep_corroboration", True):
                         h = estimate_stage_from_vitals(
                             frame, sleep_hr_base, recent,

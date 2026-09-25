@@ -478,6 +478,19 @@ class Tunables:
     deep_earliest_min: float = 8.0
     # Sleep resumes through LIGHT and descends from there; it does not resume in REM.
     reentry_light_min: float = 5.0
+    # ...but only after an AWAKENING: AWAKE held at least this long (first to last awake tick).
+    # A movement burst reads AWAKE for about three ticks (the 60 s actigraphy window), and
+    # treating each one as an awakening relabelled 4,507 EEG-scored REM ticks on held-out
+    # BIDSleep nights (scripts/eval_live_staging.py); 2 min lifts REM recall 0.37 -> 0.46.
+    reentry_min_awake_min: float = 2.0
+    # ...or AWAKE again within this many minutes of the last awake tick, however brief: that is
+    # the 2026-08-30 R A R A oscillation the rule exists for. Costs 0.02 REM recall held out.
+    reentry_recurrent_awake_min: float = 5.0
+    # While the onset detector is still deliberating, a run of adopted sleep this long stands
+    # in for onset (deep_earliest_min / rem_earliest_min then count from the run's start).
+    # Waiting for the detector's confirmation erased 2,415 held-out ticks that both the EEG
+    # and the stager called deep -- the front-loaded first-cycle N3. 0 = wait for the detector.
+    provisional_onset_min: float = 10.0
     # A DEEP bout begins only after this many continuous minutes of LIGHT (see hypnogram.py).
     deep_reentry_light_min: float = 3.0
     # Learned wearable stager (sleepctl/ml/sleep_staging, trained on PhysioNet sleep-accel). Preferred
@@ -535,8 +548,13 @@ class Tunables:
     # baseline. The learned stager's deep emission is suppressed by its own clock features after
     # the first ~100 min (measured: deep 0-2% live vs 0.60 CV recall; resetting only
     # minutes_since_onset moved max p_deep 0.008 -> 0.558), while the heuristic scored deep 17.7%
-    # on the same night, inside the 15-20% literature range. Set False to trust the model alone.
-    deep_corroboration: bool = True
+    # on the same night, inside the 15-20% literature range.
+    #
+    # OFF since the BIDSleep retrain: the stager now emits deep at about the EEG rate, and on
+    # held-out BIDSleep nights replayed through the live path 7% of its upgrades were EEG deep
+    # (58% light, 26% REM): deep precision 0.66 -> 0.57 and kappa -0.016 for +0.01 deep recall
+    # (scripts/eval_live_staging.py, docs/LIVE_STAGING_EVAL.md).
+    deep_corroboration: bool = False
     # Score the STORED night summary from non-causal staging (loop.restage.restage_night_offline:
     # the live window plus a 2.5 min lookahead) instead of the labels recorded live. OFF: on
     # held-out BIDSleep subjects it places stages better (4-class kappa +0.02, wake kappa +0.02,

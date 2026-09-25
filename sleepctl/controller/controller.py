@@ -937,7 +937,7 @@ class SleepController:
                 # produced from independent stager evidence (WakeDetector._votes).
                 frame.stage_source = self._stage_source
                 self._stage_estimated = True
-                self.hypnogram.observe(frame.stage, now)
+                self.hypnogram.observe(frame.stage, now, cfg)
 
         arousal = None
         wake_detected = False

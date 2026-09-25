@@ -42,11 +42,19 @@ def test_rem_at_a_plausible_latency_is_left_alone():
     assert v.confidence == 0.7
 
 
+def _awake(hc, cfg, start, minutes):
+    """Adopt AWAKE on every 30 s tick for ``minutes``; returns the last awake tick."""
+    t = start
+    for k in range(int(minutes * 2) + 1):
+        t = start + timedelta(seconds=30 * k)
+        hc.observe(SleepStage.AWAKE, t, cfg)
+    return t
+
+
 def test_sleep_does_not_resume_in_rem_after_an_awakening():
     """The rule that ends the R A R A oscillation: re-entry runs through light sleep."""
     hc, cfg = _hc(), AppConfig()
-    t = T0 + timedelta(minutes=120)
-    hc.observe(SleepStage.AWAKE, t)
+    t = _awake(hc, cfg, T0 + timedelta(minutes=120), 3)
     v = hc.apply(SleepStage.REM, 0.7, t + timedelta(minutes=1), cfg, sleep_onset_time=T0)
     assert v.stage is SleepStage.LIGHT
     assert v.reason == "no_light_sleep_since_awakening"
@@ -54,11 +62,87 @@ def test_sleep_does_not_resume_in_rem_after_an_awakening():
 
 def test_rem_is_allowed_again_once_light_sleep_has_been_re_established():
     hc, cfg = _hc(), AppConfig()
-    t = T0 + timedelta(minutes=120)
-    hc.observe(SleepStage.AWAKE, t)
-    hc.observe(SleepStage.LIGHT, t + timedelta(minutes=1))
+    t = _awake(hc, cfg, T0 + timedelta(minutes=120), 3)
+    hc.observe(SleepStage.LIGHT, t + timedelta(minutes=1), cfg)
     late = t + timedelta(minutes=1 + cfg.tunables.reentry_light_min + 1)
     assert hc.apply(SleepStage.REM, 0.7, late, cfg, T0).stage is SleepStage.REM
+
+
+def test_a_lone_movement_burst_is_not_an_awakening():
+    """The accelerometer override reads a movement burst as ~3 AWAKE ticks. Treating each as an
+    awakening relabelled 4,507 EEG-scored REM ticks on held-out BIDSleep nights."""
+    hc, cfg = _hc(), AppConfig()
+    t = _awake(hc, cfg, T0 + timedelta(minutes=120), 1)
+    v = hc.apply(SleepStage.REM, 0.7, t + timedelta(seconds=30), cfg, sleep_onset_time=T0)
+    assert v.stage is SleepStage.REM and v.reason is None
+
+
+def test_brief_awakenings_that_keep_coming_back_still_count():
+    """2026-08-30: REM/AWAKE every 1-2 minutes for hours. A brief AWAKE that follows another
+    within minutes is the oscillation this rule exists for, not a lone movement."""
+    hc, cfg = _hc(), AppConfig()
+    t = _awake(hc, cfg, T0 + timedelta(minutes=120), 1)
+    hc.observe(SleepStage.REM, t + timedelta(seconds=30), cfg)
+    t = _awake(hc, cfg, t + timedelta(minutes=2), 0.5)
+    v = hc.apply(SleepStage.REM, 0.7, t + timedelta(seconds=30), cfg, sleep_onset_time=T0)
+    assert v.stage is SleepStage.LIGHT
+    assert v.reason == "no_light_sleep_since_awakening"
+
+
+def test_every_awake_tick_counts_without_a_config():
+    """Callers that pass no config keep the strict rule."""
+    hc, cfg = _hc(), AppConfig()
+    hc.observe(SleepStage.AWAKE, T0 + timedelta(minutes=120))
+    v = hc.apply(SleepStage.REM, 0.7, T0 + timedelta(minutes=121), cfg, sleep_onset_time=T0)
+    assert v.stage is SleepStage.LIGHT
+
+
+def _asleep(hc, cfg, start, minutes, stage=SleepStage.LIGHT):
+    t = start
+    for k in range(int(minutes * 2) + 1):
+        t = start + timedelta(seconds=30 * k)
+        hc.observe(stage, t, cfg)
+    return t
+
+
+def test_deep_is_allowed_on_a_held_sleep_run_before_the_detector_confirms():
+    """Waiting for the onset detector erased 2,415 held-out ticks that both the EEG and the
+    stager called deep: first-cycle N3 arrives while the detector is still deliberating."""
+    hc, cfg = _hc(), AppConfig()
+    t = _asleep(hc, cfg, T0, cfg.tunables.provisional_onset_min + 1)
+    v = hc.apply(SleepStage.DEEP, 0.6, t + timedelta(seconds=30), cfg, sleep_onset_time=None)
+    assert v.stage is SleepStage.DEEP and v.reason is None
+
+
+def test_deep_still_waits_for_a_held_sleep_run():
+    hc, cfg = _hc(), AppConfig()
+    t = _asleep(hc, cfg, T0, 3)
+    v = hc.apply(SleepStage.DEEP, 0.6, t + timedelta(seconds=30), cfg, sleep_onset_time=None)
+    assert v.stage is SleepStage.LIGHT and v.reason == "before_sleep_onset"
+
+
+def test_rem_counts_its_latency_from_the_provisional_onset():
+    hc, cfg = _hc(), AppConfig()
+    t = _asleep(hc, cfg, T0, 15)
+    v = hc.apply(SleepStage.REM, 0.7, t + timedelta(seconds=30), cfg, sleep_onset_time=None)
+    assert v.stage is SleepStage.LIGHT and v.reason == "rem_too_early_after_onset"
+
+
+def test_an_awakening_restarts_the_provisional_onset():
+    hc, cfg = _hc(), AppConfig()
+    t = _asleep(hc, cfg, T0, 15)
+    t = _awake(hc, cfg, t + timedelta(seconds=30), 3)
+    t = _asleep(hc, cfg, t + timedelta(seconds=30), 2)
+    v = hc.apply(SleepStage.DEEP, 0.6, t + timedelta(seconds=30), cfg, sleep_onset_time=None)
+    assert v.stage is SleepStage.LIGHT and v.reason == "before_sleep_onset"
+
+
+def test_the_provisional_onset_can_be_switched_off():
+    hc, cfg = _hc(), AppConfig()
+    cfg.tunables.provisional_onset_min = 0.0
+    t = _asleep(hc, cfg, T0, 30)
+    v = hc.apply(SleepStage.DEEP, 0.6, t + timedelta(seconds=30), cfg, sleep_onset_time=None)
+    assert v.stage is SleepStage.LIGHT and v.reason == "before_sleep_onset"
 
 
 def test_an_awake_label_is_never_touched():
@@ -157,3 +241,27 @@ def test_a_pre_onset_relabel_keeps_the_sleep_evidence_above_the_onset_floor():
     assert v.confidence >= 0.4
     v = _hc().apply(SleepStage.DEEP, 0.3, T0, AppConfig(), sleep_onset_time=None)
     assert v.confidence < 0.4        # a label that was already under the floor stays under it
+
+
+def test_the_controller_hands_its_config_to_the_constraint(monkeypatch):
+    """Without the config the constraint falls back to the strict rule, so the live path must
+    pass it for the awakening definition above to apply at all."""
+    from sleepctl.controller.controller import SleepController
+    from sleepctl.models import ContextRecord, SensorFrame
+
+    seen = []
+    real = HypnogramConstraint.observe
+
+    def spy(self, stage, now, cfg=None):
+        seen.append(cfg)
+        return real(self, stage, now, cfg)
+
+    monkeypatch.setattr(HypnogramConstraint, "observe", spy)
+    cfg = AppConfig.default()
+    c = SleepController(cfg)
+    now = datetime(2026, 6, 23, 23, 0)
+    frame = SensorFrame(timestamp=now, stage=SleepStage.UNKNOWN, presence=True,
+                        heart_rate=58.0, hrv=62.0, movement=0.03,
+                        bed_temp_f=72.0, room_temp_f=68.0, data_age_seconds=20)
+    c.decide(frame, ContextRecord(date="2026-06-23"), [], now)
+    assert seen and seen[-1] is cfg
