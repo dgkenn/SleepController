@@ -554,6 +554,19 @@ class LiveDashboardDaemon:
             # and then ignored.
             controller.set_comfort_profile(comfort)
             controller.set_settle_nudge(learn_settle_nudge(self.repo, self.cfg))
+            # Habitual wake (median of recent mornings) anchors the late-phase warmth on nights
+            # with no alarm -- three of the last four. It never arms an alarm.
+            try:
+                import statistics as _st
+                mins = []
+                for n in self.repo.recent_nights(14):
+                    w = getattr(n, "wake_time", None)
+                    if w is not None and 3 <= w.hour < 13:
+                        mins.append(w.hour * 60 + w.minute)
+                controller.habitual_wake_min_of_day = (float(_st.median(mins))
+                                                       if len(mins) >= 3 else None)
+            except Exception as exc:
+                self._skip("habitual wake", exc)
             from sleepctl.benchmarks import sleep_debt_min
             controller.wake_debt_min = sleep_debt_min(self.repo.recent_nights(14))
             self._flush_wake_log()        # persist last night's wake conditions

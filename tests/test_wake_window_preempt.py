@@ -136,6 +136,7 @@ def test_never_preempts_out_of_deep_sleep():
     """Defense in depth: even with the wake-window vote true, MaintenanceRoutine itself never
     lets a preempt_cool signal disturb DEEP sleep (see MaintenanceRoutine.step)."""
     cfg = AppConfig.default()
+    cfg.tunables.stage_label_actuation = True   # pins the label-driven mapping
     ctrl = _make_controller(cfg)
     ctrl.set_wake_window_report([_high_conf_window()])
     now = datetime(2026, 6, 24, 2, 45)

@@ -519,9 +519,11 @@ class SleepController:
             t = cfg.tunables
             if not bool(getattr(t, "settle_release_enabled", True)):
                 return False
+            scheduled = not bool(getattr(t, "stage_label_actuation", True))
             last = getattr(self, "_last_settle_at", None)
             if last is None:
-                return False
+                # Scheduled steering: with no settle to hold, the bed follows the schedule.
+                return scheduled and self._off_schedule()
             quiet_min = (now - last).total_seconds() / 60.0
             if quiet_min < 0:
                 # An anchor in the future (a backward clock step the caller did not route
@@ -531,10 +533,58 @@ class SleepController:
                 quiet_min = 0.0
             if quiet_min < float(getattr(t, "settle_release_after_min", 20.0)):
                 return False
+            if scheduled:
+                # Back to the schedule from EITHER side after a quiet spell: holding a warm
+                # settle indefinitely made the night's level depend on how often the detector
+                # false-fired, and blurred the dose the thermal trial thinks it delivered.
+                return self._off_schedule()
             neutral = self.thermal.profile.neutral_f + getattr(self.thermal, "ambient_bias_f", 0.0)
             return float(self._last_target_f) < neutral - 0.05
         except Exception:
             return False
+
+    def _off_schedule(self) -> bool:
+        """Is the bed's last target away from the scheduled neutral (neutral + bias + phase)?"""
+        try:
+            sched = (self.thermal.profile.neutral_f
+                     + getattr(self.thermal, "ambient_bias_f", 0.0)
+                     + float(getattr(self.thermal, "phase_offset_f", 0.0) or 0.0))
+            return self._last_target_f is None or abs(float(self._last_target_f) - sched) > 0.05
+        except Exception:
+            return False
+
+    #: Habitual wake (minutes after midnight) for nights with no alarm: the phase schedule's
+    #: anchor only -- it never arms an alarm. Set by the daemon from recent nights.
+    habitual_wake_min_of_day: Optional[float] = None
+
+    def _phase_offset_f(self, now: datetime, required_wake, cfg) -> float:
+        """Late-phase warmth for this tick (0 outside the last ``late_phase_before_wake_min``)."""
+        t = cfg.tunables
+        peak = float(getattr(t, "late_phase_warm_f", 0.0) or 0.0)
+        if peak <= 0 or self._sleep_onset_time is None:
+            return 0.0
+        wake = required_wake
+        if wake is None and self.habitual_wake_min_of_day is not None:
+            m = float(self.habitual_wake_min_of_day)
+            cand = now.replace(hour=int(m // 60) % 24, minute=int(m % 60), second=0,
+                               microsecond=0)
+            if cand < now - timedelta(hours=2):
+                cand += timedelta(days=1)
+            # Only a wake time that belongs to THIS sleep (after onset, within 14 h of it).
+            if not (self._sleep_onset_time < cand <= self._sleep_onset_time + timedelta(hours=14)):
+                return 0.0
+            wake = cand
+        if wake is None:
+            return 0.0
+        try:
+            mins_to_wake = (wake - now).total_seconds() / 60.0
+        except TypeError:
+            return 0.0
+        start = float(getattr(t, "late_phase_before_wake_min", 180.0))
+        if mins_to_wake > start or mins_to_wake < 0:
+            return 0.0
+        ramp = max(1.0, float(getattr(t, "late_phase_ramp_min", 30.0)))
+        return round(peak * min(1.0, (start - mins_to_wake) / ramp), 3)
 
     def _wearable_bed_entry(self, frame, recent, cfg) -> bool:
         """Can sustained LIVE wearable physiology stand in for an unavailable Pod presence?
@@ -1094,9 +1144,11 @@ class SleepController:
             # including one recovered across a restart.
             if state_before is not ControllerState.IDLE:
                 self._reset_session_state()
+            self.thermal.phase_offset_f = 0.0
             intent = ThermalIntent.NEUTRAL
             self._induction_entered_at = None  # left induction -> next entry restarts the cascade
         elif state is ControllerState.INDUCTION:
+            self.thermal.phase_offset_f = 0.0     # the phase schedule is a maintenance anchor
             # Start (or restart, on a fresh "help me fall asleep" press) the cascade clock so
             # phase 1 (cold settle) always begins NOW, regardless of how long you've been in bed.
             if self._induction_restart or self._induction_entered_at is None:
@@ -1116,12 +1168,14 @@ class SleepController:
             preempting = bool(getattr(self, "_preempt_cool", False))
             if preempting or wake_detected:
                 self._last_settle_at = now
+            self.thermal.phase_offset_f = self._phase_offset_f(now, required_wake, cfg)
             self._settle_release = self._should_release_settle(now, cfg)
             intent = self.maintenance.step(frame, objective,
                                            preempt_cool=preempting,
                                            keep_light=self.session_keep_light, deepen=deepen,
                                            release=self._settle_release)
         elif state is ControllerState.WAKE_RECOVERY:
+            self.thermal.phase_offset_f = self._phase_offset_f(now, required_wake, cfg)
             self._deepen_active = False     # an awakening breaks any active deepen maneuver
             # Recovery IS a settle, so the quiet clock restarts here too -- otherwise the bed
             # would release the moment recovery handed back to maintenance.
@@ -1660,7 +1714,10 @@ class SleepController:
         # n-of-1 control: ACTUATE only on 'act' nights; on 'observe'/disabled nights the steerer
         # still judges + logs a SHADOW event (applied=0) but does NOT cool — that's the control arm
         # the deepening-response learner compares against (does cooling beat the natural base rate?).
-        actuate = deepen and self.steer_actuate
+        # With stage-label actuation off, every deepen verdict is a shadow event (applied=0):
+        # the maintenance routine does not act on it, and the ledger must say so.
+        actuate = (deepen and self.steer_actuate
+                   and bool(getattr(cfg.tunables, "stage_label_actuation", True)))
         # Edge-trigger the steer-event ledger when the deepen VERDICT first starts (either arm), so
         # the learner scores stage response + any awakening for both actuated and control nights.
         if deepen and not self._deepen_active:

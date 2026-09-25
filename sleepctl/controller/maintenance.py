@@ -23,6 +23,12 @@ class MaintenanceRoutine:
             # Power-nap mode: hold neutral so the bed never drives slow-wave sleep — keep the
             # nap light so waking is grogginess-free. A rising wake-risk still gets a gentle cool.
             return ThermalIntent.SETTLE_COOL if preempt_cool else ThermalIntent.STABILIZE
+        if not bool(getattr(self.cfg.tunables, "stage_label_actuation", True)):
+            # Scheduled, not label-driven (see AppConfig.stage_label_actuation): a settle when an
+            # awakening is brewing, the schedule when it has been quiet, otherwise hold.
+            if preempt_cool:
+                return ThermalIntent.SETTLE_COOL
+            return ThermalIntent.NEUTRAL if release else ThermalIntent.STABILIZE
         if frame.stage is SleepStage.DEEP:
             # Never disturb deep sleep with proactive moves; the deep-bias cool already runs.
             return ThermalIntent.DEEP_BIAS_COOL

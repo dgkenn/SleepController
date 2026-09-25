@@ -142,6 +142,7 @@ def test_disabled_steering_always_holds():
 # ---- maintenance wiring ----------------------------------------------------
 def test_maintenance_deepen_drives_the_deep_bias_cool():
     cfg = AppConfig.default()
+    cfg.tunables.stage_label_actuation = True   # pins the label-driven mapping
     m = MaintenanceRoutine(cfg)
     t0 = datetime(2026, 6, 24, 1, 30)
     # light + deepen -> drive toward the deep setpoint (cooler -> more deep)
@@ -162,6 +163,7 @@ def test_maintenance_deepen_drives_the_deep_bias_cool():
 # ---- controller accrual + veto + edge-triggered logging --------------------
 def test_controller_accrues_architecture_and_logs_a_deepen_edge():
     cfg = AppConfig.default()
+    cfg.tunables.stage_label_actuation = True   # pins the label-driven mapping
     ctrl = SleepController(cfg)
     ctrl.set_night_targets(targets_for(NightMode.NORMAL), est_sleep_min=420)
     onset = datetime(2026, 6, 24, 0, 30)

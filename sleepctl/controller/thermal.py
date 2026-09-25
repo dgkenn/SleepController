@@ -159,7 +159,10 @@ class ThermalController:
         hot_bias = (t.hot_sleeper_cool_bias_f
                     if (hot_sleeper and not personal_neutral) else 0.0)
         bias = hot_bias + self.ambient_bias_f
-        neutral = p.neutral_f + bias
+        # The phase schedule (late-night warmth before the wake time) moves the neutral every
+        # maintenance intent is measured from; the controller sets it each tick.
+        phase = float(getattr(self, "phase_offset_f", 0.0) or 0.0)
+        neutral = p.neutral_f + bias + phase
 
         if intent is ThermalIntent.WIND_DOWN:
             target = neutral - 1.0  # gentle, not aggressive
@@ -200,7 +203,7 @@ class ThermalController:
                 # neutral. Not anchored on the last command, which would ratchet +nudge per
                 # tick; a bed already warmer than this is held by resolve(), and the comfort
                 # clamp and session bounds still bound the result downstream.
-                target = p.neutral_f + hot_bias + max(0.0, self.ambient_bias_f) + nudge
+                target = p.neutral_f + hot_bias + max(0.0, self.ambient_bias_f) + phase + nudge
             else:
                 target = neutral + nudge
         elif intent is ThermalIntent.ONSET_WARM:

@@ -102,6 +102,7 @@ def test_arousal_grades_micro_vs_awakening_vs_bed_exit():
 # ---- handling: routines ----------------------------------------------------
 def test_maintenance_preempts_with_cooling_in_light_not_deep():
     cfg = AppConfig.default()
+    cfg.tunables.stage_label_actuation = True   # pins the label-driven mapping
     m = MaintenanceRoutine(cfg)
     t0 = datetime(2026, 6, 24, 3, 0)
     # light sleep + preempt -> settle cool; without -> stabilize

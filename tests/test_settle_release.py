@@ -20,7 +20,9 @@ def _frame(stage=SleepStage.LIGHT):
 
 
 def _routine():
-    return MaintenanceRoutine(AppConfig()), NightObjective.RECOVERY
+    cfg = AppConfig()
+    cfg.tunables.stage_label_actuation = True     # the label-driven mapping these tests pin
+    return MaintenanceRoutine(cfg), NightObjective.RECOVERY
 
 
 def test_a_quiet_stretch_releases_the_bed_back_to_neutral():
@@ -57,6 +59,7 @@ def _controller():
     from sleepctl.controller.controller import SleepController
     cfg = AppConfig()
     cfg.tunables.settle_cooling_allowed = True
+    cfg.tunables.stage_label_actuation = True     # the label-driven release semantics
     c = SleepController(cfg)
     c.thermal.set_measured_neutral(69.0)
     c.thermal.settle_nudge_f = -0.7

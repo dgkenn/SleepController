@@ -239,6 +239,22 @@ class Tunables:
     #: awakening was building, in a user whose awakenings are cold ones. A settle now never
     #: cools while cooling is off (see ThermalController.resolve), and a pre-empt warms by this.
     preempt_warm_f: float = 0.5
+    # STAGE-LABEL ACTUATION OFF (2026-09-25 steering audit). The bed used to change target on
+    # every deep/REM label change (deep bias, REM warmth, "deepen"). With deep scored 0-4% and
+    # REM 33-47% on this band, that was a label-driven toggle between 70.0 and 70.5 F, 17-39
+    # moves a night, and the deep-deficit gate was open on 100% of maintenance ticks. Labels are
+    # still scored, logged and shadow-steered; the bed now follows a SCHEDULE (neutral plus the
+    # late-phase warmth below), a settle when an awakening is predicted or detected, and a
+    # drift back to the schedule after a quiet spell. True restores the old label mapping.
+    stage_label_actuation: bool = False
+    # Late-phase warmth: up to +0.5 F over the last 3 h before the wake time (the alarm, or the
+    # habitual wake from recent nights when none is set), ramped over 30 min. Late awakenings ran
+    # at twice the early rate (1.5 vs 0.8 per hour, 09-18..09-21), the back of the night is
+    # REM-rich and cold-vulnerable, the user's awakenings are cold ones, and mild skin warming
+    # reduced early-morning wakefulness in Raymann 2008. Bounded by the comfort clamp.
+    late_phase_warm_f: float = 0.5
+    late_phase_before_wake_min: float = 180.0
+    late_phase_ramp_min: float = 30.0
     # A manual temperature change from the phone is an instruction, not interference: hold the
     # user's level for this long, then resume control with the floor/ceiling it implied.
     user_override_hold_min: float = 60.0

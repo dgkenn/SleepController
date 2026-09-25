@@ -91,6 +91,7 @@ def test_cold_settle_target_is_really_cold_and_follows_override():
 # ---- power-nap keeps the bed light ---------------------------------------
 def test_power_nap_keeps_light_no_deep_cooling():
     cfg = AppConfig.default()
+    cfg.tunables.stage_label_actuation = True   # pins the label-driven mapping
     m = MaintenanceRoutine(cfg)
     # normally deep sleep -> deep-bias cool; in keep_light it must NOT drive deep cooling
     assert m.step(_frame(SleepStage.DEEP), NightObjective.OPTIMIZE) is ThermalIntent.DEEP_BIAS_COOL
