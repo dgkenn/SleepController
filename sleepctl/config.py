@@ -239,6 +239,9 @@ class Tunables:
     #: awakening was building, in a user whose awakenings are cold ones. A settle now never
     #: cools while cooling is off (see ThermalController.resolve), and a pre-empt warms by this.
     preempt_warm_f: float = 0.5
+    #: Share of pre-empt EPISODES withheld at random (logged as maneuver "preempt", applied=0),
+    #: so the ledger can measure whether pre-empting prevents the awakening. Capped at 0.5.
+    preempt_withhold_frac: float = 0.3
     # STAGE-LABEL ACTUATION OFF (2026-09-25 steering audit). The bed used to change target on
     # every deep/REM label change (deep bias, REM warmth, "deepen"). With deep scored 0-4% and
     # REM 33-47% on this band, that was a label-driven toggle between 70.0 and 70.5 F, 17-39

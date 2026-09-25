@@ -1,6 +1,7 @@
 """Standing "does the controller help?" efficacy trial: assignment balance/washout, HELD-arm
 application (do-no-harm), outcome recording, and the CONTROLLED-vs-HELD analysis math."""
 
+from dataclasses import replace
 import tempfile
 from datetime import date, timedelta
 
@@ -109,10 +110,13 @@ def test_neutral_setpoint_zeroes_steering_biases():
     cfg = AppConfig.default()
     base = cfg.default_setpoints()
     neutral = neutral_setpoint(base, cfg)
-    assert neutral.deep_bias_f == 0.0
+    # no steering bias: deep sits AT the user's own neutral, no REM warmth; the user's own
+    # neutral and wake warm-up are kept (a comfort point and a wake cue, not steering)
+    assert neutral.deep_bias_f == neutral.neutral_f == base.neutral_f
     assert neutral.rem_warm_offset_f == 0.0
-    assert neutral.neutral_f == cfg.tunables.neutral_temp_f
-    assert neutral.wake_ramp_f == cfg.tunables.neutral_temp_f
+    assert neutral.wake_ramp_f == base.wake_ramp_f
+    personal = neutral_setpoint(replace(base, neutral_f=72.5, wake_ramp_f=75.0), cfg)
+    assert personal.neutral_f == personal.deep_bias_f == 72.5 and personal.wake_ramp_f == 75.0
 
 
 def test_apply_efficacy_arm_inactive_when_disabled(repo):
@@ -140,7 +144,7 @@ def test_held_night_disables_steering_and_preemption_do_no_harm(repo):
             break
     assert info["arm"] == "held" and info["applied"] is True
     # neutral, zero-bias profile applied
-    assert prof.deep_bias_f == 0.0 and prof.rem_warm_offset_f == 0.0
+    assert prof.deep_bias_f == prof.neutral_f and prof.rem_warm_offset_f == 0.0
     # experimental steering disabled via the EXISTING setter (not touching controller.py)
     assert controller.steer_actuate is False
     # predictive pre-emption gates neutralized (score is capped at 1.0, so > 1.0 never fires)

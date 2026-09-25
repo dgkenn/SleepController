@@ -47,6 +47,7 @@ def _run(ctrl, now, recent=None):
 
 def test_high_confidence_window_preempts_within_lead_time():
     cfg = AppConfig.default()
+    cfg.tunables.preempt_withhold_frac = 0.0   # no randomised withhold: test the acted path
     ctrl = _make_controller(cfg)
     ctrl.set_wake_window_report([_high_conf_window()])
     now = datetime(2026, 6, 24, 2, 45)  # inside [02:40, 03:30) with the default 20-min lead

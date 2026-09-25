@@ -195,8 +195,18 @@ def _debt_adjust_targets(t: "Targets", df: float, mode: "NightMode" = NightMode.
     return replace(t, weights=w, sol_max_min=max(4.0, t.sol_max_min * (1.0 - 0.3 * df)))
 
 
+#: How far the night score trusts the stager's deep / REM minutes, as a multiplier on those two
+#: weights (the rest renormalise, so continuity -- awakenings, WASO, efficiency -- gains the
+#: share). Heart rate + motion stages reach 4-class kappa ~0.45-0.47 on held-out EEG nights;
+#: wake detection ~0.68. A score that is a third deep/REM percentages mostly rewards stager noise
+#: -- and every learner that optimises this score would chase it. Raise toward 1.0 once the
+#: stager is calibrated against the user's own EEG nights (sleepctl.learning.eeg_calibration).
+STAGE_WEIGHT_TRUST = 0.5
+
+
 def perfect_sleep_index(summary, mode: NightMode = NightMode.NORMAL,
-                        targets: Optional[Targets] = None, debt_min: float = 0.0) -> dict:
+                        targets: Optional[Targets] = None, debt_min: float = 0.0,
+                        stage_trust: Optional[float] = None) -> dict:
     """Score a NightSummary 0-100 against the active mode's benchmarks.
 
     Returns {score, mode, components: {metric: 0..1}, targets_met: [...], notes}.
@@ -236,11 +246,13 @@ def perfect_sleep_index(summary, mode: NightMode = NightMode.NORMAL,
         # relative: 70 ms is a reasonable healthy nighttime average anchor
         comp["hrv"] = max(0.0, min(1.0, _safe_float(hrv) / 70.0))
 
-    total_w = sum(t.weights.get(k, 0) for k in comp)
+    trust = STAGE_WEIGHT_TRUST if stage_trust is None else max(0.0, min(1.0, float(stage_trust)))
+    w = {k: t.weights.get(k, 0) * (trust if k in ("deep", "rem") else 1.0) for k in comp}
+    total_w = sum(w.values())
     if total_w <= 0:
         score = 0.0
     else:
-        score = 100.0 * sum(comp[k] * t.weights.get(k, 0) for k in comp) / total_w
+        score = 100.0 * sum(comp[k] * w[k] for k in comp) / total_w
     score = max(0.0, min(100.0, score))  # invariant: always a clean 0..100
 
     # Honesty signal: distinguish a genuinely bad night from one we couldn't score. <1 h of

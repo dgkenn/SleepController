@@ -218,13 +218,18 @@ def sham_profile(base_profile, cfg):
     ``composite_bed_weight`` (a comfort blend, not an experimental steering behavior) untouched."""
     from dataclasses import replace
 
-    t = cfg.tunables
+    # The user's OWN neutral and wake warm-up stay (2026-09-25). This used to reset the neutral
+    # to the population tunable -- a held night then ran at a temperature the user had never
+    # chosen, so "held vs controlled" compared the controller against a different comfort
+    # point -- and flattened the wake ramp, which is a wake cue, not the in-night steering the
+    # trial measures. deep_bias_f is an ABSOLUTE temperature: 0.0 only stayed harmless
+    # because the floors caught it; it now sits at the neutral, i.e. no deep bias.
+    neutral = float(getattr(base_profile, "neutral_f", None) or cfg.tunables.neutral_temp_f)
     return replace(
         base_profile,
-        neutral_f=t.neutral_temp_f,
-        deep_bias_f=0.0,
+        neutral_f=neutral,
+        deep_bias_f=neutral,
         rem_warm_offset_f=0.0,
-        wake_ramp_f=t.neutral_temp_f,
     )
 
 

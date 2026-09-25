@@ -2,6 +2,7 @@
 deterministic + fraction-capped arm assignment, the auto-stop guardrail, do-no-harm SHAM-arm
 application, and the pure-python causal-effect analysis."""
 
+from dataclasses import replace
 import tempfile
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -181,10 +182,13 @@ def test_sham_profile_stays_within_device_clamp_and_zeroes_steering():
     cfg = AppConfig.default()
     base = cfg.default_setpoints()
     prof = sham_profile(base, cfg)
-    assert prof.deep_bias_f == 0.0
+    # no steering bias: deep sits AT the user's own neutral, no REM warmth; the user's own
+    # neutral and wake warm-up are kept (a comfort point and a wake cue, not steering)
+    assert prof.deep_bias_f == prof.neutral_f == base.neutral_f
     assert prof.rem_warm_offset_f == 0.0
-    assert prof.neutral_f == cfg.tunables.neutral_temp_f
-    assert prof.wake_ramp_f == cfg.tunables.neutral_temp_f
+    assert prof.wake_ramp_f == base.wake_ramp_f
+    personal = sham_profile(replace(base, neutral_f=72.5, wake_ramp_f=75.0), cfg)
+    assert personal.neutral_f == personal.deep_bias_f == 72.5 and personal.wake_ramp_f == 75.0
     # Still inside the Eight Sleep Pod's real 55-110 F device range -- do-no-harm never means
     # "no clamp", it means "the SAME clamp as every other night".
     assert 55.0 <= prof.neutral_f <= 110.0
@@ -222,7 +226,7 @@ def test_sham_night_disables_steering_and_preemption_do_no_harm(repo):
         if info["arm"] == SHAM:
             break
     assert info["arm"] == SHAM and info["eligible"] is True
-    assert prof.deep_bias_f == 0.0 and prof.rem_warm_offset_f == 0.0
+    assert prof.deep_bias_f == prof.neutral_f and prof.rem_warm_offset_f == 0.0
     assert controller.steer_actuate is False
     assert controller.wake_risk_assessor.preempt_threshold > 1.0
     assert controller.precursor_detector.preempt_threshold > 1.0

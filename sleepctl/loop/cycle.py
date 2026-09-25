@@ -153,6 +153,16 @@ class ControlCycle:
             except Exception:
                 pass
             self.controller.pending_steer_event = None
+        # A pre-empt episode, acted or withheld (see the controller's per-episode randomisation).
+        pre = getattr(self.controller, "pending_preempt_event", None)
+        if pre is not None:
+            try:
+                self.repo.log_steer_event(
+                    night_date, pre["ts"], "preempt", pre["stage_before"], 0.0,
+                    pre["frac_of_night"], pre["horizon_min"], applied=pre.get("applied", 1))
+            except Exception:
+                pass
+            self.controller.pending_preempt_event = None
         self.recent.append(frame)
         if len(self.recent) > 60:
             self.recent = self.recent[-60:]

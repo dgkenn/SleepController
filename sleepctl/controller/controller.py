@@ -47,6 +47,9 @@ from sleepctl.models import (
 #: way the first few ticks happened to go, and rate-limiting on that would silence the pre-cool
 #: exactly when the most night is left to protect.
 MIN_TICKS_FOR_DUTY_CYCLE = 60
+#: How long after a pre-empt episode starts a wake still counts as "followed it" when the steer
+#: ledger resolves the episode (acted vs withheld).
+PREEMPT_EVENT_HORIZON_MIN = 15.0
 
 #: A gap this long between architecture accruals means a different night. Comfortably
 #: longer than any within-night sensor dropout, comfortably shorter than a day.
@@ -104,6 +107,11 @@ class SleepController:
         self._deepen_active = False         # edge-trigger for steer-event logging
         self.last_steer = None              # last SteerDecision (telemetry)
         self.pending_steer_event = None     # consumed + logged by the cycle
+        self.pending_preempt_event = None   # consumed + logged by the cycle (maneuver "preempt")
+        self._preempt_episode = None        # tonight's current pre-empt episode: {"act": bool}
+        self.last_preempt_withheld = False
+        import random as _random
+        self._preempt_rng = _random.Random()
         # Deepening-response policy: whether to ACTUATE the deepen nudge tonight. On control
         # ('observe') nights this is False — the steerer still judges + logs a SHADOW event (the
         # n-of-1 control arm) but doesn't cool. Set nightly by the daemon from the learner.
@@ -934,6 +942,8 @@ class SleepController:
         arousal = None
         wake_detected = False
         self._preempt_cool = False
+        if self.sm.state is not ControllerState.MAINTENANCE:
+            self._preempt_episode = None      # a pre-empt episode lives inside maintenance
         if self.sm.state in (ControllerState.MAINTENANCE, ControllerState.WAKE_RECOVERY):
             arousal = self.arousal_detector.assess(
                 frame, recent, now, sleep_hr_base, sleep_hrv_base)
@@ -998,6 +1008,32 @@ class SleepController:
                 self.last_wake_window_preempt = should_preempt_window(
                     self.wake_window_report, now, cfg)
                 self._preempt_cool = self._preempt_cool or bool(self.last_wake_window_preempt)
+                # PER-EPISODE RANDOMISATION (2026-09-25). Whether a pre-empt prevents the
+                # awakening it fires for has never been measured: every episode acted, so there
+                # was no comparison. Each episode (the run of ticks from when pre-emption first
+                # fires until it stops) is now assigned ONCE: acted, or withheld with probability
+                # ``preempt_withhold_frac``. Both kinds are logged to the steer ledger as maneuver
+                # "preempt" (applied 1/0), whose resolver records whether a wake followed within
+                # the horizon -- the between-arm difference is the pre-empt's actual effect.
+                raw_preempt = self._preempt_cool
+                self.last_preempt_withheld = False
+                if raw_preempt:
+                    ep = getattr(self, "_preempt_episode", None)
+                    if ep is None:
+                        frac = max(0.0, min(0.5, float(
+                            getattr(cfg.tunables, "preempt_withhold_frac", 0.0) or 0.0)))
+                        act = self._preempt_rng.random() >= frac
+                        ep = self._preempt_episode = {"act": act}
+                        self.pending_preempt_event = {
+                            "ts": now, "applied": 1 if act else 0,
+                            "stage_before": frame.stage.value if frame.stage else None,
+                            "frac_of_night": 0.0, "horizon_min": PREEMPT_EVENT_HORIZON_MIN,
+                            "evidence_backed": bool(evidence_backed)}
+                    if not ep["act"]:
+                        self._preempt_cool = False
+                        self.last_preempt_withheld = True
+                else:
+                    self._preempt_episode = None
                 # Edge-trigger a pre-cool efficacy event when anticipatory cooling first
                 # fires for a window (so the lead-time learner can later score prevention).
                 anticip = next((r for r in risk.reasons if r.startswith("anticipatory_")), None)
