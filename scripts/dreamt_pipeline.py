@@ -520,7 +520,7 @@ def main(argv=None) -> int:
     out = os.path.join(work, "weights_candidate")
     # featurising runs one process per subject; capped so a many-core box doesn't multiply RAM
     report = TD.train(reduced, out, quick=args.quick, jobs=min(4, max(1, (os.cpu_count() or 2) - 1)),
-                      cache_dir=os.path.join(work, "cache"))
+                      cache_dir=os.path.join(work, "cache"), exportable_only=True)
     verdict = _better_than_bundled(report or {})
     scores = {k: {"kappa4_smoothed": round(float(v["sm"]["kappa4"]), 3),
                   "wake_kappa_smoothed": round(float(v["sm"].get("wake_kappa", 0.0)), 3)}

@@ -69,7 +69,9 @@ def _select(tag: str, ds: StagingDataset, names: Sequence[str], grid, folds: int
 
 def train(data_dir: str, out: str, folds: int = 5, quick: bool = False, jobs: int = 1,
           subjects: Optional[Sequence[str]] = None, skip_hrvonly: bool = False,
-          cache_dir: Optional[str] = None) -> Dict[str, object]:
+          cache_dir: Optional[str] = None, exportable_only: bool = False) -> Dict[str, object]:
+    """``exportable_only`` drops the reference-only candidates (gradient boosting), which can
+    never be installed but cost ~70% of the CV time on 216 features, single-threaded."""
     t0 = time.time()
     sids = list(subjects or discover_subjects(data_dir))
     with_ibi = subjects_with_ibi(data_dir, sids)
@@ -86,6 +88,8 @@ def train(data_dir: str, out: str, folds: int = 5, quick: bool = False, jobs: in
     if not len(ds):
         raise SystemExit("the reduction produced no scorable epochs")
     grid = T._candidates(quick)
+    if exportable_only:
+        grid = [(c, sp) for c, sp in grid if T._exportable(sp)]
     results: Dict[str, dict] = {}
     chosen: Dict[str, Tuple[str, dict]] = {}
 
