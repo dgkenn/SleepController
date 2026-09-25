@@ -161,6 +161,9 @@ _LOG_TAILS = (
     # runs were failing, colliding with the night-data push, or not being fired at all.
     ("health_publish", "health-publish.log", 12),
     ("watchdog", "watchdog.log", 12),
+    # The daemon's stderr: where a wedged event loop's thread stacks land (live_daemon's
+    # faulthandler), and where an exception that escapes the loop is printed.
+    ("daemon_err", "daemon.err", 40),
     ("verity_err", "verity.err", 10),
     # The web UI's own output. A dashboard that will not load is invisible in every other
     # signal here -- port 3000 answers, the build is current, every check is green -- so the
@@ -575,6 +578,13 @@ def write_snapshot(db_path: str, out_path: str, run_dir: str | None = None) -> s
 
 
 if __name__ == "__main__":
+    # A build that hangs dumps its stack to stderr before the publisher's time limit kills it
+    # (publish-health.ps1), so the next publish log says where it hung.
+    try:
+        import faulthandler
+        faulthandler.dump_traceback_later(150, repeat=False)
+    except Exception:
+        pass
     if len(sys.argv) < 3:
         sys.stderr.write("usage: python -m app.health_snapshot <db_path> <out_path> [run_dir]\n")
         raise SystemExit(2)

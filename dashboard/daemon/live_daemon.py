@@ -17,10 +17,30 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import sys
 import time
 import json
 from datetime import datetime, timedelta
 from typing import Optional
+
+
+#: If the event loop makes no progress for this long, every thread's stack is written to stderr
+#: (.run\daemon.err, published in the health snapshot). 2026-09-25 13:31 the daemon wedged
+#: during startup right after the comfort-anchor log line and nothing said where; the watchdog
+#: restarts a wedged loop, but only a stack says what to fix.
+WEDGE_DUMP_S = 240
+
+
+def _arm_wedge_dump(seconds: int = WEDGE_DUMP_S) -> None:
+    try:
+        import faulthandler
+        faulthandler.cancel_dump_traceback_later()
+        faulthandler.dump_traceback_later(seconds, repeat=True, file=sys.stderr)
+    except Exception:
+        pass
+
+
+_arm_wedge_dump()     # covers start-up (profile loading runs before the loop)
 
 
 def _write_daemon_heartbeat() -> None:
@@ -2860,6 +2880,7 @@ class LiveDashboardDaemon:
                 # loop for the same touch — kept independent of the runtime_state DB write so a
                 # DB hiccup can't also blind the "is the daemon alive" check).
                 bridge.write_heartbeat("daemon")
+                _arm_wedge_dump()            # progress: push the stack-dump deadline out
                 if max_ticks is not None and ticks >= max_ticks:
                     break
                 if shutdown_event is not None and shutdown_event.is_set():

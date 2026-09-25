@@ -118,14 +118,40 @@ try {
     Log "building operational-health snapshot from $dbPath -> $outPath"
     $prevPythonPath = $env:PYTHONPATH
     $env:PYTHONPATH = "$Root;$Root\dashboard\api;$Root\pyEight"
-    $pyErrLog = Join-Path $run "health-publish-py.err"
-    Remove-Item -Path $pyErrLog -Force -ErrorAction SilentlyContinue
-    $pyOut = & $py (Join-Path $Root "dashboard\api\app\health_snapshot.py") $dbPath $outPath 2>$pyErrLog
-    $pyExit = $LASTEXITCODE
+    # A builder that hangs (it once did, holding health-publish-py.err open so every later publish
+    # failed on the locked file) must not take publishing down with it: reap any builder older than
+    # a few minutes, write this run's output to per-run files, and kill this run's builder on timeout.
+    try {
+        Get-CimInstance Win32_Process -Filter "Name LIKE 'python%'" -ErrorAction Stop |
+            Where-Object { $_.CommandLine -like "*health_snapshot.py*" -and
+                           $_.CreationDate -lt (Get-Date).AddMinutes(-5) } |
+            ForEach-Object {
+                Log "killing stale snapshot builder pid $($_.ProcessId) (started $($_.CreationDate))"
+                Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            }
+    } catch { Log "stale-builder sweep skipped: $($_.Exception.Message)" }
+    Get-ChildItem -Path $run -Filter "health-publish-py.*" -ErrorAction SilentlyContinue |
+        Remove-Item -Force -ErrorAction SilentlyContinue
+    $pyErrLog = Join-Path $run "health-publish-py.$PID.err"
+    $pyOutLog = Join-Path $run "health-publish-py.$PID.out"
+    $builder = Join-Path $Root "dashboard\api\app\health_snapshot.py"
+    $proc = Start-Process -FilePath $py -ArgumentList @("`"$builder`"", "`"$dbPath`"", "`"$outPath`"") `
+        -NoNewWindow -PassThru -RedirectStandardOutput $pyOutLog -RedirectStandardError $pyErrLog
+    $null = $proc.Handle   # pin the handle so ExitCode is readable after exit
     $env:PYTHONPATH = $prevPythonPath
+    if (-not $proc.WaitForExit(180000)) {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+        $errText = ""
+        if (Test-Path $pyErrLog) { $errText = (Get-Content $pyErrLog -Raw -ErrorAction SilentlyContinue) }
+        throw "health_snapshot.py timed out after 180s and was killed: $errText"
+    }
+    $pyExit = $proc.ExitCode
+    $pyOut = @()
+    if (Test-Path $pyOutLog) { $pyOut = Get-Content $pyOutLog -ErrorAction SilentlyContinue }
     if ($pyExit -ne 0) {
         $errText = ""
-        if (Test-Path $pyErrLog) { $errText = (Get-Content $pyErrLog -Raw) }
+        if (Test-Path $pyErrLog) { $errText = (Get-Content $pyErrLog -Raw -ErrorAction SilentlyContinue) }
         throw "health_snapshot.py failed (exit $pyExit): $errText"
     }
     $pyOut | ForEach-Object { Log "health_snapshot: $_" }
