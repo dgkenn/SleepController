@@ -995,6 +995,22 @@ def main() -> None:
     # --- live: drive the real Pod via the async client ----------------------------
     import asyncio
 
+    # Stamp runtime_state.updated once at process start. Until a watchdog running older code
+    # restarts itself, it judges tick progress on this row, which still holds the PREVIOUS
+    # process's last tick, and would kill this one 45 s in; the stamp gives it the watchdog's
+    # usual 300 s to finish starting (2026-09-25). Nothing else in the row changes.
+    try:
+        from datetime import datetime as _dt, timezone as _tz
+
+        from app.db import connect as _connect
+        _c = _connect()
+        _c.execute("UPDATE runtime_state SET updated = ? WHERE id = 1",
+                   (_dt.now(_tz.utc).isoformat(),))
+        _c.commit()
+        _c.close()
+    except Exception:
+        pass
+
     from sleepctl.adapters.credentials import load_credentials
     from sleepctl.config import AppConfig
     from app.db import get_repo
