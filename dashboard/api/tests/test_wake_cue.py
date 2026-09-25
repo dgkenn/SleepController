@@ -27,7 +27,7 @@ def _run(monkeypatch, denied, hue, plug):
 
 
 _NO_HUE = {"enabled": False, "bridge_ip": None, "target_ids": [], "therapy_ids": []}
-_HUE = {"enabled": True, "bridge_ip": "10.0.0.5", "target_ids": ["1", "2"],
+_HUE = {"enabled": True, "bridge_ip": "10.0.0.5", "token": "paired", "target_ids": ["1", "2"],
         "therapy_ids": ["9"]}
 _NO_PLUG = {"enabled": False}
 
@@ -55,7 +55,8 @@ def test_everything_available_is_ok(monkeypatch):
 
 def test_a_wifi_therapy_plug_counts_without_hue_therapy_ids(monkeypatch):
     hue = dict(_HUE, therapy_ids=[])
-    r = _run(monkeypatch, denied=False, hue=hue, plug={"enabled": True})
+    plug = {"enabled": True, "config": {"ip": "10.0.0.9", "local_key": "k"}}
+    r = _run(monkeypatch, denied=False, hue=hue, plug=plug)
     assert r["status"] == "ok"
     assert "bright therapy lamp" in r["detail"]
 
@@ -66,3 +67,34 @@ def test_an_unconfigured_light_is_a_preference_not_a_fault(monkeypatch):
     r = _run(monkeypatch, denied=False, hue=_NO_HUE, plug=_NO_PLUG)
     assert r["status"] == "info"
     assert "Pod vibration" in r["detail"]
+
+
+def test_an_unpaired_hue_and_an_empty_plug_are_not_wake_cues(monkeypatch):
+    """A Hue bridge that was never paired has no token and cannot switch a lamp; a plug toggled
+    "enabled" with no address or key cannot either. Counting them turned "nothing but a warming
+    bed" into a mere warning."""
+    hue = dict(_HUE, token=None)
+    r = _run(monkeypatch, denied=True, hue=hue, plug={"enabled": True, "config": {}})
+    assert r["status"] == "fail"
+    assert "not paired" in r["detail"]
+    assert "no address/key" in r["detail"]
+
+
+def test_an_http_plug_with_an_on_url_counts(monkeypatch):
+    plug = {"enabled": True, "backend": "http", "config": {"on_url": "http://10.0.0.9/on"}}
+    r = _run(monkeypatch, denied=True, hue=_NO_HUE, plug=plug)
+    assert r["status"] == "warn"
+    assert "bright therapy lamp" in r["detail"].split("|")[0]
+
+
+def test_a_config_read_error_is_info_not_a_failure(monkeypatch):
+    """Not being able to READ the light config is not evidence that there is no light."""
+    def boom(repo):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr("app.bridge.read_runtime_state",
+                        lambda conn, secs=180: {"extra": {"alarm_write_denied": True}})
+    monkeypatch.setattr("app.services._get_hue_config", boom)
+    monkeypatch.setattr("app.services._get_plug_config", boom)
+    r = diag._check_wake_cue(_Repo())
+    assert r["status"] == "info"
+    assert "unreadable" in r["detail"]

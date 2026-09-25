@@ -693,12 +693,16 @@ def _check_preemption_dead_zone(repo) -> dict:
     ones mean there was genuinely nothing to act on and the gap is not the problem.
     """
     try:
+        # The newest night that actually SLEPT. The daemon ticks all day, and from noon on an
+        # idle afternoon tick carries the next night_date -- picking the newest night_date of
+        # ANY decision swapped last night's result for "ok" on a night that has not happened.
         row = repo.conn.execute(
             "SELECT night_date FROM decisions WHERE night_date IS NOT NULL "
+            "AND state IN ('maintenance', 'wake_recovery') "
             "ORDER BY id DESC LIMIT 1").fetchone()
         if not row:
             return _check("preemption_dead_zone", "Pre-emption dead zone", "info",
-                          "no decisions recorded yet", None)
+                          "no maintenance decisions recorded yet", None)
         night = row[0]
         rows = repo.conn.execute(
             "SELECT state, log_payload FROM decisions WHERE night_date = ? ORDER BY id",
@@ -1953,6 +1957,7 @@ def _check_wake_cue(repo) -> dict:
     """
     channels: list[str] = []
     missing: list[str] = []
+    unreadable = False
     # 1) the bed itself -- always present, but on its own the weakest cue we have.
     channels.append("thermal ramp")
     # 2) vibration, unless the Pod refused the write.
@@ -1964,21 +1969,33 @@ def _check_wake_cue(repo) -> dict:
         else:
             channels.append("Pod vibration")
     except Exception:
+        unreadable = True
         missing.append("Pod vibration (state unreadable)")
-    # 3) the dawn light and 4) the bright therapy lamp, on either transport.
+    # 3) the dawn light and 4) the bright therapy lamp, on either transport. A channel counts
+    # only if it can actually be driven: a Hue bridge that was never paired has no token, and
+    # a plug switched "on" with no address/key is a toggle, not a lamp.
     try:
         from app import services as _svc
         hue = _svc._get_hue_config(repo)
         plug = _svc._get_plug_config(repo)
-        if hue.get("enabled") and hue.get("bridge_ip") and hue.get("target_ids"):
+        hue_ok = bool(hue.get("enabled") and hue.get("bridge_ip") and hue.get("token"))
+        pcfg = plug.get("config") or {}
+        plug_ok = bool(plug.get("enabled") and (
+            (pcfg.get("ip") and pcfg.get("local_key")) or pcfg.get("on_url")))
+        if hue_ok and hue.get("target_ids"):
             channels.append(f"dawn light ({len(hue['target_ids'])} Hue lamp(s))")
+        elif hue.get("enabled") and hue.get("bridge_ip") and not hue.get("token"):
+            missing.append("dawn light (Hue bridge not paired)")
         else:
             missing.append("dawn light (Hue not configured)")
-        if (hue.get("enabled") and hue.get("therapy_ids")) or plug.get("enabled"):
+        if (hue_ok and hue.get("therapy_ids")) or plug_ok:
             channels.append("bright therapy lamp")
+        elif plug.get("enabled"):
+            missing.append("bright therapy lamp (plug has no address/key)")
         else:
             missing.append("bright therapy lamp")
     except Exception as exc:
+        unreadable = True
         missing.append(f"light channels (unreadable: {exc!r})")
 
     detail = f"available: {', '.join(channels)}"
@@ -1991,6 +2008,11 @@ def _check_wake_cue(repo) -> dict:
     # preference; a wake system with nothing but a warming bed in it is a missed shift. Grading
     # every unconfigured channel as a warning would leave this permanently amber for anyone who
     # simply does not own a Hue, and an alert that is always on is one nobody reads.
+    # A read error is not evidence that a channel is gone -- say so, do not fail on it.
+    if unreadable and not (has_vibration and has_light):
+        return _check("wake_cue", "Wake cues available", "info",
+                      f"could not read every wake channel -- {detail}",
+                      "re-run diagnostics; if this persists, check the database is readable")
     if not has_vibration and not has_light:
         return _check("wake_cue", "Wake cues available", "fail",
                       f"the ONLY thing left to wake you is a warming bed -- {detail}",

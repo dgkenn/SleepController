@@ -219,3 +219,105 @@ def test_the_review_endpoints_need_auth():
     assert anon.get("/tonight/wake-review").status_code in (401, 403)
     assert anon.post("/tonight/wake-up").status_code in (401, 403)
     assert anon.post("/tonight/wake-review", json={}).status_code in (401, 403)
+
+
+# ---- re-saving a review replaces its declared instants; it does not multiply them ----------
+def _review_events(repo):
+    return [json.loads(r[0]) for r in repo.conn.execute(
+        "SELECT data FROM events WHERE code='marker_vs_stage' ORDER BY id").fetchall()]
+
+
+def test_saving_the_same_review_again_does_not_multiply_its_verdicts(repo):
+    """Every save used to insert one event per verdict, so 12 saves of one confirmed awakening
+    read to wake_truth as 12 independent confirmations (n=12, bias pinned at the maximum)."""
+    from sleepctl.learning.wake_truth import wake_truth_profile
+    _seed(repo)
+    eps = wake_review.suspected_awakenings(repo, NIGHT)
+    body = {"night_date": NIGHT, "rested": 3,
+            "verdicts": [{"ts": eps[0]["ts"], "verdict": "yes"},
+                         {"ts": eps[1]["ts"], "verdict": "no"}]}
+    for _ in range(12):
+        wake_review.save_review(repo, body)
+    evs = _review_events(repo)
+    assert len(evs) == 2
+    assert all(e["night_date"] == NIGHT for e in evs)
+    p = wake_truth_profile(repo)
+    assert p["n"] == 1 and p["n_denied"] == 1
+
+
+def test_changing_or_dropping_a_verdict_replaces_the_old_instant(repo):
+    _seed(repo)
+    eps = wake_review.suspected_awakenings(repo, NIGHT)
+    wake_review.save_review(repo, {"night_date": NIGHT, "verdicts": [
+        {"ts": eps[0]["ts"], "verdict": "yes"}, {"ts": eps[1]["ts"], "verdict": "yes"}]})
+    wake_review.save_review(repo, {"night_date": NIGHT, "verdicts": [
+        {"ts": eps[0]["ts"], "verdict": "no"}]})
+    evs = _review_events(repo)
+    assert len(evs) == 1 and evs[0]["declared_awake"] is False
+
+
+def test_a_resave_leaves_gestures_and_other_nights_and_cleans_up_legacy_duplicates(repo):
+    _seed(repo)
+    eps = wake_review.suspected_awakenings(repo, NIGHT)
+    ins = ("INSERT INTO events (ts, category, severity, code, message, data) "
+           "VALUES (?,?,?,?,?,?)")
+    # a marker gesture during the night, another night's review, and three copies of this
+    # night's verdict written before events carried a night_date
+    repo.conn.execute(ins, (eps[0]["ts"], "sensor", "info", "marker_vs_stage", "gesture",
+                            json.dumps({"stage_at_marker": "light", "kind": "tap"})))
+    repo.conn.execute(ins, ("2026-09-20T02:00:00", "sensor", "info", "marker_vs_stage", "r",
+                            json.dumps({"stage_at_marker": "light", "kind": "review",
+                                        "declared_awake": True, "night_date": "2026-09-19"})))
+    for _ in range(3):
+        repo.conn.execute(ins, (eps[0]["ts"], "sensor", "info", "marker_vs_stage", "old",
+                                json.dumps({"stage_at_marker": "awake", "kind": "review",
+                                            "declared_awake": True})))
+    repo.conn.commit()
+    wake_review.save_review(repo, {"night_date": NIGHT, "verdicts": [
+        {"ts": eps[0]["ts"], "verdict": "yes"}]})
+    evs = _review_events(repo)
+    kinds = sorted((e.get("kind"), e.get("night_date") or "") for e in evs)
+    assert kinds == [("review", "2026-09-19"), ("review", NIGHT), ("tap", "")]
+
+
+# ---- the night a review belongs to follows the session, not the clock ----------------------
+def _session(repo, start, end, state="maintenance", wake_at=None, step_min=5):
+    t = start
+    while t <= end:
+        nd = (t - timedelta(hours=12)).date().isoformat()   # how the controller labels ticks
+        is_wake = wake_at is not None and t == wake_at
+        repo.conn.execute(
+            "INSERT INTO raw_samples (ts, night_date, stage, controller_state, wake_event) "
+            "VALUES (?,?,?,?,?)",
+            (t.isoformat(), nd, "awake" if is_wake else "light", state, 1 if is_wake else 0))
+        t += timedelta(minutes=step_min)
+    repo.conn.commit()
+
+
+def test_a_day_sleeper_waking_after_noon_reviews_the_sleep_they_just_had(repo):
+    """Post-night-shift sleep 04:00-12:05: the controller files the tail after noon under the
+    next date, and tapping "I'm awake" at 12:10 opened an empty review for a night that had
+    not happened yet -- the 09:00 awakening was never asked about."""
+    _session(repo, datetime(2026, 7, 2, 4, 0), datetime(2026, 7, 2, 12, 5),
+             wake_at=datetime(2026, 7, 2, 9, 0))
+    now = datetime(2026, 7, 2, 12, 10)
+    assert wake_review.night_date_for(now, repo) == "2026-07-01"
+    p = wake_review.review_payload(repo, now=now)
+    assert p["night_date"] == "2026-07-01"
+    assert [a["ts"] for a in p["awakenings"]] == ["2026-07-02T09:00:00"]
+    out = wake_review.save_review(repo, {"rested": 2}, now=now)
+    assert out["night_date"] == "2026-07-01"
+
+
+def test_an_idle_stretch_separates_last_night_from_this_afternoons_nap(repo):
+    _session(repo, datetime(2026, 9, 21, 23, 0), datetime(2026, 9, 22, 7, 0))
+    _session(repo, datetime(2026, 9, 22, 7, 5), datetime(2026, 9, 22, 13, 55), state="idle")
+    _session(repo, datetime(2026, 9, 22, 14, 0), datetime(2026, 9, 22, 15, 0))
+    assert wake_review.night_date_for(datetime(2026, 9, 22, 15, 5), repo) == "2026-09-22"
+
+
+def test_a_normal_morning_and_no_recent_session_keep_the_noon_cutoff(repo):
+    _session(repo, datetime(2026, 9, 21, 23, 0), datetime(2026, 9, 22, 7, 0))
+    assert wake_review.night_date_for(datetime(2026, 9, 22, 7, 10), repo) == "2026-09-21"
+    assert wake_review.night_date_for(datetime(2026, 9, 24, 6, 0), repo) == "2026-09-23"
+    assert wake_review.night_date_for(datetime(2026, 9, 24, 13, 0), repo) == "2026-09-24"

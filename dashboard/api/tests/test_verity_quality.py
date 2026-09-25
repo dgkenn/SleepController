@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 
 def _hist(now: float, offsets_s: list, hr=None, pim=None):
     """Build a ``history`` list (oldest -> newest) of samples at ``now - offset`` for each
@@ -461,3 +463,65 @@ def test_a_band_that_reports_charging_is_not_worn(monkeypatch):
     out = services.ingest_hr(repo, {"hr": 72.0, "rr": [830.0, 840.0, 835.0],
                                     "source": "verity-test-charging"})
     assert out["not_worn"] is True and out["usable"] is False
+
+
+# ---- "no RR" is evidence only when beat intervals are supposed to be arriving -------------
+def test_missing_rr_is_no_evidence_when_ppi_is_not_expected():
+    from app.services import assess_cardiac_quality
+
+    now = 1_000_000.0
+    history = _hist(now, [400.0, 350.0, 300.0, 250.0, 200.0, 150.0, 100.0, 50.0],
+                    hr=56.0, pim=0.2)
+    kw = dict(hr=56.0, rr=[], acc={"pim": 0.2}, history=history, now=now, recent_rr_n=0)
+    assert assess_cardiac_quality(**kw, ppi_expected=False)["not_worn"] is False
+    assert assess_cardiac_quality(**kw, ppi_expected=True)["not_worn"] is True
+    assert assess_cardiac_quality(**kw)["not_worn"] is True       # unknown: unchanged
+
+
+@pytest.fixture()
+def tmp_repo(tmp_path):
+    from sleepctl.storage.repository import Repository
+    from app import db as app_db
+    r = Repository(str(tmp_path / "vq.db"), check_same_thread=False)
+    r.conn.executescript(app_db._DASHBOARD_DDL)
+    app_db._apply_migrations(r.conn)
+    r.conn.commit()
+    yield r
+    r.close()
+
+
+def _link(repo, streams, source="verity"):
+    from app import services
+    rec = {"state": "connected", "streams": streams,
+           "ts": datetime.now(timezone.utc).isoformat(), "source": source}
+    services._kv_set_json(repo, "wearable_link", rec)
+    services._kv_set_json(repo, f"wearable_link:{source}", rec)
+
+
+def test_ppi_is_expected_when_the_link_lists_it_or_rr_arrived_recently(tmp_repo):
+    from app import bridge, services
+    assert services._ppi_expected(tmp_repo, "verity") is False       # nothing known
+    _link(tmp_repo, ["ACC@52Hz", "HR/RR (generic 0x180D)"])
+    assert services._ppi_expected(tmp_repo, "verity") is False
+    _link(tmp_repo, ["ACC@52Hz", "PPI"])
+    assert services._ppi_expected(tmp_repo, "verity") is True
+    _link(tmp_repo, ["ACC@52Hz", "HR/RR (generic 0x180D)"])
+    bridge.append_rr_intervals(tmp_repo.conn, [980.0, 1000.0], "verity")
+    assert services._ppi_expected(tmp_repo, "verity") is True
+
+
+def test_a_still_sleeper_on_the_generic_hr_service_keeps_their_heart_rate(tmp_repo):
+    """The forwarder's "ACC ok, PPI refused -> generic HR service" mode never delivers beat
+    intervals. Five still minutes of real sleep then read as "flat actigraphy + no RR" and the
+    sleeper's heart rate was blanked from the live readout as not worn."""
+    from app import bridge, services
+    n = int((services.NOT_WORN_MIN_DURATION_S + 30) // 10)
+    _seed_verity_history(tmp_repo.conn, hr=54.0, pim=0.2, n=n, step_s=10.0)
+    _link(tmp_repo, ["ACC@52Hz", "HR/RR (generic 0x180D)"])
+    out = services.ingest_hr(tmp_repo, {"hr": 54.0, "source": "verity", "acc": {"pim": 0.2}})
+    assert out["not_worn"] is False and out["usable"] is True
+    assert bridge.read_cardiac_sample(tmp_repo.conn)["hr"] == 54.0
+    # ...while a band that SHOULD be streaming PPI and is not still reads as off the arm
+    _link(tmp_repo, ["ACC@52Hz", "PPI"])
+    out = services.ingest_hr(tmp_repo, {"hr": 54.0, "source": "verity", "acc": {"pim": 0.2}})
+    assert out["not_worn"] is True

@@ -301,9 +301,12 @@ def append_actigraphy(conn: sqlite3.Connection, counts: dict, source: str = "ver
                 rt = read_runtime_state(conn)
                 stage = ((rt.get("frame") or {}).get("stage") or (rt.get("decision") or {}).get("stage")
                          or rt.get("stage"))
+                # events.ts is NAIVE LOCAL (Repository.log_event, the wake review, every
+                # reader that bounds it by raw_samples times) -- unlike actigraphy.ts above, which
+                # is UTC. A UTC stamp here landed hours outside the night's window.
                 conn.execute(
                     "INSERT INTO events (ts, category, severity, code, message, data) VALUES (?,?,?,?,?,?)",
-                    (_now(), "sensor", "info", "marker_vs_stage",
+                    (datetime.now().isoformat(), "sensor", "info", "marker_vs_stage",
                      f"marker {counts.get('marker_kind') or 'gesture'} while the stager said {stage or 'unknown'}",
                      json.dumps({"stage_at_marker": stage, "runtime_stale": rt.get("stale"),
                                  "kind": counts.get("marker_kind")})))

@@ -66,6 +66,14 @@ def repo_dep():
         repo.close()
 
 
+def _secret_eq(presented: str, expected: str) -> bool:
+    """Constant-time secret compare that never raises. ``secrets.compare_digest`` on two *str*
+    raises TypeError when either holds a non-ASCII character, so ``?token=%C3%A9`` used to
+    500 every gated endpoint instead of 404/401. Comparing the UTF-8 bytes has no such limit."""
+    return secrets.compare_digest((presented or "").encode("utf-8"),
+                                  (expected or "").encode("utf-8"))
+
+
 def _tail(path: str, n: int) -> str:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
@@ -95,7 +103,7 @@ def diag(token: str = "", format: str = "", repo=Depends(repo_dep)):
     logs — but it IS reachable over the public Funnel URL, so keep the token strong. This exists so
     the maintainer can read the daemon state remotely without shelling into the host."""
     expected = os.environ.get("DIAG_TOKEN")
-    if not expected or not token or not secrets.compare_digest(token, expected):
+    if not expected or not token or not _secret_eq(token, expected):
         raise HTTPException(404, "not found")
 
     from app.diagnostics import render_diagnosis_text, run_diagnostics
@@ -454,11 +462,9 @@ def _bcg_auth(request: Request, token: str | None) -> None:
     LAN."""
     if settings.bcg_ingest_open:
         return
-    import hmac
-
     from app.security import _token_from_request, decode_token
     presented = token or _token_from_request(request) or ""
-    if settings.bcg_ingest_token and hmac.compare_digest(presented, settings.bcg_ingest_token):
+    if settings.bcg_ingest_token and _secret_eq(presented, settings.bcg_ingest_token):
         return  # static shared-secret ingest token (non-expiring, funnel-safe)
     decode_token(presented)  # raises 401 if invalid
 
@@ -1007,14 +1013,34 @@ def get_settings(repo=Depends(repo_dep), user: str = AuthDep):
     # every row 500'd this endpoint every single time a night/induce/nap session ended normally,
     # which is every morning. Skip whatever doesn't parse as real settings rather than crash the
     # whole page over an internal bookkeeping key that was never meant to be read from here.
+    #
+    # The same table also holds device credentials (wake_plug_config.config.local_key,
+    # hue_config.token, calendar_config.ics_url, ...). Those have their own masked views
+    # (/wake/plug/config etc.); here every secret-looking key is masked at any depth, so this
+    # endpoint never hands a stored credential to the browser.
     rows = repo.conn.execute("SELECT key, value FROM settings_kv").fetchall()
     stored = {}
     for r in rows:
         try:
-            stored[r["key"]] = json.loads(r["value"])
+            stored[r["key"]] = _redact_secrets(json.loads(r["value"]), r["key"])
         except (TypeError, ValueError, json.JSONDecodeError):
             continue
     return {"stored": stored, "defaults": _config_defaults()}
+
+
+_SECRET_KEY_RE = re.compile(r"local_key|token|secret|password|ics_url|api_key", re.IGNORECASE)
+
+
+def _redact_secrets(value, key: str = ""):
+    """Deep copy of ``value`` with every value under a secret-looking key replaced by "***"
+    (an empty/null secret stays as-is so the UI can still tell "not set" from "set")."""
+    if key and _SECRET_KEY_RE.search(key):
+        return "***" if value not in (None, "", [], {}) else value
+    if isinstance(value, dict):
+        return {k: _redact_secrets(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_redact_secrets(v) for v in value]
+    return value
 
 
 @app.put("/settings")
@@ -1092,9 +1118,7 @@ def get_alerts(repo=Depends(repo_dep), user: str = AuthDep):
 
 @app.post("/alerts/{alert_id}/ack")
 def ack_alert(alert_id: int, repo=Depends(repo_dep), user: str = AuthDep):
-    repo.conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
-    repo.conn.commit()
-    return {"ok": True}
+    return services.acknowledge_alert(repo, alert_id)
 
 
 # ---- High-leverage features: pre-emption, readiness, weather, forensics, n-of-1 ----
@@ -1365,7 +1389,7 @@ def diag_events(token: str = "", limit: int = 200, category: str = "", severity:
     missing/wrong/disabled — invisible to scanners). Complements ``/diag``'s log tails with a
     structured, queryable event timeline instead of unstructured text."""
     expected = os.environ.get("DIAG_TOKEN")
-    if not expected or not token or not secrets.compare_digest(token, expected):
+    if not expected or not token or not _secret_eq(token, expected):
         raise HTTPException(404, "not found")
 
     return repo.recent_events(
@@ -1384,7 +1408,7 @@ def diag_thermal_samples(token: str = "", limit: int = 500, repo=Depends(repo_de
     SAME token gating as ``/diag`` (secret ``DIAG_TOKEN`` env, constant-time compare, 404 when
     missing/wrong/disabled — invisible to scanners). ``limit`` defaults to 500, capped at 5000."""
     expected = os.environ.get("DIAG_TOKEN")
-    if not expected or not token or not secrets.compare_digest(token, expected):
+    if not expected or not token or not _secret_eq(token, expected):
         raise HTTPException(404, "not found")
 
     from app import bridge
@@ -1403,7 +1427,7 @@ def diag_sensor_history(token: str = "", limit: int = 500, since: str = "", repo
     missing/wrong/disabled -- invisible to scanners). ``limit`` defaults to 500, capped at 5000.
     Optional ``since`` (ISO timestamp) restricts to rows at or after it."""
     expected = os.environ.get("DIAG_TOKEN")
-    if not expected or not token or not secrets.compare_digest(token, expected):
+    if not expected or not token or not _secret_eq(token, expected):
         raise HTTPException(404, "not found")
 
     from app import bridge
@@ -1420,7 +1444,7 @@ def diag_rr_history(token: str = "", minutes: float = 720.0, repo=Depends(repo_d
     (secret ``DIAG_TOKEN``, constant-time compare, 404 when missing/wrong so it's invisible to
     scanners). ``minutes`` is the trailing window, capped at 30 days."""
     expected = os.environ.get("DIAG_TOKEN")
-    if not expected or not token or not secrets.compare_digest(token, expected):
+    if not expected or not token or not _secret_eq(token, expected):
         raise HTTPException(404, "not found")
 
     from app import bridge
@@ -1437,7 +1461,7 @@ def diag_rr_history(token: str = "", minutes: float = 720.0, repo=Depends(repo_d
 # round-trip that bypasses whatever runtime_state currently says.
 def _diag_gate(token: str) -> None:
     expected = os.environ.get("DIAG_TOKEN")
-    if not expected or not token or not secrets.compare_digest(token, expected):
+    if not expected or not token or not _secret_eq(token, expected):
         raise HTTPException(404, "not found")
 
 

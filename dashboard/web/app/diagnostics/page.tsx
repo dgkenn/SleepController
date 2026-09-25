@@ -12,6 +12,7 @@ import {
   DiagCheck,
   DiagEvent,
   DiagVerdict,
+  TailscaleLogin,
 } from '@/lib/api';
 
 const VERDICT_BANNER: Record<DiagVerdict, { bg: string; border: string; text: string; label: string }> = {
@@ -62,6 +63,40 @@ function renderDiagnosisText(report: DiagnosticsReport): string {
   return lines.join('\n');
 }
 
+/** Only an https URL is ever turned into a link -- the file it comes from is written by a
+ * watchdog on the box, and a `javascript:` href would run in this signed-in page. */
+function safeLoginUrl(url: string | null | undefined): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).protocol === 'https:' ? url : null;
+  } catch {
+    return null;
+  }
+}
+
+/** The one-tap Tailscale re-attach the remote_access remedy points at. Fetched only while that
+ * check warns; the URL is a credential, so it is rendered as a link and nothing else (never
+ * logged, never part of "Copy diagnostics"). */
+function TailscaleLoginLink() {
+  const { data } = useSWR<TailscaleLogin>(
+    'tailscale-login',
+    () => diagnosticsApi.tailscaleLogin(),
+    { refreshInterval: 30000, shouldRetryOnError: false },
+  );
+  const url = safeLoginUrl(data?.login_url);
+  if (!url) return null;
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="mt-2 flex items-center justify-center w-full text-sm px-4 py-3 rounded-xl bg-brand/15 border border-brand/40 text-brand font-medium min-h-[44px] active:bg-brand/25"
+    >
+      Log this machine back in to Tailscale
+    </a>
+  );
+}
+
 function CheckRow({ check }: { check: DiagCheck }) {
   const style = STATUS_STYLE[check.status] ?? STATUS_STYLE.info;
   return (
@@ -77,6 +112,7 @@ function CheckRow({ check }: { check: DiagCheck }) {
       {check.remedy && (
         <p className="text-xs text-brand mt-1 leading-relaxed">Fix: {check.remedy}</p>
       )}
+      {check.id === 'remote_access' && check.status === 'warn' && <TailscaleLoginLink />}
     </div>
   );
 }

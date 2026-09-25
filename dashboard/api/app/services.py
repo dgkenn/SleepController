@@ -525,17 +525,20 @@ def generate_alerts(repo) -> int:
 
 
 def _add_alert(repo, atype: str, severity: str, message: str) -> int:
-    # de-dupe: skip if an identical unacknowledged alert already exists today
-    today = datetime.now().date().isoformat()
+    # de-dupe: skip if an identical unacknowledged alert already exists today. "Today" is the
+    # UTC date, because alerts.ts is written in UTC: comparing a LOCAL date against it missed
+    # every existing row whenever the two dates differed (evenings west of UTC, mornings east),
+    # and each poll of /alerts then inserted another copy.
+    now_utc = datetime.now(timezone.utc)
     exists = repo.conn.execute(
         "SELECT 1 FROM alerts WHERE type=? AND acknowledged=0 AND substr(ts,1,10)=? LIMIT 1",
-        (atype, today),
+        (atype, now_utc.date().isoformat()),
     ).fetchone()
     if exists:
         return 0
     repo.conn.execute(
         "INSERT INTO alerts (ts, type, severity, message, acknowledged) VALUES (?,?,?,?,0)",
-        (datetime.now(timezone.utc).isoformat(), atype, severity, message),
+        (now_utc.isoformat(), atype, severity, message),
     )
     repo.conn.commit()
     return 1
@@ -1803,7 +1806,8 @@ def _stillness_run_start(history: list) -> "float | None":
 
 def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
                            now: float | None = None, *, recent_rr_n: int | None = None,
-                           window_rmssd: float | None = None) -> dict:
+                           window_rmssd: float | None = None,
+                           ppi_expected: bool | None = None) -> dict:
     """Pure, deterministic Verity Sense data-quality guard -- see the module comments above the
     threshold constants for the documented Polar behaviours this defends against.
 
@@ -1822,6 +1826,10 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
         of a perfectly worn, sleeping band carry no intervals at all.
       window_rmssd: RMSSD over the persisted window (``_windowed_rmssd``). Preferred over the
         batch's own two or three intervals, where one artefact swings RMSSD past either bound.
+      ppi_expected: whether beat intervals SHOULD be arriving (``_ppi_expected``). False means
+        the band is streaming without PPI (the forwarder's "ACC ok, PPI refused -> generic HR
+        service" mode), where absent RR is the normal state of a worn band and so is no
+        evidence of anything. None (unknown) keeps the old behaviour.
 
     Returns ``{"hr_frozen": bool, "not_worn": bool, "usable": bool, "reason": str}``. No hidden
     global state -- same inputs always produce the same output, so this is trivially unit-testable
@@ -1872,7 +1880,8 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
         if duration >= NOT_WORN_MIN_DURATION_S:
             rmssd = (window_rmssd if window_rmssd is not None
                      else (_rmssd(rr) if rr else None))
-            no_rr = not rr and (recent_rr_n is None or int(recent_rr_n) <= 0)
+            no_rr = (not rr and (recent_rr_n is None or int(recent_rr_n) <= 0)
+                     and ppi_expected is not False)
             implausible_rr = rmssd is not None and rmssd < RMSSD_IMPLAUSIBLY_LOW_MS
             implausible_high = rmssd is not None and rmssd > RMSSD_IMPLAUSIBLY_HIGH_MS
             racing_still = hr is not None and float(hr) >= STILL_HR_IMPLAUSIBLY_HIGH_BPM
@@ -1896,6 +1905,33 @@ def assess_cardiac_quality(hr, rr: list | None, acc: dict | None, history: list,
         "usable": not (hr_frozen or not_worn),
         "reason": "; ".join(reasons) if reasons else "ok",
     }
+
+
+#: RR seen this recently means the band IS delivering beat intervals, whatever the link said.
+PPI_RECENT_RR_S = 60 * 60.0
+
+
+def _ppi_expected(repo, source: str) -> bool:
+    """Should beat intervals be arriving from this band right now?
+
+    True when the forwarder's link report lists a PPI stream, or when any RR interval landed
+    in the last ``PPI_RECENT_RR_S``. Otherwise the band is streaming heart rate without PPI --
+    the forwarder's fallback when the PMD PPI start is refused -- and "no RR" is simply what a
+    worn, sleeping band looks like in that mode, not a sign it is off the arm. Never raises
+    (an unreadable answer is True: the old, stricter behaviour)."""
+    try:
+        for key in (f"{_WEARABLE_LINK_KEY}:{source}", _WEARABLE_LINK_KEY):
+            rec = _kv_get_json(repo, key)
+            if isinstance(rec, dict) and rec.get("streams") is not None:
+                if any("PPI" in str(x).upper() for x in (rec.get("streams") or [])):
+                    return True
+                break
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=PPI_RECENT_RR_S)).isoformat()
+        row = repo.conn.execute(
+            "SELECT 1 FROM rr_intervals WHERE ts >= ? LIMIT 1", (cutoff,)).fetchone()
+        return row is not None
+    except Exception:
+        return True
 
 
 #: settings_kv key holding the wearable's last reported battery percent.
@@ -2532,7 +2568,8 @@ def ingest_hr(repo, payload: dict) -> dict:
         recent_rr_n = None
     quality = assess_cardiac_quality(hr, rr, acc if isinstance(acc, dict) else None,
                                      history, now=now_ts, recent_rr_n=recent_rr_n,
-                                     window_rmssd=hrv_windowed)
+                                     window_rmssd=hrv_windowed,
+                                     ppi_expected=_ppi_expected(repo, source))
     # The band's own word: a fresh "charging" / "off the arm" report from the forwarder means
     # whatever the optical sensor says is not the user's heart.
     try:
@@ -2886,6 +2923,50 @@ def _clear_health_alert(repo, code: str) -> None:
     repo.conn.commit()
 
 
+#: settings_kv key holding the health codes the user acknowledged while still true. An ack
+#: marks the alert row acknowledged, and without this the next tick saw "no open row" for a
+#: still-active code and raised (and pushed) it again -- dismissing a critical alert re-buzzed
+#: the phone within a poll. A code leaves this set once its condition clears, so a genuinely
+#: new occurrence still alerts.
+_HEALTH_ACKED_KEY = "health_alert_acked"
+
+
+def _acked_health_codes(repo) -> set[str]:
+    import json as _json
+    try:
+        row = repo.conn.execute(
+            "SELECT value FROM settings_kv WHERE key=?", (_HEALTH_ACKED_KEY,)).fetchone()
+        codes = _json.loads(row["value"]) if row and row["value"] else []
+    except Exception:
+        return set()
+    return {str(c) for c in codes} if isinstance(codes, list) else set()
+
+
+def _store_acked_health_codes(repo, codes: set[str]) -> None:
+    import json as _json
+    if codes:
+        repo.conn.execute(
+            "INSERT INTO settings_kv (key, value) VALUES (?,?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            (_HEALTH_ACKED_KEY, _json.dumps(sorted(codes))))
+    else:
+        repo.conn.execute("DELETE FROM settings_kv WHERE key=?", (_HEALTH_ACKED_KEY,))
+    repo.conn.commit()
+
+
+def acknowledge_alert(repo, alert_id: int) -> dict:
+    """User dismissal of one alert. A health-monitor alert additionally stays suppressed
+    (not re-raised, not re-pushed) until its condition clears."""
+    row = repo.conn.execute("SELECT type FROM alerts WHERE id=?", (alert_id,)).fetchone()
+    repo.conn.execute("UPDATE alerts SET acknowledged=1 WHERE id=?", (alert_id,))
+    repo.conn.commit()
+    atype = str(row["type"]) if row and row["type"] else ""
+    if atype.startswith(_HEALTH_ALERT_PREFIX):
+        _store_acked_health_codes(
+            repo, _acked_health_codes(repo) | {atype[len(_HEALTH_ALERT_PREFIX):]})
+    return {"ok": True}
+
+
 def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None) -> dict:
     """Run the health evaluator against the live runtime_state, raise alerts for newly
     appearing issues, clear alerts for issues that resolved, and push newly-appearing
@@ -2910,9 +2991,17 @@ def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None
                                             stale_seconds=settings.runtime_stale_seconds)
     current_codes = {i["code"] for i in issues}
     previously_active = active_health_alert_codes(repo)
+    # Acknowledged-while-active codes stay quiet until the condition clears; then they are
+    # forgotten, so the next occurrence raises and pushes like any new issue.
+    acked = _acked_health_codes(repo)
+    suppressed = acked & current_codes
+    if suppressed != acked:
+        _store_acked_health_codes(repo, suppressed)
 
     newly_raised = []
     for issue in issues:
+        if issue["code"] in suppressed:
+            continue
         if _raise_health_alert(repo, issue):
             newly_raised.append(issue)
 
@@ -2920,7 +3009,7 @@ def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None
         _clear_health_alert(repo, code)
 
     pushed = 0
-    to_push = push_sender.select_new_critical(newly_raised, previously_active)
+    to_push = push_sender.select_new_critical(newly_raised, previously_active | suppressed)
     if to_push:
         subs = list_push_subscriptions(repo)
         for issue in to_push:
@@ -2932,7 +3021,8 @@ def evaluate_and_sync_health_alerts(repo, recent_errors: list[str] | None = None
                 pass
 
     return {"issues": issues, "newly_raised": [i["code"] for i in newly_raised],
-            "cleared": sorted(previously_active - current_codes), "pushed": pushed}
+            "cleared": sorted(previously_active - current_codes), "pushed": pushed,
+            "suppressed": sorted(suppressed)}
 
 
 # ---------------------------------------------------------------------- push subscriptions

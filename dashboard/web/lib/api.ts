@@ -1475,10 +1475,17 @@ export interface DiagEvent {
   [k: string]: unknown;
 }
 
+/** GET /admin/tailscale-login. ``login_url`` is a CREDENTIAL (it lets whoever opens it join
+ * the tailnet): render it as a link for the signed-in user and never log, copy or persist it. */
+export interface TailscaleLogin {
+  login_url: string | null;
+}
+
 export const diagnosticsApi = {
   summary: () => apiFetch<DiagnosticsReport>('/api/diagnostics'),
   events: (limit = 100) =>
     apiFetch<DiagEvent[]>(`/api/diagnostics/events?limit=${limit}`),
+  tailscaleLogin: () => apiFetch<TailscaleLogin>('/api/admin/tailscale-login'),
 };
 
 // ---- wearable pipeline: connected / streaming / consumed, as three separate facts -----------

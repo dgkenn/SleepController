@@ -273,3 +273,43 @@ def test_an_older_night_never_overwrites_the_latest_staging_verdict(tmp_path):
     assert out.get("staging_consistency", {}).get("n_epochs", 0) > 0
     row = repo.conn.execute("SELECT value FROM settings_kv WHERE key='staging_consistency_latest'").fetchone()
     assert _json.loads(row[0])["night_date"] == "2026-09-19"
+
+
+@pytest.fixture()
+def eastern_tz(monkeypatch):
+    """Run in a zone west of UTC, where local and UTC stamps differ by hours."""
+    import time
+    monkeypatch.setenv("TZ", "America/New_York")
+    time.tzset()
+    yield
+    monkeypatch.undo()
+    time.tzset()
+
+
+def test_the_marker_audit_bounds_the_local_events_table_by_local_time(repo, eastern_tz):
+    """events.ts is naive local; the audit compared it against UTC bounds, so a night's
+    declared awakenings fell outside its own window and the audit reported n=0."""
+    from app import wake_review
+    night = "2026-08-10"
+    for hh in (22, 23):
+        _insert_sample(repo.conn, f"2026-08-10T{hh}:00:00", night, stage="light",
+                       controller_state="maintenance")
+    for hh in range(0, 7):
+        _insert_sample(repo.conn, f"2026-08-11T{hh:02d}:00:00", night,
+                       stage="awake" if hh == 1 else "light", wake_event=1 if hh == 1 else 0,
+                       controller_state="maintenance")
+    ins = "INSERT INTO events (ts, category, severity, code, message, data) VALUES (?,?,?,?,?,?)"
+    # a gesture stamped in UTC by the old bridge code: 06:30Z == 02:30 EDT, inside the night
+    repo.conn.execute(ins, ("2026-08-11T06:30:00+00:00", "sensor", "info", "marker_vs_stage",
+                            "m", json.dumps({"stage_at_marker": "light", "kind": "tap"})))
+    # outside the night either way
+    repo.conn.execute(ins, ("2026-08-11T09:00:00", "sensor", "info", "marker_vs_stage",
+                            "m", json.dumps({"stage_at_marker": "awake", "kind": "tap"})))
+    repo.conn.commit()
+    wake_review.save_review(repo, {"night_date": night,
+                                   "verdicts": [{"ts": "2026-08-11T01:00:00", "verdict": "yes"}]})
+    audit = night_export.build_night_export(repo, night)["marker_audit"]
+    assert audit["n"] == 2
+    assert [m["ts"] for m in audit["markers"]] == ["2026-08-11T01:00:00",
+                                                   "2026-08-11T06:30:00+00:00"]
+    assert audit["n_scored_awake"] == 1

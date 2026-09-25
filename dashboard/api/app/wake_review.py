@@ -31,10 +31,52 @@ ONSET_CHOICES = ("fast", "normal", "slow")
 VERDICTS = ("yes", "no", "unsure")
 
 
-def night_date_for(now: Optional[datetime] = None) -> str:
-    """The night a review filed now belongs to (noon cutoff, as the controller groups them)."""
+#: How far back "the session you just woke from" can have been running.
+SESSION_LOOKBACK_H = 18.0
+#: Non-idle ticks further apart than this (with no idle tick between) are separate sessions.
+SESSION_GAP_MIN = 240.0
+
+
+def night_date_for(now: Optional[datetime] = None, repo=None) -> str:
+    """The night a review filed now belongs to.
+
+    With a repo: the night the most recent sleep session STARTED under -- the latest run of
+    non-idle ``raw_samples`` in the last ``SESSION_LOOKBACK_H`` hours, walked back to its first
+    tick (an idle tick, or a gap over ``SESSION_GAP_MIN``, ends the walk). The controller labels
+    each tick by a noon cutoff, so a day sleeper (04:00-12:05) has the tail of the session filed
+    under the next date, and tapping "I'm awake" at 12:10 used to open an empty review for a
+    night that had not happened yet. Falls back to the plain noon cutoff when there is no
+    recent session (or no repo).
+    """
     now = now or datetime.now()
-    return (now - timedelta(hours=12)).date().isoformat()
+    fallback = (now - timedelta(hours=12)).date().isoformat()
+    if repo is None:
+        return fallback
+    prev_date = (now - timedelta(hours=36)).date().isoformat()
+    try:
+        rows = repo.conn.execute(
+            "SELECT ts, night_date, controller_state FROM raw_samples "
+            "WHERE night_date IN (?, ?) AND ts >= ? AND ts <= ? ORDER BY ts DESC",
+            (fallback, prev_date,
+             (now - timedelta(hours=SESSION_LOOKBACK_H)).isoformat(),
+             (now + timedelta(minutes=5)).isoformat())).fetchall()
+    except Exception:
+        return fallback
+    start_date, last_t = None, None
+    for r in rows:
+        idle = r[2] is None or str(r[2]) == "idle"
+        if idle:
+            if start_date is not None:
+                break  # the tick before this session began
+            continue   # idle after the session ended
+        try:
+            t = datetime.fromisoformat(str(r[0]))
+        except Exception:
+            continue
+        if last_t is not None and (last_t - t).total_seconds() / 60.0 > SESSION_GAP_MIN:
+            break
+        start_date, last_t = r[1], t
+    return str(start_date) if start_date else fallback
 
 
 def suspected_awakenings(repo, night_date: str) -> List[dict]:
@@ -101,7 +143,7 @@ def get_review(repo, night_date: str) -> Optional[dict]:
 def review_payload(repo, night_date: Optional[str] = None, now: Optional[datetime] = None) -> dict:
     """Everything the popup needs: the night, its suspected awakenings, and any review
     already filed for it (so a second visit shows the answers rather than asking again)."""
-    night_date = night_date or night_date_for(now)
+    night_date = night_date or night_date_for(now, repo)
     return {"night_date": night_date,
             "awakenings": suspected_awakenings(repo, night_date),
             "review": get_review(repo, night_date)}
@@ -114,7 +156,7 @@ def _clean(value, allowed):
 def save_review(repo, payload: dict, now: Optional[datetime] = None) -> dict:
     """Store the review and turn its verdicts into declared instants the learners can read."""
     now = now or datetime.now()
-    night_date = str(payload.get("night_date") or night_date_for(now))
+    night_date = str(payload.get("night_date") or night_date_for(now, repo))
     rested = payload.get("rested")
     try:
         rested = int(rested) if rested is not None else None
@@ -130,6 +172,7 @@ def save_review(repo, payload: dict, now: Optional[datetime] = None) -> dict:
         ts, verdict = str(v.get("ts") or ""), _clean(v.get("verdict"), VERDICTS)
         if ts and verdict:
             verdicts.append({"ts": ts, "verdict": verdict})
+    previous = get_review(repo, night_date)
     repo.conn.execute(
         "INSERT INTO wake_review (night_date, ts, rested, temperature, onset_feel, note, verdicts) "
         "VALUES (?,?,?,?,?,?,?) ON CONFLICT(night_date) DO UPDATE SET "
@@ -137,10 +180,44 @@ def save_review(repo, payload: dict, now: Optional[datetime] = None) -> dict:
         "onset_feel=excluded.onset_feel, note=excluded.note, verdicts=excluded.verdicts",
         (night_date, now.isoformat(), rested, temperature, onset_feel, note,
          json.dumps(verdicts)))
+    # A re-save replaces this night's declared instants rather than adding to them: without
+    # this every save re-inserted one event per verdict, so saving the same review 12 times
+    # read to wake_truth as 12 independent confirmations of a single awakening.
+    stale_ts = {v["ts"] for v in verdicts}
+    stale_ts.update(str(v.get("ts")) for v in ((previous or {}).get("verdicts") or [])
+                    if isinstance(v, dict) and v.get("ts"))
+    _clear_declared(repo, night_date, stale_ts)
     n_events = _record_declared(repo, night_date, verdicts)
     repo.conn.commit()
     return {"ok": True, "night_date": night_date, "verdicts": len(verdicts),
             "declared_instants": n_events}
+
+
+def _clear_declared(repo, night_date: str, legacy_ts: set) -> None:
+    """Drop the review-sourced ``marker_vs_stage`` events already filed for this night.
+
+    Matched by the ``night_date`` stored in the event data; rows written before that field
+    existed are matched by their instant instead (one of this night's verdict timestamps).
+    Marker-gesture events (``kind`` != "review") are never touched.
+    """
+    try:
+        rows = repo.conn.execute(
+            "SELECT id, ts, data FROM events WHERE code = 'marker_vs_stage'").fetchall()
+    except Exception:
+        return
+    doomed = []
+    for r in rows:
+        try:
+            data = json.loads(r[2]) if r[2] else {}
+        except Exception:
+            continue
+        if not isinstance(data, dict) or data.get("kind") != "review":
+            continue
+        nd = data.get("night_date")
+        if nd == night_date or (nd is None and str(r[1]) in legacy_ts):
+            doomed.append((r[0],))
+    if doomed:
+        repo.conn.executemany("DELETE FROM events WHERE id = ?", doomed)
 
 
 def _record_declared(repo, night_date: str, verdicts: List[dict]) -> int:
@@ -171,7 +248,7 @@ def _record_declared(repo, night_date: str, verdicts: List[dict]) -> int:
                  f"wake review: {'confirmed' if declared_awake else 'denied'} "
                  f"while the stager said {stage or 'unknown'}",
                  json.dumps({"stage_at_marker": stage, "kind": "review",
-                             "declared_awake": declared_awake})))
+                             "declared_awake": declared_awake, "night_date": night_date})))
             n += 1
         except Exception:
             continue

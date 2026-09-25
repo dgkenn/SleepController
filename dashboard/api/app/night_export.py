@@ -26,13 +26,19 @@ import os
 import sqlite3
 import sys
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 SCHEMA = "sleepctl.night_data/v1"
 
 
 def _iso(now: datetime | None) -> str:
     return (now or datetime.now(timezone.utc)).isoformat()
+
+
+def _naive_local(ts) -> datetime:
+    """Parse an ISO stamp to a NAIVE LOCAL datetime (aware stamps are converted to local)."""
+    t = datetime.fromisoformat(str(ts))
+    return t.astimezone().replace(tzinfo=None) if t.tzinfo is not None else t
 
 
 def _build_repo(db_path: str):
@@ -650,9 +656,25 @@ def build_night_export(repo, night_date: str) -> dict:
                 out["marker_anchors"] = bridge_mod.marker_anchors(conn, lo, hi)
             # What the stager said at each DECLARED-awake instant: the only wake-detection
             # score that rests on a fact rather than another inference.
+            # events.ts is NAIVE LOCAL, like raw_samples -- NOT the UTC bounds the actigraphy
+            # tables above take. Comparing it to UTC strings shifted the window by the zone
+            # offset and silently dropped the night's markers. Older bridge rows were stamped in
+            # UTC, so fetch with a day of slack and filter on the parsed local instant.
+            lo_l, hi_l = _naive_local(first_ts), _naive_local(last_ts)
             rows = conn.execute(
                 "SELECT ts, data FROM events WHERE code = 'marker_vs_stage' AND ts >= ? AND ts <= ? "
-                "ORDER BY ts ASC", (lo, hi)).fetchall()
+                "ORDER BY ts ASC",
+                ((lo_l - timedelta(days=1)).isoformat(),
+                 (hi_l + timedelta(days=1)).isoformat())).fetchall()
+            in_night = []
+            for r in rows:
+                try:
+                    t = _naive_local(r["ts"])
+                except Exception:
+                    continue
+                if lo_l <= t <= hi_l:
+                    in_night.append((t, r))
+            rows = [r for _t, r in sorted(in_night, key=lambda x: x[0])]
             audit = []
             for r in rows:
                 try:

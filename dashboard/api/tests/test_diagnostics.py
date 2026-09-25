@@ -1442,6 +1442,26 @@ def test_induction_ticks_are_not_counted_as_dead_zone():
     assert _check_preemption_dead_zone(_decisions(rows))["status"] == "ok"
 
 
+def test_an_idle_afternoon_tick_does_not_hide_last_nights_dead_zone(repo):
+    """From noon on, the daemon's idle ticks carry the NEXT night_date. Picking the newest
+    night_date of any decision graded a night that had not happened yet ("ok") and hid last
+    night's warning every afternoon."""
+    import json as _json
+    from app.diagnostics import _check_preemption_dead_zone
+    ins = "INSERT INTO decisions (ts, night_date, state, log_payload) VALUES (?,?,?,?)"
+    for i in range(30):
+        repo.conn.execute(ins, (f"2026-09-24T01:{i:02d}:00", "2026-09-23", "maintenance",
+                                _json.dumps({"wake_signals": ["hr_rise"],
+                                             "preemption": {"precursor_score": 0.4}})))
+    repo.conn.execute(ins, ("2026-09-24T02:00:00", "2026-09-23", "maintenance",
+                            _json.dumps({"preemption": {"preempting": True}})))
+    repo.conn.execute(ins, ("2026-09-24T12:01:00", "2026-09-24", "idle", _json.dumps({})))
+    repo.conn.commit()
+    c = _check_preemption_dead_zone(repo)
+    assert c["status"] == "warn"
+    assert c["detail"].startswith("2026-09-23")
+
+
 def test_an_unreadable_database_never_raises_out_of_the_dead_zone_check():
     from app.diagnostics import _check_preemption_dead_zone
 

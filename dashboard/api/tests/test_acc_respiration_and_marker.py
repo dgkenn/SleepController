@@ -57,3 +57,16 @@ def test_a_snap_marker_records_its_kind(conn):
     assert row[0] == 1 and row[1] == "snap"
     ev = conn.execute("SELECT message, data FROM events WHERE code='marker_vs_stage' ORDER BY id DESC LIMIT 1").fetchone()
     assert "snap" in ev[0] and json.loads(ev[1])["kind"] == "snap"
+
+
+def test_a_marker_event_is_stamped_in_naive_local_time_like_the_rest_of_events(conn):
+    """events.ts is naive local (Repository.log_event, the wake review, the night export's
+    window). A UTC stamp put the gesture hours outside the night it happened in."""
+    before = datetime.now()
+    bridge.append_actigraphy(conn, {"pim": 9.0, "n": 104, "fs": 52, "marker": True})
+    after = datetime.now()
+    ts = conn.execute("SELECT ts FROM events WHERE code='marker_vs_stage' "
+                      "ORDER BY id DESC LIMIT 1").fetchone()[0]
+    t = datetime.fromisoformat(ts)
+    assert t.tzinfo is None
+    assert before <= t <= after
