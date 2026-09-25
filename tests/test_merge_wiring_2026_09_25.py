@@ -53,3 +53,15 @@ def test_dreamt_block_says_whether_it_was_ever_launched(tmp_path):
                    "installed": False}
     (tmp_path / "dreamt.lastrun").write_text("x")
     assert _dreamt_block(str(tmp_path))["last_launch"] is not None
+
+
+def test_snapshot_reads_pipeline_status_without_an_explicit_run_dir(tmp_path, monkeypatch):
+    """publish-health.ps1 passes no run_dir; the dreamt/mesa blocks were always null because
+    they read the raw None instead of resolving the box's .run folder."""
+    sys.path.insert(0, str(ROOT / "dashboard" / "api"))
+    import app.diagnostics as diag
+    from app.health_snapshot import _dreamt_block, _resolve_run_dir
+    monkeypatch.setattr(diag, "_default_run_dir", lambda: str(tmp_path))
+    (tmp_path / "dreamt.status.json").write_text(json.dumps({"stage": "reducing", "reduced": 3}))
+    assert _resolve_run_dir(None) == str(tmp_path)
+    assert _dreamt_block(_resolve_run_dir(None)) == {"stage": "reducing", "reduced": 3}

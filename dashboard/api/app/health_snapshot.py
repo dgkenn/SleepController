@@ -311,10 +311,24 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "wearable": _wearable_block(repo, run_dir),
         "controller": _controller_block(repo),
         "wake_light": _wake_light_block(repo),
-        "dreamt": _dreamt_block(run_dir),
-        "mesa": _mesa_block(run_dir),
+        "dreamt": _dreamt_block(_resolve_run_dir(run_dir)),
+        "mesa": _mesa_block(_resolve_run_dir(run_dir)),
     }
     return scrub(snapshot)
+
+
+def _resolve_run_dir(run_dir: str | None) -> str | None:
+    """The box's .run folder. publish-health.ps1 passes no run_dir, so resolve it the way the
+    log tails do; without this the pipeline blocks read ``None`` and were ALWAYS null in
+    production (2026-09-25)."""
+    if run_dir:
+        return run_dir
+    try:
+        from app.diagnostics import _default_run_dir
+        return _default_run_dir()
+    except Exception:
+        db = os.environ.get("SLEEPCTL_DB", "")
+        return os.path.join(os.path.dirname(db) if db else os.getcwd(), ".run")
 
 
 def _dreamt_block(run_dir: str | None) -> dict | None:
