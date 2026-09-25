@@ -67,8 +67,8 @@ def test_precursor_profile_windows_and_speed(tmp_path):
     t0 = time.time()
     prof = awakening_precursor_profile(repo)
     assert time.time() - t0 < 10
-    # every flagged tick is an "awakening" (40 ticks x 3 bouts x 3 nights) with a full 6-min
-    # pre-window of 24 ticks behind it
-    assert prof["n_awakenings"] == 3 * 3 * 40
-    assert prof["features"]["hr_mean"]["n_pre"] == 360
+    # one awakening per bout (3 bouts x 3 nights), not one per flagged tick (40 per bout)
+    assert prof["n_awakenings"] == 3 * 3
+    assert prof["features"]["hr_mean"]["n_pre"] == 9
     assert prof["features"]["hr_mean"]["n_base"] > 0
+    assert prof["restlessness"]["n"] == 9

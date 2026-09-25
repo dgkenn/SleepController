@@ -241,6 +241,22 @@ def _mean_sd(vals):
     return m, sd, len(vals)
 
 
+#: Flagged wake ticks closer than this belong to ONE awakening. The wake voter can flag every
+#: tick of a bout, so counting ticks turned one 10-minute awakening into ~20 "awakenings".
+_BOUT_GAP = timedelta(minutes=3)
+
+
+def _bout_onsets(wake_times) -> list:
+    """The first tick of each awakening: a flagged tick more than ``_BOUT_GAP`` after the
+    previous flagged tick. ``wake_times`` must be sorted."""
+    out, prev = [], None
+    for t in wake_times:
+        if prev is None or t - prev > _BOUT_GAP:
+            out.append(t)
+        prev = t
+    return out
+
+
 def awakening_precursor_profile(repo, lead_min: float = 6.0, nights: int = 30,
                                 min_events: int = 5) -> dict:
     """Learn the per-person sensor trajectory that PREDICTS an incoming awakening.
@@ -281,8 +297,11 @@ def awakening_precursor_profile(repo, lead_min: float = 6.0, nights: int = 30,
         times = [s[0] for s in series]
         wake_times = [s[0] for s in series if s[6] == 1]
         lead_td = timedelta(minutes=lead_min)
-        # pre-wake windows: ticks with 0 <= tw - t < lead_min
-        for tw in wake_times:
+        # pre-wake windows: the lead_min BEFORE each awakening's first tick (0 <= tw - t <
+        # lead_min). 2026-09-25: this ran once per flagged tick, so the later ticks of a bout
+        # put awake physiology into the "pre-wake" features and one awakening counted many
+        # times toward min_events.
+        for tw in _bout_onsets(wake_times):
             win = [((s[0] - tw).total_seconds() / 60.0 + lead_min, s[1], s[2], s[3], s[4], s[5])
                    for s in series[bisect_right(times, tw - lead_td):bisect_right(times, tw)]]
             f = _window_features(win)
@@ -391,7 +410,7 @@ def restlessness_lead_profile(repo, nights: int = 30, min_events: int = 5,
             continue
         base_rate = sum(1 for m in moves if m >= burst_movement) / max(1, len(moves))
         wake_times = [t for t, _, w in series if w == 1]
-        for tw in wake_times:
+        for tw in _bout_onsets(wake_times):        # one ramp per awakening, not per tick
             n_wakes += 1
             bins = int(_RAMP_LOOKBACK_MIN / _RAMP_BIN_MIN)
             dens = []
