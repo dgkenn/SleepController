@@ -164,6 +164,12 @@ _LOG_TAILS = (
     # The daemon's stderr: where a wedged event loop's thread stacks land (live_daemon's
     # faulthandler), and where an exception that escapes the loop is printed.
     ("daemon_err", "daemon.err", 40),
+    # The DREAMT / MESA pipelines' own output (counts, stages and tracebacks; they never print
+    # credentials, and the whole snapshot is scrubbed on top). A pipeline that dies before it
+    # writes its status file is otherwise invisible.
+    ("dreamt", "dreamt.log", 12),
+    ("dreamt_err", "dreamt.err.log", 20),
+    ("mesa_err", "mesa.err.log", 12),
     ("verity_err", "verity.err", 10),
     # The web UI's own output. A dashboard that will not load is invisible in every other
     # signal here -- port 3000 answers, the build is current, every check is green -- so the
@@ -320,7 +326,18 @@ def _dreamt_block(run_dir: str | None) -> dict | None:
         with open(os.path.join(run_dir, "dreamt.status.json")) as fh:
             st = json.load(fh)
     except Exception:
-        return None
+        # No status yet: say whether the watchdog has launched it at all, and when, so "never
+        # started" and "started, then died before writing anything" can be told apart.
+        out = {"stage": "no_status"}
+        for key, name in (("last_launch", "dreamt.lastrun"), ("deps_ok_at", "dreamt-deps.ok")):
+            try:
+                out[key] = datetime.fromtimestamp(
+                    os.path.getmtime(os.path.join(run_dir, name)), timezone.utc).isoformat()
+            except OSError:
+                out[key] = None
+        out["installed"] = os.path.exists(os.path.join(run_dir, "staging_weights",
+                                                       "stage4_hrv.json"))
+        return out
     keep = ("stage", "source", "n_participants", "reduced", "failed", "of", "error",
             "last_error", "updated", "started", "finished", "scores", "verdict", "participants",
             "workers", "gb_read", "minutes", "zip_gb", "transfer_gb")

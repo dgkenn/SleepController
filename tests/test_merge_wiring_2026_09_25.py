@@ -43,3 +43,13 @@ def test_calibrated_wake_threshold_decides_both_ways():
     assert st.wake_threshold == 0.9
     st.set_wake_threshold(None)
     assert st.wake_threshold is None
+
+
+def test_dreamt_block_says_whether_it_was_ever_launched(tmp_path):
+    sys.path.insert(0, str(ROOT / "dashboard" / "api"))
+    from app.health_snapshot import _dreamt_block
+    blk = _dreamt_block(str(tmp_path))
+    assert blk == {"stage": "no_status", "last_launch": None, "deps_ok_at": None,
+                   "installed": False}
+    (tmp_path / "dreamt.lastrun").write_text("x")
+    assert _dreamt_block(str(tmp_path))["last_launch"] is not None
