@@ -24,6 +24,7 @@ controlled, confounder-aware audit everywhere else. Pure-python, conservative.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
@@ -85,6 +86,12 @@ def wake_causation_audit(repo, horizon_min: float = 15.0, nights: int = 30) -> d
         f"AND controller_state IN ('maintenance','wake_recovery') ORDER BY ts", dates).fetchall()
     buckets: dict = defaultdict(lambda: {"n": 0, "woke": 0, "confounded": False})
     n_total = 0
+    # Every wake-event timestamp, fetched ONCE and binary-searched per intervention. It used to
+    # be one COUNT(*) per intervention over raw_samples.ts, which has no index: ~1000
+    # interventions a night x 30 nights full-table scans. The comparison stays on the stored
+    # ISO strings, exactly as SQLite compared them.
+    wake_ts = sorted(r[0] for r in conn.execute(
+        "SELECT ts FROM raw_samples WHERE wake_event = 1").fetchall() if r[0] is not None)
     for iv in ivs:
         try:
             t0 = datetime.fromisoformat(iv["ts"])
@@ -92,9 +99,7 @@ def wake_causation_audit(repo, horizon_min: float = 15.0, nights: int = 30) -> d
             continue
         key = _parse_maneuver(iv["reason"], iv["action"])
         end = t0 + timedelta(minutes=horizon_min)
-        woke = conn.execute(
-            "SELECT COUNT(*) c FROM raw_samples WHERE wake_event = 1 AND ts > ? AND ts <= ?",
-            (_iso(t0), _iso(end))).fetchone()["c"]
+        woke = bisect_right(wake_ts, _iso(end)) - bisect_right(wake_ts, _iso(t0))
         b = buckets[key]
         b["n"] += 1
         b["woke"] += 1 if woke else 0
@@ -267,11 +272,19 @@ def awakening_precursor_profile(repo, lead_min: float = 6.0, nights: int = 30,
                            r["movement"], r["bed_temp_f"], r["wake_event"]))
         if not series:
             continue
+        # Windows are cut by binary search on the sorted tick times. 2026-09-25: each window
+        # used to rescan the whole night, once per awake TICK (every tick of a bout carries
+        # wake_event=1), which made this quadratic -- on 30 real nights it held the daemon's
+        # start-up for many minutes, long enough for the watchdog and the self-updater's smoke
+        # test to call it dead. Same windows, same order, same result.
+        series.sort(key=lambda s: s[0])
+        times = [s[0] for s in series]
         wake_times = [s[0] for s in series if s[6] == 1]
-        # pre-wake windows
+        lead_td = timedelta(minutes=lead_min)
+        # pre-wake windows: ticks with 0 <= tw - t < lead_min
         for tw in wake_times:
             win = [((s[0] - tw).total_seconds() / 60.0 + lead_min, s[1], s[2], s[3], s[4], s[5])
-                   for s in series if 0 <= (tw - s[0]).total_seconds() / 60.0 < lead_min]
+                   for s in series[bisect_right(times, tw - lead_td):bisect_right(times, tw)]]
             f = _window_features(win)
             if f:
                 n_wakes += 1
@@ -287,10 +300,11 @@ def awakening_precursor_profile(repo, lead_min: float = 6.0, nights: int = 30,
             w_start = t0 + timedelta(minutes=k * step)
             w_end = w_start + timedelta(minutes=lead_min)
             guard_end = w_end + timedelta(minutes=lead_min)
-            near_wake = any(w_start <= tw <= guard_end for tw in wake_times)
+            j = bisect_left(wake_times, w_start)
+            near_wake = j < len(wake_times) and wake_times[j] <= guard_end
             if not near_wake:
                 win = [((s[0] - w_start).total_seconds() / 60.0, s[1], s[2], s[3], s[4], s[5])
-                       for s in series if w_start <= s[0] < w_end]
+                       for s in series[bisect_left(times, w_start):bisect_left(times, w_end)]]
                 f = _window_features(win)
                 for kk, v in f.items():
                     if v is not None:
@@ -370,6 +384,8 @@ def restlessness_lead_profile(repo, nights: int = 30, min_events: int = 5,
                 continue
         if len(series) < 40:
             continue
+        series.sort(key=lambda s: s[0])            # bins are cut by binary search (see above)
+        times = [t for t, _, _ in series]
         moves = [m for _, m, _ in series if m is not None]
         if not moves:
             continue
@@ -382,7 +398,8 @@ def restlessness_lead_profile(repo, nights: int = 30, min_events: int = 5,
             for b in range(bins, 0, -1):                       # oldest bin first
                 lo = tw - timedelta(minutes=b * _RAMP_BIN_MIN)
                 hi = lo + timedelta(minutes=_RAMP_BIN_MIN)
-                win = [m for t, m, _ in series if lo <= t < hi and m is not None]
+                win = [m for _t, m, _ in series[bisect_left(times, lo):bisect_left(times, hi)]
+                       if m is not None]
                 dens.append((sum(1 for m in win if m >= burst_movement) / len(win)) if win else 0.0)
             onset_bin = None
             for i in range(len(dens)):

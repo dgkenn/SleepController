@@ -24,8 +24,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 
-#: If the event loop makes no progress for this long, every thread's stack is written to stderr
-#: (.run\daemon.err, published in the health snapshot). 2026-09-25 13:31 the daemon wedged
+#: If the event loop makes no progress for this long, every thread's stack is written to
+#: stdout (.run\daemon.log, whose tail the health snapshot publishes). 2026-09-25 13:31 the daemon wedged
 #: during startup right after the comfort-anchor log line and nothing said where; the watchdog
 #: restarts a wedged loop, but only a stack says what to fix.
 WEDGE_DUMP_S = 240
@@ -35,9 +35,15 @@ def _arm_wedge_dump(seconds: int = WEDGE_DUMP_S) -> None:
     try:
         import faulthandler
         faulthandler.cancel_dump_traceback_later()
-        faulthandler.dump_traceback_later(seconds, repeat=True, file=sys.stderr)
+        # stdout is daemon.log, whose tail every health snapshot publishes -- including one built
+        # by an older build after a rollback, which does not publish daemon.err.
+        sys.stdout.flush()
+        faulthandler.dump_traceback_later(seconds, repeat=True, file=sys.stdout)
     except Exception:
-        pass
+        try:
+            faulthandler.dump_traceback_later(seconds, repeat=True, file=sys.stderr)
+        except Exception:
+            pass
 
 
 _arm_wedge_dump()     # covers start-up (profile loading runs before the loop)
