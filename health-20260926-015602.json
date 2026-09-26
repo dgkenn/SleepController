@@ -1,0 +1,670 @@
+{
+  "checks": [
+    {
+      "detail": "commit ab40702 on claude/confident-gates-rg7af0; web build is up to date",
+      "id": "version",
+      "remedy": null,
+      "status": "info",
+      "title": "Deployed version"
+    },
+    {
+      "detail": "up to date with origin/claude/confident-gates-rg7af0",
+      "id": "auto_update",
+      "remedy": null,
+      "status": "ok",
+      "title": "Auto-update currency"
+    },
+    {
+      "detail": "last self-update: update to 'claude/confident-gates-rg7af0' succeeded (validate=PASS) -- restart requested (at 2026-09-25T20:59:23.4704294-04:00) | last smoke test: SMOKE PASS",
+      "id": "self_update",
+      "remedy": null,
+      "status": "ok",
+      "title": "Self-update / deploy history"
+    },
+    {
+      "detail": "health: OK 20260926-015258 health-20260926-015258.json (3 min ago) | night-data: OK 20260926-015222 14 (4 min ago)",
+      "id": "publishers",
+      "remedy": null,
+      "status": "ok",
+      "title": "GitHub relay publishers"
+    },
+    {
+      "detail": "open http://192.168.1.163:3000 on the same network -- network profile: Fios-jdC2D 2=Private, Tailscale=Private; port-3000 rules: 3000=Private/True/Allow",
+      "id": "lan_access",
+      "remedy": null,
+      "status": "ok",
+      "title": "Dashboard reachable on your network"
+    },
+    {
+      "detail": "remote UI unreachable: tailscale NoState (backend not running)",
+      "id": "remote_access",
+      "remedy": null,
+      "status": "warn",
+      "title": "Remote access (Tailscale funnel)"
+    },
+    {
+      "detail": "1 receiver(s) seen in the last hour -- verity: connected (ACC@52Hz, PPI; 1 min ago). One radio, no redundancy: a dropped link is a gap until it reconnects",
+      "id": "wearable_receivers",
+      "remedy": "a second receiver (deploy/PI_BRIDGE.md) holds a parallel link and takes over the streams the first one loses",
+      "status": "info",
+      "title": "Wearable receivers"
+    },
+    {
+      "detail": "215 accelerometer count batches in the last 15 min (newest 1s ago) -- the actigraphy wake detector is live",
+      "id": "actigraphy",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wearable accelerometer"
+    },
+    {
+      "detail": "looping (heartbeat 2s ago)",
+      "id": "verity_forwarder",
+      "remedy": null,
+      "status": "ok",
+      "title": "Verity forwarder process"
+    },
+    {
+      "detail": "last sample 0.0h ago",
+      "id": "wearable_reachable",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wearable reachable"
+    },
+    {
+      "detail": "last heartbeat 0s ago",
+      "id": "daemon_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Control daemon heartbeat"
+    },
+    {
+      "detail": "last heartbeat 1s ago",
+      "id": "watchdog_heartbeat",
+      "remedy": null,
+      "status": "ok",
+      "title": "Watchdog heartbeat"
+    },
+    {
+      "detail": "running watchdog matches the script on disk (process started 2026-09-25 18:35:03)",
+      "id": "watchdog_code",
+      "remedy": null,
+      "status": "ok",
+      "title": "Watchdog code currency"
+    },
+    {
+      "detail": "this request was served, so the API is up",
+      "id": "api",
+      "remedy": null,
+      "status": "ok",
+      "title": "API process"
+    },
+    {
+      "detail": "something is listening on 127.0.0.1:3000",
+      "id": "web",
+      "remedy": null,
+      "status": "ok",
+      "title": "Web UI (port 3000)"
+    },
+    {
+      "detail": "last update 9s ago",
+      "id": "runtime_state_fresh",
+      "remedy": null,
+      "status": "ok",
+      "title": "Runtime state freshness"
+    },
+    {
+      "detail": "reservoir has water",
+      "id": "device_water",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water reservoir"
+    },
+    {
+      "detail": "device reports online",
+      "id": "device_online",
+      "remedy": null,
+      "status": "ok",
+      "title": "Device online"
+    },
+    {
+      "detail": "not priming / doesn't need priming",
+      "id": "priming",
+      "remedy": null,
+      "status": "ok",
+      "title": "Priming state"
+    },
+    {
+      "detail": "state=ok (at setpoint)",
+      "id": "thermal_response",
+      "remedy": null,
+      "status": "ok",
+      "title": "Thermal response"
+    },
+    {
+      "detail": "no water-loop/thermal-capacity issue detected.",
+      "id": "thermal_capacity",
+      "remedy": null,
+      "status": "ok",
+      "title": "Water-loop / thermal capacity"
+    },
+    {
+      "detail": "ok: no external-controller conflict detected. | exclusive control is on; no external writes overridden in 24 h",
+      "id": "external_conflict",
+      "remedy": null,
+      "status": "ok",
+      "title": "External controller conflict"
+    },
+    {
+      "detail": "telemetry is updating normally.",
+      "id": "frozen_telemetry",
+      "remedy": null,
+      "status": "ok",
+      "title": "Frozen telemetry"
+    },
+    {
+      "detail": "live=True dry_run=False",
+      "id": "live_mode",
+      "remedy": null,
+      "status": "info",
+      "title": "Live / dry-run mode"
+    },
+    {
+      "detail": "phone not currently streaming (last sample unknown; 836 samples in last hr)",
+      "id": "phone_sensor",
+      "remedy": null,
+      "status": "info",
+      "title": "Phone sensor (iPhone)"
+    },
+    {
+      "detail": "no cloud/timeout errors in the last 10 log lines",
+      "id": "cloud_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep cloud errors"
+    },
+    {
+      "detail": "daemon.err and daemon-crash.log are empty",
+      "id": "recent_errors",
+      "remedy": null,
+      "status": "ok",
+      "title": "Recent daemon errors"
+    },
+    {
+      "detail": "EIGHTSLEEP_EMAIL/EIGHTSLEEP_PASSWORD are set",
+      "id": "eight_sleep_creds",
+      "remedy": null,
+      "status": "ok",
+      "title": "Eight Sleep credentials"
+    },
+    {
+      "detail": "streaming (last HR sample 0s ago)",
+      "id": "cardiac_sensor",
+      "remedy": null,
+      "status": "ok",
+      "title": "Cardiac sensor (Verity)"
+    },
+    {
+      "detail": "no measured bed temperature on this account in 49 days of samples -- the thermal loop runs open-loop by design here (tempBedC is on the same paywalled surface as presence)",
+      "id": "bed_temperature",
+      "remedy": "nothing to do on the box: the cooling floor is kept conservative and the commanded water is trusted; an independent bed sensor can close the loop via /bedtemp/ingest",
+      "status": "info",
+      "title": "Bed temperature feedback"
+    },
+    {
+      "detail": "3 device-level jump(s) larger than 20 levels between consecutive samples -- 1 one-sample spike(s) that reverted and 1 sustained step(s). A sustained step is not something the bed can slew to, so something else wrote it. Worst: -55 -> -100 at 2026-09-25T05:11:31",
+      "id": "device_level_glitch",
+      "remedy": "check for another controller (the Eight Sleep app's own schedule) writing to the pod; treat these samples as suspect in any range/exposure analysis",
+      "status": "warn",
+      "title": "Device level glitches"
+    },
+    {
+      "detail": "all 5 recent session night(s) reached MAINTENANCE -- awakening prevention and steering were able to run",
+      "id": "maintenance_reached",
+      "remedy": null,
+      "status": "ok",
+      "title": "Sleep maintenance reached"
+    },
+    {
+      "detail": "all 4 recent session(s) ended within 11h of starting",
+      "id": "session_span",
+      "remedy": null,
+      "status": "ok",
+      "title": "Session ended when you got up"
+    },
+    {
+      "detail": "2026-09-25: pre-emption engaged on 52/116 maintenance tick(s) (light_stage x50, anticipatory_recurring x44, hr_creep x28, hrv_decay x28)",
+      "id": "preemption_ran",
+      "remedy": null,
+      "status": "ok",
+      "title": "Awakening pre-emption"
+    },
+    {
+      "detail": "2026-09-25: 97/116 maintenance ticks (84%) sat at the WARM ceiling of the comfort band (70.5F)",
+      "id": "comfort_band",
+      "remedy": "if you are waking hot, lower warm_edge_f (currently 70.5F)",
+      "status": "warn",
+      "title": "Comfort-band pinning"
+    },
+    {
+      "detail": "2026-09-25: only 116 maintenance tick(s) -- too short to judge",
+      "id": "maintenance_acted",
+      "remedy": null,
+      "status": "info",
+      "title": "Maintenance moved the water"
+    },
+    {
+      "detail": "2026-09-25: 1 maintenance tick(s) before pre-emption engaged, but no wake evidence in that window -- nothing to have acted on",
+      "id": "preemption_dead_zone",
+      "remedy": null,
+      "status": "ok",
+      "title": "Pre-emption dead zone"
+    },
+    {
+      "detail": "85% (read 0.7h ago) -- about 21.7h of streaming left (capped at the measured 25.5h full-charge runtime; the 2.0%/h seen between readings was not measured under streaming load)",
+      "id": "wearable_battery",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wearable battery"
+    },
+    {
+      "detail": "enabled, collecting: 0 resolved night(s) so far (>= 8 nights/arm needed for a verdict)",
+      "id": "thermal_trial",
+      "remedy": null,
+      "status": "ok",
+      "title": "Thermal dose-response trial"
+    },
+    {
+      "detail": "no alarm-write refusal recorded",
+      "id": "wake_alarm",
+      "remedy": null,
+      "status": "ok",
+      "title": "Wake alarm (vibration)"
+    },
+    {
+      "detail": "available: thermal ramp, Pod vibration | unavailable: dawn light (Hue not configured), bright therapy lamp",
+      "id": "wake_cue",
+      "remedy": "a dawn light would add a second independent cue; vibration is currently the only one that does not depend on the bed",
+      "status": "info",
+      "title": "Wake cues available"
+    },
+    {
+      "detail": "no subsystem failures recorded",
+      "id": "degraded",
+      "remedy": null,
+      "status": "ok",
+      "title": "Silently skipped subsystems"
+    },
+    {
+      "detail": "2 of 3 missing \u2014 the controller is running on evidence priors: thermal self-test (bed's real heat/cool rates + lags \u2014 sizes the pre-cool lead, onset cascade and wake ramp; without it those use generic presets) | morning check-ins (1/5 \u2014 they are the ground truth the felt-recovery learners personalize against)  (have: comfort sweep)",
+      "id": "calibration",
+      "remedy": "in bed: POST /diag/action/self-test, then the comfort sweep from the dashboard; log a check-in each morning (`sleepctl checkin`). Fix the water loop first \u2014 both in-bed batteries need a loop that can move heat.",
+      "status": "info",
+      "title": "Personal calibration"
+    },
+    {
+      "detail": "2026-09-25: deep: only 11.0 min called | rem: only 0 min called | awake: 58.5 min, signature holds",
+      "id": "staging_plausibility",
+      "remedy": null,
+      "status": "ok",
+      "title": "Sleep staging plausibility"
+    },
+    {
+      "detail": "17/21 prevention failures happened BEFORE the bed had moved (median arrival 4.8 min, median wake 9.7 min) \u2014 of those, 12 had NO measurable bed movement at all and 5 were beaten by the awakening \u2014 moot: pre-emption holds neutral rather than cooling on this configuration, so arrival timing no longer applies",
+      "id": "prevention_timing",
+      "remedy": null,
+      "status": "info",
+      "title": "Awakening pre-emption timing"
+    },
+    {
+      "detail": "no calendar configured",
+      "id": "calendar",
+      "remedy": null,
+      "status": "info",
+      "title": "Work calendar (ICS)"
+    },
+    {
+      "detail": "no upcoming shift configured",
+      "id": "shift",
+      "remedy": null,
+      "status": "info",
+      "title": "Shift plan"
+    },
+    {
+      "detail": "daemon.log=997B, daemon.err=0B, watchdog.log=4MB, api.log=82KB, web-build.log=16KB",
+      "id": "log_sizes",
+      "remedy": null,
+      "status": "ok",
+      "title": "Log file sizes"
+    }
+  ],
+  "controller": {
+    "available": true,
+    "comfort_band": {
+      "cool_edge_f": 67.0,
+      "neutral_f": 69.0,
+      "source": "evidence_corrected_2026-08-28",
+      "warm_edge_f": 69.5
+    },
+    "in_force": {
+      "decision_ts": "2026-09-25T21:55:36.793189",
+      "onset": null,
+      "thermal_profile": {
+        "ambient_bias_f": 0.0,
+        "deep_bias_f": 70.0,
+        "maintenance_floor_f": 69.0,
+        "neutral_f": 70.0,
+        "neutral_is_measured": true,
+        "override": {
+          "kept_deep_bias_f": 70.0,
+          "kept_neutral_f": 70.0,
+          "learned_deep_bias_f": 74.5015625,
+          "learned_neutral_f": 74.68037109375
+        },
+        "rem_warm_offset_f": 0.5,
+        "session_ceiling_f": null,
+        "session_floor_f": null,
+        "settle_nudge_f": 0.0,
+        "source": "manual_pref",
+        "user_overrides": 0,
+        "version": 14,
+        "wake_ramp_f": 76.0
+      }
+    },
+    "learned_setpoints": {
+      "deep_bias_f": 74.5015625,
+      "neutral_f": 74.68037109375,
+      "rem_warm_offset_f": 0.5,
+      "source": "manual_pref",
+      "version": 14,
+      "wake_ramp_f": 68.0
+    },
+    "pod_guard": {
+      "commanded_level": -46,
+      "enabled": true,
+      "last_at": null,
+      "last_commanded_level": null,
+      "last_observed_level": null,
+      "reasserts_24h": 0,
+      "user_override_active": false,
+      "user_override_level": null,
+      "user_overrides_24h": 0
+    },
+    "staging_personalization": {
+      "hmm": {
+        "n_epochs": 4819,
+        "n_nights": 12,
+        "personalized": false,
+        "rationale": "population transitions kept -- your own labels over 12 nights carry too little 2.9% deep (needs 4%) to be trusted to reshape the stager"
+      },
+      "wake_truth": {
+        "agreement": 0.0,
+        "bias": 1.0,
+        "n": 2,
+        "n_denied": 0,
+        "n_markers": 2,
+        "n_notes": 0,
+        "personalized": false,
+        "rationale": "learning -- 2/10 declared awakenings (2 gesture(s) + 0 from morning notes) before the wake threshold is tuned to them"
+      }
+    },
+    "staging_plausibility": {
+      "night_date": "2026-09-25",
+      "outside_norms": [],
+      "shares": {},
+      "summary": "deep: only 11.0 min called | rem: only 0 min called | awake: 58.5 min, signature holds",
+      "verdicts": {
+        "awake": "supported",
+        "deep": "insufficient",
+        "rem": "insufficient"
+      }
+    },
+    "steering_policy": {
+      "confidence": 0.0,
+      "deepen_rate_act": 1.0,
+      "deepen_rate_ctrl": 0.574,
+      "enabled": true,
+      "is_personalized": false,
+      "lift": 0.426,
+      "mode": null,
+      "n_act": 1,
+      "n_ctrl": 122,
+      "n_delivered": 0,
+      "n_records": 123,
+      "n_undelivered": 75,
+      "rationale": "learning \u2014 1/6 actuated + 122/4 control nights before judging whether deepening actually works for you",
+      "tonight": "observe",
+      "wake_lift": 0.508,
+      "wake_rate_act": 1.0
+    },
+    "thermal_trial_tonight": null,
+    "wake_armed": {
+      "night_type": "auto",
+      "thermal_level": null,
+      "vibration_power": 50,
+      "wake_time": "05:00",
+      "window_min": 18
+    }
+  },
+  "dreamt": {
+    "error": "PhysioNet answered 403: access to DREAMT is not live for this account yet (credentialing and the project's data use agreement must both be approved)",
+    "stage": "blocked",
+    "started": "2026-09-25T17:41:38.648455+00:00",
+    "updated": "2026-09-25T17:41:39.774043+00:00"
+  },
+  "funnel_url": "https://john-desktop-pavilion-hampton.tail712dd4.ts.net",
+  "generated_utc": "2026-09-26T01:56:00.446884+00:00",
+  "headline": "Device level glitches: 3 device-level jump(s) larger than 20 levels between consecutive samples -- 1 one-sample spike(s) that reverted and 1 sustained step(s). A sustained step is not something the bed can slew to, so something else wrote it. Worst: -55 -> -100 at 2026-09-25T05:11:31",
+  "lan_url": "http://192.168.1.163:3000",
+  "log_tails": {
+    "daemon": [
+      "comfort anchor: measured 69.0F +1.0F -> neutral 70.0F (re-anchor +1.0, mornings +0.0 over 0 reviews / 0 notes)",
+      "staging personalisation: wake x1.00 (2 markers); hmm population (11 nights)",
+      "Eight Sleep Autopilot DISABLED (exclusive control; no schedule override).",
+      "Eight Sleep bedtime schedule is still ACTIVE and CANNOT be disabled via the API on this account -- Eight Sleep's own server refuses the write with 'Subscription required'. It may keep fighting our commanded level; the only known fix is disabling the schedule in the Eight Sleep app itself.",
+      "restored wake 05:00 (window 18 min) after daemon restart",
+      "night targets planned at session-state recovery: normal, est sleep 441 min",
+      "resumed maintenance after daemon restart: onset 20:56, deep 0 / REM 0 / light 2 min",
+      "sleepctl dashboard LIVE daemon started (dry_run=False, control=30s, telemetry=15s).",
+      "sleep onset confirmed at 2026-09-25T20:56:54.123388 (confidence=0.50, signals=['restored'])",
+      "wake plug scan: 0 Tuya device(s) on the LAN"
+    ],
+    "health_publish": [
+      "2026-09-25 21:49:54  OK: pushed health-20260926-014951.json",
+      "2026-09-25 21:52:55  ==== health publish starting (root=C:\\Users\\jackk\\SleepController) ====",
+      "2026-09-25 21:52:55  building operational-health snapshot from C:\\Users\\jackk\\SleepController\\sleepctl.db -> C:\\Users\\jackk\\SleepController\\.run\\health-staging\\latest.json",
+      "2026-09-25 21:52:58  health_snapshot: C:\\Users\\jackk\\SleepController\\.run\\health-staging\\latest.json",
+      "2026-09-25 21:52:58  fetching origin in dedicated health clone",
+      "2026-09-25 21:53:02  checking out existing local health branch, syncing to origin/health",
+      "2026-09-25 21:53:03  staged health-20260926-015258.json (+ refreshed latest.json) in C:\\Users\\jackk\\SleepController\\.run\\health-repo",
+      "2026-09-25 21:53:03  pruned old snapshot health-20260923-114432.json",
+      "2026-09-25 21:53:03  pushing health to origin",
+      "2026-09-25 21:53:05  OK: pushed health-20260926-015258.json",
+      "2026-09-25 21:56:00  ==== health publish starting (root=C:\\Users\\jackk\\SleepController) ====",
+      "2026-09-25 21:56:00  building operational-health snapshot from C:\\Users\\jackk\\SleepController\\sleepctl.db -> C:\\Users\\jackk\\SleepController\\.run\\health-staging\\latest.json"
+    ],
+    "verity": [
+      "2026-09-25 20:21:47  PMD: start PPI ok",
+      "2026-09-25 20:21:47  PMD: start ACC @52Hz/16bit/8G ok",
+      "2026-09-25 20:21:47  PMD: streaming ACC@52Hz + PPI; forwarding to http://localhost:8000/hr/ingest?\u0001<redacted>",
+      "2026-09-25 20:21:49  PMD: PPI warm-up -- Polar documents ~25s to the first batch and HR updates only every ~5s; silence until then is normal",
+      "2026-09-25 20:26:39  PMD: no data for 61s on 2 stream(s) -- restarting them on the live link",
+      "2026-09-25 20:26:40  PMD: restarted PPI + ACC; waiting for frames",
+      "2026-09-25 20:28:43  PMD: no sensor data for 121s while connected -- dropping the link to force a reconnect",
+      "2026-09-25 20:28:44  PMD: frames this session acc=138 ppi=92",
+      "2026-09-25 20:28:44  PMD: 2 blocked/implausible PPI (0 without skin contact), 0 malformed frames this session",
+      "2026-09-25 20:28:44  falling back to the generic HR service for up to 20 min, then retrying PMD",
+      "2026-09-25 20:28:46  subscribing to HR notifications; forwarding to http://localhost:8000/hr/ingest?\u0001<redacted>",
+      "2026-09-25 20:48:51  HR-only session was a fallback after barren attempts; dropping the link after 20 min to try the accelerometer/PPI again",
+      "2026-09-25 20:48:51  disconnected",
+      "2026-09-25 20:48:54  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-25 20:49:14  found 'Polar Sense 16961D33' at 24:AC:AC:16:96:1D (rssi -66 dBm)",
+      "2026-09-25 20:49:14  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-25 20:49:18  connected",
+      "2026-09-25 20:49:18  link: mtu=232",
+      "2026-09-25 20:49:18  battery: 87%",
+      "2026-09-25 20:49:23  PMD: start PPI ok",
+      "2026-09-25 20:49:23  PMD: start ACC @52Hz/16bit/8G ok",
+      "2026-09-25 20:49:23  PMD: streaming ACC@52Hz + PPI; forwarding to http://localhost:8000/hr/ingest?\u0001<redacted>",
+      "2026-09-25 20:49:25  PMD: PPI warm-up -- Polar documents ~25s to the first batch and HR updates only every ~5s; silence until then is normal",
+      "2026-09-25 21:10:10  PMD: no data for 61s on 2 stream(s) -- restarting them on the live link",
+      "2026-09-25 21:10:41  PMD restart PPI: write failed (Could not write value b'\\x02\\x03' to characteristic 003E: Unreachable)",
+      "2026-09-25 21:10:41  PMD stop ACC: write failed (Not connected)",
+      "2026-09-25 21:10:41  PMD restart ACC: write failed (Not connected)",
+      "2026-09-25 21:10:41  PMD: frames this session acc=650 ppi=457",
+      "2026-09-25 21:10:41  PMD: 2 blocked/implausible PPI (0 without skin contact), 0 malformed frames this session",
+      "2026-09-25 21:10:41  disconnected",
+      "2026-09-25 21:10:43  scanning for a Polar/BLE heart-rate sensor (20s)...",
+      "2026-09-25 21:11:03  found 'Polar Sense 16961D33' at 24:AC:AC:16:96:1D (rssi -68 dBm)",
+      "2026-09-25 21:11:03  connecting to 24:AC:AC:16:96:1D ...",
+      "2026-09-25 21:11:06  connected",
+      "2026-09-25 21:11:06  link: mtu=232",
+      "2026-09-25 21:11:06  battery: 85%",
+      "2026-09-25 21:11:10  PMD: start PPI ok",
+      "2026-09-25 21:11:10  PMD: start ACC @52Hz/16bit/8G ok",
+      "2026-09-25 21:11:10  PMD: streaming ACC@52Hz + PPI; forwarding to http://localhost:8000/hr/ingest?\u0001<redacted>",
+      "2026-09-25 21:11:13  PMD: PPI warm-up -- Polar documents ~25s to the first batch and HR updates only every ~5s; silence until then is normal"
+    ],
+    "watchdog": [
+      "2026-09-25 20:59:26  api not listening; starting (restart #1 in window)",
+      "2026-09-25 20:59:29  daemon heartbeat missing; restarting (restart #1 in window)",
+      "2026-09-25 20:59:30  web not listening; starting (restart #1 in window)",
+      "2026-09-25 21:00:23  smoke test: api and web up, daemon alive; waiting for its control loop to tick (up to 600s from its start)",
+      "2026-09-25 21:01:25  smoke test: SMOKE PASS",
+      "2026-09-25 21:06:35  tailscale: backend state 'NoState'; running 'tailscale up' (next attempt in 10 min at the earliest)",
+      "2026-09-25 21:16:41  tailscale: backend state 'NoState'; running 'tailscale up' (next attempt in 10 min at the earliest)",
+      "[redacted]",
+      "2026-09-25 21:26:46  tailscale: backend state 'NoState'; running 'tailscale up' (next attempt in 10 min at the earliest)",
+      "2026-09-25 21:35:33  tailscale: NoState (backend not running)",
+      "2026-09-25 21:36:52  tailscale: backend state 'NoState'; running 'tailscale up' (next attempt in 10 min at the earliest)",
+      "2026-09-25 21:46:57  tailscale: backend state 'NoState'; running 'tailscale up' (next attempt in 10 min at the earliest)"
+    ],
+    "web": [
+      "> sleep-controller-dashboard@0.1.0 start",
+      "> next start -H 0.0.0.0 -p 3000",
+      "  \u25b2 Next.js 14.2.35",
+      "  - Local:        http://localhost:3000",
+      "  - Network:      http://0.0.0.0:3000",
+      " \u2713 Starting...",
+      " \u2713 Ready in 304ms"
+    ]
+  },
+  "mesa": null,
+  "playbook_matches": [
+    {
+      "id": "calendar_ics_unreachable"
+    }
+  ],
+  "preflight": {
+    "available": true,
+    "blocking": [],
+    "degraded": [],
+    "verdict": "GO"
+  },
+  "primary_remedy": "check for another controller (the Eight Sleep app's own schedule) writing to the pod; treat these samples as suspect in any range/exposure analysis",
+  "schema": "sleepctl.health/v1",
+  "verdict": "DEGRADED",
+  "version": {
+    "branch": "claude/confident-gates-rg7af0",
+    "sha": "ab40702"
+  },
+  "wake_light": {
+    "backend": "tuya",
+    "configured": false,
+    "enabled": false,
+    "has_address": false,
+    "lan_scan": {
+      "n_tuya_devices": 0,
+      "scanned_at": "2026-09-26T00:59:53.775492+00:00",
+      "versions": []
+    },
+    "tinytuya_installed": true
+  },
+  "wearable": {
+    "acc_stage": {
+      "age_s": 1.7,
+      "ok": true
+    },
+    "available": true,
+    "battery_pct": 85,
+    "headline": "Streaming heart rate, intervals and movement",
+    "hr_stage": {
+      "age_s": 1.7,
+      "ok": true
+    },
+    "link": {
+      "age_s": 44.8,
+      "shape": null,
+      "state": "connected",
+      "streams": [
+        "ACC@52Hz",
+        "PPI"
+      ]
+    },
+    "ppi_stage": {
+      "age_s": 1.7,
+      "ok": true
+    },
+    "receivers": [
+      {
+        "age_s": 44.8,
+        "source": "verity",
+        "state": "connected",
+        "streams": [
+          "ACC@52Hz",
+          "PPI"
+        ]
+      }
+    ],
+    "remedy": null,
+    "streams": [
+      "HR",
+      "PPI",
+      "ACC"
+    ],
+    "used": {
+      "activity_units": "counts",
+      "checks": [
+        {
+          "detail": "stager received 634 dense HR samples",
+          "id": "stager_hr",
+          "ok": true
+        },
+        {
+          "detail": "controller HR source: verity",
+          "id": "fusion_hr",
+          "ok": true
+        },
+        {
+          "detail": "accelerometer counts reach the wake detector",
+          "id": "wake_detector_acc",
+          "ok": true
+        },
+        {
+          "detail": "beat-to-beat intervals produce HRV",
+          "id": "hrv",
+          "ok": true
+        },
+        {
+          "detail": "758 beat intervals reached the stage estimator",
+          "id": "autonomic_rr",
+          "ok": true
+        },
+        {
+          "detail": "158 breathing estimate(s) in the last 15 min; latest confidence 0.8878028270379136, source rsa+acc",
+          "id": "respiration",
+          "ok": true
+        }
+      ],
+      "controller_state": "maintenance",
+      "hr_source": "verity",
+      "in_session": true,
+      "movement_source": "verity",
+      "respiratory_rate_conf": 0.8878028270379136,
+      "respiratory_source": "rsa+acc",
+      "rr_history_n": 758,
+      "stage_source": "model+deep",
+      "ticking": true
+    },
+    "verdict": "streaming_full"
+  }
+}
