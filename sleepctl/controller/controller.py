@@ -51,6 +51,13 @@ MIN_TICKS_FOR_DUTY_CYCLE = 60
 #: ledger resolves the episode (acted vs withheld).
 PREEMPT_EVENT_HORIZON_MIN = 15.0
 
+
+def _episode_draw(now) -> float:
+    """A uniform [0, 1) draw keyed to the minute a pre-empt episode starts."""
+    import hashlib
+    key = now.strftime("%Y-%m-%dT%H:%M") if hasattr(now, "strftime") else str(now)
+    return int.from_bytes(hashlib.sha256(key.encode()).digest()[:8], "big") / 2.0 ** 64
+
 #: A gap this long between architecture accruals means a different night. Comfortably
 #: longer than any within-night sensor dropout, comfortably shorter than a day.
 ARCHITECTURE_GAP_RESET_MIN = 180.0
@@ -110,8 +117,7 @@ class SleepController:
         self.pending_preempt_event = None   # consumed + logged by the cycle (maneuver "preempt")
         self._preempt_episode = None        # tonight's current pre-empt episode: {"act": bool}
         self.last_preempt_withheld = False
-        import random as _random
-        self._preempt_rng = _random.Random()
+        self._preempt_rng = None            # tests may inject an object with .random()
         # Deepening-response policy: whether to ACTUATE the deepen nudge tonight. On control
         # ('observe') nights this is False — the steerer still judges + logs a SHADOW event (the
         # n-of-1 control arm) but doesn't cool. Set nightly by the daemon from the learner.
@@ -1022,7 +1028,12 @@ class SleepController:
                     if ep is None:
                         frac = max(0.0, min(0.5, float(
                             getattr(cfg.tunables, "preempt_withhold_frac", 0.0) or 0.0)))
-                        act = self._preempt_rng.random() >= frac
+                        # Drawn from the episode's start minute, not a free-running RNG: effectively
+                        # random across real nights, yet a replay or backtest of the same night
+                        # reproduces the same assignment.
+                        draw = (self._preempt_rng.random() if self._preempt_rng is not None
+                                else _episode_draw(now))
+                        act = draw >= frac
                         ep = self._preempt_episode = {"act": act}
                         self.pending_preempt_event = {
                             "ts": now, "applied": 1 if act else 0,
