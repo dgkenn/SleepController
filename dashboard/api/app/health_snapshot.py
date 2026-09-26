@@ -41,6 +41,8 @@ SCHEMA = "sleepctl.health/v1"
 # Dict keys whose VALUE must always be redacted regardless of shape (case-insensitive substring).
 _SECRET_KEY_SUBSTRINGS = (
     "password", "secret", "token", "email", "recipient", "authorization", "cookie", "bearer",
+    # the phone alarm's credentials: the ntfy topic, the Pushover user key and receipts
+    "topic", "user_key", "receipt",
 )
 
 # String VALUES that LOOK secret-shaped get replaced wholesale with "[redacted]". Kept
@@ -58,6 +60,8 @@ _SECRET_VALUE_PATTERNS = (
     re.compile(r"\b[0-9a-fA-F]{32,}\b"),
     # inline password=/pwd=/secret=/token= style secrets
     re.compile(r"(?i)\b(?:password|passwd|pwd|secret|token|api[_\-]?key)\s*=\s*\S+"),
+    # the phone alarm's generated ntfy topic (see app.phone_alarm.generate_topic)
+    re.compile(r"sleepctl-[A-Za-z0-9_\-]{16,}"),
 )
 
 _REDACTED = "[redacted]"
@@ -311,6 +315,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "wearable": _wearable_block(repo, run_dir),
         "controller": _controller_block(repo),
         "wake_light": _wake_light_block(repo),
+        "phone_alarm": _phone_alarm_block(repo),
         "dreamt": _dreamt_block(_resolve_run_dir(run_dir)),
         "mesa": _mesa_block(_resolve_run_dir(run_dir)),
     }
@@ -400,6 +405,16 @@ def _wake_light_block(repo) -> dict:
     except Exception as exc:
         out["error"] = type(exc).__name__
     return out
+
+
+def _phone_alarm_block(repo) -> dict:
+    """Whether the phone alarm is set up and switched on, and on which backend. Never the ntfy
+    topic (it IS the credential), the Pushover keys or a receipt: this snapshot is public."""
+    try:
+        from app import phone_alarm as _pa
+        return _pa.public_summary(repo)
+    except Exception as exc:
+        return {"error": type(exc).__name__}
 
 
 def _controller_block(repo) -> dict:

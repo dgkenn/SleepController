@@ -2024,31 +2024,48 @@ def _check_wake_cue(repo) -> dict:
     except Exception as exc:
         unreadable = True
         missing.append(f"light channels (unreadable: {exc!r})")
+    # 5) the phone alarm (ntfy / Pushover), which rings until "I'm awake". Listed only once it
+    # is switched on: a phone alarm never set up is a preference, like a Hue never bought.
+    try:
+        from app import phone_alarm as _pa
+        pa = _pa.get_config(repo)
+        if pa.get("enabled"):
+            if _pa.is_configured(pa):
+                channels.append(f"phone alarm ({pa.get('backend')})")
+            else:
+                missing.append(f"phone alarm ({pa.get('backend')} not set up)")
+    except Exception as exc:
+        unreadable = True
+        missing.append(f"phone alarm (unreadable: {type(exc).__name__})")
 
     detail = f"available: {', '.join(channels)}"
     if missing:
         detail += f" | unavailable: {', '.join(missing)}"
     has_vibration = "Pod vibration" in channels
     has_light = any(c.startswith("dawn light") or c == "bright therapy lamp" for c in channels)
+    has_phone = any(c.startswith("phone alarm") for c in channels)
 
     # SEVERITY TRACKS WHAT IS LOST, NOT WHAT IS UNCONFIGURED. A light that was never set up is a
     # preference; a wake system with nothing but a warming bed in it is a missed shift. Grading
     # every unconfigured channel as a warning would leave this permanently amber for anyone who
     # simply does not own a Hue, and an alert that is always on is one nobody reads.
     # A read error is not evidence that a channel is gone -- say so, do not fail on it.
-    if unreadable and not (has_vibration and has_light):
+    if unreadable and not (has_vibration and (has_light or has_phone)):
         return _check("wake_cue", "Wake cues available", "info",
                       f"could not read every wake channel -- {detail}",
                       "re-run diagnostics; if this persists, check the database is readable")
-    if not has_vibration and not has_light:
+    if not has_vibration and not has_light and not has_phone:
         return _check("wake_cue", "Wake cues available", "fail",
                       f"the ONLY thing left to wake you is a warming bed -- {detail}",
-                      "configure the Hue dawn light or a Wi-Fi therapy plug; with vibration "
-                      "subscription-gated, light is the strongest silent cue available")
+                      "set up the phone alarm (Tonight > Phone alarm), the Hue dawn light or a "
+                      "Wi-Fi therapy plug; with vibration subscription-gated, a warming bed "
+                      "alone is easily slept through")
     if not has_vibration:
+        primary = "light" if has_light else "the phone alarm"
         return _check("wake_cue", "Wake cues available", "warn", detail,
-                      "vibration is gone, so light is now the primary cue -- worth confirming "
-                      "it actually fires before relying on this for a clinical shift")
+                      f"vibration is gone, so {primary} is now the primary cue -- worth "
+                      "confirming it actually fires (Test alarm) before relying on this for a "
+                      "clinical shift")
     if missing:
         return _check("wake_cue", "Wake cues available", "info", detail,
                       "a dawn light would add a second independent cue; vibration is currently "

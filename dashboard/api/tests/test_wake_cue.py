@@ -12,7 +12,7 @@ class _Repo:
     conn = None
 
 
-def _run(monkeypatch, denied, hue, plug):
+def _run(monkeypatch, denied, hue, plug, phone=None):
     """Patch the ATTRIBUTES, not sys.modules.
 
     `diagnostics` reaches these with `from app import bridge`, which reads the attribute already
@@ -23,6 +23,7 @@ def _run(monkeypatch, denied, hue, plug):
                         lambda conn, secs=180: {"extra": {"alarm_write_denied": denied}})
     monkeypatch.setattr("app.services._get_hue_config", lambda repo: hue)
     monkeypatch.setattr("app.services._get_plug_config", lambda repo: plug)
+    monkeypatch.setattr("app.phone_alarm.get_config", lambda repo: phone or _NO_PHONE)
     return diag._check_wake_cue(_Repo())
 
 
@@ -30,6 +31,8 @@ _NO_HUE = {"enabled": False, "bridge_ip": None, "target_ids": [], "therapy_ids":
 _HUE = {"enabled": True, "bridge_ip": "10.0.0.5", "token": "paired", "target_ids": ["1", "2"],
         "therapy_ids": ["9"]}
 _NO_PLUG = {"enabled": False}
+_NO_PHONE = {"enabled": False, "backend": "ntfy", "ntfy": {"topic": ""}, "pushover": {}}
+_PHONE = {"enabled": True, "backend": "ntfy", "ntfy": {"topic": "sleepctl-x"}, "pushover": {}}
 
 
 def test_a_warming_bed_alone_is_a_failure(monkeypatch):
@@ -98,3 +101,27 @@ def test_a_config_read_error_is_info_not_a_failure(monkeypatch):
     r = diag._check_wake_cue(_Repo())
     assert r["status"] == "info"
     assert "unreadable" in r["detail"]
+
+
+def test_a_phone_alarm_is_a_wake_cue(monkeypatch):
+    """Vibration refused and no light, but the phone rings until "I'm awake": no longer a warming
+    bed alone -- a warning to test it, not a failure."""
+    r = _run(monkeypatch, denied=True, hue=_NO_HUE, plug=_NO_PLUG, phone=_PHONE)
+    assert r["status"] == "warn"
+    assert "phone alarm (ntfy)" in r["detail"] and "warming bed" not in r["detail"]
+    assert "phone alarm" in r["remedy"]
+    # the check never names the topic
+    assert "sleepctl-x" not in r["detail"]
+
+
+def test_a_switched_on_phone_alarm_with_no_topic_is_not_a_cue(monkeypatch):
+    phone = dict(_PHONE, ntfy={"topic": ""})
+    r = _run(monkeypatch, denied=True, hue=_NO_HUE, plug=_NO_PLUG, phone=phone)
+    assert r["status"] == "fail"
+    assert "phone alarm (ntfy not set up)" in r["detail"]
+
+
+def test_a_switched_off_phone_alarm_is_not_a_cue(monkeypatch):
+    r = _run(monkeypatch, denied=True, hue=_NO_HUE, plug=_NO_PLUG,
+             phone=dict(_PHONE, enabled=False))
+    assert r["status"] == "fail"

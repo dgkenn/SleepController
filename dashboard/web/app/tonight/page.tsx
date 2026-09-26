@@ -15,6 +15,7 @@ import SafetyGuardrailCard from '@/components/SafetyGuardrailCard';
 import GymCard from '@/components/GymCard';
 import HueCard from '@/components/HueCard';
 import WakeLightCard from '@/components/WakeLightCard';
+import PhoneAlarmCard from '@/components/PhoneAlarmCard';
 import DeviceStatusCard from '@/components/DeviceStatusCard';
 import ArmbandCard from '@/components/ArmbandCard';
 import Disclosure from '@/components/Disclosure';
@@ -374,6 +375,9 @@ function TonightContent() {
 
           {/* Wake-aware sleep plan (driven by the wake time + night type above) */}
           {plan && <SleepPlanCard plan={plan} />}
+
+          {/* The phone alarm: rings at the wake until "I'm awake" (ntfy or Pushover). */}
+          <PhoneAlarmCard />
 
           {/* The morning therapy lamp: set up from here, then one tap to run a dose. */}
           <WakeLightCard />

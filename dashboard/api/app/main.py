@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from app import bridge, services
+from app import bridge, phone_alarm, services
 from app.config import settings
 from app.db import get_repo
 from app.security import (
@@ -394,6 +394,42 @@ def plug_tuya_cloud(body: TuyaCloudBody, repo=Depends(repo_dep), user: str = Aut
     The developer credentials are used for this request only and never stored."""
     return services.plug_tuya_cloud_setup(repo, body.region, body.api_key, body.api_secret,
                                           body.device_id)
+
+
+class PhoneAlarmBody(BaseModel):
+    enabled: bool | None = None
+    backend: str | None = None          # "ntfy" (default) | "pushover"
+    ntfy: dict | None = None            # {"server": ...}; the topic is generated, not typed
+    pushover: dict | None = None        # {"user_key", "app_token"}; "***" keeps the stored one
+    generate_topic: bool | None = None  # replace the ntfy topic with a fresh random one
+    click_url: str | None = None
+
+
+@app.get("/wake/phone-alarm/config")
+def phone_alarm_config(repo=Depends(repo_dep), user: str = AuthDep):
+    """The phone alarm (ntfy / Pushover) that rings at the wake until "I'm awake". Masked."""
+    return phone_alarm.config_view(repo)
+
+
+@app.put("/wake/phone-alarm/config")
+def phone_alarm_config_update(body: PhoneAlarmBody, repo=Depends(repo_dep),
+                              user: str = AuthDep):
+    try:
+        return phone_alarm.config_update(repo, body.model_dump(exclude_none=True))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/wake/phone-alarm/setup")
+def phone_alarm_setup(repo=Depends(repo_dep), user: str = AuthDep):
+    """The one view that shows the ntfy topic, so the signed-in user can subscribe to it."""
+    return phone_alarm.setup_view(repo)
+
+
+@app.post("/wake/phone-alarm/test")
+def phone_alarm_test(repo=Depends(repo_dep), user: str = AuthDep):
+    """One short alarm right now (never the repeating kind) to check the phone is set up."""
+    return phone_alarm.send_test_alarm(repo)
 
 
 class LightBody(BaseModel):
@@ -1072,8 +1108,8 @@ def get_settings(repo=Depends(repo_dep), user: str = AuthDep):
     # whole page over an internal bookkeeping key that was never meant to be read from here.
     #
     # The same table also holds device credentials (wake_plug_config.config.local_key,
-    # hue_config.token, calendar_config.ics_url, ...). Those have their own masked views
-    # (/wake/plug/config etc.); here every secret-looking key is masked at any depth, so this
+    # hue_config.token, calendar_config.ics_url, phone_alarm_config's ntfy topic and Pushover
+    # keys, ...). Those have their own masked views (/wake/plug/config etc.); here every secret-looking key is masked at any depth, so this
     # endpoint never hands a stored credential to the browser.
     rows = repo.conn.execute("SELECT key, value FROM settings_kv").fetchall()
     stored = {}
@@ -1085,7 +1121,8 @@ def get_settings(repo=Depends(repo_dep), user: str = AuthDep):
     return {"stored": stored, "defaults": _config_defaults()}
 
 
-_SECRET_KEY_RE = re.compile(r"local_key|token|secret|password|ics_url|api_key", re.IGNORECASE)
+_SECRET_KEY_RE = re.compile(r"local_key|token|secret|password|ics_url|api_key|user_key|topic|receipt",
+                            re.IGNORECASE)
 
 
 def _redact_secrets(value, key: str = ""):

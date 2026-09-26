@@ -874,6 +874,32 @@ export interface PlugCloudSetup {
   found_on_lan?: boolean;
 }
 
+/** The phone alarm (ntfy or Pushover) that rings at the wake until "I'm awake". Secrets come
+ *  back masked as "***"; the ntfy topic is only ever shown by `phoneAlarmSetup`. */
+export interface PhoneAlarmConfig {
+  enabled: boolean;
+  backend: 'ntfy' | 'pushover';
+  configured: boolean;
+  ntfy: { server: string; topic: string };
+  pushover: { user_key: string; app_token: string };
+  click_url: string;
+}
+
+export interface PhoneAlarmUpdate {
+  enabled?: boolean;
+  backend?: 'ntfy' | 'pushover';
+  ntfy?: { server?: string };
+  pushover?: { user_key?: string; app_token?: string };
+  generate_topic?: boolean;
+}
+
+export interface PhoneAlarmSetup {
+  backend: string;
+  server: string;
+  topic: string;
+  subscribe_url: string;
+}
+
 export interface Backtest {
   nights: number;
   controller: Record<string, number>;
@@ -1110,6 +1136,15 @@ export const api = {
     apiFetch<PlugCloudSetup>('/api/wake/plug/tuya-cloud', { method: 'POST', body: JSON.stringify(b) }),
   plugTest: (on: boolean) =>
     apiFetch<{ ok: boolean; backend: string; commanded: boolean }>(`/api/wake/plug/test?on=${on}`, {
+      method: 'POST',
+    }),
+  // Phone alarm (ntfy / Pushover): rings at the wake until "I'm awake"
+  phoneAlarmConfig: () => apiFetch<PhoneAlarmConfig>('/api/wake/phone-alarm/config'),
+  phoneAlarmUpdate: (values: PhoneAlarmUpdate) =>
+    apiFetch<PhoneAlarmConfig>('/api/wake/phone-alarm/config', { method: 'PUT', body: JSON.stringify(values) }),
+  phoneAlarmSetup: () => apiFetch<PhoneAlarmSetup>('/api/wake/phone-alarm/setup'),
+  phoneAlarmTest: () =>
+    apiFetch<{ ok: boolean; backend: string; error?: string | null }>('/api/wake/phone-alarm/test', {
       method: 'POST',
     }),
   wakeLight: (on: boolean, minutes?: number) =>

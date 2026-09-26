@@ -189,6 +189,11 @@ class LiveDashboardDaemon:
         # Latched so we stop retrying a refusal no client can talk its way past, and so
         # the snapshot can say plainly that vibration is unavailable this night.
         self._alarm_write_denied = self._load_alarm_write_denied(repo)
+        # The phone alarm (ntfy / Pushover): the run ringing now, if any. See _start_phone_alarm.
+        self._phone_alarm = None
+        self._phone_alarm_hold_idle = None   # a run that outlives the nap it ended (see below)
+        self._phone_alarm_reported = set()
+        self._restore_phone_alarm()
         self._our_levels = self._load_our_levels(repo)
         self._pending_wake = None  # captured wake conditions, flushed to wake_log at close-out
         self._wake_last_stage = None
@@ -1217,6 +1222,7 @@ class LiveDashboardDaemon:
                             self._skip("wake window selection", exc)
                     self._persist_wake()
                 elif t == "clear_wake":
+                    self._stop_phone_alarm("alarm cleared")
                     cs.apply_clear_wake(self)
                     self._persist_wake()
                 elif t == "induce_sleep":
@@ -1224,12 +1230,14 @@ class LiveDashboardDaemon:
                 elif t == "start_nap":
                     self._start_nap(p.get("duration_min"), p.get("wake_time"))
                 elif t == "end_session":
+                    self._stop_phone_alarm("session ended")
                     self._end_session("session ended by user")
                 elif t == "woke_up":
                     # "I'm awake": end the session AND give the morning light dose. Separate
                     # from end_session so ending a nap or abandoning a session never lights
                     # the room. The user is up, so tonight's alarm is done with.
                     was_nap = self.session_mode == "nap"
+                    self._stop_phone_alarm("woke_up")
                     self._end_session("user is awake", clear_alarm=not was_nap)
                     if not was_nap:
                         self._start_light_dose("woke_up")
@@ -1770,6 +1778,9 @@ class LiveDashboardDaemon:
                       "comfort_anchor": getattr(self, "_comfort_anchor", None),
                       # The wake light: configured, and whether a dose is running.
                       "wake_light": self._wake_light_status(),
+                      # The phone alarm: ringing or not, backend, sends. No topic, keys or
+                      # receipt -- this block reaches the dashboard and diagnostics.
+                      "phone_alarm": self._phone_alarm_status(),
                       "preemption": self.cycle.controller.preemption_summary(),
                       "steering": self.cycle.controller.steering_summary(),
                       "data_quality": self.cycle.controller.data_quality_summary(),
@@ -2314,6 +2325,159 @@ class LiveDashboardDaemon:
         self._alarm_light_fired = key
         return self._start_light_dose("alarm", manual=True, now=now)
 
+    # ------------------------------------------------------------------ phone alarm
+    # The Pod's vibration is refused on this account, the web push is a single buzz, and a
+    # warming bed is easily slept through -- so the phone rings (ntfy / Pushover, see
+    # app.phone_alarm) until "I'm awake". Every call is best-effort: nothing here may raise into
+    # the control loop, and the network runs on the alarm's own thread.
+    #: One run per night: which night (and which nap) already rang, persisted in settings_kv so
+    #: a restart or a calendar alarm re-armed after "I'm awake" cannot ring the same morning twice.
+    PHONE_ALARM_RUN_KEY = "phone_alarm_last_run"
+    #: A Pushover emergency's receipt, kept so "I'm awake" can cancel it even after a restart.
+    PHONE_ALARM_RECEIPT_KEY = "phone_alarm_pushover_receipt"
+    #: ntfy re-send cadence and count (class attributes so tests can shorten them).
+    PHONE_ALARM_REPEAT_S = 60.0
+    PHONE_ALARM_MAX_SENDS = 15
+
+    def _phone_alarm_run_key(self, w: datetime) -> tuple:
+        if self.session_mode == "nap" or self.nap_deadline is not None:
+            return "nap", (getattr(self, "nap_start", None) or w).isoformat()
+        return "night", self.cycle.night_date(w)
+
+    def _start_phone_alarm(self, why: str, *, stage: "str | None" = None,
+                           minutes_early: "float | None" = None) -> bool:
+        """Ring the phone for this wake. Returns whether a run started; never raises.
+
+        Only for an ARMED wake (the night's alarm or a nap's deadline) -- never on a night
+        without one -- and at most once per night / per nap."""
+        try:
+            run = getattr(self, "_phone_alarm", None)
+            if run is not None and run.active:
+                return False
+            w = getattr(self.context, "required_wake_time", None)
+            if w is None:
+                return False
+            from app import phone_alarm as _pa
+            from app import services as _svc
+            cfg = _pa.get_config(self.repo)
+            if not _pa.is_ready(cfg):
+                return False
+            kind, key = self._phone_alarm_run_key(w)
+            last = _svc._kv_get_json(self.repo, self.PHONE_ALARM_RUN_KEY) or {}
+            if not isinstance(last, dict):
+                last = {}
+            if last.get(kind) == key:
+                return False
+            if stage in ("light", "awake") and minutes_early:
+                body = (f"{minutes_early:.0f} min early, from {stage} sleep -- the easiest moment "
+                        "to get up.")
+            else:
+                body = "Your wake time is here."
+            body += " Open SleepCtl and press \"I'm awake\" to stop the alarm."
+            run = _pa.PhoneAlarmRun(cfg, title="Time to get up", message=body,
+                                    click=_pa.click_url(cfg),
+                                    interval_s=self.PHONE_ALARM_REPEAT_S,
+                                    max_sends=self.PHONE_ALARM_MAX_SENDS)
+            # Recorded BEFORE ringing: a restart mid-alarm must not turn into a second run.
+            _svc._kv_set_json(self.repo, self.PHONE_ALARM_RUN_KEY, {**last, kind: key})
+            self._phone_alarm = run.start()
+            self._phone_alarm_hold_idle = None
+            self._phone_alarm_reported = set()
+            self._log(f"phone alarm ringing ({run.backend}; {why})")
+            self._emit_event("wake", "info", "phone_alarm_started",
+                             f"Phone alarm ringing ({run.backend}).",
+                             {"backend": run.backend, "why": why, "kind": kind})
+            return True
+        except Exception as exc:
+            self._skip("phone alarm", exc)
+            return False
+
+    def _stop_phone_alarm(self, reason: str) -> None:
+        """Stop the ringing and cancel a Pushover emergency. Never raises, never blocks."""
+        try:
+            run = getattr(self, "_phone_alarm", None)
+            self._phone_alarm_hold_idle = None
+            if run is None or not run.active:
+                return
+            run.stop(reason)
+            self._log(f"phone alarm stopped ({reason}) after {run.sends} send(s)")
+            self._emit_event("wake", "info", "phone_alarm_stopped",
+                             f"Phone alarm stopped ({reason}).",
+                             {"backend": run.backend, "reason": reason, "sends": run.sends})
+            from app import services as _svc
+            _svc._kv_set_json(self.repo, self.PHONE_ALARM_RECEIPT_KEY, None)
+        except Exception as exc:
+            self._skip("phone alarm stop", exc)
+
+    def _maybe_phone_alarm(self, now: "datetime | None" = None) -> bool:
+        """The backstop: ring at the armed wake's deadline if the smart wake has not already.
+        Naps included -- a nap's deadline is exactly when it must end."""
+        w = getattr(self.context, "required_wake_time", None)
+        if w is None:
+            return False
+        now = now or self._clock_now()
+        try:
+            due = w <= now < w + timedelta(minutes=self.ALARM_LIGHT_GRACE_MIN)
+        except TypeError:
+            return False
+        return self._start_phone_alarm("deadline") if due else False
+
+    def _tend_phone_alarm(self) -> None:
+        """Main-thread bookkeeping for the alarm's worker: report a failed send and the end of
+        the run once each, and keep a Pushover receipt cancellable across a restart."""
+        run = getattr(self, "_phone_alarm", None)
+        if run is None:
+            return
+        try:
+            from app import services as _svc
+            seen = getattr(self, "_phone_alarm_reported", None)
+            if seen is None:
+                seen = self._phone_alarm_reported = set()
+            if run.failures and "failed" not in seen:
+                seen.add("failed")
+                self._log(f"phone alarm send failed ({run.backend}): {run.last_error}")
+                self._emit_event("wake", "warn", "phone_alarm_send_failed",
+                                 f"The phone alarm could not reach {run.backend}.",
+                                 {"backend": run.backend, "error": run.last_error})
+            if run.receipt and run.active and "receipt" not in seen:
+                seen.add("receipt")
+                _svc._kv_set_json(self.repo, self.PHONE_ALARM_RECEIPT_KEY,
+                                  {"receipt": run.receipt,
+                                   "started_at": run.started_at.isoformat()})
+            if run.finished and "finished" not in seen:
+                seen.add("finished")
+                self._emit_event("wake", "info", "phone_alarm_finished",
+                                 f"Phone alarm ran its course ({run.sends} send(s)).",
+                                 {"backend": run.backend, "sends": run.sends,
+                                  "failures": run.failures})
+                _svc._kv_set_json(self.repo, self.PHONE_ALARM_RECEIPT_KEY, None)
+        except Exception as exc:
+            self._skip("phone alarm upkeep", exc)
+
+    def _restore_phone_alarm(self) -> None:
+        """A Pushover emergency sent before a restart keeps repeating on Pushover's side; adopt
+        its receipt so "I'm awake" can still cancel it."""
+        try:
+            from app import phone_alarm as _pa
+            from app import services as _svc
+            rec = _svc._kv_get_json(self.repo, self.PHONE_ALARM_RECEIPT_KEY)
+            if not (isinstance(rec, dict) and rec.get("receipt")):
+                return
+            cfg = _pa.get_config(self.repo)
+            run = _pa.PhoneAlarmRun.resume_pushover(
+                cfg, rec["receipt"], datetime.fromisoformat(rec["started_at"]))
+            if run.active:
+                self._phone_alarm = run
+                self._phone_alarm_reported = {"receipt"}
+            else:
+                _svc._kv_set_json(self.repo, self.PHONE_ALARM_RECEIPT_KEY, None)
+        except Exception as exc:
+            self._skip("phone alarm restore", exc)
+
+    def _phone_alarm_status(self) -> dict:
+        run = getattr(self, "_phone_alarm", None)
+        return run.status() if run is not None else {"ringing": False}
+
     def _clock_now(self) -> datetime:
         try:
             now = self.client.now()
@@ -2398,16 +2562,16 @@ class LiveDashboardDaemon:
         # ramp alone -- silent, and easily slept through. Best-effort and idempotent per night:
         # a push failure must never disturb the control loop that owns the ramp itself.
         if la.get("should_wake"):
+            mins_early = None
+            dl = la.get("target_time")
+            if dl:
+                try:
+                    mins_early = max(0.0, (datetime.fromisoformat(dl)
+                                           - now).total_seconds() / 60.0)
+                except Exception:
+                    pass
             try:
                 from app import services as _svc
-                mins_early = None
-                dl = la.get("target_time")
-                if dl:
-                    try:
-                        mins_early = max(0.0, (datetime.fromisoformat(dl)
-                                               - now).total_seconds() / 60.0)
-                    except Exception:
-                        pass
                 res = _svc.deliver_wake_push(
                     self.repo, stage=(self._wake_last_stage or st),
                     minutes_early=mins_early,
@@ -2417,6 +2581,9 @@ class LiveDashboardDaemon:
                                      "Wake pushed to your phone.", res)
             except Exception as exc:
                 self._skip("wake push", exc)
+            # ...and ring it, until "I'm awake": the push above is a single buzz.
+            self._start_phone_alarm("smart_wake", stage=(self._wake_last_stage or st),
+                                    minutes_early=mins_early)
         # Capture at confirmation — first "post_wake" (light dose held) or "done" — not after the
         # post-wake hold, so minutes_early/forced reflect the real wake instant.
         if la.get("phase") in ("post_wake", "done") and self._pending_wake is None:
@@ -2580,6 +2747,8 @@ class LiveDashboardDaemon:
             self._prev_state = decision.state
         self._last_decision = decision
         self._maybe_alarm_light()         # the lamp at the alarm time set in the app
+        self._maybe_phone_alarm()         # the phone, at the deadline, if the smart wake has not
+        self._tend_phone_alarm()
         self._expire_passed_wake()        # an alarm that has passed is over, in memory and on disk
         self._drive_dawn(decision)        # push the dawn light level to Hue (best-effort)
         snapshot = self._snapshot(decision, frame)
@@ -2593,6 +2762,9 @@ class LiveDashboardDaemon:
         # losing it to an end-of-session reset that would wipe required_wake_time out from under
         # this same tick (which would previously drop the deadline-crossing wake action).
         if self.nap_deadline is not None and datetime.now() >= self.nap_deadline:
+            # Ending the nap here is not the user getting up: the phone keeps ringing through
+            # the IDLE transition this causes on the next tick.
+            self._phone_alarm_hold_idle = getattr(self, "_phone_alarm", None)
             self._end_session("nap deadline reached")
 
     async def command_tick(self) -> bool:
@@ -2672,6 +2844,11 @@ class LiveDashboardDaemon:
                     and self._prev_state is not ControllerState.IDLE)
         ended_kind = None
         if left_bed:
+            run = getattr(self, "_phone_alarm", None)
+            if run is not None and getattr(self, "_phone_alarm_hold_idle", None) is run:
+                self._phone_alarm_hold_idle = None
+            else:
+                self._stop_phone_alarm("bed exit")
             self._session_went_idle()
             ended_kind = getattr(self, "_last_session_kind", None)
             self._last_session_kind = None      # the next session declares its own kind
