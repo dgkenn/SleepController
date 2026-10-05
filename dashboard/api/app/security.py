@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import time
@@ -106,11 +107,73 @@ def _token_from_request(request: Request) -> str | None:
     return request.cookies.get("session")
 
 
+# --------------------------------------------------------- no login on the home network
+# The owner asked for no login page at home (2026-10-05): the dashboard is opened from the
+# phone on the home Wi-Fi, and a password there only got in the way. A request is treated as
+# the owner's when it plainly came from the LAN; anything that could have come from the
+# internet -- the Tailscale Funnel URL, any request carrying Tailscale's headers, a ts.net host,
+# a public address anywhere in the path -- still needs the login, because that URL reaches the
+# bed from the whole internet. SLEEPCTL_LAN_NO_LOGIN=0 turns the exemption off.
+_LAN_NETS = tuple(ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12",
+                                                      "192.168.0.0/16"))
+
+
+def _ip(value: str):
+    try:
+        return ipaddress.ip_address(value.strip().strip("[]"))
+    except ValueError:
+        return None
+
+
+def _is_lan(value: str) -> bool:
+    ip = _ip(value)
+    if ip is not None and getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return ip is not None and any(ip in n for n in _LAN_NETS)
+
+
+def _is_loopback(value: str) -> bool:
+    ip = _ip(value)
+    if ip is not None and getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return ip is not None and ip.is_loopback
+
+
+def lan_request(request: Request) -> bool:
+    """True when this request plainly came from a device on the home network."""
+    if os.environ.get("SLEEPCTL_LAN_NO_LOGIN", "1").strip().lower() in ("0", "false", "no", "off"):
+        return False
+    h = request.headers
+    # Tailscale serve / Funnel adds Tailscale-* headers to what it proxies: never exempt those.
+    if any(k.lower().startswith("tailscale-") for k in h.keys()):
+        return False
+    # The address the browser typed: the web server passes it on as X-Forwarded-Host. It must
+    # be a LAN address (http://192.168.x.y:3000), not the ts.net name.
+    host = (h.get("x-forwarded-host") or h.get("host") or "").split(",")[0].strip()
+    hostname = host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+    if not _is_lan(hostname):
+        return False
+    # Every hop the request passed through must be the LAN or this machine, and at least one
+    # must be a LAN device: a public address anywhere in the chain means it came from outside.
+    hops = [x.strip() for x in h.get("x-forwarded-for", "").split(",") if x.strip()]
+    if request.client and request.client.host:
+        hops.append(request.client.host)
+    if not hops or not all(_is_lan(x) or _is_loopback(x) for x in hops):
+        return False
+    return any(_is_lan(x) for x in hops)
+
+
 def current_user(request: Request) -> str:
     token = _token_from_request(request)
-    if not token:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")
-    return decode_token(token)["sub"]
+    if token:
+        try:
+            return decode_token(token)["sub"]
+        except HTTPException:
+            if not lan_request(request):
+                raise
+    if lan_request(request):
+        return settings.bootstrap_user
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")
 
 
 AuthDep = Depends(current_user)

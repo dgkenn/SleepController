@@ -498,7 +498,9 @@ def _bcg_auth(request: Request, token: str | None) -> None:
     LAN."""
     if settings.bcg_ingest_open:
         return
-    from app.security import _token_from_request, decode_token
+    from app.security import _token_from_request, decode_token, lan_request
+    if lan_request(request):
+        return  # the home network needs no login (security.lan_request)
     presented = token or _token_from_request(request) or ""
     if settings.bcg_ingest_token and _secret_eq(presented, settings.bcg_ingest_token):
         return  # static shared-secret ingest token (non-expiring, funnel-safe)
@@ -642,8 +644,9 @@ def bedtemp_ingest(body: BedTempBody, request: Request, token: str | None = None
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie
     # or an explicit ?token (from the login response).
-    from app.security import decode_token
-    decode_token(token or request.cookies.get("session") or "")  # raises 401 if invalid
+    from app.security import decode_token, lan_request
+    if not lan_request(request):  # the home network needs no login (security.lan_request)
+        decode_token(token or request.cookies.get("session") or "")  # raises 401 if invalid
 
     async def gen():
         while True:
