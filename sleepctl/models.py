@@ -103,12 +103,17 @@ class SensorFrame:
     # each night and whenever no sleep session is open), so the controller falls to open-loop when
     # it is None. It must NEVER be populated from the level-derived pyEight ``current_bed_temp``
     # (that value just echoes the command back -> circular). ``device_level`` is a DIFFERENT thing:
-    # the actual achieved water-side level (currentDeviceLevel/heating_level), used ONLY to verify
-    # the actuator responded to a command (the thermal-health / frozen-telemetry checks) -- it is
-    # the command echo, so it must never be used as the feedback signal. ``target_level`` is the goal.
+    # the actual achieved water-side level (currentDeviceLevel/heating_level): the hub's MEASURED
+    # water temperature on the level scale (it lags commands and drifts on its own when the Pod is
+    # off). It is the water, not the sleeper's surface, so it verifies the actuator (thermal-health,
+    # frozen-telemetry, arrival) and, after hours switched off, reads the room
+    # (``room_temp_est_f``); it is not the bed-surface feedback signal. ``target_level`` is the goal.
     device_level: Optional[int] = None
     target_level: Optional[int] = None
     data_age_seconds: Optional[float] = None
+    # Room temperature estimated from the hub's water after hours switched off
+    # (sleepctl.controller.room_from_water). Recorded for learning; NOT used by the control law.
+    room_temp_est_f: Optional[float] = None
     # Optional DENSE trailing sensor history as [(epoch_seconds, value), ...], supplied by the
     # daemon from the ingest tables when an external sensor is streaming (a Polar Verity Sense
     # writes ~1 HR sample every 2 s). The per-tick frame fields above are only ~1 sample/minute,
@@ -128,7 +133,7 @@ class SensorFrame:
         # controller treats it as missing data (and holds) rather than acting on garbage.
         import math as _math
         for _f in ("stage_confidence", "heart_rate", "hrv", "respiratory_rate", "movement",
-                   "bed_temp_f", "room_temp_f", "data_age_seconds"):
+                   "bed_temp_f", "room_temp_f", "room_temp_est_f", "data_age_seconds"):
             v = getattr(self, _f)
             if isinstance(v, float) and not _math.isfinite(v):
                 setattr(self, _f, None)
@@ -212,6 +217,7 @@ class ContextRecord:
     work_start_time: Optional[datetime] = None
     first_commitment: Optional[datetime] = None
     outdoor_temp_f: Optional[float] = None  # ambient context (weather), for comfort offset
+    room_temp_est_f: Optional[float] = None  # bedroom, from the Pod's settled water (room_from_water)
     sleep_opportunity_min: Optional[float] = None
     is_short_sleep_day: Optional[bool] = None
     schedule_variable: Optional[bool] = None

@@ -1746,6 +1746,7 @@ class LiveDashboardDaemon:
                       "away": self.away, "wake": self.wake, "live": True,
                       "device_level": frame.device_level if frame else None,
                       "device_target_level": frame.target_level if frame else None,
+                      "room_temp_est_f": getattr(frame, "room_temp_est_f", None) if frame else None,
                       "bed_presence": frame.presence if frame else None,
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       # True once the Pod refused an alarm WRITE (subscription-gated). Published
@@ -2667,6 +2668,10 @@ class LiveDashboardDaemon:
         frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
+        # Bedroom temperature from the Pod's settled water: recorded on tonight's context (the
+        # learners' ambient covariate), never fed to the control law.
+        if getattr(frame, "room_temp_est_f", None) is not None:
+            self.context.room_temp_est_f = round(float(frame.room_temp_est_f), 1)
         self._refresh_precomp(now)
         self._refresh_shift_plan()
         decision = None

@@ -129,6 +129,8 @@ class EightSleepClient:
         # available). See _sensed_bed_temp_f: this has been None on every sample of every
         # captured night, and without this the reason was unknowable from the outside.
         self.last_bed_temp_reason: Optional[str] = None
+        from sleepctl.controller.room_from_water import RoomFromWater
+        self._room_est = RoomFromWater()
         #: Last device heating level that passed the plausibility check, and how many reads have
         #: been rejected as physically impossible (see _plausible_level).
         self._last_good_level: Optional[int] = None
@@ -213,6 +215,8 @@ class EightSleepClient:
         # (None -> the controller falls to safe open-loop control, never closes on a fake signal).
         bed_temp_f = self._sensed_bed_temp_f(user)
         level = self._plausible_level(_safe(lambda: user.heating_level), age)
+        # The hub's water, settled after hours switched off, is the room (room_from_water).
+        self._room_est.observe(now, level, self._side_on(user))
 
         return SensorFrame(
             timestamp=self._last_update or now,
@@ -230,7 +234,18 @@ class EightSleepClient:
             device_level=level,
             target_level=_safe(lambda: user.target_heating_level),
             data_age_seconds=age,
+            room_temp_est_f=self._room_est.estimate(now),
         )
+
+    def _side_on(self, user):  # pragma: no cover - requires live device
+        """Is this side switched on (heating OR cooling)? ``{side}NowHeating`` in the device
+        payload is True for either direction; None when the payload does not say."""
+        side = _safe(lambda: user.side)
+        data = _safe(lambda: user.device.device_data)
+        if not side or not isinstance(data, dict):
+            return None
+        v = data.get(f"{side}NowHeating")
+        return bool(v) if isinstance(v, bool) else None
 
     def _plausible_level(self, level, age_s):
         """Reject a device heating level the bed could not physically have reached.

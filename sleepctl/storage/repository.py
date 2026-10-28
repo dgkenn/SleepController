@@ -384,8 +384,8 @@ class Repository:
         quality, caffeine and the rest went NULL."""
         self.conn.execute(
             """INSERT INTO context
-            (date, required_wake_time, work_start_time, first_commitment, outdoor_temp_f, sleep_opportunity_min, is_short_sleep_day, schedule_variable, steps, workout_timing, workout_intensity, resting_hr_trend, hr_recovery, strain, caffeine, alcohol, screen_time_min, stress, travel, illness, late_night_work, routine_complete, subjective_quality, grogginess, daytime_performance, night_type)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            (date, required_wake_time, work_start_time, first_commitment, outdoor_temp_f, sleep_opportunity_min, is_short_sleep_day, schedule_variable, steps, workout_timing, workout_intensity, resting_hr_trend, hr_recovery, strain, caffeine, alcohol, screen_time_min, stress, travel, illness, late_night_work, routine_complete, subjective_quality, grogginess, daytime_performance, night_type, room_temp_est_f)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(date) DO UPDATE SET
              required_wake_time=COALESCE(excluded.required_wake_time, context.required_wake_time),
              work_start_time=COALESCE(excluded.work_start_time, context.work_start_time),
@@ -411,7 +411,8 @@ class Repository:
              subjective_quality=COALESCE(excluded.subjective_quality, context.subjective_quality),
              grogginess=COALESCE(excluded.grogginess, context.grogginess),
              daytime_performance=COALESCE(excluded.daytime_performance, context.daytime_performance),
-             night_type=COALESCE(excluded.night_type, context.night_type)""",
+             night_type=COALESCE(excluded.night_type, context.night_type),
+             room_temp_est_f=COALESCE(excluded.room_temp_est_f, context.room_temp_est_f)""",
             (
                 ctx.date,
                 _iso(ctx.required_wake_time),
@@ -439,6 +440,7 @@ class Repository:
                 ctx.grogginess,
                 ctx.daytime_performance,
                 getattr(ctx, "night_type", None),
+                getattr(ctx, "room_temp_est_f", None),
             ),
         )
         self.conn.commit()
@@ -1124,6 +1126,7 @@ class Repository:
             grogginess=r["grogginess"],
             daytime_performance=r["daytime_performance"],
             night_type=(r["night_type"] if "night_type" in r.keys() else None),
+            room_temp_est_f=(r["room_temp_est_f"] if "room_temp_est_f" in r.keys() else None),
         )
 
     # ---- runtime-state history: append-only trend of runtime_state snapshots (48h+ window) --

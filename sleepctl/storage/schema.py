@@ -463,6 +463,9 @@ _MIGRATIONS = [
     # but the table had no column, so it read back None: recovery nights were never scored as
     # RECOVERY and the per-mode learners only ever saw "normal".
     ("context", "night_type", "TEXT"),
+    # Bedroom temperature estimated from the Pod's settled water (room_from_water): the only room
+    # reading on an account whose Pod room sensor is subscription-gated.
+    ("context", "room_temp_est_f", "REAL"),
 ]
 
 

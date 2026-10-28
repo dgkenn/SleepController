@@ -482,6 +482,8 @@ def _controller_block(repo) -> dict:
         # The armed wake: the alarm the user set is the planner's ONLY schedule input (it arms
         # the night targets, the wake window and the thermal ramp), so whether tonight has one
         # must be visible off-box. A clock time is not physiology.
+        # Bedroom temperature from the Pod's settled water (room_from_water); a plain number.
+        out["room_temp_est_f"] = (rt.get("extra") or {}).get("room_temp_est_f")
         wk = (rt.get("extra") or {}).get("wake")
         out["wake_armed"] = wk if isinstance(wk, dict) else ({"set": bool(wk)} if wk else None)
     except Exception as exc:
