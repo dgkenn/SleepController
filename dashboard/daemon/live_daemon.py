@@ -1623,6 +1623,33 @@ class LiveDashboardDaemon:
         except Exception:
             pass
 
+    #: Eight Sleep trends timeseries keys, in words, for the sensor-inventory log line.
+    _TRENDS_NAMES = {"heartRate": "heart rate", "hrv": "HRV", "respiratoryRate": "breathing rate",
+                     "tempBedC": "bed temperature", "tempRoomC": "room temperature",
+                     "tnt": "tosses and turns"}
+
+    def _log_sensor_inventory(self) -> None:
+        """Log what Eight Sleep's sleep-data feed returns, whenever that changes (a
+        subscription bought or lapsed shows up as one line in the published daemon log)."""
+        inv = getattr(self.client, "sensor_inventory", None)
+        if not isinstance(inv, dict) or not inv.get("checked"):
+            return
+        sig = (tuple(inv.get("trends_keys") or ()), bool(inv.get("stages")),
+               bool(inv.get("presence")), bool(inv.get("trends_error")))
+        if sig == getattr(self, "_sensor_inv_sig", None):
+            return
+        self._sensor_inv_sig = sig
+        if inv.get("trends_error"):
+            self._log(f"Eight Sleep sleep data: feed refused ({inv['trends_error'][:120]})")
+            return
+        names = [self._TRENDS_NAMES.get(k, k) for k in inv.get("trends_keys") or []]
+        if inv.get("stages"):
+            names.append("sleep stages")
+        if inv.get("presence"):
+            names.append("in-bed times")
+        self._log("Eight Sleep sleep data now includes: " + (", ".join(names) or
+                  "nothing yet (it fills once a sleep session has been recorded)"))
+
     def _publish_session_state(self) -> None:
         """Write .run/session.state so the WATCHDOG can see a night is running.
 
@@ -1747,6 +1774,7 @@ class LiveDashboardDaemon:
                       "device_level": frame.device_level if frame else None,
                       "device_target_level": frame.target_level if frame else None,
                       "room_temp_est_f": getattr(frame, "room_temp_est_f", None) if frame else None,
+                      "eight_sensors": getattr(self.client, "sensor_inventory", None),
                       "bed_presence": frame.presence if frame else None,
                       "dry_run": self.dry_run, "session_mode": self.session_mode,
                       # True once the Pod refused an alarm WRITE (subscription-gated). Published
@@ -2668,6 +2696,7 @@ class LiveDashboardDaemon:
         frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
+        self._log_sensor_inventory()
         # Bedroom temperature from the Pod's settled water: recorded on tonight's context (the
         # learners' ambient covariate), never fed to the control law.
         if getattr(frame, "room_temp_est_f", None) is not None:
@@ -3004,6 +3033,25 @@ class LiveDashboardDaemon:
                               f"({result.get('detail')}) -- it may still fight commanded levels.")
             except Exception as exc:  # pragma: no cover - network dependent
                 self._log(f"WARNING: could not disable bedtime schedule: {exc!r}")
+        # Can the Pod's alarm (vibration) be written? Asked of the server at start-up with a no-op
+        # write (the alarm is read and put back unchanged), so a subscription change shows up at
+        # once instead of at the next night's alarm, and a stale refusal latch is cleared.
+        probe = getattr(self.client, "probe_alarm_capability", None)
+        if probe is not None and not self.dry_run:
+            try:
+                res = await probe()
+                if res.get("writable"):
+                    if self._alarm_write_denied:
+                        self._save_alarm_write_denied(False)
+                    self._alarm_write_denied = False
+                    self._log("Pod alarm: writes ACCEPTED -- vibration is available.")
+                else:
+                    self._log(f"Pod alarm: {res.get('detail') or 'not writable'}")
+                self._emit_event("lifecycle", "info", "alarm_probe",
+                                 "Pod alarm write probe", {"writable": bool(res.get("writable")),
+                                                           "detail": (res.get("detail") or "")[:200]})
+            except Exception as exc:  # pragma: no cover - network dependent
+                self._log(f"Pod alarm probe skipped: {exc!r}")
         # Reload a wake deadline persisted by a previous daemon instance (see _restore_wake):
         # the watchdog restarts this process on its own, and losing the alarm silently is the
         # worst possible failure for the one thing the night is planned around.

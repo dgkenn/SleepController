@@ -294,6 +294,14 @@ class EightSleepDirectClient:
         self._device_ts: Optional[datetime] = None
         self._physiology: dict = {}
         self._physiology_ts: Optional[datetime] = None
+        # What Eight Sleep's sleep-data feed (trends) actually returns on this account, so a
+        # subscription change shows up in the log and the health snapshot at once: the
+        # timeseries keys seen with data, whether sleep stages / in-bed times come back, and
+        # the last error if the feed was refused.
+        self.sensor_inventory: dict = {"trends_keys": [], "stages": False, "presence": False,
+                                       "trends_error": None, "checked": None}
+        from sleepctl.controller.room_from_water import RoomFromWater
+        self._room_est = RoomFromWater()
         self._last_update: Optional[datetime] = None
 
         self._alarm_id: Optional[str] = None
@@ -567,6 +575,19 @@ class EightSleepDirectClient:
             "sample_time": sample_ts,
         }
 
+    @staticmethod
+    def _inventory(days: list) -> dict:
+        """Which data the trends feed carried in these days' sessions (keys with data)."""
+        keys, stages, presence = set(), False, False
+        for day in days or []:
+            for session in (day or {}).get("sessions") or []:
+                for k, arr in ((session or {}).get("timeseries") or {}).items():
+                    if arr:
+                        keys.add(k)
+                stages = stages or bool((session or {}).get("stages"))
+                presence = presence or bool((session or {}).get("presenceStart"))
+        return {"trends_keys": sorted(keys), "stages": stages, "presence": presence}
+
     async def update_physiology(self, force: bool = False) -> None:
         """Throttled trends GET (~60s cadence by default; batch/processed, lags minutes).
         A no-op if the interval hasn't elapsed unless ``force=True``. On failure, logs and
@@ -593,11 +614,14 @@ class EightSleepDirectClient:
             data = await self._request("GET", f"{CLIENT_API_URL}/users/{self._user_id}/trends", params=params)
         except EightSleepRequestError as exc:
             _LOGGER.warning("physiology update failed, using stale data: %r", exc)
+            self.sensor_inventory.update(trends_error=str(exc)[:160], checked=now.isoformat())
             return
 
         days = (data or {}).get("days", [])
         self._physiology = self._extract_latest_physiology(days)
         self._physiology_ts = now
+        self.sensor_inventory.update(self._inventory(days), trends_error=None,
+                                     checked=now.isoformat())
 
     async def update(self, user: bool = True, device: bool = True) -> None:
         """Drop-in for the pyEight adapter's ``update(user, device)``. ``device`` refreshes
@@ -642,6 +666,9 @@ class EightSleepDirectClient:
 
         device_level = device.get(f"{side}HeatingLevel")
         target_level = device.get(f"{side}TargetHeatingLevel")
+        # The hub's water, settled after hours switched off, is the room (room_from_water).
+        side_on = device.get(f"{side}NowHeating")
+        self._room_est.observe(now, device_level, side_on if isinstance(side_on, bool) else None)
 
         sample_dt = _parse_iso(phys.get("sample_time"))
         # SENSED-physiology freshness. The trends pipeline is session-gated: it is EMPTY for the
@@ -671,6 +698,7 @@ class EightSleepDirectClient:
             device_level=device_level,
             target_level=target_level,
             data_age_seconds=device_age,
+            room_temp_est_f=self._room_est.estimate(now),
         )
 
     def device_status(self) -> dict:

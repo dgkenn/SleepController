@@ -484,6 +484,12 @@ def _controller_block(repo) -> dict:
         # must be visible off-box. A clock time is not physiology.
         # Bedroom temperature from the Pod's settled water (room_from_water); a plain number.
         out["room_temp_est_f"] = (rt.get("extra") or {}).get("room_temp_est_f")
+        # What Eight Sleep's sleep-data feed returns on this account (key names, flags, an error
+        # string): shows at once what a subscription change turned on.
+        inv = (rt.get("extra") or {}).get("eight_sensors")
+        out["eight_sensors"] = ({k: inv.get(k) for k in ("trends_keys", "stages", "presence",
+                                                         "trends_error", "checked")}
+                                if isinstance(inv, dict) else None)
         wk = (rt.get("extra") or {}).get("wake")
         out["wake_armed"] = wk if isinstance(wk, dict) else ({"set": bool(wk)} if wk else None)
     except Exception as exc:
