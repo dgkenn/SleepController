@@ -608,6 +608,17 @@ class EightSleepDirectClient:
             self.sensor_inventory["day_keys"] = sorted({k for d in days for k in (d or {})})
         except Exception as exc:
             self.sensor_inventory["nights_7d_error"] = str(exc)[:160]
+        # The other session feed (what pyEight / Home Assistant read): if trends is empty but
+        # this has sessions, the data exists and our trends query is what misses it.
+        try:
+            iv = await self._request("GET", f"{CLIENT_API_URL}/users/{self._user_id}/intervals")
+            sessions = (iv or {}).get("intervals") or []
+            self.sensor_inventory["intervals"] = {
+                "n": len(sessions),
+                "latest_ts": (sessions[0] or {}).get("ts") if sessions else None,
+                "keys": sorted({k for x in sessions[:3] for k in ((x or {}).get("timeseries") or {})})}
+        except Exception as exc:
+            self.sensor_inventory["intervals"] = {"error": str(exc)[:160]}
         d = self._device or {}
         uid = str(self._user_id or "")
         # Each side separately: in "solo" mode the Pod can list the same user on both.

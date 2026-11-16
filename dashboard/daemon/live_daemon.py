@@ -1637,14 +1637,15 @@ class LiveDashboardDaemon:
         nights = inv.get("nights_7d")
         if isinstance(nights, list):
             hsig = (tuple((n.get("day"), n.get("sessions")) for n in nights),
-                    inv.get("assigned_side"), inv.get("reading_side"), inv.get("away"))
+                    inv.get("assigned_side"), inv.get("reading_side"), inv.get("away"),
+                    json.dumps(inv.get("intervals"), sort_keys=True, default=str))
             if hsig != getattr(self, "_sensor_hist_sig", None):
                 self._sensor_hist_sig = hsig
                 rec = sum(1 for n in nights if (n.get("sessions") or 0) > 0)
                 self._log(f"Eight Sleep recorded {rec} of the last {len(nights)} nights; this "
                           f"account is assigned the {inv.get('assigned_side') or 'NO'} side, the "
                           f"controller reads the {inv.get('reading_side')} side; away mode "
-                          f"{inv.get('away')}")
+                          f"{inv.get('away')}; intervals feed: {inv.get('intervals')}")
         sig = (tuple(inv.get("trends_keys") or ()), bool(inv.get("stages")),
                bool(inv.get("presence")), bool(inv.get("trends_error")))
         if sig == getattr(self, "_sensor_inv_sig", None):

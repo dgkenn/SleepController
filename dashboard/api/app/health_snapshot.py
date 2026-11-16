@@ -489,7 +489,8 @@ def _controller_block(repo) -> dict:
         inv = (rt.get("extra") or {}).get("eight_sensors")
         out["eight_sensors"] = ({k: inv.get(k) for k in (
             "trends_keys", "stages", "presence", "trends_error", "checked", "nights_7d",
-            "nights_7d_error", "day_keys", "api_side", "assigned_side", "reading_side", "away")}
+            "nights_7d_error", "day_keys", "api_side", "assigned_side", "reading_side", "away",
+            "intervals")}
             if isinstance(inv, dict) else None)
         # The Pod's own status: is the cover's sensor connected to the hub, water, priming, its
         # schedule engine. Flags and levels only (no serials).
