@@ -487,9 +487,17 @@ def _controller_block(repo) -> dict:
         # What Eight Sleep's sleep-data feed returns on this account (key names, flags, an error
         # string): shows at once what a subscription change turned on.
         inv = (rt.get("extra") or {}).get("eight_sensors")
-        out["eight_sensors"] = ({k: inv.get(k) for k in ("trends_keys", "stages", "presence",
-                                                         "trends_error", "checked")}
-                                if isinstance(inv, dict) else None)
+        out["eight_sensors"] = ({k: inv.get(k) for k in (
+            "trends_keys", "stages", "presence", "trends_error", "checked", "nights_7d",
+            "nights_7d_error", "day_keys", "api_side", "assigned_side", "reading_side", "away")}
+            if isinstance(inv, dict) else None)
+        # The Pod's own status: is the cover's sensor connected to the hub, water, priming, its
+        # schedule engine. Flags and levels only (no serials).
+        dev = (rt.get("extra") or {}).get("device")
+        out["pod"] = ({k: dev.get(k) for k in (
+            "online", "has_water", "priming", "needs_priming", "sensor_connected",
+            "firmware_version", "external_schedule", "device_level", "device_target_level")}
+            if isinstance(dev, dict) else None)
         wk = (rt.get("extra") or {}).get("wake")
         out["wake_armed"] = wk if isinstance(wk, dict) else ({"set": bool(wk)} if wk else None)
     except Exception as exc:

@@ -300,6 +300,7 @@ class EightSleepDirectClient:
         # the last error if the feed was refused.
         self.sensor_inventory: dict = {"trends_keys": [], "stages": False, "presence": False,
                                        "trends_error": None, "checked": None}
+        self._history_ts: Optional[datetime] = None
         from sleepctl.controller.room_from_water import RoomFromWater
         self._room_est = RoomFromWater()
         self._last_update: Optional[datetime] = None
@@ -334,6 +335,7 @@ class EightSleepDirectClient:
         # configured physical side -- otherwise device reads target keys that do
         # not exist and the controller goes blind (see _corrected_side).
         api_side = (current_device.get("side") or "").lower()
+        self.sensor_inventory["api_side"] = api_side or None
         if api_side in ("left", "right"):
             self.side = api_side
         if self._token is not None and self._token.user_id:
@@ -588,6 +590,34 @@ class EightSleepDirectClient:
                 presence = presence or bool((session or {}).get("presenceStart"))
         return {"trends_keys": sorted(keys), "stages": stages, "presence": presence}
 
+    async def _refresh_history(self, now: datetime) -> None:
+        """Diagnostics: which of the last 7 nights Eight Sleep recorded (day -> session count),
+        which side of the Pod this account is assigned to, and whether away mode is on. Counts,
+        dates and flags only -- no physiology. Never raises."""
+        try:
+            data = await self._request(
+                "GET", f"{CLIENT_API_URL}/users/{self._user_id}/trends",
+                params={"tz": self.timezone,
+                        "from": (now.date() - timedelta(days=7)).isoformat(),
+                        "to": (now.date() + timedelta(days=1)).isoformat(),
+                        "include-all-sessions": "true", "model-version": "v2"})
+            days = (data or {}).get("days") or []
+            self.sensor_inventory["nights_7d"] = [
+                {"day": (d or {}).get("day"), "sessions": len((d or {}).get("sessions") or [])}
+                for d in days]
+            self.sensor_inventory["day_keys"] = sorted({k for d in days for k in (d or {})})
+        except Exception as exc:
+            self.sensor_inventory["nights_7d_error"] = str(exc)[:160]
+        d = self._device or {}
+        uid = str(self._user_id or "")
+        self.sensor_inventory["assigned_side"] = next(
+            (sd for sd in ("left", "right") if uid and str(d.get(f"{sd}UserId") or "") == uid), None)
+        self.sensor_inventory["reading_side"] = self._corrected_side()
+        try:
+            self.sensor_inventory["away"] = await self.is_away()
+        except Exception:
+            pass
+
     async def update_physiology(self, force: bool = False) -> None:
         """Throttled trends GET (~60s cadence by default; batch/processed, lags minutes).
         A no-op if the interval hasn't elapsed unless ``force=True``. On failure, logs and
@@ -622,6 +652,9 @@ class EightSleepDirectClient:
         self._physiology_ts = now
         self.sensor_inventory.update(self._inventory(days), trends_error=None,
                                      checked=now.isoformat())
+        if self._history_ts is None or (now - self._history_ts).total_seconds() > 3 * 3600:
+            self._history_ts = now
+            await self._refresh_history(now)
 
     async def update(self, user: bool = True, device: bool = True) -> None:
         """Drop-in for the pyEight adapter's ``update(user, device)``. ``device`` refreshes

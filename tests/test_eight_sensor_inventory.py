@@ -22,3 +22,25 @@ def test_inventory_lists_only_keys_that_carry_data():
 def test_an_empty_feed_reports_nothing():
     assert EightSleepDirectClient._inventory([]) == {"trends_keys": [], "stages": False,
                                                      "presence": False}
+
+
+def test_history_reports_nights_side_and_away():
+    import asyncio
+    c = EightSleepDirectClient.__new__(EightSleepDirectClient)
+    c.sensor_inventory = {}
+    c.timezone, c._user_id, c.side = "America/New_York", "u1", "right"
+    c._device = {"leftUserId": "u2", "rightUserId": "u1"}
+
+    async def _req(method, url, **kw):
+        if url.endswith("/trends"):
+            return {"days": [{"day": "2026-11-14", "sessions": []},
+                             {"day": "2026-11-15", "sessions": [{}], "score": 80}]}
+        return {"isAway": False}
+    c._request = _req
+    from datetime import datetime
+    asyncio.new_event_loop().run_until_complete(c._refresh_history(datetime(2026, 11, 16, 9)))
+    inv = c.sensor_inventory
+    assert inv["nights_7d"] == [{"day": "2026-11-14", "sessions": 0},
+                                {"day": "2026-11-15", "sessions": 1}]
+    assert inv["assigned_side"] == "right" and inv["reading_side"] == "right"
+    assert inv["away"] is False and "score" in inv["day_keys"]
