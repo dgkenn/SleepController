@@ -610,8 +610,10 @@ class EightSleepDirectClient:
             self.sensor_inventory["nights_7d_error"] = str(exc)[:160]
         d = self._device or {}
         uid = str(self._user_id or "")
-        self.sensor_inventory["assigned_side"] = next(
-            (sd for sd in ("left", "right") if uid and str(d.get(f"{sd}UserId") or "") == uid), None)
+        # Each side separately: in "solo" mode the Pod can list the same user on both.
+        mine = [sd for sd in ("left", "right") if uid and str(d.get(f"{sd}UserId") or "") == uid]
+        self.sensor_inventory["assigned_side"] = (
+            "both" if len(mine) == 2 else (mine[0] if mine else None))
         self.sensor_inventory["reading_side"] = self._corrected_side()
         try:
             self.sensor_inventory["away"] = await self.is_away()

@@ -44,3 +44,17 @@ def test_history_reports_nights_side_and_away():
                                 {"day": "2026-11-15", "sessions": 1}]
     assert inv["assigned_side"] == "right" and inv["reading_side"] == "right"
     assert inv["away"] is False and "score" in inv["day_keys"]
+
+
+def test_a_solo_pod_listing_you_on_both_sides_says_both():
+    import asyncio
+    from datetime import datetime
+    c = EightSleepDirectClient.__new__(EightSleepDirectClient)
+    c.sensor_inventory, c.timezone, c._user_id, c.side = {}, "UTC", "u1", "right"
+    c._device = {"leftUserId": "u1", "rightUserId": "u1"}
+
+    async def _req(method, url, **kw):
+        return {"days": []} if url.endswith("/trends") else {"isAway": False}
+    c._request = _req
+    asyncio.new_event_loop().run_until_complete(c._refresh_history(datetime(2026, 11, 16)))
+    assert c.sensor_inventory["assigned_side"] == "both"
