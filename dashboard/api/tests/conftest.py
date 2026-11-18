@@ -22,6 +22,10 @@ os.environ["SLEEPCTL_DB"] = os.path.join(_TMP, "test.db")
 os.environ["DASHBOARD_USER"] = "owner"
 os.environ["DASHBOARD_PASSWORD"] = "secret"
 os.environ["JWT_SECRET"] = "test-secret"
+# The box runs with no login at all (security.login_waived; the owner's choice). The suite
+# exercises the login-ON mode, which is still supported behind SLEEPCTL_NO_LOGIN=0, so its auth
+# tests keep guarding that path. tests/test_no_login.py covers the default.
+os.environ["SLEEPCTL_NO_LOGIN"] = "0"
 
 
 @pytest.fixture(scope="session")

@@ -163,15 +163,34 @@ def lan_request(request: Request) -> bool:
     return any(_is_lan(x) for x in hops)
 
 
+# ------------------------------------------------------------------- no login at all
+# The owner asked for the login screen to go entirely (2026-11-18): "There doesn't need to be a
+# password on my sleep controller." So every request is the owner's, from the home Wi-Fi and the
+# Funnel URL alike. SLEEPCTL_NO_LOGIN=0 brings the login back (the home-network exemption above
+# still applies then). Two things stay guarded even with the login gone, because they reach past
+# the bed to the PC itself: the Tailscale join URL (``admin_tailscale_login``, home network
+# only) and the /diag actions (their own DIAG_TOKEN).
+_OFF = ("0", "false", "no", "off")
+
+
+def login_required() -> bool:
+    return os.environ.get("SLEEPCTL_NO_LOGIN", "1").strip().lower() in _OFF
+
+
+def login_waived(request: Request) -> bool:
+    """True when this request needs no login: always, unless SLEEPCTL_NO_LOGIN=0."""
+    return (not login_required()) or lan_request(request)
+
+
 def current_user(request: Request) -> str:
     token = _token_from_request(request)
     if token:
         try:
             return decode_token(token)["sub"]
         except HTTPException:
-            if not lan_request(request):
+            if not login_waived(request):
                 raise
-    if lan_request(request):
+    if login_waived(request):
         return settings.bootstrap_user
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "not authenticated")
 

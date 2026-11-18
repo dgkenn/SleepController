@@ -239,6 +239,23 @@ def _lan_url(run_dir: str | None) -> str | None:
         return None
 
 
+def _public_funnel_url(run_dir: str | None) -> str | None:
+    """The Funnel URL as the PUBLIC snapshot may carry it: only while the dashboard login is on.
+
+    With the login switched off (security.login_required() False -- the owner's choice since
+    2026-11-18) the URL alone opens the dashboard and steers the bed, so publishing it on the
+    public health branch would hand that to anyone who reads the repo. The rationale below
+    ("the URL alone grants nothing") only holds while the login is on.
+    """
+    try:
+        from app.security import login_required
+        if not login_required():
+            return None
+    except Exception:
+        return None
+    return _funnel_url(run_dir)
+
+
 def _funnel_url(run_dir: str | None) -> str | None:
     """The public Tailscale Funnel URL, if the watchdog recorded one.
 
@@ -310,7 +327,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "playbook_matches": _copy_playbook_matches(diag.get("playbook_matches")),
         "preflight": _preflight_block(repo, diag.get("checks")),
         "log_tails": _log_tails(run_dir),
-        "funnel_url": _funnel_url(run_dir),
+        "funnel_url": _public_funnel_url(run_dir),
         "lan_url": _lan_url(run_dir),
         "wearable": _wearable_block(repo, run_dir),
         "controller": _controller_block(repo),

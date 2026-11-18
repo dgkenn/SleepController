@@ -498,9 +498,9 @@ def _bcg_auth(request: Request, token: str | None) -> None:
     LAN."""
     if settings.bcg_ingest_open:
         return
-    from app.security import _token_from_request, decode_token, lan_request
-    if lan_request(request):
-        return  # the home network needs no login (security.lan_request)
+    from app.security import _token_from_request, decode_token, login_waived
+    if login_waived(request):
+        return  # no login needed (security.login_waived)
     presented = token or _token_from_request(request) or ""
     if settings.bcg_ingest_token and _secret_eq(presented, settings.bcg_ingest_token):
         return  # static shared-secret ingest token (non-expiring, funnel-safe)
@@ -576,13 +576,17 @@ def hr_ingest(body: HRBody, request: Request, token: str | None = None,
 
 
 @app.get("/admin/tailscale-login")
-def admin_tailscale_login(user: str = AuthDep):
+def admin_tailscale_login(request: Request):
     """The pending Tailscale login URL, if remote access needs a browser re-attach.
 
-    Authenticated and never published: this URL would let anyone join the tailnet, so the
-    health branch only says that a login is waiting. Reachable from the LAN dashboard, which
-    is exactly where someone is when they can fix it.
+    Never published, and served only to the home network (or a real login): this URL would let
+    anyone join the tailnet and reach the PC itself, so it stays guarded even with the dashboard
+    login switched off. The health branch only says that a login is waiting. Reachable from the
+    LAN dashboard, which is exactly where someone is when they can fix it.
     """
+    from app.security import _token_from_request, decode_token, lan_request
+    if not lan_request(request):
+        decode_token(_token_from_request(request) or "")  # raises 401 off the home network
     try:
         with open(os.path.join(_run_dir(), "tailscale-login.url"), "r", encoding="utf-8-sig") as fh:
             url = fh.read().strip()
@@ -644,8 +648,8 @@ def bedtemp_ingest(body: BedTempBody, request: Request, token: str | None = None
 async def stream_status(request: Request, token: str | None = None):
     # SSE auth: EventSource can't set headers, so accept the same-origin session cookie
     # or an explicit ?token (from the login response).
-    from app.security import decode_token, lan_request
-    if not lan_request(request):  # the home network needs no login (security.lan_request)
+    from app.security import decode_token, login_waived
+    if not login_waived(request):  # no login needed (security.login_waived)
         decode_token(token or request.cookies.get("session") or "")  # raises 401 if invalid
 
     async def gen():
