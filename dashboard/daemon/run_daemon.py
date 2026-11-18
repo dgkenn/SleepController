@@ -1041,20 +1041,26 @@ def main() -> None:
         # bed went uncontrolled). Building the client in the same loop the daemon runs on fixes it.
         # build_eightsleep_client already does the direct->pyEight fallback internally; the outer
         # except here only covers a hard import failure of the direct client.
-        try:
-            from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
-            client = await build_eightsleep_client(
+        async def _build():
+            try:
+                from sleepctl.adapters.eightsleep_direct import build_eightsleep_client
+            except Exception as exc:  # hard import failure of the direct client only
+                print(f"[daemon] eightsleep_direct unavailable ({exc!r}); using pyEight client.",
+                      flush=True)
+                from sleepctl.adapters.eightsleep_cloud import EightSleepClient
+                c = EightSleepClient(
+                    email=creds.email, password=creds.password, timezone=creds.timezone,
+                    side=_eight_side, client_id=creds.client_id,
+                    client_secret=creds.client_secret,
+                )
+                await c.connect()
+                return c
+            return await build_eightsleep_client(
                 creds.email, creds.password, creds.timezone, _eight_side,
                 creds.client_id, creds.client_secret,
             )
-        except Exception as exc:
-            print(f"[daemon] eightsleep_direct unavailable ({exc!r}); using pyEight client.",
-                  flush=True)
-            from sleepctl.adapters.eightsleep_cloud import EightSleepClient
-            client = EightSleepClient(
-                email=creds.email, password=creds.password, timezone=creds.timezone,
-                side=_eight_side, client_id=creds.client_id, client_secret=creds.client_secret,
-            )
+
+        client = await connect_eight_with_backoff(_build, _wait_state_writer(get_repo()))
         # Environmental pre-compensation: enable the weather feed unless explicitly disabled.
         weather = None
         if os.environ.get("SLEEPCTL_WEATHER", "1") not in ("0", "false", "off"):
@@ -1099,6 +1105,62 @@ def main() -> None:
         except Exception:
             pass
         raise
+
+
+# ------------------------------------------------- Eight Sleep refusing the connection
+# 2026-11-18: Eight Sleep answered 403 to /users/me on every start-up. The daemon raised, died,
+# was restarted by the watchdog ~90 s later and signed in again -- a login every minute and a
+# half, which is the pattern most likely to keep an account blocked -- and because the control
+# loop never ticked, the deploy that happened to be installing failed its smoke test and was
+# rolled back for a fault that was not its own. Now a refused connection is waited out in-process
+# with a growing gap (1, 2, 4 ... capped at 20 min), the process stays alive, and runtime_state
+# says plainly what it is waiting for.
+EIGHT_RETRY_FIRST_S = 60.0
+EIGHT_RETRY_MAX_S = 1200.0
+
+
+def _wait_state_writer(repo):
+    def write(exc: BaseException, retry_in_s: float, attempt: int) -> None:
+        try:
+            bridge.write_runtime_state(repo.conn, {
+                "state": "waiting_for_eight_sleep", "daemon_alive": True,
+                "extra": {"eight_sleep_error": repr(exc)[:240], "retry_in_s": int(retry_in_s),
+                          "attempt": attempt},
+            })
+        except Exception:
+            pass
+    return write
+
+
+async def connect_eight_with_backoff(build, on_wait=None, *, first_s: float = EIGHT_RETRY_FIRST_S,
+                                     max_s: float = EIGHT_RETRY_MAX_S, beat_s: float = 30.0,
+                                     max_attempts: int | None = None, sleep=None):
+    """Return ``await build()``, retrying a failed connect with a doubling gap instead of raising.
+
+    ``on_wait(exc, retry_in_s, attempt)`` is called at each failure and every ``beat_s`` while
+    waiting, so runtime_state keeps advancing and the watchdog sees a live, explained daemon."""
+    import asyncio
+    sleep = sleep or asyncio.sleep
+    delay = first_s
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            return await build()
+        except Exception as exc:
+            if max_attempts is not None and attempt >= max_attempts:
+                raise
+            print(f"[daemon] Eight Sleep refused the connection ({exc!r}); trying again in "
+                  f"{int(delay)} s (attempt {attempt}). Staying up rather than restarting into "
+                  "another sign-in.", flush=True)
+            waited = 0.0
+            while waited < delay:
+                if on_wait is not None:
+                    on_wait(exc, delay - waited, attempt)
+                step = min(beat_s, delay - waited)
+                await sleep(step)
+                waited += step
+            delay = min(delay * 2, max_s)
 
 
 def _crash_journal(msg: str) -> None:
