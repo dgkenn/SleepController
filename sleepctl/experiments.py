@@ -17,14 +17,14 @@ import json
 from datetime import datetime, timezone
 from typing import List, Optional
 
-_LOWER_BETTER = {"wake_events", "waso_min", "sleep_onset_latency_min"}
+_LOWER_BETTER = {"wake_events", "waso_min", "sleep_onset_latency_min", "hr_min", "resp_mean"}
 _METRIC_COLS = {
     "wake_events", "waso_min", "sleep_efficiency", "deep_min", "rem_min",
     "total_sleep_min", "sleep_onset_latency_min", "avg_hrv", "outcome_score",
-    "recovery_score", "hrv_mean", "hr_min",
+    "recovery_score", "hrv_mean", "hr_min", "resp_mean",
 }
 #: Metrics that only the independent (Apple) reference measures.
-_REFERENCE_ONLY = {"recovery_score", "hrv_mean", "hr_min"}
+_REFERENCE_ONLY = {"recovery_score", "hrv_mean", "hr_min", "resp_mean"}
 
 
 def _now() -> str:

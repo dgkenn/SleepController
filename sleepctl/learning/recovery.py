@@ -9,11 +9,13 @@ controller) are the independent judge. This module turns them into:
 
 * ``night_reference`` -- per night (keyed by the controller's ``night_date``): deep / REM / core
   minutes, total sleep, efficiency, WASO and awakenings from Apple's hypnogram, plus overnight
-  physiology from Apple Health (lowest sustained heart rate, mean HRV (SDNN), resting heart rate);
+  physiology from Apple Health (lowest sustained heart rate, mean HRV (SDNN), resting heart rate,
+  mean sleeping breathing rate, mean blood oxygen);
 * ``recovery_score`` -- one number per night, 50 = your usual, +10 per typical-spread better:
   the mean of robust z-scores against your own previous nights (median / MAD, up to 30), weighted
-  half physiology (HRV up, overnight HR down) and half architecture (deep and REM up, WASO down,
-  efficiency up). Needs :data:`MIN_HISTORY` earlier nights before it scores at all;
+  half physiology (HRV up, overnight HR down, sleeping breathing rate down) and half architecture
+  (deep and REM up, WASO down, efficiency up). Needs :data:`MIN_HISTORY` earlier nights before it
+  scores at all;
 * :func:`regrade_steer_events` -- re-labels each resolved deepen / REM nudge with whether Apple
   saw the target stage in its response window, so the learners judge the maneuver by an outside
   measurement when one exists.
@@ -36,13 +38,17 @@ HISTORY_N = 30
 MIN_SLEEP_MIN = 120.0      # a "night" with less sleep than this is not scored
 AWAKE_EVENT_MIN = 1.0      # an awake segment at least this long, after onset, is an awakening
 #: component: (column, +1 if higher is better, weight)
+#: Physiology half: HRV up, overnight heart rate down, overnight breathing rate down (a raised
+#: sleeping breathing rate against your own baseline is one of the earliest strain / illness
+#: signs a watch sees). Architecture half: deep and REM up, WASO down, efficiency up.
 COMPONENTS = (
-    ("hrv_mean", +1, 0.30), ("hr_min", -1, 0.20),
+    ("hrv_mean", +1, 0.25), ("hr_min", -1, 0.15), ("resp_mean", -1, 0.10),
     ("deep_min", +1, 0.20), ("rem_min", +1, 0.10), ("waso_min", -1, 0.10),
     ("sleep_efficiency", +1, 0.10),
 )
 METRICS = ("deep_min", "rem_min", "light_min", "total_sleep_min", "sleep_efficiency",
-           "waso_min", "wake_events", "hr_min", "hrv_mean", "resting_hr", "recovery_score")
+           "waso_min", "wake_events", "hr_min", "hrv_mean", "resting_hr", "resp_mean",
+           "spo2_mean", "recovery_score")
 
 DDL = """
 CREATE TABLE IF NOT EXISTS night_reference (
@@ -50,6 +56,7 @@ CREATE TABLE IF NOT EXISTS night_reference (
     deep_min REAL, rem_min REAL, light_min REAL, total_sleep_min REAL,
     sleep_efficiency REAL, waso_min REAL, wake_events INTEGER,
     hr_min REAL, hrv_mean REAL, resting_hr REAL,
+    resp_mean REAL, spo2_mean REAL,
     recovery_score REAL,
     source TEXT, updated TEXT
 );
@@ -58,6 +65,13 @@ CREATE TABLE IF NOT EXISTS night_reference (
 
 def ensure_schema(conn) -> None:
     conn.executescript(DDL)
+    try:   # columns added after the first cut of the table
+        have = {r[1] for r in conn.execute("PRAGMA table_info(night_reference)").fetchall()}
+        for col in ("resp_mean", "spo2_mean"):
+            if col not in have:
+                conn.execute(f"ALTER TABLE night_reference ADD COLUMN {col} REAL")
+    except Exception:
+        pass
     for col in ("ref_deepened", "ref_succeeded"):
         try:
             cols = {r[1] for r in conn.execute("PRAGMA table_info(steer_events)").fetchall()}
@@ -122,6 +136,8 @@ def night_outcomes(conn, lo: float, hi: float) -> Optional[dict]:
     hrv = [v for _, v in _health_values(conn, "heart_rate_variability", onset - 3600, final + 3600)]
     rhr = [v for _, v in _health_values(conn, "resting_heart_rate", final - 6 * 3600,
                                         final + 18 * 3600)]
+    resp = [v for _, v in _health_values(conn, "respiratory_rate", onset, final)]
+    spo2 = [v for _, v in _health_values(conn, "blood_oxygen_saturation", onset, final)]
     return {"deep_min": round(deep, 1), "rem_min": round(rem, 1), "light_min": round(core, 1),
             "total_sleep_min": round(total, 1),
             "sleep_efficiency": round(min(1.0, eff), 3) if eff else None,
@@ -129,6 +145,8 @@ def night_outcomes(conn, lo: float, hi: float) -> Optional[dict]:
             "hr_min": round(hr_min, 1) if hr_min else None,
             "hrv_mean": round(statistics.fmean(hrv), 1) if hrv else None,
             "resting_hr": round(rhr[-1], 1) if rhr else None,
+            "resp_mean": round(statistics.fmean(resp), 2) if resp else None,
+            "spo2_mean": round(statistics.fmean(spo2), 1) if spo2 else None,
             "onset_unix": onset, "final_unix": final}
 
 
@@ -137,12 +155,13 @@ def _robust_z(x: float, hist: Sequence[float]) -> Optional[float]:
         return None
     med = statistics.median(hist)
     mad = statistics.median(abs(h - med) for h in hist) * 1.4826
-    if mad <= 1e-9:
-        sd = statistics.pstdev(hist)
-        if sd <= 1e-9:
-            return 0.0
-        mad = sd
-    return max(-3.0, min(3.0, (x - med) / mad))
+    # A very steady history must not turn a real change into a huge (or, with zero spread, a
+    # zero) score: the spread is floored at 5% of the usual value, about the night-to-night
+    # noise of any of these measurements.
+    scale = max(mad, statistics.pstdev(hist) if mad <= 1e-9 else 0.0, 0.05 * abs(med))
+    if scale <= 1e-9:
+        return 0.0
+    return max(-3.0, min(3.0, (x - med) / scale))
 
 
 def recovery_score(row: dict, history: Sequence[dict]) -> Optional[float]:
@@ -177,11 +196,11 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None) -> 
         out["recovery_score"] = recovery_score(out, done[-HISTORY_N:])
         out["date"] = nd
         done.append(out)
+        cols = ("date",) + METRICS + ("source", "updated")
         conn.execute(
-            "INSERT INTO night_reference (date, deep_min, rem_min, light_min, total_sleep_min, "
-            "sleep_efficiency, waso_min, wake_events, hr_min, hrv_mean, resting_hr, recovery_score,"
-            " source, updated) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(date) DO UPDATE SET "
-            + ", ".join(f"{c}=excluded.{c}" for c in METRICS + ("source", "updated")),
+            f"INSERT INTO night_reference ({', '.join(cols)}) VALUES "
+            f"({', '.join('?' for _ in cols)}) ON CONFLICT(date) DO UPDATE SET "
+            + ", ".join(f"{c}=excluded.{c}" for c in cols[1:]),
             (nd, *(out.get(c) for c in METRICS), "apple", now))
     conn.commit()
     regraded = regrade_steer_events(conn)

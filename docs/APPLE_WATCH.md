@@ -44,8 +44,12 @@ how many samples were stored and, if none, the first value it could not read.
 
 Shortcut: Find Health Samples (Sleep Analysis, start date in the last 3 days) -> Get Contents of
 URL (POST, JSON: kind=sleep, start/end/value/source = the samples' Start Date / End Date / Value /
-Source). Repeat with Heart Rate (kind=heart_rate, start + value). Run it from a daily
-time-of-day automation; overlapping days are de-duplicated.
+Source). Repeat with Heart Rate (kind=heart_rate, start + value). The same works for
+Heart Rate Variability (kind=hrv), Respiratory Rate (respiratory_rate), Blood Oxygen
+(blood_oxygen), Resting Heart Rate (resting_heart_rate) and Sleeping Wrist Temperature
+(wrist_temperature). Run it from a daily time-of-day automation; overlapping days are
+de-duplicated. These are written by the Watch after the fact, so they feed the morning
+outcomes and the recovery score (breathing rate included), not live steering.
 
 ### Paid: Health Auto Export
 

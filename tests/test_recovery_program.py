@@ -34,7 +34,8 @@ def _u(local: datetime) -> str:
     return local.astimezone(timezone.utc).isoformat()
 
 
-def _night(repo, date: str, *, deep=90, rem=100, core=230, awake_bouts=2, hrv=55.0, hr=52.0):
+def _night(repo, date: str, *, deep=90, rem=100, core=230, awake_bouts=2, hrv=55.0, hr=52.0,
+           resp=14.0):
     d = datetime.fromisoformat(date)
     t = d.replace(hour=23)
     segs = [("in_bed", t - timedelta(minutes=10), t + timedelta(minutes=deep + rem + core + 30))]
@@ -49,6 +50,8 @@ def _night(repo, date: str, *, deep=90, rem=100, core=230, awake_bouts=2, hrv=55
     rows = [(_u(t + timedelta(minutes=m)), "heart_rate", hr + (m % 7), "{}", "x")
             for m in range(0, 400, 5)]
     rows.append((_u(t + timedelta(hours=3)), "heart_rate_variability", hrv, "{}", "x"))
+    rows += [(_u(t + timedelta(minutes=m)), "respiratory_rate", resp, "{}", "x")
+             for m in range(30, 400, 30)]
     repo.conn.executemany("INSERT INTO apple_health VALUES (?,?,?,?,?)", rows)
     # the controller's own rows give the night its date and window
     repo.conn.executemany("INSERT INTO raw_samples (ts, night_date, stage) VALUES (?,?,?)",
@@ -61,10 +64,10 @@ def test_outcomes_come_from_apples_hypnogram(repo):
     _night(repo, "2026-11-01", deep=90, rem=100, core=230, awake_bouts=2)
     rc.build(repo.conn)
     row = repo.conn.execute("SELECT deep_min, rem_min, total_sleep_min, wake_events, waso_min, "
-                            "hrv_mean, hr_min FROM night_reference WHERE date='2026-11-01'"
-                            ).fetchone()
+                            "hrv_mean, hr_min, resp_mean FROM night_reference WHERE "
+                            "date='2026-11-01'").fetchone()
     assert tuple(row)[:5] == (90.0, 100.0, 420.0, 1, 5.0)    # last awake bout ends the night
-    assert row[5] == 55.0 and 52.0 <= row[6] <= 54.0
+    assert row[5] == 55.0 and 52.0 <= row[6] <= 54.0 and row[7] == 14.0
 
 
 def test_the_recovery_score_rises_with_a_better_night(repo):
@@ -72,10 +75,12 @@ def test_the_recovery_score_rises_with_a_better_night(repo):
         _night(repo, f"2026-11-{i + 1:02d}", deep=80 + i % 3, hrv=50.0 + i % 3, hr=55.0)
     _night(repo, "2026-11-10", deep=130, hrv=70.0, hr=49.0)
     _night(repo, "2026-11-11", deep=40, hrv=35.0, hr=61.0)
+    _night(repo, "2026-11-12", deep=81, hrv=51.0, hr=55.0, resp=18.0)   # only breathing is off
     rc.build(repo.conn)
     s = dict(repo.conn.execute("SELECT date, recovery_score FROM night_reference").fetchall())
     assert s["2026-11-01"] is None                       # no history yet: no score
     assert s["2026-11-10"] > 60 > 40 > s["2026-11-11"]
+    assert s["2026-11-12"] < 50                          # a raised breathing rate costs recovery
 
 
 def test_a_nudge_is_regraded_by_apple(repo):

@@ -94,3 +94,24 @@ def test_skips_are_explained_per_reason_and_source(auth_client, monkeypatch):
     assert out["skipped_because"] == {"unknown sleep value 'Snoring'": 1,
                                       "unreadable start date 'soon'": 1}
     assert list(out["by_source"].items()) == [("Apple Watch", [1, 0]), ("Bevel", [0, 2])]
+
+
+@pytest.mark.parametrize("kind,value,metric,stored_value", [
+    ("hrv", "48.2 ms", "heart_rate_variability", 48.2),
+    ("respiratory_rate", "14.5 count/min", "respiratory_rate", 14.5),
+    ("blood_oxygen", "0.97", "blood_oxygen_saturation", 97.0),
+    ("blood_oxygen", "96%", "blood_oxygen_saturation", 96.0),
+    ("resting_heart_rate", "52", "resting_heart_rate", 52.0),
+    ("wrist_temperature", "-0.3 °C", "apple_sleeping_wrist_temperature", -0.3),
+])
+def test_the_other_overnight_measurements(auth_client, monkeypatch, kind, value, metric,
+                                          stored_value):
+    monkeypatch.setattr(apple_health, "kick_consensus", lambda force=False: "started")
+    out = auth_client.post("/apple/shortcut", json={
+        "kind": kind, "start": "2026-11-21T03:00:00-05:00", "value": value,
+        "source": "Apple Watch"}).json()
+    assert out["stored"] == 1, out
+    from app.db import get_repo
+    got = get_repo().conn.execute("SELECT value FROM apple_health WHERE metric = ? AND ts = ?",
+                                  (metric, "2026-11-21T08:00:00+00:00")).fetchone()[0]
+    assert got == pytest.approx(stored_value)

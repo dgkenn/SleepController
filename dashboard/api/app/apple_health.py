@@ -314,6 +314,19 @@ def _column(payload: dict, *names: str) -> list:
 _NUM = __import__("re").compile(r"-?\d+(?:\.\d+)?")
 
 
+#: Numeric sample kinds a shortcut may send -> the stored metric (same names as Health Auto
+#: Export's, so both paths land in the same rows).
+_NUMERIC_KINDS = {
+    "heart_rate": "heart_rate", "heartrate": "heart_rate", "hr": "heart_rate",
+    "hrv": "heart_rate_variability", "heart_rate_variability": "heart_rate_variability",
+    "respiratory_rate": "respiratory_rate", "breathing_rate": "respiratory_rate",
+    "resting_heart_rate": "resting_heart_rate",
+    "blood_oxygen": "blood_oxygen_saturation", "oxygen_saturation": "blood_oxygen_saturation",
+    "blood_oxygen_saturation": "blood_oxygen_saturation",
+    "wrist_temperature": "apple_sleeping_wrist_temperature",
+    "sleeping_wrist_temperature": "apple_sleeping_wrist_temperature",
+}
+
 #: HKCategoryValueSleepAnalysis raw values, should a sample's value arrive as its number.
 _SLEEP_CODES = {"0": "in_bed", "1": "asleep", "2": "awake", "3": "core", "4": "deep", "5": "rem"}
 
@@ -382,7 +395,8 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
                 "ON CONFLICT(start, end, stage, source) DO UPDATE SET received=excluded.received",
                 (start, end, stage, src[:80], received))
             stored += 1
-        elif kind in ("heart_rate", "heartrate", "hr"):
+        elif kind in _NUMERIC_KINDS:
+            metric = _NUMERIC_KINDS[kind]
             m = _NUM.search(str(values[i] if i < len(values) else ""))
             if not start:
                 skip(f"unreadable date {str(starts[i])[:40]!r}", src)
@@ -391,14 +405,19 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
                 skip(f"no number in {str(values[i] if i < len(values) else None)[:30]!r}", src)
                 continue
             by_source.setdefault(src or "?", [0, 0])[0] += 1
+            val = float(m.group())
+            if metric == "blood_oxygen_saturation" and val <= 1.0:
+                val *= 100.0                # Shortcuts may give 0.97 or "97%": store percent
             conn.execute(
                 "INSERT INTO apple_health (ts, metric, value, extra, received) VALUES (?,?,?,?,?) "
                 "ON CONFLICT(ts, metric) DO UPDATE SET value=excluded.value, extra=excluded.extra, "
                 "received=excluded.received",
-                (start, "heart_rate", float(m.group()), json.dumps({"source": src[:80]}), received))
+                (start, metric, val, json.dumps({"source": src[:80]}), received))
             stored += 1
         else:
-            return {"ok": False, "error": 'kind must be "sleep" or "heart_rate"', "got": kind[:30]}
+            return {"ok": False, "error": "kind must be one of: sleep, heart_rate, hrv, "
+                    "respiratory_rate, resting_heart_rate, blood_oxygen, wrist_temperature",
+                    "got": kind[:30]}
     conn.commit()
     out: dict = {"ok": stored > 0, "kind": kind, "stored": stored, "skipped": skipped}
     if skipped:
