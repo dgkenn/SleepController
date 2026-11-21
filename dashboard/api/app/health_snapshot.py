@@ -239,6 +239,15 @@ def _lan_url(run_dir: str | None) -> str | None:
         return None
 
 
+def _automation_block(repo) -> dict:
+    """iPhone sleep-schedule automations: event counts and what the last one did, no times."""
+    try:
+        from app import automation
+        return automation.summary(repo.conn)
+    except Exception as exc:
+        return {"error": type(exc).__name__}
+
+
 def _apple_health_block(repo) -> dict:
     """Apple Watch uploads: counts and times only, never a value (the branch is public)."""
     try:
@@ -343,6 +352,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "wake_light": _wake_light_block(repo),
         "phone_alarm": _phone_alarm_block(repo),
         "apple_health": _apple_health_block(repo),
+        "sleep_automation": _automation_block(repo),
         "dreamt": _dreamt_block(_resolve_run_dir(run_dir)),
         "mesa": _mesa_block(_resolve_run_dir(run_dir)),
     }

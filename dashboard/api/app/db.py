@@ -209,6 +209,18 @@ CREATE TABLE IF NOT EXISTS apple_sleep (
     received TEXT NOT NULL,
     PRIMARY KEY (start, end, stage)
 );
+-- Sleep events sent by the iPhone's Shortcuts automations (app/automation.py): wind down,
+-- bedtime, waking up, plus the alarm time read off the phone. One row per call, with what the
+-- box did about it.
+CREATE TABLE IF NOT EXISTS automation_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TEXT NOT NULL,
+    event TEXT NOT NULL,
+    alarm TEXT,                -- HH:MM as parsed, or NULL
+    alarm_raw TEXT,            -- what the phone sent, for debugging a parse
+    actions TEXT,              -- JSON list of what was queued / skipped and why
+    source TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);

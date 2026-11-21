@@ -609,6 +609,16 @@ def hds_ingest(request: Request, payload: dict = Body(...), token: str | None = 
     return services.ingest_hr(repo, {"hr": hr, "source": "apple_watch"})
 
 
+@app.post("/automation/sleep")
+def automation_sleep(request: Request, payload: dict = Body(...), token: str | None = None,
+                     repo=Depends(repo_dep)):
+    """iPhone Shortcuts sleep automations (Wind Down / Bedtime / Waking Up) -> wake time armed,
+    night started, night ended. See app/automation.py and docs/AUTOMATION.md."""
+    _bcg_auth(request, token)
+    from app import automation
+    return automation.handle(repo.conn, payload)
+
+
 @app.post("/apple/health")
 def apple_health_ingest(request: Request, payload: dict = Body(...), token: str | None = None,
                         repo=Depends(repo_dep)):
