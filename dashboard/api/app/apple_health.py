@@ -253,3 +253,114 @@ def night_stages(conn: sqlite3.Connection, start_iso: str, end_iso: str) -> list
     rows = conn.execute("SELECT start, end, stage, source FROM health_sleep WHERE end > ? AND "
                         "start < ? ORDER BY start", (start_iso, end_iso)).fetchall()
     return [{"start": r[0], "end": r[1], "stage": r[2], "source": r[3]} for r in rows]
+
+
+# ------------------------------------------------- free path: Apple's own Shortcuts app
+# Health Auto Export's REST automation is paid. Shortcuts' "Find Health Samples" is free and can
+# POST the samples itself, but it sends them the way Shortcuts can: one JSON field per property,
+# each a list -- or, when a list is dropped into a text field, the items joined by newlines -- and
+# dates in the phone's display format ("Nov 21, 2026 at 3:14 AM", with a narrow no-break space
+# before AM on recent iOS) unless formatted as ISO 8601. This accepts all of that:
+#
+#   POST /api/apple/shortcut  {"kind": "sleep" | "heart_rate",
+#                              "start": [...], "end": [...], "value": [...], "source": [...]}
+#
+# A date with no offset is taken as the box's local time, which is the phone's too.
+_DISPLAY_FORMATS = (
+    "%b %d, %Y at %I:%M %p", "%b %d, %Y at %I:%M:%S %p", "%B %d, %Y at %I:%M %p",
+    "%B %d, %Y at %I:%M:%S %p", "%b %d, %Y, %I:%M %p", "%m/%d/%Y, %I:%M %p", "%m/%d/%y, %I:%M %p",
+    "%m/%d/%Y %I:%M %p", "%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M",
+    "%d %b %Y at %H:%M", "%d %B %Y at %H:%M", "%b %d, %Y at %H:%M",
+)
+
+
+def parse_any_ts(value: Any) -> Optional[str]:
+    """Any date the phone may send -> UTC ISO; naive means local (box == phone)."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = " ".join(value.replace(" ", " ").replace(" ", " ").split())
+    got = parse_ts(v)
+    if got:
+        return got
+    dt = None
+    try:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        for fmt in _DISPLAY_FORMATS:
+            try:
+                dt = datetime.strptime(v, fmt)
+                break
+            except ValueError:
+                continue
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()          # naive -> this machine's local zone
+    return _utc(dt)
+
+
+def _column(payload: dict, *names: str) -> list:
+    for n in names:
+        if n in payload and payload[n] is not None:
+            v = payload[n]
+            if isinstance(v, list):
+                return v
+            if isinstance(v, str):
+                return [x for x in v.splitlines() if x.strip()] if "\n" in v else [v]
+            return [v]
+    return []
+
+
+_NUM = __import__("re").compile(r"-?\d+(?:\.\d+)?")
+
+
+def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
+    kind = str(payload.get("kind") or payload.get("type") or "").strip().lower().replace(" ", "_")
+    starts = _column(payload, "start", "startDate", "start_date")
+    ends = _column(payload, "end", "endDate", "end_date")
+    values = _column(payload, "value", "values")
+    sources = _column(payload, "source", "sources")
+    n = len(starts)
+    note = None
+    if values and len(values) != n:
+        note = f"{n} start dates but {len(values)} values; paired the first {min(n, len(values))}"
+        n = min(n, len(values))
+    received = _now()
+    stored = skipped = 0
+    for i in range(n):
+        src = str(sources[i] if i < len(sources) else (sources[0] if len(sources) == 1 else ""))
+        start = parse_any_ts(str(starts[i]))
+        if kind in ("sleep", "sleep_analysis"):
+            end = parse_any_ts(str(ends[i])) if i < len(ends) else None
+            stage = _stage(values[i] if i < len(values) else None)
+            if not (start and end and stage):
+                skipped += 1
+                continue
+            conn.execute(
+                "INSERT INTO health_sleep (start, end, stage, source, received) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(start, end, stage, source) DO UPDATE SET received=excluded.received",
+                (start, end, stage, src[:80], received))
+            stored += 1
+        elif kind in ("heart_rate", "heartrate", "hr"):
+            m = _NUM.search(str(values[i] if i < len(values) else ""))
+            if not (start and m):
+                skipped += 1
+                continue
+            conn.execute(
+                "INSERT INTO apple_health (ts, metric, value, extra, received) VALUES (?,?,?,?,?) "
+                "ON CONFLICT(ts, metric) DO UPDATE SET value=excluded.value, extra=excluded.extra, "
+                "received=excluded.received",
+                (start, "heart_rate", float(m.group()), json.dumps({"source": src[:80]}), received))
+            stored += 1
+        else:
+            return {"ok": False, "error": 'kind must be "sleep" or "heart_rate"', "got": kind[:30]}
+    conn.commit()
+    out: dict = {"ok": stored > 0, "kind": kind, "stored": stored, "skipped": skipped}
+    if note:
+        out["note"] = note
+    if skipped and not stored:
+        out["first_unread"] = {"start": str(starts[0])[:60] if starts else None,
+                               "value": str(values[0])[:30] if values else None}
+    if stored and kind in ("sleep", "sleep_analysis"):
+        out["consensus"] = kick_consensus()
+    return out

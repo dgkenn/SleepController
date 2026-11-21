@@ -34,6 +34,21 @@ and falls back to any device advertising 0x180D. A worn Polar band still wins.
 
 ## 2. Full night after waking (Apple's stages, HRV, respiration)
 
+### Free: Apple Shortcuts
+
+`POST /api/apple/shortcut` takes what Shortcuts' "Find Health Samples" can send: JSON fields
+`kind` ("sleep" or "heart_rate"), `start`, `end`, `value`, `source`, each a list or a list dropped
+into a text field (newline-joined). Dates may be ISO 8601 or the phone's display format
+("Nov 21, 2026 at 3:14 AM"); without an offset they are the box's local time. The response says
+how many samples were stored and, if none, the first value it could not read.
+
+Shortcut: Find Health Samples (Sleep Analysis, start date in the last 3 days) -> Get Contents of
+URL (POST, JSON: kind=sleep, start/end/value/source = the samples' Start Date / End Date / Value /
+Source). Repeat with Heart Rate (kind=heart_rate, start + value). Run it from a daily
+time-of-day automation; overlapping days are de-duplicated.
+
+### Paid: Health Auto Export
+
 Health Auto Export (iOS) has a REST API automation that POSTs its JSON export to a URL.
 
 - URL: `https://<funnel host>/api/apple/health` (works away from home), or

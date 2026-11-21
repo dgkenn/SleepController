@@ -648,6 +648,17 @@ def staging_consensus_run(request: Request, token: str | None = None, repo=Depen
     return wc.run(repo)
 
 
+@app.post("/apple/shortcut")
+def apple_shortcut_ingest(request: Request, payload: dict = Body(...), token: str | None = None,
+                          repo=Depends(repo_dep)):
+    """The free path: Apple's Shortcuts app ("Find Health Samples" -> "Get Contents of URL").
+    Body: {"kind": "sleep"|"heart_rate", "start", "end", "value", "source"} as lists or
+    newline-joined text. See app/apple_health.py and docs/APPLE_WATCH.md."""
+    _bcg_auth(request, token)
+    from app import apple_health
+    return apple_health.ingest_shortcut(repo.conn, payload)
+
+
 @app.get("/apple/health/summary")
 def apple_health_summary(request: Request, token: str | None = None, repo=Depends(repo_dep)):
     _bcg_auth(request, token)
