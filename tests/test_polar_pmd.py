@@ -1410,3 +1410,29 @@ def test_a_worn_polar_band_still_wins_over_the_watch(tmp_path, monkeypatch):
     got = asyncio.run(fwd._discover(_scanner_of(_Dev("Apple Watch", "02:02:02:02:02:02"),
                                                 _Dev("Polar Sense 1A2B", "03:03:03:03:03:03")), None))
     assert got == "03:03:03:03:03:03"
+
+
+def test_an_unnamed_broadcaster_is_found_by_its_advertised_heart_rate_service(tmp_path, monkeypatch):
+    """Newer bleak has no BLEDevice.metadata; the service UUIDs are on the AdvertisementData. A
+    nameless 0x180D broadcaster (an Apple Watch app) must still be found."""
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+
+    class _Adv:
+        def __init__(self, uuids):
+            self.service_uuids, self.rssi, self.local_name = uuids, -60, None
+
+    class _Bare:
+        def __init__(self, address):
+            self.name, self.address = None, address
+
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0, return_adv=False):
+            assert return_adv
+            return {"a": (_Bare("01:01:01:01:01:01"), _Adv([])),
+                    "b": (_Bare("02:02:02:02:02:02"),
+                          _Adv(["0000180d-0000-1000-8000-00805f9b34fb"]))}
+
+    assert asyncio.run(fwd._discover(_Scanner, None)) == "02:02:02:02:02:02"

@@ -713,12 +713,22 @@ def _reset_repeat_log() -> None:
         _repeat_state.update({"key": None, "count": 0, "next_at": 1, "last_reported": 0})
 
 
-def _adv_uuids(device) -> list[str]:
-    """Service UUIDs a scan result advertised (empty if the bleak backend doesn't expose them)."""
+def _adv_uuids(device, adv=None) -> list[str]:
+    """Service UUIDs a scan result advertised (empty if the bleak backend doesn't expose them).
+
+    Newer bleak dropped ``BLEDevice.metadata``; the UUIDs live on the scan's AdvertisementData
+    (``service_uuids``). Reading only the old field left the 0x180D fallback matching nothing,
+    so a heart-rate broadcaster with no name (an Apple Watch app, 2026-11-21) was invisible."""
+    out: list[str] = []
     try:
-        return [u.lower() for u in (device.metadata.get("uuids") or [])]
+        out += [str(u).lower() for u in (getattr(adv, "service_uuids", None) or [])]
     except Exception:
-        return []
+        pass
+    try:
+        out += [str(u).lower() for u in (device.metadata.get("uuids") or [])]
+    except Exception:
+        pass
+    return out
 
 
 
@@ -753,11 +763,13 @@ async def _discover(BleakScanner, address_hint: str | None):
     # Signal strength at discovery is the one number that says whether the radio is placed
     # well: a link that drops mid-night at -90 dBm is a placement problem, at -60 dBm it is not.
     rssi: dict = {}
+    advs: dict = {}
     try:
         found = await BleakScanner.discover(timeout=20.0, return_adv=True)
         devices = []
         for _addr, (d, adv) in found.items():
             devices.append(d)
+            advs[d.address] = adv
             try:
                 rssi[d.address] = int(adv.rssi)
             except Exception:
@@ -766,7 +778,7 @@ async def _discover(BleakScanner, address_hint: str | None):
         devices = await BleakScanner.discover(timeout=20.0)
     for hints in (_NAME_HINTS, _WATCH_HINTS):
         for d in devices:
-            name = (d.name or "").lower()
+            name = (d.name or getattr(advs.get(d.address), "local_name", None) or "").lower()
             if any(h in name for h in hints):
                 _log(f"found '{d.name}' at {d.address}"
                      + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
@@ -774,8 +786,10 @@ async def _discover(BleakScanner, address_hint: str | None):
                 return d.address
     # Fall back to any device advertising the HR service, if the backend exposes it.
     for d in devices:
-        if any("180d" in u for u in _adv_uuids(d)):
-            _log(f"found HR-service device '{d.name}' at {d.address}")
+        if any("180d" in u for u in _adv_uuids(d, advs.get(d.address))):
+            _log(f"found HR-service device '{d.name}' at {d.address}"
+                 + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
+            _STATS["last_rssi"] = rssi.get(d.address)
             return d.address
 
     # Nothing matched. Say WHAT WAS THERE -- "no sensor found" alone cannot distinguish "the band
