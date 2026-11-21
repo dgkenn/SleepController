@@ -161,3 +161,54 @@ def test_snapshot_carries_agreement_not_minutes(repo):
     snap = wc.snapshot(repo.conn)
     assert snap["nights"] == 1 and set(snap["sources"]) == {"apple", "bevel", "ours"}
     assert "minutes" not in str(snap) and "deep" not in str(snap)
+
+
+def _apple_hr_table(repo):
+    repo.conn.executescript("CREATE TABLE IF NOT EXISTS apple_health (ts TEXT NOT NULL, metric TEXT"
+                            " NOT NULL, value REAL, extra TEXT, received TEXT NOT NULL,"
+                            " PRIMARY KEY (ts, metric));")
+
+
+def _nights_without_live_feed(repo, rnd):
+    t = [truth(i) for i in range(N)]
+    _write_source(repo, t, "wc", "Apple Watch")
+    _write_source(repo, [s if rnd.random() > 0.1 else "light" for s in t], "wc", "Bevel")
+    _write_ours(repo, [None] * N)            # the controller ran, but staged nothing
+    return t
+
+
+def test_a_night_without_a_live_feed_is_replayed_from_health_heart_rate(repo):
+    _nights_without_live_feed(repo, random.Random(3))
+    seen = {}
+
+    def fake_replay(conn, times):
+        seen["n"] = len(times)
+        return ["light"] * len(times)
+    rep = wc.build(repo.conn, replay=fake_replay)
+    assert seen["n"] >= N - 2
+    assert "ours_replay" in rep["nights"][0]["sources"] and "ours" not in rep["nights"][0]["sources"]
+    assert "ours_replay" in rep["confusion"]
+    # the replay is a comparison only: its night is not offered to the calibration as live data
+    marked = repo.conn.execute("SELECT COUNT(*) FROM consensus_hypnogram WHERE ours LIKE "
+                               "'replay:%'").fetchone()[0]
+    assert marked >= N - 2
+
+
+def test_the_health_replay_runs_the_real_stager(repo):
+    from sleepctl.ml.sleep_staging.infer import SleepStager
+    st = SleepStager.load()
+    if not getattr(st, "available", False):
+        pytest.skip("stager weights not available")
+    _apple_hr_table(repo)
+    rnd = random.Random(5)
+    rows = []
+    for k in range(0, N * 30, 300):          # a reading every 5 minutes, like Apple overnight
+        i = k // 30
+        hr = 64 if truth(i) == "awake" else 52 if truth(i) == "deep" else 57
+        rows.append((_utc(i), "heart_rate", hr + rnd.uniform(-2, 2), "{}", "now"))
+    repo.conn.executemany("INSERT INTO apple_health VALUES (?,?,?,?,?)", rows)
+    repo.conn.commit()
+    times = [wc._iso_unix(_utc(i)) for i in range(N)]
+    out = wc.make_health_replay(st)(repo.conn, times)
+    assert out is not None and sum(1 for x in out if x) > N / 2
+    assert set(x for x in out if x) <= set(wc.CLASSES)

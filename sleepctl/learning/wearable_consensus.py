@@ -47,12 +47,19 @@ CONF_MIN = 0.7                 # reference posterior needed for an epoch to beco
 MAX_NIGHTS = 21                # recent nights considered
 MIN_REF_EPOCHS = 120           # an hour of referenced epochs before a night counts
 EM_ITERS = 25
-SOURCES = ("apple", "bevel", "ours")
+SOURCES = ("apple", "bevel", "ours", "ours_replay")
 REFERENCES = ("apple", "bevel")
 #: Prior pseudo-counts on each confusion row: this many "agreed" epochs on the diagonal, one per
 #: off-diagonal cell. Apple's stages are PSG-validated; Bevel's method is unpublished; ours is
 #: what is being corrected.
-PRIOR_DIAG = {"apple": 40.0, "bevel": 20.0, "ours": 10.0}
+PRIOR_DIAG = {"apple": 40.0, "bevel": 20.0, "ours": 10.0, "ours_replay": 6.0}
+#: A night whose live labels cover less of the grid than this gets "ours_replay" instead: our
+#: stager run afterwards on Apple Health's overnight heart rate (a reading every few minutes, far
+#: sparser than the live feed). Kept as its own source -- a different, weaker input -- and only
+#: for the comparison: the calibration replays the live feed, which such a night does not have.
+LIVE_COVERAGE_MIN = 0.2
+REPLAY_STALE_S = 900.0         # newest Health HR reading at most 15 min old
+REPLAY_MIN_HR = 3              # readings in the trailing 45 min
 _K = len(CLASSES)
 _IDX = {c: i for i, c in enumerate(CLASSES)}
 _HEALTH_STAGE = {"core": "light", "light": "light", "deep": "deep", "rem": "rem",
@@ -148,7 +155,8 @@ def _label_at(segs: Sequence[Tuple[float, float, str]], t: float) -> Optional[st
     return None
 
 
-def assemble_night(conn, night_date: str, lo: float, hi: float) -> Optional[dict]:
+def assemble_night(conn, night_date: str, lo: float, hi: float,
+                   replay=None) -> Optional[dict]:
     """The night's epoch grid with each source's label (None where it says nothing)."""
     segs = _segments(conn, lo, hi)
     starts = [a for v in segs.values() for a, _, _ in v]
@@ -164,7 +172,83 @@ def assemble_night(conn, night_date: str, lo: float, hi: float) -> Optional[dict
     labels = {k: [_label_at(segs[k], t + EPOCH_S / 2) for t in times] for k in REFERENCES}
     ours = recorded_labels(conn, night_date)
     labels["ours"] = align([(t, EPOCH_S, "") for t in times], ours) if ours else [None] * len(times)
+    labels["ours_replay"] = [None] * len(times)
+    live = sum(1 for v in labels["ours"] if v) / len(times)
+    if live < LIVE_COVERAGE_MIN and replay is not None:
+        try:
+            got = replay(conn, times)
+        except Exception:
+            got = None
+        if got:
+            labels["ours_replay"] = got
     return {"night_date": night_date, "times": times, "labels": labels}
+
+
+def health_hr(conn, lo: float, hi: float) -> List[Tuple[float, float]]:
+    """Apple Health heart-rate readings (``apple_health``) in [lo, hi], as (unix, bpm)."""
+    a = datetime.fromtimestamp(lo, timezone.utc).isoformat()
+    b = datetime.fromtimestamp(hi, timezone.utc).isoformat()
+    try:
+        rows = conn.execute("SELECT ts, value FROM apple_health WHERE metric = 'heart_rate' "
+                            "AND ts >= ? AND ts <= ? ORDER BY ts", (a, b)).fetchall()
+    except Exception:
+        return []
+    out = []
+    for ts, v in rows:
+        t = _iso_unix(ts)
+        if t is not None and v is not None:
+            out.append((t, float(v)))
+    return out
+
+
+def make_health_replay(stager=None):
+    """A ``replay(conn, times)`` that stages a night from Apple Health's heart rate with the
+    bundled, un-personalised stager and the live smoothing, for nights with no live feed."""
+    import bisect
+
+    from sleepctl.learning.eeg_calibration import (HISTORY_MIN, _hmm_with, decide,
+                                                   population_hmm, windowed_posteriors)
+    state = {"stager": stager, "hmm": None}
+
+    def replay(conn, times):
+        hr = health_hr(conn, times[0] - HISTORY_MIN * 60.0, times[-1] + EPOCH_S)
+        if len(hr) < 10:
+            return None
+        if state["stager"] is None:
+            from sleepctl.ml.sleep_staging.infer import SleepStager
+            state["stager"] = SleepStager.load()
+        st = state["stager"]
+        if not getattr(st, "available", False):
+            return None
+        if state["hmm"] is None:
+            state["hmm"] = _hmm_with(population_hmm(), {})
+        ts = [t for t, _ in hr]
+        em = []
+        for t in times:
+            end = t + EPOCH_S
+            lo, hi = bisect.bisect_left(ts, end - HISTORY_MIN * 60.0), bisect.bisect_right(ts, end)
+            if hi - lo < REPLAY_MIN_HR or ts[hi - 1] < end - REPLAY_STALE_S:
+                em.append(None)
+                continue
+            try:
+                est = st.predict(hr[lo:hi], minutes_since_start=(end - times[0]) / 60.0,
+                                 minutes_since_onset=None, smooth=False)
+            except Exception:
+                est = None
+            if est is None:
+                em.append(None)
+                continue
+            pr = est.probs
+            em.append([float(pr.get("wake", 0.0)), float(pr.get("light", 0.0)),
+                       float(pr.get("deep", 0.0)), float(pr.get("rem", 0.0))])
+        if not any(em):
+            return None
+        h = state["hmm"]
+        post = windowed_posteriors(em, h["trans"], h["start"], h["emission_prior"],
+                                   h["temper"], h["window"])
+        return [decide(p) for p in post]
+
+    return replay
 
 
 # --------------------------------------------------------------------------- Dawid-Skene
@@ -217,11 +301,17 @@ def _posterior(o: Dict[str, int], conf, prior, only: Optional[Sequence[str]] = N
 
 
 # --------------------------------------------------------------------------- the whole pass
-def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None) -> dict:
-    """Assemble, fit, store the consensus epochs and return the agreement report."""
+def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
+          replay="health") -> dict:
+    """Assemble, fit, store the consensus epochs and return the agreement report.
+
+    ``replay``: "health" stages nights without a live feed from Apple Health's heart rate (see
+    :func:`make_health_replay`); a callable is used as is; None disables it."""
     ensure_schema(conn)
+    if replay == "health":
+        replay = make_health_replay()
     nights = list(nights if nights is not None else recent_nights(conn))
-    assembled = [a for nd, lo, hi in nights if (a := assemble_night(conn, nd, lo, hi))]
+    assembled = [a for nd, lo, hi in nights if (a := assemble_night(conn, nd, lo, hi, replay))]
     obs_all: List[Dict[str, int]] = []
     where: List[Tuple[int, int]] = []
     for ni, a in enumerate(assembled):
@@ -246,8 +336,10 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None) -> 
         k = max(range(_K), key=lambda i: p[i])
         stage = CLASSES[k] if p[k] >= CONF_MIN else "unknown"
         t = a["times"][ei]
+        ours_l = a["labels"]["ours"][ei] or (f"replay:{a['labels']['ours_replay'][ei]}"
+                                             if a["labels"]["ours_replay"][ei] else None)
         rows.append((a["night_date"], t, local_naive(t), EPOCH_S, stage, round(p[k], 4),
-                     a["labels"]["apple"][ei], a["labels"]["bevel"][ei], a["labels"]["ours"][ei]))
+                     a["labels"]["apple"][ei], a["labels"]["bevel"][ei], ours_l))
         per_night.setdefault(ni, {"n": 0, "labelled": 0})
         per_night[ni]["n"] += 1
         per_night[ni]["labelled"] += stage != "unknown"
@@ -270,7 +362,8 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None) -> 
         streams = dict(a["labels"])
         streams["consensus"] = [cons.get(t) if cons.get(t) in _IDX else None for t in a["times"]]
         for x, y in (("apple", "bevel"), ("apple", "ours"), ("bevel", "ours"),
-                     ("ours", "consensus")):
+                     ("ours", "consensus"), ("ours_replay", "consensus"),
+                     ("apple", "ours_replay"), ("bevel", "ours_replay")):
             pairs = [(u, v) for u, v in zip(streams[x], streams[y]) if u in _IDX and v in _IDX]
             if len(pairs) >= MIN_REF_EPOCHS:
                 kap = cohen_kappa([u for u, _ in pairs], [v for _, v in pairs])
