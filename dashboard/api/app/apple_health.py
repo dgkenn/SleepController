@@ -18,7 +18,8 @@ heart rate. Sleep comes in two shapes depending on the app's "aggregate sleep" s
 * aggregated -- one entry per night with stage totals (``core``, ``deep``, ``rem``, ``awake``,
   ``asleep``, ``inBed`` in hours) and ``sleepStart``/``sleepEnd``.
 
-Both are stored: segments in ``apple_sleep``, nightly totals as ``sleep_<stage>_h`` metrics in
+Both are stored: segments in ``health_sleep`` (keyed with the writing app, so Apple's and
+Bevel's stay apart), nightly totals as ``sleep_<stage>_h`` metrics in
 ``apple_health``. Everything is an idempotent upsert because the app re-sends overlapping windows.
 Nothing here is published: the health snapshot carries counts and times only.
 """
@@ -27,6 +28,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
@@ -138,8 +141,50 @@ def ingest(conn: sqlite3.Connection, payload: dict) -> dict:
                 (ts, name, val, json.dumps(extra), received))
             stored[name] = stored.get(name, 0) + 1
     conn.commit()
-    return {"ok": True, "stored": stored, "sleep_segments": segments, "skipped": skipped,
-            "ignored_metrics": sorted(x for x in ignored if x)}
+    out = {"ok": True, "stored": stored, "sleep_segments": segments, "skipped": skipped,
+           "ignored_metrics": sorted(x for x in ignored if x)}
+    if segments or stored.get("sleep_totals"):
+        out["consensus"] = kick_consensus()
+    return out
+
+
+# ------------------------------------------------- the morning comparison, after new stages
+# New sleep stages -> rebuild the three-way comparison and refit the personal calibration
+# (sleepctl.learning.wearable_consensus). Run off the request on its own DB connection; the
+# phone re-sends overlapping windows hourly, so a run is skipped within RERUN_MIN of the last.
+RERUN_MIN = 30.0
+_consensus_lock = threading.Lock()
+_consensus_last = 0.0
+
+
+def kick_consensus(force: bool = False) -> str:
+    global _consensus_last
+    now = time.monotonic()
+    if not force and now - _consensus_last < RERUN_MIN * 60:
+        return "ran recently"
+    if not _consensus_lock.acquire(blocking=False):
+        return "already running"
+    _consensus_last = now
+
+    def work():
+        try:
+            from app.db import get_repo
+            from sleepctl.learning import wearable_consensus
+            repo = get_repo()
+            try:
+                wearable_consensus.run(repo)
+            finally:
+                try:
+                    repo.close()
+                except Exception:
+                    pass
+        except Exception as exc:   # never let the background pass take the API down
+            print(f"[apple_health] consensus pass failed: {exc!r}", flush=True)
+        finally:
+            _consensus_lock.release()
+
+    threading.Thread(target=work, name="wearable-consensus", daemon=True).start()
+    return "started"
 
 
 def _ingest_sleep_point(conn, p: dict, received: str) -> tuple[int, int]:
@@ -149,9 +194,9 @@ def _ingest_sleep_point(conn, p: dict, received: str) -> tuple[int, int]:
     source = _get(p, "source")
     if start and end and stage:
         conn.execute(
-            "INSERT INTO apple_sleep (start, end, stage, source, received) VALUES (?,?,?,?,?) "
-            "ON CONFLICT(start, end, stage) DO UPDATE SET source=excluded.source, "
-            "received=excluded.received", (start, end, stage, source, received))
+            "INSERT INTO health_sleep (start, end, stage, source, received) VALUES (?,?,?,?,?) "
+            "ON CONFLICT(start, end, stage, source) DO UPDATE SET received=excluded.received",
+            (start, end, stage, str(source or "")[:80], received))
         return 1, 0
     # Aggregated: one row per night with stage totals in hours.
     night_end = parse_ts(_get(p, "sleepEnd", "inBedEnd", "date"))
@@ -178,20 +223,33 @@ def summary(conn: sqlite3.Connection, days: int = 7) -> dict:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         last = conn.execute("SELECT MAX(received) FROM ("
                             "SELECT received FROM apple_health UNION ALL "
-                            "SELECT received FROM apple_sleep)").fetchone()[0]
+                            "SELECT received FROM health_sleep)").fetchone()[0]
         rows = conn.execute("SELECT metric, COUNT(*) FROM apple_health WHERE received >= ? "
                             "GROUP BY metric", (since,)).fetchall()
-        segs = conn.execute("SELECT COUNT(*), COUNT(DISTINCT substr(end, 1, 10)) FROM apple_sleep "
+        segs = conn.execute("SELECT COUNT(*), COUNT(DISTINCT substr(end, 1, 10)) FROM health_sleep "
                             "WHERE received >= ?", (since,)).fetchone()
+        srcs = conn.execute("SELECT source, COUNT(*) FROM health_sleep WHERE received >= ? "
+                            "GROUP BY source", (since,)).fetchall()
     except sqlite3.Error as exc:
         return {"error": str(exc)[:120]}
     return {"last_received": last, "points_7d": {m: n for m, n in rows},
-            "sleep_segments_7d": segs[0] or 0, "sleep_nights_7d": segs[1] or 0}
+            "sleep_segments_7d": segs[0] or 0, "sleep_nights_7d": segs[1] or 0,
+            # which apps' stages are arriving, by kind only (the raw name carries a device name)
+            "sleep_sources_7d": _source_kinds(srcs)}
+
+
+def _source_kinds(rows) -> dict:
+    from sleepctl.learning.wearable_consensus import source_kind
+    out: dict = {}
+    for src, n in rows:
+        k = source_kind(src) or "other"
+        out[k] = out.get(k, 0) + n
+    return out
 
 
 def night_stages(conn: sqlite3.Connection, start_iso: str, end_iso: str) -> list[dict]:
     """Apple's stage segments overlapping [start, end): the reference to score our stager against.
     Bounds must be UTC ISO strings, like the stored values."""
-    rows = conn.execute("SELECT start, end, stage, source FROM apple_sleep WHERE end > ? AND "
+    rows = conn.execute("SELECT start, end, stage, source FROM health_sleep WHERE end > ? AND "
                         "start < ? ORDER BY start", (start_iso, end_iso)).fetchall()
     return [{"start": r[0], "end": r[1], "stage": r[2], "source": r[3]} for r in rows]

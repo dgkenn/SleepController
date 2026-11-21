@@ -219,8 +219,10 @@ def replay_emissions(repo, night_date: str, epochs: Sequence[Tuple[float, float,
 
 
 def load_night(repo, night_date: str, emission_fn: Optional[Callable] = None,
-               stager=None) -> Optional[NightData]:
-    epochs = load_epochs(repo.conn, night_date)
+               stager=None, epochs_fn: Optional[Callable] = None) -> Optional[NightData]:
+    """``epochs_fn(conn, night_date)`` supplies the reference epochs; default the EEG import.
+    (learning.wearable_consensus passes its Apple/Bevel consensus instead.)"""
+    epochs = (epochs_fn or load_epochs)(repo.conn, night_date)
     if not epochs:
         return None
     if emission_fn is not None:
@@ -510,8 +512,11 @@ def _r(x, nd=3):
 
 def build_calibration(repo, *, nights: Optional[Sequence[str]] = None,
                       emission_fn: Optional[Callable] = None, stager=None,
-                      pop: Optional[dict] = None) -> dict:
-    """Fit + validate on the imported nights and return the profile (not yet stored)."""
+                      pop: Optional[dict] = None, epochs_fn: Optional[Callable] = None,
+                      reference: str = "EEG") -> dict:
+    """Fit + validate on the imported nights and return the profile (not yet stored).
+
+    ``epochs_fn``/``reference`` swap the reference hypnogram (default: the EEG import)."""
     pop = pop or population_hmm()
     if nights is None:
         nights = [n["night_date"] for n in imported_nights(repo.conn)][:MAX_NIGHTS]
@@ -520,7 +525,7 @@ def build_calibration(repo, *, nights: Optional[Sequence[str]] = None,
         stager = SleepStager.load()
     data, skipped = [], []
     for d in nights:
-        nd = load_night(repo, d, emission_fn=emission_fn, stager=stager)
+        nd = load_night(repo, d, emission_fn=emission_fn, stager=stager, epochs_fn=epochs_fn)
         usable = 0 if nd is None else sum(1 for t, e in zip(nd.truth, nd.emissions)
                                           if t is not None and e is not None)
         if nd is None or usable < 120:        # under an hour of paired epochs
@@ -530,11 +535,12 @@ def build_calibration(repo, *, nights: Optional[Sequence[str]] = None,
     data.sort(key=lambda n: n.night_date)
     now = datetime.now().replace(microsecond=0).isoformat()
     prof = {"version": PROFILE_VERSION, "fitted_ts": now, "enabled": False,
+            "reference": reference,
             "wake_threshold_enabled": False, "n_nights": len(data),
             "nights": [n.night_date for n in data], "skipped": skipped}
     if len(data) < MIN_NIGHTS:
-        prof["rationale"] = (f"learning -- {len(data)}/{MIN_NIGHTS} EEG nights paired with "
-                             "arm-band data before a calibration can be validated")
+        prof["rationale"] = (f"learning -- {len(data)}/{MIN_NIGHTS} {reference} nights paired "
+                             "with sensor data before a calibration can be validated")
         return prof
     val = validate(data, pop)
     params = fit(data, pop)
@@ -560,11 +566,11 @@ def build_calibration(repo, *, nights: Optional[Sequence[str]] = None,
     })
     if enabled:
         prof["rationale"] = (f"held-out kappa {val['kappa_unadjusted']:.2f} -> "
-                             f"{val['kappa_calibrated']:.2f} over {len(data)} EEG nights "
+                             f"{val['kappa_calibrated']:.2f} over {len(data)} {reference} nights "
                              f"(better on {val['wins']}); enabled")
     else:
         prof["rationale"] = (f"held-out kappa {val['kappa_unadjusted']} -> "
-                             f"{val['kappa_calibrated']} over {len(data)} EEG nights "
+                             f"{val['kappa_calibrated']} over {len(data)} {reference} nights "
                              f"(better on {val['wins']}, ahead in {val['p_better']} of bootstrap "
                              f"draws) -- needs +{MIN_KAPPA_GAIN}, at least half the nights and "
                              f"{BOOT_CONFIDENCE} of draws; the unadjusted stager stays")

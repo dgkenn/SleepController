@@ -44,5 +44,25 @@ Health Auto Export (iOS) has a REST API automation that POSTs its JSON export to
   what the stager can be scored against, so leave "aggregate sleep" off if offered.
 - Interval: hourly is enough. Overlapping windows are de-duplicated.
 
-Stored on the box only (`apple_health`, `apple_sleep` tables). The public health snapshot carries
+Stored on the box only (`apple_health`, `health_sleep` tables; sleep segments keep the app that
+wrote them, so Apple's and Bevel's stay apart). The public health snapshot carries
 counts and times (`apple_health` block), never values. `GET /api/apple/health/summary` shows the same.
+
+## 3. Three-way comparison and personal calibration
+
+After each upload that brings new sleep stages, `sleepctl/learning/wearable_consensus.py` runs:
+
+1. Lines up three hypnograms on 30 s epochs: our live stager (`raw_samples.stage`), Apple's
+   stages, and Bevel's (the Health samples whose source is Bevel -- only if Bevel writes its
+   stages into Apple Health; check Health > Sleep > Data Sources & Access).
+2. Settles disagreements with a Dawid-Skene model: each source has a learned confusion matrix
+   (how it labels each true stage), fitted with EM across all nights from a "mostly right"
+   prior (Apple strongest). The matrices are the fingerprint of each algorithm's habits.
+3. Labels each epoch from **Apple + Bevel only** (our own vote never sets the label it is
+   corrected against). An epoch with reference posterior below 0.7 abstains.
+4. Refits the personal stager calibration (`learning/eeg_calibration.py`) against those labels.
+   It switches on only if it beats the unadjusted stager on held-out nights (leave-one-night-out
+   plus a bootstrap). EEG-headband nights, if ever imported, are ground truth and win.
+
+`GET /api/staging/consensus` returns the full report (per-night and pooled kappas, confusion
+matrices). The health snapshot shows pooled agreement and the calibration state only.

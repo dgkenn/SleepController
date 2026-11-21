@@ -201,14 +201,18 @@ CREATE TABLE IF NOT EXISTS apple_health (
     received TEXT NOT NULL,
     PRIMARY KEY (ts, metric)
 );
-CREATE TABLE IF NOT EXISTS apple_sleep (
-    start TEXT NOT NULL,
+-- Sleep stages from every app that writes them into Apple Health (Apple's own, Bevel, ...), one
+-- row per stage segment, keyed WITH the writing app so two apps' identical segments both stay.
+-- (Replaces the first cut, apple_sleep, whose key had no source.)
+CREATE TABLE IF NOT EXISTS health_sleep (
+    start TEXT NOT NULL,       -- UTC ISO-8601
     end TEXT NOT NULL,
     stage TEXT NOT NULL,       -- core / deep / rem / awake / asleep / in_bed
-    source TEXT,
+    source TEXT NOT NULL DEFAULT '',
     received TEXT NOT NULL,
-    PRIMARY KEY (start, end, stage)
+    PRIMARY KEY (start, end, stage, source)
 );
+CREATE INDEX IF NOT EXISTS idx_health_sleep_end ON health_sleep(end);
 -- Sleep events sent by the iPhone's Shortcuts automations (app/automation.py): wind down,
 -- bedtime, waking up, plus the alarm time read off the phone. One row per call, with what the
 -- box did about it.

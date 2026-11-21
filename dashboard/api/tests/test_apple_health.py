@@ -40,7 +40,7 @@ def test_a_resent_window_does_not_duplicate(auth_client):
     client.post("/apple/health", json=_payload())
     conn = get_repo().conn
     assert conn.execute("SELECT COUNT(*) FROM apple_health WHERE metric='heart_rate'").fetchone()[0] == 2
-    assert conn.execute("SELECT COUNT(*) FROM apple_sleep").fetchone()[0] == 2
+    assert conn.execute("SELECT COUNT(*) FROM health_sleep").fetchone()[0] == 2
 
 
 def test_times_are_stored_in_utc():
@@ -77,3 +77,36 @@ def test_it_needs_no_login_on_the_box_by_default(monkeypatch):
     from app.main import app
     monkeypatch.delenv("SLEEPCTL_NO_LOGIN", raising=False)
     assert TestClient(app).post("/apple/health", json=_payload()).status_code == 200
+
+
+def test_new_sleep_stages_start_the_morning_comparison(auth_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(apple_health, "kick_consensus", lambda force=False: calls.append(1) or "started")
+    out = auth_client.post("/apple/health", json=_payload()).json()
+    assert out["consensus"] == "started" and calls
+
+
+def test_heart_rate_alone_does_not(auth_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(apple_health, "kick_consensus", lambda force=False: calls.append(1) or "started")
+    p = {"data": {"metrics": [_payload()["data"]["metrics"][0]]}}
+    assert "consensus" not in auth_client.post("/apple/health", json=p).json() and not calls
+
+
+def test_the_comparison_endpoints(auth_client):
+    r = auth_client.post("/staging/consensus/run")
+    assert r.status_code == 200, r.text
+    got = auth_client.get("/staging/consensus").json()
+    assert "report" in got and "calibration" in got
+
+
+def test_bevel_and_apple_segments_are_kept_apart(auth_client):
+    from app.db import get_repo
+    seg = {"startDate": "2026-11-22 01:00:00 -0500", "endDate": "2026-11-22 01:30:00 -0500",
+           "value": "REM"}
+    p = {"data": {"metrics": [{"name": "sleep_analysis", "data": [
+        dict(seg, source="Apple Watch"), dict(seg, source="Bevel")]}]}}
+    auth_client.post("/apple/health", json=p)
+    n = get_repo().conn.execute("SELECT COUNT(*) FROM health_sleep WHERE start = ?",
+                                ("2026-11-22T06:00:00+00:00",)).fetchone()[0]
+    assert n == 2

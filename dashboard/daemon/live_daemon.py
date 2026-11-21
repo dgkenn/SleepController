@@ -667,7 +667,9 @@ class LiveDashboardDaemon:
                 from sleepctl.learning.eeg_calibration import apply_stored_calibration
                 applied = apply_stored_calibration(self.repo, _get_stager())
                 if applied:
-                    self._log(f"staging calibration (EEG nights): {applied}")
+                    from sleepctl.learning.eeg_calibration import load_calibration
+                    ref = (load_calibration(self.repo.conn) or {}).get("reference") or "EEG"
+                    self._log(f"staging calibration ({ref} nights): {applied}")
             except Exception as exc:
                 self._skip("EEG staging calibration", exc)
         except Exception as exc:

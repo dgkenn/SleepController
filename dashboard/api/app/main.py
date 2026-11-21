@@ -630,6 +630,24 @@ def apple_health_ingest(request: Request, payload: dict = Body(...), token: str 
     return apple_health.ingest(repo.conn, payload)
 
 
+@app.get("/staging/consensus")
+def staging_consensus(request: Request, token: str | None = None, repo=Depends(repo_dep)):
+    """Our stager vs Apple vs Bevel: per-night and pooled agreement, each source's fitted
+    confusion matrix, and the calibration fitted against the consensus."""
+    _bcg_auth(request, token)
+    from sleepctl.learning import wearable_consensus as wc
+    from sleepctl.learning.eeg_calibration import load_calibration
+    return {"report": wc.load_report(repo.conn), "calibration": load_calibration(repo.conn)}
+
+
+@app.post("/staging/consensus/run")
+def staging_consensus_run(request: Request, token: str | None = None, repo=Depends(repo_dep)):
+    """Rebuild the comparison and refit now (normally automatic after each Health upload)."""
+    _bcg_auth(request, token)
+    from sleepctl.learning import wearable_consensus as wc
+    return wc.run(repo)
+
+
 @app.get("/apple/health/summary")
 def apple_health_summary(request: Request, token: str | None = None, repo=Depends(repo_dep)):
     _bcg_auth(request, token)

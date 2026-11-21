@@ -239,6 +239,15 @@ def _lan_url(run_dir: str | None) -> str | None:
         return None
 
 
+def _consensus_block(repo) -> dict:
+    """Our stager vs Apple vs Bevel: agreement figures and the calibration's state only."""
+    try:
+        from sleepctl.learning import wearable_consensus
+        return wearable_consensus.snapshot(repo.conn)
+    except Exception as exc:
+        return {"error": type(exc).__name__}
+
+
 def _automation_block(repo) -> dict:
     """iPhone sleep-schedule automations: event counts and what the last one did, no times."""
     try:
@@ -353,6 +362,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "phone_alarm": _phone_alarm_block(repo),
         "apple_health": _apple_health_block(repo),
         "sleep_automation": _automation_block(repo),
+        "staging_consensus": _consensus_block(repo),
         "dreamt": _dreamt_block(_resolve_run_dir(run_dir)),
         "mesa": _mesa_block(_resolve_run_dir(run_dir)),
     }
