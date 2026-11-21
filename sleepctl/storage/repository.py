@@ -695,7 +695,8 @@ class Repository:
         caused_wake, night_type}. ``succeeded`` is reaching the maneuver's target stage (deep for
         deepen, REM for rem_warm). Joins each night's mode from context for per-mode learning."""
         rows = self.conn.execute(
-            "SELECT night_date, ts, horizon_min, maneuver, applied, deepened, succeeded, caused_wake "
+            "SELECT night_date, ts, horizon_min, maneuver, applied, deepened, succeeded, caused_wake, "
+            "ref_deepened, ref_succeeded "
             "FROM steer_events WHERE resolved = 1 AND maneuver = ? ORDER BY id DESC LIMIT ?",
             (maneuver, int(nights) * 40),     # several events per night
         ).fetchall()
@@ -711,6 +712,13 @@ class Repository:
             succeeded = r["succeeded"]
             if succeeded is None:                       # back-compat: deepen rows pre-`succeeded`
                 succeeded = r["deepened"]
+            # Graded by Apple's hypnogram when it covered the event (learning.recovery): the
+            # controller's own stager reads a cooler bed's lower heart rate as deep sleep, so its
+            # verdict on a cooling nudge is partly the nudge measuring itself.
+            deepened = r["deepened"]
+            graded_by = "stager"
+            if r["ref_succeeded"] is not None:
+                succeeded, deepened, graded_by = r["ref_succeeded"], r["ref_deepened"], "apple"
             applied = 1 if r["applied"] in (1, None) else 0
             delivered = self._steer_event_delivered(r, targets) if applied else None
             # An actuated maneuver whose water never moved is a CONTROL condition, whatever the
@@ -723,8 +731,9 @@ class Repository:
             out.append({
                 "applied": applied,
                 "delivered": delivered,
-                "deepened": int(r["deepened"] or 0),
+                "deepened": int(deepened or 0),
                 "succeeded": int(succeeded or 0),
+                "graded_by": graded_by,
                 "caused_wake": int(r["caused_wake"] or 0),
                 "night_type": (getattr(ctx, "night_type", None) or "normal") if ctx else "normal",
             })

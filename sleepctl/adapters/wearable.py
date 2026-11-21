@@ -38,6 +38,7 @@ class WearableSample:
     respiratory_rate_conf: Optional[float] = None   # 0..1 confidence of the fused breathing rate
     respiratory_rate_source: Optional[str] = None   # "rsa" | "acc" | "rsa+acc" | "...(disagree)"
     age_seconds: Optional[float] = None    # freshness of this sample
+    hr_source: Optional[str] = None        # which sensor supplied heart_rate
 
 
 class RealtimeWearableSource(ABC):
@@ -77,6 +78,7 @@ def fuse_sample(frame: SensorFrame, sample, max_age_s: float = 30.0) -> bool:
         return False
     if sample.heart_rate is not None:
         frame.heart_rate = sample.heart_rate
+        frame.hr_source = getattr(sample, "hr_source", None)
     if sample.movement is not None:
         frame.movement = sample.movement
     if sample.hrv is not None:

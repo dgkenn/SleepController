@@ -239,6 +239,22 @@ def _lan_url(run_dir: str | None) -> str | None:
         return None
 
 
+def _learning_block(repo) -> dict:
+    """Recovery-score coverage and the standing experiment program: counts, names, statuses."""
+    out = {}
+    try:
+        from sleepctl.learning import recovery
+        out["recovery"] = recovery.snapshot(repo.conn)
+    except Exception as exc:
+        out["recovery"] = {"error": type(exc).__name__}
+    try:
+        from sleepctl.learning import auto_experiments
+        out["experiments"] = auto_experiments.snapshot(repo)
+    except Exception as exc:
+        out["experiments"] = {"error": type(exc).__name__}
+    return out
+
+
 def _consensus_block(repo) -> dict:
     """Our stager vs Apple vs Bevel: agreement figures and the calibration's state only."""
     try:
@@ -363,6 +379,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "apple_health": _apple_health_block(repo),
         "sleep_automation": _automation_block(repo),
         "staging_consensus": _consensus_block(repo),
+        "learning_program": _learning_block(repo),
         "dreamt": _dreamt_block(_resolve_run_dir(run_dir)),
         "mesa": _mesa_block(_resolve_run_dir(run_dir)),
     }

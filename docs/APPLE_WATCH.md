@@ -81,3 +81,24 @@ After each upload that brings new sleep stages, `sleepctl/learning/wearable_cons
 
 `GET /api/staging/consensus` returns the full report (per-night and pooled kappas, confusion
 matrices). The health snapshot shows pooled agreement and the calibration state only.
+
+## 4. Watch-only nights, independent grading, and the standing experiment program
+
+- **Watch-only control.** Heart rate from the Watch (`source=apple_watch`) feeds the same fusion,
+  stager, bed-entry and arousal paths as the band. The data-quality score no longer docks the
+  Watch for HRV and breathing rate it can never send (`data_quality.SOURCE_VITALS`); a sensor
+  that can measure them and stops still counts as missing.
+- **Independent outcomes** (`learning/recovery.py`). From Apple's hypnogram and Apple Health:
+  deep / REM / core minutes, total sleep, efficiency, WASO, awakenings, lowest sustained heart
+  rate, mean HRV, resting heart rate, and a **recovery score** (50 = your usual; robust z-scores
+  against your previous nights, half physiology, half architecture).
+- **Nudges graded by Apple.** Each deepen / REM-warm maneuver is re-graded with whether Apple
+  saw the target stage in its response window. The steer learners use that grade when present,
+  because the controller's own stager reads a cooler bed's lower heart rate as deeper sleep.
+- **Experiments measured by Apple** when Apple covers every night in the comparison.
+- **Standing program** (`learning/auto_experiments.py`). Once 7 nights have a recovery score, it
+  keeps one "Auto:" crossover running: cooler in deep sleep, cooler baseline, warmer in REM,
+  warmer baseline. 3 nights per arm, 1 washout night, judged on the recovery score. A treatment
+  whose 95% interval clears zero after 2+ cycles is written into the learned setpoints; no
+  difference after 4 cycles keeps the setting. A hand-started experiment always takes priority.
+  `SLEEPCTL_AUTO_EXPERIMENTS=0` turns it off.

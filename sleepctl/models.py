@@ -126,6 +126,9 @@ class SensorFrame:
     # released by the ingest's not-worn verdict. Positive evidence the sleeper is not wearing
     # it, which on a Pod that never reports presence is the crispest bed-exit signal there is.
     wearable_off_arm: Optional[bool] = None
+    # Which sensor supplied heart_rate ("verity", "apple_watch", "phone", ...), when a wearable
+    # did. Lets the data-quality score tell "this sensor never measures HRV" from "HRV dropped".
+    hr_source: Optional[str] = None
 
     def __post_init__(self) -> None:
         # Sanitize at the boundary: a bad sensor reading (NaN/Inf) must never enter the engine —

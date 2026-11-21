@@ -41,6 +41,13 @@ class DataQuality:
         }
 
 
+#: Vitals each heart-rate source can deliver at all. A source not listed is assumed to provide
+#: all three (the original behaviour).
+SOURCE_VITALS = {
+    "apple_watch": frozenset({"heart_rate"}),
+}
+
+
 def assess_data_quality(frame: SensorFrame, cfg, now: Optional[datetime] = None) -> DataQuality:
     """Score how much the control loop should trust ``frame`` right now.
 
@@ -67,11 +74,17 @@ def assess_data_quality(frame: SensorFrame, cfg, now: Optional[datetime] = None)
         penalties.append((min(0.4, 0.8 * min(frame.movement, 0.5)), "high_movement"))
 
     # --- missing vitals ---------------------------------------------------------------------
+    # Only vitals the active sensor can provide count as missing. An Apple Watch streaming over
+    # Wi-Fi (Health Data Server) sends heart rate and nothing else -- Apple exposes no live beat
+    # intervals -- so docking it for "missing" HRV and breathing on every tick would hold the
+    # whole night at a permanently lowered score for data that was never coming, and scale every
+    # action down with it. A sensor that CAN measure them and stops still counts as missing.
+    provides = SOURCE_VITALS.get(str(getattr(frame, "hr_source", None) or "").lower())
     missing_vitals = [name for name, v in (
         ("heart_rate", frame.heart_rate),
         ("hrv", frame.hrv),
         ("respiratory_rate", frame.respiratory_rate),
-    ) if v is None]
+    ) if v is None and (provides is None or name in provides)]
     if missing_vitals:
         # Each missing vital chips away at trust; capped so a single frame can't go to zero
         # from missing vitals alone (staleness/presence are the harder gates for that).

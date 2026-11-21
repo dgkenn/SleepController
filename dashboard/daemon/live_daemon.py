@@ -689,6 +689,16 @@ class LiveDashboardDaemon:
                                     base_f=self.cfg.tunables.wake_ramp_temp_f)
             self._wake_thermal_f = next_wake_f(tw.wake_f, datetime.now().timetuple().tm_yday)
             base = replace(base, wake_ramp_f=self._wake_thermal_f)
+            # The standing program (learning.auto_experiments): concludes / adopts / starts the
+            # next "Auto:" experiment, judged on the Apple-measured recovery score. Never touches
+            # an experiment started by hand.
+            try:
+                from sleepctl.learning.auto_experiments import tick as _auto_tick
+                auto = _auto_tick(self.repo)
+                if auto.get("action") not in ("off", "waiting", "running"):
+                    self._log(f"experiment program: {auto}")
+            except Exception as exc:
+                self._skip("experiment program", exc)
             prof, arm = apply_experiment_arm(self.repo, datetime.now().date().isoformat(), base)
             controller.set_setpoints(prof)
             self.active_experiment = arm

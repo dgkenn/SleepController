@@ -466,6 +466,10 @@ _MIGRATIONS = [
     # Bedroom temperature estimated from the Pod's settled water (room_from_water): the only room
     # reading on an account whose Pod room sensor is subscription-gated.
     ("context", "room_temp_est_f", "REAL"),
+    # Each deepen / REM nudge re-graded by Apple's hypnogram (learning.recovery): the outside
+    # measurement, independent of the controller's own stager.
+    ("steer_events", "ref_deepened", "INTEGER"),
+    ("steer_events", "ref_succeeded", "INTEGER"),
 ]
 
 

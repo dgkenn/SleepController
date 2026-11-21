@@ -21,7 +21,10 @@ _LOWER_BETTER = {"wake_events", "waso_min", "sleep_onset_latency_min"}
 _METRIC_COLS = {
     "wake_events", "waso_min", "sleep_efficiency", "deep_min", "rem_min",
     "total_sleep_min", "sleep_onset_latency_min", "avg_hrv", "outcome_score",
+    "recovery_score", "hrv_mean", "hr_min",
 }
+#: Metrics that only the independent (Apple) reference measures.
+_REFERENCE_ONLY = {"recovery_score", "hrv_mean", "hr_min"}
 
 
 def _now() -> str:
@@ -103,8 +106,29 @@ def assign_arm(repo, exp_id: int, date: str) -> Optional[str]:
 
 
 def _metric_by_date(repo, metric: str, dates: List[str]) -> dict:
+    return _measured(repo, metric, dates)[0]
+
+
+def _measured(repo, metric: str, dates: List[str]) -> tuple:
+    """``({date: value}, measured_by)``. Apple's independent measurement (learning.recovery)
+    when it covers EVERY scored night -- an arm comparison must not mix two instruments --
+    otherwise the controller's own nightly summary."""
     if not dates:
-        return {}
+        return {}, None
+    try:
+        from sleepctl.learning.recovery import reference_metric
+        ref = reference_metric(repo.conn, metric, dates)
+    except Exception:
+        ref = {}
+    if metric in _REFERENCE_ONLY:
+        return ref, "apple"
+    own = _own_metric(repo, metric, dates)
+    if ref and set(own) <= set(ref):
+        return ref, "apple"
+    return own, "controller"
+
+
+def _own_metric(repo, metric: str, dates: List[str]) -> dict:
     qs = ",".join("?" for _ in dates)
     rows = repo.conn.execute(
         f"SELECT date, {metric} AS m FROM nightly_summaries WHERE date IN ({qs})", dates
@@ -133,7 +157,7 @@ def analyze_experiment(repo, exp_id: int) -> Optional[dict]:
     period = int(exp["min_nights_per_arm"])
     washout = int(exp.get("washout_nights", 1))
     assignments = exp["assignments"] or {}
-    by_date = _metric_by_date(repo, metric, list(assignments.keys()))
+    by_date, measured_by = _measured(repo, metric, list(assignments.keys()))
 
     # Reconstruct each night's cycle from its insertion order (dict preserves order).
     cycles: dict = {}
@@ -187,7 +211,7 @@ def analyze_experiment(repo, exp_id: int) -> Optional[dict]:
     return {"metric": metric, "lower_better": lower_better, "control": sa, "treatment": sb,
             "diff": diff, "effect_size": effect, "winner": winner, "enough_data": enough,
             "n_cycles": n_cycles, "cycle_diffs": cycle_diffs, "ci": ci,
-            "washout_nights": washout, "recommendation": rec}
+            "washout_nights": washout, "recommendation": rec, "measured_by": measured_by}
 
 
 # Arm params that map to a learnable SetpointProfile knob (additive °F deltas). These are the

@@ -126,7 +126,7 @@ class BridgeWearableSource(RealtimeWearableSource):
                               respiratory_rate=s.get("respiratory_rate"),
                               respiratory_rate_conf=s.get("respiratory_rate_conf"),
                               respiratory_rate_source=s.get("respiratory_rate_source"),
-                              age_seconds=min(ages))
+                              age_seconds=min(ages), hr_source=s.get("hr_source"))
 
     def read_history(self, minutes: float = 45.0) -> dict:
         """DENSE trailing {"hr": [(t_s, bpm)], "activity": [(t_s, movement)]} from the ingest

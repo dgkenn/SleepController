@@ -270,3 +270,28 @@ def test_low_quality_hold_still_detects_and_logs_the_awakening():
         "awakening was not detected during a low-data-quality hold -- the controller is blind "
         "at exactly the moment it should be watching")
     assert decision.log_payload.get("wake_signals"), "wake signals were not logged"
+
+
+# ------------------------------------------- an HR-only sensor (Apple Watch over Wi-Fi), 2026-11-21
+def test_an_hr_only_sensor_is_not_docked_for_vitals_it_cannot_measure():
+    now = datetime(2026, 11, 21, 2, 0)
+    cfg = AppConfig.default()
+    watch = _good_frame(now, hrv=None, respiratory_rate=None, hr_source="apple_watch")
+    assert "missing_vitals" not in " ".join(assess_data_quality(watch, cfg).reasons)
+    band = _good_frame(now, hrv=None, respiratory_rate=None, hr_source="verity")
+    assert "missing_vitals:hrv,respiratory_rate" in assess_data_quality(band, cfg).reasons
+
+
+def test_the_watch_still_counts_missing_heart_rate():
+    now = datetime(2026, 11, 21, 2, 0)
+    f = _good_frame(now, heart_rate=None, hrv=None, respiratory_rate=None, hr_source="apple_watch")
+    assert "missing_vitals:heart_rate" in assess_data_quality(f, AppConfig.default()).reasons
+
+
+def test_fusion_carries_the_heart_rate_source_onto_the_frame():
+    from sleepctl.adapters.wearable import WearableSample, fuse_sample
+    now = datetime(2026, 11, 21, 2, 0)
+    f = _good_frame(now, heart_rate=None, hrv=None)
+    fuse_sample(f, WearableSample(timestamp=now, heart_rate=55.0, age_seconds=3.0,
+                                  hr_source="apple_watch"))
+    assert f.heart_rate == 55.0 and f.hr_source == "apple_watch"

@@ -437,6 +437,13 @@ def run(repo, **kw) -> dict:
     """The morning pass: rebuild the consensus, then recalibrate against it."""
     report = build(repo.conn)
     out = {"report": report}
+    # Apple-measured night outcomes + the recovery score, and the deepen/REM nudges re-graded by
+    # Apple's hypnogram (learning.recovery): what experiments and the steer learners are judged by.
+    try:
+        from sleepctl.learning.recovery import build as build_reference
+        out["reference"] = build_reference(repo.conn)
+    except Exception as exc:
+        out["reference"] = {"error": repr(exc)[:200]}
     if report.get("n_nights", 0) > 0:
         out["calibration"] = calibrate(repo, **kw)
     return out
