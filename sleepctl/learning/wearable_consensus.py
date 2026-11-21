@@ -23,16 +23,20 @@ matrices and the night's true stages are estimated together by EM over every nig
 * the fitted matrices ARE the reverse-engineered fingerprint of each algorithm's habits, kept in
   the report as the start of the "learn their algorithms" work.
 
-The label our stager is calibrated against is the posterior from **Apple and Bevel, plus
-OpenVitals once it has earned a vote** (``sleepctl.ml.openvitals``, a whole-night heart-rate model
-whose accuracy is its author's unreviewed benchmark: it votes only after agreeing with Apple --
-the independently PSG-validated rater -- at kappa >= 0.4 over 3+ of this sleeper's nights): letting our own vote pull the label toward our own
-output would teach the stager nothing. Ours does not even inform the others' confusion matrices (they are fitted from the references alone);
-its own matrix is measured against the reference posterior, for the report. An epoch becomes a training label only at posterior
->= :data:`CONF_MIN`; below that it abstains. "Asleep (unspecified)" and "in bed" are not stages
-and abstain too. Apple and Bevel both read the same watch, so their errors are not independent
-and agreement between them is somewhat over-counted; the confidence threshold and the
-calibration's own held-out gate (it switches on only when it beats the unadjusted stager on
+The label our stager is calibrated against is the posterior from the reference raters: Apple
+and Bevel, plus AutoSleep and OpenVitals once each has earned a vote. Neither of those two has an
+independent validation (AutoSleep none published, and it can simply re-use Apple's stages;
+OpenVitals only its author's benchmark), so each votes only after agreeing with Apple -- the
+independently PSG-validated rater -- at kappa >= 0.4 over 3+ of this sleeper's nights, and never
+while it is a near-copy of Apple (kappa >= 0.95), which would be no second opinion at all.
+
+Our own stager never votes on its own label, and does not even inform the references' confusion
+matrices (they are fitted from the references alone); its matrix is measured against the
+reference posterior, for the report. An epoch becomes a training label only at posterior >=
+:data:`CONF_MIN`; below that it abstains. "Asleep (unspecified)" and "in bed" are not stages and
+abstain too. The watch-based raters all read the same watch, so their errors are not
+independent and agreement between them is somewhat over-counted; the confidence threshold and
+the calibration's own held-out gate (it switches on only when it beats the unadjusted stager on
 nights it was not fitted on) are the guards against that.
 """
 
@@ -51,16 +55,20 @@ CONF_MIN = 0.7                 # reference posterior needed for an epoch to beco
 MAX_NIGHTS = 21                # recent nights considered
 MIN_REF_EPOCHS = 120           # an hour of referenced epochs before a night counts
 EM_ITERS = 25
-SOURCES = ("apple", "bevel", "openvitals", "ours", "ours_replay")
+SOURCES = ("apple", "bevel", "autosleep", "openvitals", "ours", "ours_replay")
 #: The raters whose votes set the label our stager is calibrated against. OpenVitals
 #: (sleepctl.ml.openvitals: PSG-trained, heart-rate only, whole-night) is independent of Apple's
 #: algorithm and corrects its known deep-sleep under-call; ours never votes on its own label.
-REFERENCES = ("apple", "bevel", "openvitals")
+REFERENCES = ("apple", "bevel", "autosleep", "openvitals")
+#: Raters with no independent PSG validation: they vote only after earning it on this sleeper's
+#: nights (see :func:`_earned_gate`). AutoSleep has no published validation and, in its "Apple
+#: sleep stages" mode, re-uses Apple's own stages; OpenVitals' accuracy is its author's benchmark.
+GATED = ("autosleep", "openvitals")
 #: Prior pseudo-counts on each confusion row: this many "agreed" epochs on the diagonal, one per
 #: off-diagonal cell. Apple's stages are PSG-validated; Bevel's method is unpublished; ours is
 #: what is being corrected.
-PRIOR_DIAG = {"apple": 40.0, "bevel": 20.0, "openvitals": 25.0, "ours": 10.0,
-              "ours_replay": 6.0}
+PRIOR_DIAG = {"apple": 40.0, "bevel": 20.0, "autosleep": 12.0, "openvitals": 25.0,
+              "ours": 10.0, "ours_replay": 6.0}
 #: Apple's prior is not "mostly right everywhere". Against lab PSG (Apple Watch Series 8, 35
 #: healthy adults; Sensors 2024, PMC11511193) Apple under-called deep sleep by ~43 min and wake by
 #: ~7 min and over-called light ("core") by ~45 min: much of true deep, and some true wake, is
@@ -92,7 +100,7 @@ CREATE TABLE IF NOT EXISTS consensus_hypnogram (
     epoch_s REAL NOT NULL DEFAULT 30,
     stage TEXT NOT NULL,           -- awake|light|deep|rem, or unknown (abstained)
     confidence REAL,               -- reference posterior of that stage
-    apple TEXT, bevel TEXT, ours TEXT, openvitals TEXT,
+    apple TEXT, bevel TEXT, ours TEXT, openvitals TEXT, autosleep TEXT,
     PRIMARY KEY (night_date, epoch_unix)
 );
 CREATE TABLE IF NOT EXISTS staging_consensus (
@@ -103,12 +111,17 @@ CREATE TABLE IF NOT EXISTS staging_consensus (
 """
 
 
+#: Raters that arrive as Apple Health sleep samples (the rest are computed here).
+HEALTH_KINDS = ("apple", "bevel", "autosleep")
+
+
 def ensure_schema(conn) -> None:
     conn.executescript(CONSENSUS_DDL)
     try:
         have = {r[1] for r in conn.execute("PRAGMA table_info(consensus_hypnogram)").fetchall()}
-        if "openvitals" not in have:
-            conn.execute("ALTER TABLE consensus_hypnogram ADD COLUMN openvitals TEXT")
+        for col in ("openvitals", "autosleep"):
+            if col not in have:
+                conn.execute(f"ALTER TABLE consensus_hypnogram ADD COLUMN {col} TEXT")
     except Exception:
         pass
 
@@ -118,6 +131,8 @@ def source_kind(src) -> Optional[str]:
     s = str(src or "").lower()
     if "bevel" in s:
         return "bevel"
+    if "autosleep" in s or "auto sleep" in s:
+        return "autosleep"
     if not s or any(k in s for k in ("watch", "iphone", "apple", "health")):
         return "apple"
     return None   # another app (AutoSleep, Pillow, ...) -- not one of the three
@@ -153,7 +168,7 @@ def recent_nights(conn, limit: int = MAX_NIGHTS) -> List[Tuple[str, float, float
 
 def _segments(conn, lo: float, hi: float) -> Dict[str, List[Tuple[float, float, str]]]:
     """Health sleep segments overlapping [lo, hi), per source kind, mapped to our classes."""
-    out: Dict[str, List[Tuple[float, float, str]]] = {k: [] for k in REFERENCES}
+    out: Dict[str, List[Tuple[float, float, str]]] = {k: [] for k in HEALTH_KINDS}
     lo_s = datetime.fromtimestamp(lo - 86400, timezone.utc).isoformat()
     hi_s = datetime.fromtimestamp(hi + 86400, timezone.utc).isoformat()
     try:
@@ -194,7 +209,7 @@ def assemble_night(conn, night_date: str, lo: float, hi: float,
         return None
     g0 = math.floor(g0 / EPOCH_S) * EPOCH_S
     times = [g0 + i * EPOCH_S for i in range(int((g1 - g0) // EPOCH_S))]
-    labels = {k: [_label_at(segs[k], t + EPOCH_S / 2) for t in times] for k in REFERENCES}
+    labels = {k: [_label_at(segs[k], t + EPOCH_S / 2) for t in times] for k in HEALTH_KINDS}
     ours = recorded_labels(conn, night_date)
     labels["ours"] = align([(t, EPOCH_S, "") for t in times], ours) if ours else [None] * len(times)
     labels["openvitals"] = [None] * len(times)
@@ -411,9 +426,10 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
     # PSG validations. So it must agree with Apple at kappa >= OV_MIN_KAPPA over at least
     # OV_MIN_NIGHTS nights first; until then it is reported, not counted.
     refs = set(REFERENCES)
-    ov_gate = _openvitals_gate(assembled)
-    if not ov_gate["votes"]:
-        refs.discard("openvitals")
+    gates = {src: _earned_gate(assembled, src) for src in GATED}
+    for src, g in gates.items():
+        if not g["votes"]:
+            refs.discard(src)
     ref_obs = [{s: l for s, l in o.items() if s in refs} for o in obs_all]
     conf, prior, ref_post = dawid_skene(ref_obs)
     conf = dict(conf)
@@ -441,7 +457,7 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
                                              if a["labels"]["ours_replay"][ei] else None)
         rows.append((a["night_date"], t, local_naive(t), EPOCH_S, stage, round(p[k], 4),
                      a["labels"]["apple"][ei], a["labels"]["bevel"][ei], ours_l,
-                     a["labels"]["openvitals"][ei]))
+                     a["labels"]["openvitals"][ei], a["labels"]["autosleep"][ei]))
         per_night.setdefault(ni, {"n": 0, "labelled": 0})
         per_night[ni]["n"] += 1
         per_night[ni]["labelled"] += stage != "unknown"
@@ -449,8 +465,8 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
         conn.execute("DELETE FROM consensus_hypnogram WHERE night_date = ?",
                      (assembled[ni]["night_date"],))
     conn.executemany("INSERT OR REPLACE INTO consensus_hypnogram (night_date, epoch_unix, "
-                     "epoch_ts, epoch_s, stage, confidence, apple, bevel, ours, openvitals) "
-                     "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
+                     "epoch_ts, epoch_s, stage, confidence, apple, bevel, ours, openvitals, "
+                     "autosleep) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
 
     pooled: Dict[str, Tuple[list, list]] = {}
@@ -463,7 +479,8 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
                  "kappa": {}}
         streams = dict(a["labels"])
         streams["consensus"] = [cons.get(t) if cons.get(t) in _IDX else None for t in a["times"]]
-        for x, y in (("apple", "bevel"), ("apple", "openvitals"), ("bevel", "openvitals"),
+        for x, y in (("apple", "bevel"), ("apple", "autosleep"), ("apple", "openvitals"),
+                     ("autosleep", "openvitals"), ("bevel", "openvitals"),
                      ("apple", "ours"), ("bevel", "ours"), ("openvitals", "ours"),
                      ("ours", "consensus"), ("ours_replay", "consensus"),
                      ("apple", "ours_replay"), ("openvitals", "ours_replay")):
@@ -480,28 +497,40 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
     report["confusion"] = {s: [[round(v, 3) for v in r] for r in m] for s, m in conf.items()}
     report["class_prior"] = [round(v, 3) for v in prior]
     report["n_nights"] = sum(1 for e in report["nights"] if e["labelled"] >= MIN_REF_EPOCHS)
-    report["openvitals_gate"] = ov_gate
+    report["openvitals_gate"] = gates["openvitals"]
+    report["gates"] = gates
     _save_report(conn, report)
     return report
 
 
 OV_MIN_NIGHTS = 3
 OV_MIN_KAPPA = 0.4
+#: Agreement this close to Apple means the rater is re-using Apple's stages, not judging
+#: independently: it adds no second opinion, so it does not vote.
+ECHO_KAPPA = 0.95
 
 
-def _openvitals_gate(assembled: Sequence[dict]) -> dict:
+def _earned_gate(assembled: Sequence[dict], src: str) -> dict:
+    """Has ``src`` earned a vote? It must agree with Apple (the independently PSG-validated
+    rater) at kappa >= OV_MIN_KAPPA over >= OV_MIN_NIGHTS nights, and not be a near-copy."""
     nights, a_all, o_all = 0, [], []
     for a in assembled:
-        pairs = [(x, y) for x, y in zip(a["labels"]["apple"], a["labels"]["openvitals"])
+        pairs = [(x, y) for x, y in zip(a["labels"]["apple"], a["labels"].get(src) or [])
                  if x in _IDX and y in _IDX]
         if len(pairs) >= MIN_REF_EPOCHS:
             nights += 1
             a_all += [x for x, _ in pairs]
             o_all += [y for _, y in pairs]
     kap = cohen_kappa(a_all, o_all) if a_all else None
-    votes = nights >= OV_MIN_NIGHTS and kap is not None and kap >= OV_MIN_KAPPA
+    echo = kap is not None and kap >= ECHO_KAPPA
+    votes = nights >= OV_MIN_NIGHTS and kap is not None and OV_MIN_KAPPA <= kap and not echo
     return {"nights": nights, "kappa_vs_apple": None if kap is None else round(kap, 3),
-            "votes": bool(votes), "needs": f"{OV_MIN_NIGHTS} nights at kappa >= {OV_MIN_KAPPA}"}
+            "votes": bool(votes), "echoes_apple": bool(echo),
+            "needs": f"{OV_MIN_NIGHTS} nights at kappa >= {OV_MIN_KAPPA}, below {ECHO_KAPPA}"}
+
+
+def _openvitals_gate(assembled: Sequence[dict]) -> dict:
+    return _earned_gate(assembled, "openvitals")
 
 
 def consensus_epochs(conn, night_date: str) -> List[Tuple[float, float, str]]:

@@ -89,7 +89,8 @@ def test_source_kinds():
     assert wc.source_kind("Dean’s Apple Watch") == "apple"
     assert wc.source_kind("Bevel") == "bevel"
     assert wc.source_kind("") == "apple"
-    assert wc.source_kind("AutoSleep") is None
+    assert wc.source_kind("AutoSleep") == "autosleep"
+    assert wc.source_kind("Pillow") is None
 
 
 def test_consensus_recovers_the_night_and_learns_bevels_habit(repo):
@@ -268,9 +269,27 @@ def test_openvitals_earns_its_vote_over_three_agreeing_nights(repo):
                               [((day + timedelta(seconds=30 * i + 15)).isoformat(), night, None)
                                for i in (0, N - 1)])
     repo.conn.commit()
+    rnd = random.Random(7)
+    noisy = lambda conn, times: [truth(i % N) if rnd.random() > 0.15 else "light"   # noqa: E731
+                                 for i in range(len(times))]
+    rep = wc.build(repo.conn, replay=None, openvitals=noisy)
+    g = rep["openvitals_gate"]
+    assert g["nights"] == 3 and g["votes"] is True and not g["echoes_apple"]
+    # a rater that copies Apple exactly adds no second opinion: it never votes
     rep = wc.build(repo.conn, replay=None,
                    openvitals=lambda conn, times: [truth(i % N) for i in range(len(times))])
-    assert rep["openvitals_gate"]["nights"] == 3 and rep["openvitals_gate"]["votes"] is True
+    assert rep["openvitals_gate"]["echoes_apple"] is True and rep["openvitals_gate"]["votes"] is False
+
+
+def test_autosleep_samples_are_their_own_rater(repo):
+    t = [truth(i) for i in range(N)]
+    _write_source(repo, t, "wc", "Apple Watch")
+    _write_source(repo, [s if s != "deep" else "light" for s in t], "wc", "AutoSleep")
+    _write_ours(repo, [None] * N)
+    rep = wc.build(repo.conn, replay=None, openvitals=None)
+    assert "autosleep" in rep["nights"][0]["sources"]
+    assert "apple~autosleep" in rep["pooled_kappa"]
+    assert rep["gates"]["autosleep"]["votes"] is False           # one night: not earned yet
 
 
 def _u2(t):

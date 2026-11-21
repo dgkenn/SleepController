@@ -15,6 +15,7 @@ this sleeper's own nights.
 | B | Warming at sleep onset | [Raymann 2005](https://pubmed.ncbi.nlm.nih.gov/15677527/) (onset), [Fronczek 2008](https://pmc.ncbi.nlm.nih.gov/articles/PMC2542970) (small, narcolepsy) | the existing onset program |
 | B | Vagal HRV as a recovery marker | meta-analyses: HRV guidance improves vagal indices (SMD 0.50) with small performance effects ([Granero-Gallegos 2021](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8507742/)) | 20% of the recovery score |
 | C | Cooling only in deep sleep / warming in REM | physiological rationale; no trials | later experiments, after the A-grade one |
+| C | AutoSleep's stages | no published PSG validation; can re-use Apple's stages; reviewers report large disagreements with Apple on deep sleep | **reported, not counted**, until it agrees with Apple (kappa >= 0.4, below 0.95 = not a copy) on 3+ of your nights |
 | C | OpenVitals stager | the author's own benchmark, not peer-reviewed | **reported, not counted**, until it agrees with Apple (kappa >= 0.4) on 3+ of your nights |
 | C | Recovery-score weights | judgment, weighted toward what the A-grade trials moved and what is measured best | experiments' outcome; re-weightable |
 | - | Warmer bed all night | contrary to the A-grade cooling trials | dropped from the program |
