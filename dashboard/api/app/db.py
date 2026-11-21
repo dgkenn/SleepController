@@ -293,8 +293,23 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn = engine_schema.connect(path or settings.db_path, check_same_thread=False)
     conn.executescript(_DASHBOARD_DDL)
     _apply_migrations(conn)
+    _carry_apple_sleep(conn)
     conn.commit()
     return conn
+
+
+def _carry_apple_sleep(conn: sqlite3.Connection) -> None:
+    """Copy rows from the first-cut ``apple_sleep`` table (no source in its key) into
+    ``health_sleep``, so stages uploaded before the upgrade still reach the comparison.
+    Idempotent: re-running copies nothing new."""
+    try:
+        if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='apple_sleep'"
+                        ).fetchone() is None:
+            return
+        conn.execute("INSERT OR IGNORE INTO health_sleep (start, end, stage, source, received) "
+                     "SELECT start, end, stage, COALESCE(source, ''), received FROM apple_sleep")
+    except sqlite3.Error:
+        pass
 
 
 # Set once ``init_schema()`` has run (see ``main.py``'s startup event). Guards ``get_repo()``

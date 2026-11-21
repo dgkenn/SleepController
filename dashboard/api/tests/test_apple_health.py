@@ -68,8 +68,12 @@ def test_the_health_snapshot_carries_counts_but_no_values(auth_client):
     client.post("/apple/health", json=_payload())
     block = health_snapshot._apple_health_block(repo)
     assert block["sleep_nights_7d"] >= 1 and block["points_7d"]["heart_rate"] >= 2
-    blob = json.dumps(block)
-    assert "55" not in blob and "61.5" not in blob
+    # counts and times only: no reading's value anywhere (61.5 is the HRV reading; the heart
+    # rate 55 is not checked as a substring, since a timestamp can contain it)
+    assert "61.5" not in json.dumps(block)
+    assert set(block) == {"last_received", "points_7d", "sleep_segments_7d", "sleep_nights_7d",
+                          "sleep_sources_7d"}
+    assert all(isinstance(v, int) for v in block["points_7d"].values())
 
 
 def test_it_needs_no_login_on_the_box_by_default(monkeypatch):
@@ -110,3 +114,20 @@ def test_bevel_and_apple_segments_are_kept_apart(auth_client):
     n = get_repo().conn.execute("SELECT COUNT(*) FROM health_sleep WHERE start = ?",
                                 ("2026-11-22T06:00:00+00:00",)).fetchone()[0]
     assert n == 2
+
+
+def test_stages_uploaded_before_the_upgrade_are_carried_over(tmp_path):
+    import sqlite3
+    from app import db
+    path = str(tmp_path / "old.db")
+    c = sqlite3.connect(path)
+    c.execute("CREATE TABLE apple_sleep (start TEXT NOT NULL, end TEXT NOT NULL, stage TEXT NOT"
+              " NULL, source TEXT, received TEXT NOT NULL, PRIMARY KEY (start, end, stage))")
+    c.execute("INSERT INTO apple_sleep VALUES ('2026-11-21T05:00:00+00:00',"
+              " '2026-11-21T05:30:00+00:00', 'deep', 'Apple Watch', 'x')")
+    c.commit()
+    c.close()
+    conn = db.connect(path)
+    assert [tuple(r) for r in conn.execute("SELECT source FROM health_sleep")] == [("Apple Watch",)]
+    db.connect(path)    # idempotent
+    assert conn.execute("SELECT COUNT(*) FROM health_sleep").fetchone()[0] == 1
