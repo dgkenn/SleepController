@@ -5,6 +5,21 @@ Watch. There are two paths, and they do different jobs.
 
 ## 1. Live heart rate during the night (steers the bed)
 
+### Preferred: over Wi-Fi with Health Data Server (HDS)
+
+The HDS watch app sends each heart-rate reading over the network as `PUT /` with
+`{"data": "heartRate:72"}` (the protocol of Rexios80/hds_desktop). `dashboard/web/middleware.ts`
+hands a PUT to the dashboard root to the API's `/hds` route, which ingests it like the band's
+heart rate (source `apple_watch`).
+
+- In the HDS watch app's settings: turn **HDS Cloud off**, and set the IP address to
+  `192.168.1.163:3000` (the dashboard's address).
+- Start it at bedtime. The Watch and the box must be on the same home network.
+- No Bluetooth range limit and none of the box's Bluetooth trouble. Battery cost is the same as
+  any live-heart-rate app (it runs a workout session).
+
+### Alternative: over Bluetooth
+
 A heart-rate broadcaster app makes the Watch advertise its heart rate as a standard Bluetooth
 heart-rate strap (service 0x180D). `scripts/verity_forwarder.py` already reads that service; it
 now also looks for broadcaster names (HeartBLE, Echo, "Apple Watch", HRM) after the Polar names,

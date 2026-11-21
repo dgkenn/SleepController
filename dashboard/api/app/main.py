@@ -575,6 +575,40 @@ def hr_ingest(body: HRBody, request: Request, token: str | None = None,
     return services.ingest_hr(repo, payload)
 
 
+# ---------------------------------------------------- Apple Watch live heart rate over Wi-Fi
+# The Health Data Server (HDS) watch app sends each reading as ``PUT /`` with
+# ``{"data": "heartRate:72"}`` (Rexios80/hds_desktop's server is the reference). The web server
+# rewrites a PUT to its root onto this route (dashboard/web/middleware.ts), so in the watch app the
+# address is just the dashboard's: 192.168.1.163:3000. Wi-Fi, not Bluetooth: no range limit to the
+# PC and none of the box's Bluetooth trouble. Readings go through ingest_hr like the band's.
+_HDS_LINK_EVERY_S = 120.0
+_hds_last_link = 0.0
+
+
+@app.put("/hds")
+def hds_ingest(request: Request, payload: dict = Body(...), token: str | None = None,
+               repo=Depends(repo_dep)):
+    global _hds_last_link
+    _bcg_auth(request, token)
+    data = payload.get("data")
+    if not isinstance(data, str) or ":" not in data:
+        raise HTTPException(status_code=400, detail='expected {"data": "<type>:<value>"}')
+    kind, _, value = data.partition(":")
+    if kind.strip() != "heartRate":
+        return {"ok": True, "ignored": kind.strip()}   # calories, steps, ... -- not used
+    try:
+        hr = float(value)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="heart rate is not a number")
+    import time as _time
+    now = _time.monotonic()
+    if now - _hds_last_link >= _HDS_LINK_EVERY_S:
+        services.ingest_hr(repo, {"link": "connected", "source": "apple_watch",
+                                  "streams": ["HR (Apple Watch over Wi-Fi)"]})
+        _hds_last_link = now
+    return services.ingest_hr(repo, {"hr": hr, "source": "apple_watch"})
+
+
 @app.post("/apple/health")
 def apple_health_ingest(request: Request, payload: dict = Body(...), token: str | None = None,
                         repo=Depends(repo_dep)):
