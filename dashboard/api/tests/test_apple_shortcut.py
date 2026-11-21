@@ -69,3 +69,26 @@ def test_an_unreadable_upload_says_what_it_saw(auth_client):
 def test_unknown_kind(auth_client):
     assert auth_client.post("/apple/shortcut", json={"kind": "steps", "start": ["x"],
                                                      "value": ["1"]}).json()["ok"] is False
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("Core", "core"), ("Asleep Core", "core"), ("Asleep (Unspecified)", "asleep"),
+    ("In Bed", "in_bed"), ("REM Sleep", "rem"), ("Deep", "deep"), ("4", "deep"), ("0", "in_bed"),
+    ("Awake", "awake"), ("Light", "core"), ("", None), ("Nap", None),
+])
+def test_sleep_value_spellings(raw, want):
+    assert apple_health.shortcut_stage(raw) == want
+
+
+def test_skips_are_explained_per_reason_and_source(auth_client, monkeypatch):
+    monkeypatch.setattr(apple_health, "kick_consensus", lambda force=False: "started")
+    body = {"kind": "sleep",
+            "start": ["2026-11-19T23:10:00-05:00", "2026-11-19T23:40:00-05:00", "soon"],
+            "end": ["2026-11-19T23:40:00-05:00", "2026-11-20T00:20:00-05:00",
+                    "2026-11-20T00:30:00-05:00"],
+            "value": ["Core", "Snoring", "Deep"], "source": ["Apple Watch", "Bevel", "Bevel"]}
+    out = auth_client.post("/apple/shortcut", json=body).json()
+    assert out["stored"] == 1 and out["skipped"] == 2
+    assert out["skipped_because"] == {"unknown sleep value 'Snoring'": 1,
+                                      "unreadable start date 'soon'": 1}
+    assert out["by_source"] == {"Apple Watch": [1, 0], "Bevel": [0, 2]}

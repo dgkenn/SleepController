@@ -314,6 +314,29 @@ def _column(payload: dict, *names: str) -> list:
 _NUM = __import__("re").compile(r"-?\d+(?:\.\d+)?")
 
 
+#: HKCategoryValueSleepAnalysis raw values, should a sample's value arrive as its number.
+_SLEEP_CODES = {"0": "in_bed", "1": "asleep", "2": "awake", "3": "core", "4": "deep", "5": "rem"}
+
+
+def shortcut_stage(value) -> Optional[str]:
+    """Shortcuts' sleep value in any of the spellings iOS versions use -- "Core", "Asleep Core",
+    "Asleep (Unspecified)", "In Bed", "REM Sleep", the raw code -- mapped to a stored stage."""
+    v = str(value or "").strip().lower()
+    if not v:
+        return None
+    if v in _SLEEP_CODES:
+        return _STAGES.get(_SLEEP_CODES[v].replace("_", " "), _SLEEP_CODES[v])
+    direct = _stage(v)
+    if direct:
+        return direct
+    for key, stage in (("core", "core"), ("deep", "deep"), ("rem", "rem"), ("awake", "awake"),
+                       ("in bed", "in_bed"), ("inbed", "in_bed"), ("unspecified", "asleep"),
+                       ("asleep", "asleep"), ("light", "core")):
+        if key in v:
+            return stage
+    return None
+
+
 def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
     kind = str(payload.get("kind") or payload.get("type") or "").strip().lower().replace(" ", "_")
     starts = _column(payload, "start", "startDate", "start_date")
@@ -327,15 +350,33 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
         n = min(n, len(values))
     received = _now()
     stored = skipped = 0
+    reasons: dict = {}
+    by_source: dict = {}
+
+    def skip(why: str, src: str) -> None:
+        nonlocal skipped
+        skipped += 1
+        if len(reasons) < 12 or why in reasons:
+            reasons[why] = reasons.get(why, 0) + 1
+        by_source.setdefault(src or "?", [0, 0])[1] += 1
+
     for i in range(n):
         src = str(sources[i] if i < len(sources) else (sources[0] if len(sources) == 1 else ""))
         start = parse_any_ts(str(starts[i]))
         if kind in ("sleep", "sleep_analysis"):
             end = parse_any_ts(str(ends[i])) if i < len(ends) else None
-            stage = _stage(values[i] if i < len(values) else None)
-            if not (start and end and stage):
-                skipped += 1
+            raw = values[i] if i < len(values) else None
+            stage = shortcut_stage(raw)
+            if not start:
+                skip(f"unreadable start date {str(starts[i])[:40]!r}", src)
                 continue
+            if not end:
+                skip(f"unreadable end date {str(ends[i])[:40] if i < len(ends) else None!r}", src)
+                continue
+            if not stage:
+                skip(f"unknown sleep value {str(raw)[:30]!r}", src)
+                continue
+            by_source.setdefault(src or "?", [0, 0])[0] += 1
             conn.execute(
                 "INSERT INTO health_sleep (start, end, stage, source, received) VALUES (?,?,?,?,?) "
                 "ON CONFLICT(start, end, stage, source) DO UPDATE SET received=excluded.received",
@@ -343,9 +384,13 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
             stored += 1
         elif kind in ("heart_rate", "heartrate", "hr"):
             m = _NUM.search(str(values[i] if i < len(values) else ""))
-            if not (start and m):
-                skipped += 1
+            if not start:
+                skip(f"unreadable date {str(starts[i])[:40]!r}", src)
                 continue
+            if not m:
+                skip(f"no number in {str(values[i] if i < len(values) else None)[:30]!r}", src)
+                continue
+            by_source.setdefault(src or "?", [0, 0])[0] += 1
             conn.execute(
                 "INSERT INTO apple_health (ts, metric, value, extra, received) VALUES (?,?,?,?,?) "
                 "ON CONFLICT(ts, metric) DO UPDATE SET value=excluded.value, extra=excluded.extra, "
@@ -356,6 +401,10 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
             return {"ok": False, "error": 'kind must be "sleep" or "heart_rate"', "got": kind[:30]}
     conn.commit()
     out: dict = {"ok": stored > 0, "kind": kind, "stored": stored, "skipped": skipped}
+    if skipped:
+        out["skipped_because"] = reasons
+    # per writing app: [stored, skipped] -- shows at a glance whether Bevel's stages came through
+    out["by_source"] = {k[:40]: v for k, v in list(by_source.items())[:10]}
     if note:
         out["note"] = note
     if skipped and not stored:
