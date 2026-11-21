@@ -1,0 +1,38 @@
+OpenVitals — data attribution notice
+
+The bundled sleep-staging model (src/openvitals/assets/stager_hr_4class.onnx) was trained on,
+and the benchmark results in this repository were computed from, the two datasets below.
+
+  Contains information from the BIDSleep Apple Watch Dataset
+  (https://physionet.org/content/bidsleep-dataset/1.0.1/), which is made available under the
+  ODC Attribution License (https://opendatacommons.org/licenses/by/1-0/).
+
+  Contains information from "Motion and heart rate from a wrist-worn wearable and labeled sleep
+  from polysomnography" (https://physionet.org/content/sleep-accel/1.0.0/), which is made available
+  under the ODC Attribution License (https://opendatacommons.org/licenses/by/1-0/).
+
+No raw data from either dataset is included in this package or repository.
+
+Citations requested by the data providers
+
+  BIDSleep dataset:
+    Song, Zhang, Zhou, Dutta (2026). BIDSleep Apple Watch Dataset (version 1.0.1). PhysioNet.
+    https://doi.org/10.13026/rees-1092
+  BIDSleep paper:
+    Song, Zhang, Zhou, Hou, Malekzadeh, Behzad, Dutta. "AI-driven sleep staging using instantaneous
+    heart rate and accelerometry: Insights from an Apple Watch study." IEEE Transactions on
+    Biomedical Engineering 73(4), 2026. https://doi.org/10.1109/TBME.2025.3612158
+  Walch dataset:
+    Walch, O. (2019). Motion and heart rate from a wrist-worn wearable and labeled sleep from
+    polysomnography (version 1.0.0). PhysioNet. https://doi.org/10.13026/hmhs-py35
+  Walch paper:
+    Walch, O., Huang, Y., Forger, D., Goldstein, C. "Sleep stage prediction with raw acceleration
+    and photoplethysmography heart rate data derived from a consumer wearable device." Sleep (2019).
+    https://doi.org/10.1093/sleep/zsz180
+  PhysioNet:
+    Pollard, T., Moody, B. E., Lehman, L., Gow, B., Fernandes, C., Xie, C., Johnson, A., Mark, R. G.,
+    Heldt, T. (2026). "PhysioNet as a global platform for biomedical research." Nature Health.
+    https://doi.org/10.1038/s44360-026-00096-z
+
+The OpenVitals code is MIT-licensed (see LICENSE). The data licences above apply to the data and
+to works produced from it, including the bundled model.

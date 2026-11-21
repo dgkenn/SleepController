@@ -116,6 +116,14 @@ def _measured(repo, metric: str, dates: List[str]) -> tuple:
     if not dates:
         return {}, None
     try:
+        # Nights flagged as strain / possible illness (learning.recovery) are left out: a cold
+        # landing on one arm would otherwise decide the comparison.
+        from sleepctl.learning.recovery import flagged_dates
+        drop = flagged_dates(repo.conn, dates)
+        dates = [d for d in dates if d not in drop]
+    except Exception:
+        pass
+    try:
         from sleepctl.learning.recovery import reference_metric
         ref = reference_metric(repo.conn, metric, dates)
     except Exception:

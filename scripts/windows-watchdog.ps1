@@ -688,6 +688,25 @@ function Ensure-WakePlugDeps {
     else { Log "WARN: 'tinytuya' not importable yet; the wake-light plug will retry next cycle" }
 }
 
+function Ensure-OnnxRuntime {
+    # The morning consensus stages each night a second time with the OpenVitals heart-rate model
+    # (sleepctl/ml/openvitals_stager.py), an ONNX file run by onnxruntime. Same one-time marker
+    # pattern as tinytuya/bleak, but a failed install is retried at most every 6 hours: the wheel
+    # is ~15-50 MB, and the consensus simply leaves that rater out until it lands.
+    $depMarker = Join-Path $run "onnxruntime-deps.ok"
+    if (Test-Path $depMarker) { return }
+    $tried = Join-Path $run "onnxruntime-deps.tried"
+    if ((Test-Path $tried) -and (((Get-Date) - (Get-Item $tried).LastWriteTime).TotalHours -lt 6)) { return }
+    & $py -c "import onnxruntime" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Set-Content -Path $tried -Value "tried" -Encoding ASCII
+        Log "installing 'onnxruntime' for the OpenVitals morning stager (one-time)"
+        & $py -m pip install --quiet --disable-pip-version-check onnxruntime 2>&1 | Out-Null
+        & $py -c "import onnxruntime" 2>$null
+    }
+    if ($LASTEXITCODE -eq 0) { Set-Content -Path $depMarker -Value "ok" -Encoding ASCII }
+    else { Log "WARN: 'onnxruntime' not importable yet; the OpenVitals rater is skipped until it is" }
+}
 function Ensure-DreamtModel {
     # Hands-off DREAMT staging model (scripts\dreamt_pipeline.py): check PhysioNet access with the
     # user's own .netrc, stream + reduce + train, install only if it beats the bundled model.
@@ -1632,6 +1651,7 @@ while ($true) {
     Handle-BluetoothResetRequest
     Ensure-Verity
     Ensure-WakePlugDeps
+    Ensure-OnnxRuntime
     Ensure-DreamtModel
     Ensure-MesaModel
 

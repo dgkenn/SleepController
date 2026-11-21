@@ -120,8 +120,7 @@ def test_our_own_vote_does_not_set_the_label(repo, tmp_path):
     _night(other, ours_noise=0.9, seed=1)    # same Apple/Bevel, much worse "ours"
     wc.build(other.conn)
     b = [e[2] for e in wc.consensus_epochs(other.conn, NIGHT)]
-    same = sum(x == y for x, y in zip(a, b)) / len(a)
-    assert same > 0.97
+    assert a == b          # identical: our stager has no path into the labels at all
 
 
 def test_a_lone_disputed_epoch_abstains(repo):
@@ -212,3 +211,41 @@ def test_the_health_replay_runs_the_real_stager(repo):
     out = wc.make_health_replay(st)(repo.conn, times)
     assert out is not None and sum(1 for x in out if x) > N / 2
     assert set(x for x in out if x) <= set(wc.CLASSES)
+
+
+def test_the_openvitals_rater_votes_and_ours_does_not(repo):
+    t = [truth(i) for i in range(N)]
+    _write_source(repo, t, "wc", "Apple Watch")
+    _write_ours(repo, ["rem"] * N)                 # a useless stager
+    seen = {}
+
+    def fake_ov(conn, times):
+        seen["n"] = len(times)
+        return [truth(i) for i in range(len(times))]
+    rep = wc.build(repo.conn, replay=None, openvitals=fake_ov)
+    assert seen["n"] >= N - 2 and "openvitals" in rep["nights"][0]["sources"]
+    assert rep["pooled_kappa"]["apple~openvitals"] > 0.9
+    assert rep["pooled_kappa"]["ours~consensus"] < 0.1
+
+
+def test_apples_core_alone_is_not_taken_for_certain_light(repo):
+    """The PSG prior: Apple labels much true deep as core, so a lone Apple "core" is weaker
+    evidence of light than a lone Apple "REM" is of REM."""
+    _write_source(repo, [truth(i) for i in range(N)], "wc", "Apple Watch")
+    _write_ours(repo, [None] * N)
+    wc.build(repo.conn, replay=None, openvitals=None)
+    conf = dict(repo.conn.execute("SELECT apple, AVG(confidence) FROM consensus_hypnogram "
+                                  "GROUP BY apple").fetchall())
+    assert conf["light"] < conf["rem"]
+
+
+def test_the_vendored_openvitals_model_runs():
+    from sleepctl.ml import openvitals as ov
+    if not ov.available():
+        pytest.skip("onnxruntime not installed")
+    import numpy as np
+    t = 1_763_700_000.0 + np.arange(0, 8 * 3600, 5.0)
+    hr = 58 + 4 * np.sin(np.arange(len(t)) / 300.0)
+    out = ov.stage(list(zip(t, hr)))
+    assert out and len(out["labels"]) > 600
+    assert set(x for x in out["labels"] if x) <= set(wc.CLASSES)

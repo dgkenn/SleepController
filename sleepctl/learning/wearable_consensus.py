@@ -1,4 +1,4 @@
-"""Three hypnograms, one answer: our live stager vs Apple's sleep stages vs Bevel's.
+"""Several hypnograms, one answer: our live stager vs Apple's stages vs Bevel's vs OpenVitals'.
 
 Every morning Health Auto Export brings in the night's sleep stages from every app that writes
 them into Apple Health (``health_sleep``: Apple's own, and Bevel's if Bevel writes them). Our
@@ -17,14 +17,17 @@ matrices and the night's true stages are estimated together by EM over every nig
 * a source is trusted on a stage exactly as far as it has agreed with the others there -- if
   Bevel calls REM what both others call light, its REM column learns that, and a lone Bevel REM
   stops carrying weight;
-* each matrix starts from a prior that says "mostly right" (Apple strongest: its stages are
-  validated against lab PSG; ours weakest), and the data take over within a few nights;
+* each matrix starts from a prior that says "mostly right" (ours weakest), except Apple's, which
+  starts from what lab PSG says about it: it under-calls deep sleep (much of true deep is labelled
+  "core") and some wake (:data:`PRIOR_MATRIX`); the data take over within a few nights;
 * the fitted matrices ARE the reverse-engineered fingerprint of each algorithm's habits, kept in
   the report as the start of the "learn their algorithms" work.
 
-The label our stager is calibrated against is the posterior from **Apple and Bevel only**:
-letting our own vote pull the label toward our own output would teach the stager nothing. Ours
-still helps estimate the others' matrices. An epoch becomes a training label only at posterior
+The label our stager is calibrated against is the posterior from **Apple, Bevel and OpenVitals
+only** (OpenVitals: ``sleepctl.ml.openvitals``, a PSG-trained whole-night heart-rate model, run
+each morning when onnxruntime is installed): letting our own vote pull the label toward our own
+output would teach the stager nothing. Ours does not even inform the others' confusion matrices (they are fitted from the references alone);
+its own matrix is measured against the reference posterior, for the report. An epoch becomes a training label only at posterior
 >= :data:`CONF_MIN`; below that it abstains. "Asleep (unspecified)" and "in bed" are not stages
 and abstain too. Apple and Bevel both read the same watch, so their errors are not independent
 and agreement between them is somewhat over-counted; the confidence threshold and the
@@ -47,12 +50,27 @@ CONF_MIN = 0.7                 # reference posterior needed for an epoch to beco
 MAX_NIGHTS = 21                # recent nights considered
 MIN_REF_EPOCHS = 120           # an hour of referenced epochs before a night counts
 EM_ITERS = 25
-SOURCES = ("apple", "bevel", "ours", "ours_replay")
-REFERENCES = ("apple", "bevel")
+SOURCES = ("apple", "bevel", "openvitals", "ours", "ours_replay")
+#: The raters whose votes set the label our stager is calibrated against. OpenVitals
+#: (sleepctl.ml.openvitals: PSG-trained, heart-rate only, whole-night) is independent of Apple's
+#: algorithm and corrects its known deep-sleep under-call; ours never votes on its own label.
+REFERENCES = ("apple", "bevel", "openvitals")
 #: Prior pseudo-counts on each confusion row: this many "agreed" epochs on the diagonal, one per
 #: off-diagonal cell. Apple's stages are PSG-validated; Bevel's method is unpublished; ours is
 #: what is being corrected.
-PRIOR_DIAG = {"apple": 40.0, "bevel": 20.0, "ours": 10.0, "ours_replay": 6.0}
+PRIOR_DIAG = {"apple": 40.0, "bevel": 20.0, "openvitals": 25.0, "ours": 10.0,
+              "ours_replay": 6.0}
+#: Apple's prior is not "mostly right everywhere". Against lab PSG (Apple Watch Series 8, 35
+#: healthy adults; Sensors 2024, PMC11511193) Apple under-called deep sleep by ~43 min and wake by
+#: ~7 min and over-called light ("core") by ~45 min: much of true deep, and some true wake, is
+#: labelled core. Rows = true awake/light/deep/rem, columns = what Apple says. Pseudo-counts, so
+#: the user's own nights still override it within a couple of weeks.
+PRIOR_MATRIX = {
+    "apple": [[30.0, 8.0, 1.0, 1.0],
+              [2.0, 34.0, 2.0, 2.0],
+              [1.0, 18.0, 20.0, 1.0],
+              [1.0, 6.0, 1.0, 32.0]],
+}
 #: A night whose live labels cover less of the grid than this gets "ours_replay" instead: our
 #: stager run afterwards on Apple Health's overnight heart rate (a reading every few minutes, far
 #: sparser than the live feed). Kept as its own source -- a different, weaker input -- and only
@@ -73,7 +91,7 @@ CREATE TABLE IF NOT EXISTS consensus_hypnogram (
     epoch_s REAL NOT NULL DEFAULT 30,
     stage TEXT NOT NULL,           -- awake|light|deep|rem, or unknown (abstained)
     confidence REAL,               -- reference posterior of that stage
-    apple TEXT, bevel TEXT, ours TEXT,
+    apple TEXT, bevel TEXT, ours TEXT, openvitals TEXT,
     PRIMARY KEY (night_date, epoch_unix)
 );
 CREATE TABLE IF NOT EXISTS staging_consensus (
@@ -86,6 +104,12 @@ CREATE TABLE IF NOT EXISTS staging_consensus (
 
 def ensure_schema(conn) -> None:
     conn.executescript(CONSENSUS_DDL)
+    try:
+        have = {r[1] for r in conn.execute("PRAGMA table_info(consensus_hypnogram)").fetchall()}
+        if "openvitals" not in have:
+            conn.execute("ALTER TABLE consensus_hypnogram ADD COLUMN openvitals TEXT")
+    except Exception:
+        pass
 
 
 def source_kind(src) -> Optional[str]:
@@ -156,7 +180,7 @@ def _label_at(segs: Sequence[Tuple[float, float, str]], t: float) -> Optional[st
 
 
 def assemble_night(conn, night_date: str, lo: float, hi: float,
-                   replay=None) -> Optional[dict]:
+                   replay=None, openvitals=None) -> Optional[dict]:
     """The night's epoch grid with each source's label (None where it says nothing)."""
     segs = _segments(conn, lo, hi)
     starts = [a for v in segs.values() for a, _, _ in v]
@@ -172,6 +196,14 @@ def assemble_night(conn, night_date: str, lo: float, hi: float,
     labels = {k: [_label_at(segs[k], t + EPOCH_S / 2) for t in times] for k in REFERENCES}
     ours = recorded_labels(conn, night_date)
     labels["ours"] = align([(t, EPOCH_S, "") for t in times], ours) if ours else [None] * len(times)
+    labels["openvitals"] = [None] * len(times)
+    if openvitals is not None:
+        try:
+            got = openvitals(conn, times)
+        except Exception:
+            got = None
+        if got:
+            labels["openvitals"] = got
     labels["ours_replay"] = [None] * len(times)
     live = sum(1 for v in labels["ours"] if v) / len(times)
     if live < LIVE_COVERAGE_MIN and replay is not None:
@@ -199,6 +231,44 @@ def health_hr(conn, lo: float, hi: float) -> List[Tuple[float, float]]:
         if t is not None and v is not None:
             out.append((t, float(v)))
     return out
+
+
+def night_hr(conn, lo: float, hi: float) -> List[Tuple[float, float]]:
+    """The night's heart rate: the live feed (sensor_samples, a reading every few seconds) when
+    it covers the night, else Apple Health's overnight readings."""
+    try:
+        from sleepctl.learning.eeg_calibration import _dense_series
+        live, _ = _dense_series(conn, lo, hi)
+    except Exception:
+        live = []
+    if len(live) >= 0.5 * (hi - lo) / 60.0:          # at least one reading per two minutes
+        return live
+    return health_hr(conn, lo, hi) or live
+
+
+def make_openvitals_rater():
+    """A ``rater(conn, times)`` staging the night with the vendored OpenVitals model, or None
+    when onnxruntime is not installed (the watchdog installs it once)."""
+    try:
+        from sleepctl.ml import openvitals as ov
+    except Exception:
+        return None
+    if not ov.available():
+        return None
+
+    def rater(conn, times):
+        hr = night_hr(conn, times[0] - 3600.0, times[-1] + EPOCH_S + 1800.0)
+        out = ov.stage(hr)
+        if not out:
+            return None
+        labs, start = out["labels"], out["start"]
+        res = []
+        for t in times:
+            k = int((t + EPOCH_S / 2 - start) // ov.EPOCH_SECONDS)
+            res.append(labs[k] if 0 <= k < len(labs) else None)
+        return res if any(res) else None
+
+    return rater
 
 
 def make_health_replay(stager=None):
@@ -253,6 +323,8 @@ def make_health_replay(stager=None):
 
 # --------------------------------------------------------------------------- Dawid-Skene
 def _prior_matrix(src: str) -> List[List[float]]:
+    if src in PRIOR_MATRIX:
+        return [list(r) for r in PRIOR_MATRIX[src]]
     d = PRIOR_DIAG.get(src, 10.0)
     return [[d + 1.0 if k == l else 1.0 for l in range(_K)] for k in range(_K)]
 
@@ -302,7 +374,7 @@ def _posterior(o: Dict[str, int], conf, prior, only: Optional[Sequence[str]] = N
 
 # --------------------------------------------------------------------------- the whole pass
 def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
-          replay="health") -> dict:
+          replay="health", openvitals="auto") -> dict:
     """Assemble, fit, store the consensus epochs and return the agreement report.
 
     ``replay``: "health" stages nights without a live feed from Apple Health's heart rate (see
@@ -310,8 +382,11 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
     ensure_schema(conn)
     if replay == "health":
         replay = make_health_replay()
+    if openvitals == "auto":
+        openvitals = make_openvitals_rater()
     nights = list(nights if nights is not None else recent_nights(conn))
-    assembled = [a for nd, lo, hi in nights if (a := assemble_night(conn, nd, lo, hi, replay))]
+    assembled = [a for nd, lo, hi in nights
+                 if (a := assemble_night(conn, nd, lo, hi, replay, openvitals))]
     obs_all: List[Dict[str, int]] = []
     where: List[Tuple[int, int]] = []
     for ni, a in enumerate(assembled):
@@ -326,8 +401,25 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
         report["rationale"] = "no Apple/Bevel sleep stages overlapping a recorded night yet"
         _save_report(conn, report)
         return report
-    conf, prior, _ = dawid_skene(obs_all)
-    ref_post = [_posterior(o, conf, prior, only=REFERENCES) for o in obs_all]
+    # The reference raters' matrices and the label posterior are fitted from the references
+    # ALONE. Fitting them with our stager's votes in the EM let it shape (through Apple's learned
+    # confusion) the very labels it is then calibrated against. Our stager's own matrix is then
+    # measured against that posterior, for the report only.
+    ref_obs = [{s: l for s, l in o.items() if s in REFERENCES} for o in obs_all]
+    conf, prior, ref_post = dawid_skene(ref_obs)
+    conf = dict(conf)
+    for src in SOURCES:
+        if src in REFERENCES:
+            continue
+        counts = _prior_matrix(src)
+        seen = False
+        for o, p in zip(obs_all, ref_post):
+            if src in o:
+                seen = True
+                for k in range(_K):
+                    counts[k][o[src]] += p[k]
+        if seen:
+            conf[src] = [_normalize(r) for r in counts]
 
     per_night: Dict[int, dict] = {}
     rows = []
@@ -339,7 +431,8 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
         ours_l = a["labels"]["ours"][ei] or (f"replay:{a['labels']['ours_replay'][ei]}"
                                              if a["labels"]["ours_replay"][ei] else None)
         rows.append((a["night_date"], t, local_naive(t), EPOCH_S, stage, round(p[k], 4),
-                     a["labels"]["apple"][ei], a["labels"]["bevel"][ei], ours_l))
+                     a["labels"]["apple"][ei], a["labels"]["bevel"][ei], ours_l,
+                     a["labels"]["openvitals"][ei]))
         per_night.setdefault(ni, {"n": 0, "labelled": 0})
         per_night[ni]["n"] += 1
         per_night[ni]["labelled"] += stage != "unknown"
@@ -347,8 +440,8 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
         conn.execute("DELETE FROM consensus_hypnogram WHERE night_date = ?",
                      (assembled[ni]["night_date"],))
     conn.executemany("INSERT OR REPLACE INTO consensus_hypnogram (night_date, epoch_unix, "
-                     "epoch_ts, epoch_s, stage, confidence, apple, bevel, ours) "
-                     "VALUES (?,?,?,?,?,?,?,?,?)", rows)
+                     "epoch_ts, epoch_s, stage, confidence, apple, bevel, ours, openvitals) "
+                     "VALUES (?,?,?,?,?,?,?,?,?,?)", rows)
     conn.commit()
 
     pooled: Dict[str, Tuple[list, list]] = {}
@@ -361,9 +454,10 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
                  "kappa": {}}
         streams = dict(a["labels"])
         streams["consensus"] = [cons.get(t) if cons.get(t) in _IDX else None for t in a["times"]]
-        for x, y in (("apple", "bevel"), ("apple", "ours"), ("bevel", "ours"),
+        for x, y in (("apple", "bevel"), ("apple", "openvitals"), ("bevel", "openvitals"),
+                     ("apple", "ours"), ("bevel", "ours"), ("openvitals", "ours"),
                      ("ours", "consensus"), ("ours_replay", "consensus"),
-                     ("apple", "ours_replay"), ("bevel", "ours_replay")):
+                     ("apple", "ours_replay"), ("openvitals", "ours_replay")):
             pairs = [(u, v) for u, v in zip(streams[x], streams[y]) if u in _IDX and v in _IDX]
             if len(pairs) >= MIN_REF_EPOCHS:
                 kap = cohen_kappa([u for u, _ in pairs], [v for _, v in pairs])

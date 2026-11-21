@@ -48,7 +48,14 @@ COMPONENTS = (
 )
 METRICS = ("deep_min", "rem_min", "light_min", "total_sleep_min", "sleep_efficiency",
            "waso_min", "wake_events", "hr_min", "hrv_mean", "resting_hr", "resp_mean",
-           "spo2_mean", "recovery_score")
+           "spo2_mean", "wrist_temp", "recovery_score", "strain_flag")
+#: "Off your usual" in the direction illness and strain push each signal (Apple's Vitals app
+#: alerts on two or more overnight outliers; Mishra 2020 detected infection from resting heart
+#: rate against a personal baseline). Robust z beyond OUTLIER_Z in the listed direction counts.
+STRAIN_SIGNALS = (("hr_min", +1), ("resp_mean", +1), ("hrv_mean", -1), ("spo2_mean", -1),
+                  ("wrist_temp", +1))
+OUTLIER_Z = 2.0
+STRAIN_MIN_SIGNALS = 2
 
 DDL = """
 CREATE TABLE IF NOT EXISTS night_reference (
@@ -56,8 +63,8 @@ CREATE TABLE IF NOT EXISTS night_reference (
     deep_min REAL, rem_min REAL, light_min REAL, total_sleep_min REAL,
     sleep_efficiency REAL, waso_min REAL, wake_events INTEGER,
     hr_min REAL, hrv_mean REAL, resting_hr REAL,
-    resp_mean REAL, spo2_mean REAL,
-    recovery_score REAL,
+    resp_mean REAL, spo2_mean REAL, wrist_temp REAL,
+    recovery_score REAL, strain_flag INTEGER, strain_signals TEXT,
     source TEXT, updated TEXT
 );
 """
@@ -67,9 +74,10 @@ def ensure_schema(conn) -> None:
     conn.executescript(DDL)
     try:   # columns added after the first cut of the table
         have = {r[1] for r in conn.execute("PRAGMA table_info(night_reference)").fetchall()}
-        for col in ("resp_mean", "spo2_mean"):
+        for col, typ in (("resp_mean", "REAL"), ("spo2_mean", "REAL"), ("wrist_temp", "REAL"),
+                         ("strain_flag", "INTEGER"), ("strain_signals", "TEXT")):
             if col not in have:
-                conn.execute(f"ALTER TABLE night_reference ADD COLUMN {col} REAL")
+                conn.execute(f"ALTER TABLE night_reference ADD COLUMN {col} {typ}")
     except Exception:
         pass
     for col in ("ref_deepened", "ref_succeeded"):
@@ -130,14 +138,15 @@ def night_outcomes(conn, lo: float, hi: float) -> Optional[dict]:
     start = min([onset] + [a for a, _ in in_bed])
     end = max([final] + [b for _, b in in_bed])
     eff = total / ((end - start) / 60.0) if end > start else None
-    hr = [v for _, v in _health_values(conn, "heart_rate", onset, final)]
-    # lowest SUSTAINED rate: the 10th percentile, so one artefactual low reading cannot set it
-    hr_min = (sorted(hr)[max(0, int(len(hr) * 0.1) - 1)] if len(hr) >= 5 else None)
+    hr_min = lowest_5min_hr(_sleeping(_health_values(conn, "heart_rate", onset, final), segs))
     hrv = [v for _, v in _health_values(conn, "heart_rate_variability", onset - 3600, final + 3600)]
     rhr = [v for _, v in _health_values(conn, "resting_heart_rate", final - 6 * 3600,
                                         final + 18 * 3600)]
     resp = [v for _, v in _health_values(conn, "respiratory_rate", onset, final)]
     spo2 = [v for _, v in _health_values(conn, "blood_oxygen_saturation", onset, final)]
+    # Apple writes one sleeping wrist-temperature value per night (a deviation, in degrees C)
+    wt = [v for _, v in _health_values(conn, "apple_sleeping_wrist_temperature",
+                                       onset - 3600, final + 12 * 3600)]
     return {"deep_min": round(deep, 1), "rem_min": round(rem, 1), "light_min": round(core, 1),
             "total_sleep_min": round(total, 1),
             "sleep_efficiency": round(min(1.0, eff), 3) if eff else None,
@@ -147,7 +156,41 @@ def night_outcomes(conn, lo: float, hi: float) -> Optional[dict]:
             "resting_hr": round(rhr[-1], 1) if rhr else None,
             "resp_mean": round(statistics.fmean(resp), 2) if resp else None,
             "spo2_mean": round(statistics.fmean(spo2), 1) if spo2 else None,
+            "wrist_temp": round(wt[-1], 2) if wt else None,
             "onset_unix": onset, "final_unix": final}
+
+
+def _sleeping(samples, segs):
+    """Samples taken while Apple scored the sleeper asleep."""
+    asleep = [(a, b) for a, b, st in segs if st in ("core", "deep", "rem", "asleep")]
+    return [(t, v) for t, v in samples if any(a <= t < b for a, b in asleep)]
+
+
+def lowest_5min_hr(samples: Sequence[Tuple[float, float]], window_s: float = 300.0,
+                   min_samples: int = 3) -> Optional[float]:
+    """Overnight resting heart rate as OpenVitals defines it: the lowest mean over any 5-minute
+    window holding at least ``min_samples`` readings, taken while asleep (the window widens to
+    the sampling interval for sparse data). One artefactual low reading cannot set it."""
+    pts = sorted(samples)
+    if len(pts) < min_samples:
+        return None
+    # Apple Health's overnight heart rate is a reading every few minutes, not every few seconds:
+    # widen the window to hold ``min_samples`` readings at the typical spacing.
+    gaps = sorted(b[0] - a[0] for a, b in zip(pts, pts[1:]))
+    window_s = max(window_s, (min_samples - 1) * gaps[len(gaps) // 2] * 1.1)
+    best = None
+    j = 0
+    total = 0.0
+    for i, (t, v) in enumerate(pts):
+        total += v
+        while pts[j][0] < t - window_s:
+            total -= pts[j][1]
+            j += 1
+        n = i - j + 1
+        if n >= min_samples:
+            m = total / n
+            best = m if best is None or m < best else best
+    return best
 
 
 def _robust_z(x: float, hist: Sequence[float]) -> Optional[float]:
@@ -162,6 +205,25 @@ def _robust_z(x: float, hist: Sequence[float]) -> Optional[float]:
     if scale <= 1e-9:
         return 0.0
     return max(-3.0, min(3.0, (x - med) / scale))
+
+
+def strain(row: dict, history: Sequence[dict]) -> Tuple[Optional[int], List[str]]:
+    """(1 if at least STRAIN_MIN_SIGNALS overnight signals are off your usual in the illness /
+    strain direction, else 0 -- or None before there is a baseline; which ones)."""
+    off, judged = [], 0
+    for col, sign in STRAIN_SIGNALS:
+        x = row.get(col)
+        if x is None:
+            continue
+        z = _robust_z(float(x), [h[col] for h in history if h.get(col) is not None])
+        if z is None:
+            continue
+        judged += 1
+        if sign * z >= OUTLIER_Z:
+            off.append(col)
+    if judged < STRAIN_MIN_SIGNALS:
+        return None, off
+    return int(len(off) >= STRAIN_MIN_SIGNALS), off
 
 
 def recovery_score(row: dict, history: Sequence[dict]) -> Optional[float]:
@@ -193,19 +255,37 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None) -> 
         out = night_outcomes(conn, lo, hi)
         if out is None:
             continue
-        out["recovery_score"] = recovery_score(out, done[-HISTORY_N:])
+        # the baseline excludes earlier flagged nights: a week of flu must not become "usual"
+        base = [d for d in done if not d.get("strain_flag")][-HISTORY_N:]
+        out["recovery_score"] = recovery_score(out, base)
+        out["strain_flag"], off = strain(out, base)
         out["date"] = nd
         done.append(out)
-        cols = ("date",) + METRICS + ("source", "updated")
+        cols = ("date",) + METRICS + ("strain_signals", "source", "updated")
         conn.execute(
             f"INSERT INTO night_reference ({', '.join(cols)}) VALUES "
             f"({', '.join('?' for _ in cols)}) ON CONFLICT(date) DO UPDATE SET "
             + ", ".join(f"{c}=excluded.{c}" for c in cols[1:]),
-            (nd, *(out.get(c) for c in METRICS), "apple", now))
+            (nd, *(out.get(c) for c in METRICS), ",".join(off) or None, "apple", now))
     conn.commit()
     regraded = regrade_steer_events(conn)
     return {"nights": len(done), "scored": sum(1 for d in done if d["recovery_score"] is not None),
+            "strain_nights": sum(1 for d in done if d.get("strain_flag")),
             "steer_events_regraded": regraded}
+
+
+def flagged_dates(conn, dates: Sequence[str]) -> set:
+    """Nights flagged as strain / possible illness: left out of experiment comparisons."""
+    if not dates:
+        return set()
+    try:
+        ensure_schema(conn)
+        qs = ",".join("?" for _ in dates)
+        return {r[0] for r in conn.execute(
+            f"SELECT date FROM night_reference WHERE strain_flag = 1 AND date IN ({qs})",
+            list(dates)).fetchall()}
+    except Exception:
+        return set()
 
 
 def reference_metric(conn, metric: str, dates: Sequence[str]) -> Dict[str, float]:
@@ -253,12 +333,13 @@ def snapshot(conn) -> dict:
     """Counts only (the health branch is public)."""
     try:
         ensure_schema(conn)
-        n, scored = conn.execute("SELECT COUNT(*), COUNT(recovery_score) FROM night_reference"
-                                 ).fetchone()
+        n, scored, flagged = conn.execute(
+            "SELECT COUNT(*), COUNT(recovery_score), COALESCE(SUM(strain_flag), 0) "
+            "FROM night_reference").fetchone()
         g = conn.execute("SELECT COUNT(ref_succeeded) FROM steer_events").fetchone()[0]
     except Exception as exc:
         return {"error": type(exc).__name__}
-    return {"reference_nights": n, "recovery_scored_nights": scored,
+    return {"reference_nights": n, "recovery_scored_nights": scored, "strain_nights": flagged,
             "steer_events_graded_by_apple": g, "needs_nights_for_score": MIN_HISTORY}
 
 

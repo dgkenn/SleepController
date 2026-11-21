@@ -177,3 +177,22 @@ def test_the_program_can_be_switched_off(repo, monkeypatch):
     monkeypatch.setenv("SLEEPCTL_AUTO_EXPERIMENTS", "0")
     _scored_nights(repo, ae.MIN_REFERENCE_NIGHTS)
     assert ae.tick(repo)["action"] == "off"
+
+
+def test_lowest_sustained_heart_rate_ignores_a_single_dip():
+    dense = [(i * 5.0, 55.0) for i in range(200)] + [(1000.0, 30.0)]          # one bad reading
+    assert rc.lowest_5min_hr(dense) > 50
+    sparse = [(i * 300.0, v) for i, v in enumerate([60, 58, 51, 52, 50, 57, 59])]
+    assert rc.lowest_5min_hr(sparse) == pytest.approx(51.0)                  # mean of 51, 52, 50
+
+
+def test_a_night_off_on_two_signals_is_flagged_and_left_out_of_experiments(repo):
+    for i in range(8):
+        _night(repo, f"2026-11-{i + 1:02d}", hrv=50.0 + i % 3, hr=55.0, resp=14.0 + 0.1 * (i % 3))
+    _night(repo, "2026-11-10", hrv=50.0, hr=55.0, resp=19.0)        # breathing only: not flagged
+    _night(repo, "2026-11-11", hrv=30.0, hr=55.0, resp=19.0)        # breathing + HRV: flagged
+    rc.build(repo.conn)
+    f = dict(repo.conn.execute("SELECT date, strain_flag FROM night_reference").fetchall())
+    assert f["2026-11-01"] is None and f["2026-11-10"] == 0 and f["2026-11-11"] == 1
+    vals, _ = ex._measured(repo, "deep_min", ["2026-11-10", "2026-11-11"])
+    assert set(vals) == {"2026-11-10"}
