@@ -1,7 +1,23 @@
 # Ready-made algorithms for Apple Watch sleep data, and what we adopted
 
 Survey date: November 2026. Goal: start from published, validated methods for each job the
-data feeds, then let the personal learning loops tailor them.
+data feeds, then let the personal learning loops tailor them. **Evidence decides priority**:
+what has independent, peer-reviewed validation leads; what does not has to earn its place on
+this sleeper's own nights.
+
+## Evidence grades and what each controls
+
+| grade | what | evidence | role here |
+|---|---|---|---|
+| A | Apple's sleep stages | independent PSG validations (kappa 0.53, Series 8; known deep under-call of ~43 min) | the lead reference rater; bias built into its prior |
+| A | Cooler bed surface all night | randomized PSG trials: 3 centres, n=72, N3 +7.5 min, HR -2.4 bpm ([Herberger 2024](https://pubmed.ncbi.nlm.nih.gov/38409133/)); earlier crossover n=15 | **first** experiment in the program |
+| A | Resting-HR deviation as an illness signal | [Mishra 2020, Nat Biomed Eng](https://www.nature.com/articles/s41551-020-00640-6); temperature and breathing-rate wearable studies | strain flag; flagged nights excluded |
+| B | Warming at sleep onset | [Raymann 2005](https://pubmed.ncbi.nlm.nih.gov/15677527/) (onset), [Fronczek 2008](https://pmc.ncbi.nlm.nih.gov/articles/PMC2542970) (small, narcolepsy) | the existing onset program |
+| B | Vagal HRV as a recovery marker | meta-analyses: HRV guidance improves vagal indices (SMD 0.50) with small performance effects ([Granero-Gallegos 2021](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC8507742/)) | 20% of the recovery score |
+| C | Cooling only in deep sleep / warming in REM | physiological rationale; no trials | later experiments, after the A-grade one |
+| C | OpenVitals stager | the author's own benchmark, not peer-reviewed | **reported, not counted**, until it agrees with Apple (kappa >= 0.4) on 3+ of your nights |
+| C | Recovery-score weights | judgment, weighted toward what the A-grade trials moved and what is measured best | experiments' outcome; re-weightable |
+| - | Warmer bed all night | contrary to the A-grade cooling trials | dropped from the program |
 
 ## 1. Sleep staging
 
@@ -65,5 +81,6 @@ that personalises from feedback (84% satisfied vs 67% on a fixed curve),
 [Bayesian meta-learning for personal thermal comfort](https://www.sciencedirect.com/science/article/abs/pii/S0360132323011563),
 and [contextual preferential Bayesian optimisation for buildings](https://arxiv.org/pdf/2512.09481).
 We keep the n-of-1 crossover program (counterbalanced arms, washout, cycle-paired intervals),
-which matches the n-of-1 trial literature. Bayesian optimisation over continuous setpoints is
+which matches the n-of-1 trial literature, and order it by the grades above: cooler baseline
+(grade A) first, then the grade-C stage-timed variants; "warmer all night" is not run. Bayesian optimisation over continuous setpoints is
 the natural upgrade once a few months of scored nights exist.

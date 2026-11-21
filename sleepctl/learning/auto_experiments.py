@@ -2,7 +2,8 @@
 
 The experiment engine (``sleepctl.experiments``) runs rigorous n-of-1 crossovers -- counterbalanced
 arms, washout nights, a cycle-paired 95% interval -- but only when someone starts one. This keeps
-one running: when no experiment is active it starts the next entry of :data:`PROGRAM`, judged on
+one running: when no experiment is active it starts the next entry of :data:`PROGRAM` (ordered
+by strength of evidence, best-supported first), judged on
 the **recovery score** (``learning.recovery``: Apple-measured, independent of the controller),
 and at each night's start it checks the running one:
 
@@ -37,22 +38,27 @@ MIN_REFERENCE_NIGHTS = 7          # MIN_HISTORY for the score + a couple of scor
 NIGHTS_PER_ARM = 3
 WASHOUT = 1
 
+#: Ordered by strength of evidence (docs/ALGORITHM_RESEARCH.md, section 4). ``evidence`` says why.
 PROGRAM = (
-    {"key": "cooler_deep", "name": "Cooler during deep sleep",
-     "hypothesis": "A colder bed while in deep sleep lengthens deep sleep and improves recovery.",
-     "variable": "deep_bias_f", "param": "deep_bias_delta_f", "delta": -1.5},
     {"key": "cooler_base", "name": "Cooler baseline",
-     "hypothesis": "A slightly cooler bed all night improves recovery.",
+     "hypothesis": "A slightly cooler bed all night increases deep sleep and lowers overnight "
+                   "heart rate, improving recovery.",
+     "evidence": "randomized PSG trials: enhanced conductive body-heat loss during sleep raised "
+                 "N3 (+7.5 min) and lowered heart rate (-2.4 bpm) in a 3-centre study of 72 "
+                 "adults (Herberger 2024), after a 15-subject crossover (Herberger 2018)",
      "variable": "neutral_f", "param": "neutral_delta_f", "delta": -1.0},
+    {"key": "cooler_deep", "name": "Cooler during deep sleep",
+     "hypothesis": "Extra cooling while in deep sleep lengthens deep sleep further.",
+     "evidence": "extension of the heat-loss trials to stage-timed cooling; no direct trial",
+     "variable": "deep_bias_f", "param": "deep_bias_delta_f", "delta": -1.5},
     {"key": "warmer_rem", "name": "Warmer during REM",
-     "hypothesis": "A little warmth in REM (thermoregulation is suspended in REM) reduces "
-                   "REM awakenings and improves recovery.",
+     "hypothesis": "A little warmth in REM (thermoregulation is suspended in REM) reduces REM "
+                   "awakenings and improves recovery.",
+     "evidence": "physiological rationale only (REM poikilothermia); no trial",
      "variable": "rem_warm_offset_f", "param": "rem_warm_offset_delta_f", "delta": 1.0},
-    {"key": "warmer_base", "name": "Warmer baseline",
-     "hypothesis": "A slightly warmer bed all night improves recovery (tests the other side of "
-                   "the cooler-baseline question).",
-     "variable": "neutral_f", "param": "neutral_delta_f", "delta": 1.0},
 )
+#: Considered and left out: a warmer bed all night. It runs against the heat-loss trials above;
+#: warmth helps at sleep ONSET (Raymann 2005; Fronczek 2008), which the onset program already does.
 
 
 def enabled() -> bool:

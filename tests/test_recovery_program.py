@@ -128,7 +128,7 @@ def test_the_program_starts_runs_concludes_and_adopts(repo):
     base = repo.latest_setpoints()
     _scored_nights(repo, ae.MIN_REFERENCE_NIGHTS)
     started = ae.tick(repo)
-    assert started["action"] == "started" and "Cooler during deep sleep" in started["name"]
+    assert started["action"] == "started" and "Cooler baseline" in started["name"]
     exp = ex.list_experiments(repo, status="active")[0]
     rnd = random.Random(2)
     day = datetime(2026, 11, 1)
@@ -143,10 +143,10 @@ def test_the_program_starts_runs_concludes_and_adopts(repo):
     done = ae.tick(repo)
     assert done["action"] == "concluded" and done["adopted"]
     new = repo.latest_setpoints()
-    assert new.deep_bias_f == pytest.approx(base.deep_bias_f - 1.5)
+    assert new.neutral_f == pytest.approx(base.neutral_f - 1.0)
     assert new.source == "experiment"
     nxt = ae.tick(repo)
-    assert nxt["action"] == "started" and "Cooler baseline" in nxt["name"]
+    assert nxt["action"] == "started" and "Cooler during deep sleep" in nxt["name"]
 
 
 def test_a_control_win_keeps_the_setting(repo):
@@ -164,7 +164,7 @@ def test_a_control_win_keeps_the_setting(repo):
     repo.conn.commit()
     done = ae.tick(repo)
     assert done["action"] == "concluded" and not done["adopted"]
-    assert repo.latest_setpoints().deep_bias_f == base.deep_bias_f
+    assert repo.latest_setpoints().neutral_f == base.neutral_f
 
 
 def test_a_manual_experiment_is_left_alone(repo):
@@ -196,3 +196,10 @@ def test_a_night_off_on_two_signals_is_flagged_and_left_out_of_experiments(repo)
     assert f["2026-11-01"] is None and f["2026-11-10"] == 0 and f["2026-11-11"] == 1
     vals, _ = ex._measured(repo, "deep_min", ["2026-11-10", "2026-11-11"])
     assert set(vals) == {"2026-11-10"}
+
+
+
+def test_the_program_runs_best_evidence_first_and_says_why():
+    assert [e["key"] for e in ae.PROGRAM][0] == "cooler_base"
+    assert all(e.get("evidence") for e in ae.PROGRAM)
+    assert "warmer_base" not in [e["key"] for e in ae.PROGRAM]

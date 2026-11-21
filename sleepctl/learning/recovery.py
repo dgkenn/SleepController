@@ -12,10 +12,9 @@ controller) are the independent judge. This module turns them into:
   physiology from Apple Health (lowest sustained heart rate, mean HRV (SDNN), resting heart rate,
   mean sleeping breathing rate, mean blood oxygen);
 * ``recovery_score`` -- one number per night, 50 = your usual, +10 per typical-spread better:
-  the mean of robust z-scores against your own previous nights (median / MAD, up to 30), weighted
-  half physiology (HRV up, overnight HR down, sleeping breathing rate down) and half architecture
-  (deep and REM up, WASO down, efficiency up). Needs :data:`MIN_HISTORY` earlier nights before it
-  scores at all;
+  the weighted mean of robust z-scores against your own previous nights (median / MAD, up to 30),
+  weighted toward what thermal trials moved and what is measured best (:data:`COMPONENTS`).
+  Needs :data:`MIN_HISTORY` earlier nights before it scores at all;
 * :func:`regrade_steer_events` -- re-labels each resolved deepen / REM nudge with whether Apple
   saw the target stage in its response window, so the learners judge the maneuver by an outside
   measurement when one exists.
@@ -38,13 +37,18 @@ HISTORY_N = 30
 MIN_SLEEP_MIN = 120.0      # a "night" with less sleep than this is not scored
 AWAKE_EVENT_MIN = 1.0      # an awake segment at least this long, after onset, is an awakening
 #: component: (column, +1 if higher is better, weight)
-#: Physiology half: HRV up, overnight heart rate down, overnight breathing rate down (a raised
-#: sleeping breathing rate against your own baseline is one of the earliest strain / illness
-#: signs a watch sees). Architecture half: deep and REM up, WASO down, efficiency up.
+#: Weights follow the evidence (docs/ALGORITHM_RESEARCH.md). Most weight goes to what randomized
+#: PSG trials of bed cooling actually moved -- deep sleep and overnight heart rate (Herberger
+#: 2024: N3 +7.5 min, HR -2.4 bpm) -- and overnight heart rate is also the most accurately
+#: measured of these (wrist PPG heart rate is reliable at rest; Apple's deep-sleep minutes carry
+#: a known bias and kappa ~0.53, but the bias cancels in a within-person comparison). Vagal HRV
+#: is a validated recovery marker with smaller effects in trials. WASO and efficiency are
+#: standard sleep-quality endpoints. REM and breathing rate get little weight: no thermal trial
+#: moved REM, and breathing rate is an illness signal, handled by the strain flag.
 COMPONENTS = (
-    ("hrv_mean", +1, 0.25), ("hr_min", -1, 0.15), ("resp_mean", -1, 0.10),
-    ("deep_min", +1, 0.20), ("rem_min", +1, 0.10), ("waso_min", -1, 0.10),
-    ("sleep_efficiency", +1, 0.10),
+    ("hr_min", -1, 0.25), ("deep_min", +1, 0.25), ("hrv_mean", +1, 0.20),
+    ("waso_min", -1, 0.10), ("sleep_efficiency", +1, 0.10),
+    ("rem_min", +1, 0.05), ("resp_mean", -1, 0.05),
 )
 METRICS = ("deep_min", "rem_min", "light_min", "total_sleep_min", "sleep_efficiency",
            "waso_min", "wake_events", "hr_min", "hrv_mean", "resting_hr", "resp_mean",

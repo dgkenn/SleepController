@@ -23,9 +23,10 @@ matrices and the night's true stages are estimated together by EM over every nig
 * the fitted matrices ARE the reverse-engineered fingerprint of each algorithm's habits, kept in
   the report as the start of the "learn their algorithms" work.
 
-The label our stager is calibrated against is the posterior from **Apple, Bevel and OpenVitals
-only** (OpenVitals: ``sleepctl.ml.openvitals``, a PSG-trained whole-night heart-rate model, run
-each morning when onnxruntime is installed): letting our own vote pull the label toward our own
+The label our stager is calibrated against is the posterior from **Apple and Bevel, plus
+OpenVitals once it has earned a vote** (``sleepctl.ml.openvitals``, a whole-night heart-rate model
+whose accuracy is its author's unreviewed benchmark: it votes only after agreeing with Apple --
+the independently PSG-validated rater -- at kappa >= 0.4 over 3+ of this sleeper's nights): letting our own vote pull the label toward our own
 output would teach the stager nothing. Ours does not even inform the others' confusion matrices (they are fitted from the references alone);
 its own matrix is measured against the reference posterior, for the report. An epoch becomes a training label only at posterior
 >= :data:`CONF_MIN`; below that it abstains. "Asleep (unspecified)" and "in bed" are not stages
@@ -405,11 +406,19 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
     # ALONE. Fitting them with our stager's votes in the EM let it shape (through Apple's learned
     # confusion) the very labels it is then calibrated against. Our stager's own matrix is then
     # measured against that posterior, for the report only.
-    ref_obs = [{s: l for s, l in o.items() if s in REFERENCES} for o in obs_all]
+    # OpenVitals votes only once it has EARNED it on this sleeper's nights: its accuracy figures
+    # are its author's own benchmark, not peer-reviewed, whereas Apple's stages have independent
+    # PSG validations. So it must agree with Apple at kappa >= OV_MIN_KAPPA over at least
+    # OV_MIN_NIGHTS nights first; until then it is reported, not counted.
+    refs = set(REFERENCES)
+    ov_gate = _openvitals_gate(assembled)
+    if not ov_gate["votes"]:
+        refs.discard("openvitals")
+    ref_obs = [{s: l for s, l in o.items() if s in refs} for o in obs_all]
     conf, prior, ref_post = dawid_skene(ref_obs)
     conf = dict(conf)
     for src in SOURCES:
-        if src in REFERENCES:
+        if src in refs:
             continue
         counts = _prior_matrix(src)
         seen = False
@@ -471,8 +480,28 @@ def build(conn, nights: Optional[Sequence[Tuple[str, float, float]]] = None,
     report["confusion"] = {s: [[round(v, 3) for v in r] for r in m] for s, m in conf.items()}
     report["class_prior"] = [round(v, 3) for v in prior]
     report["n_nights"] = sum(1 for e in report["nights"] if e["labelled"] >= MIN_REF_EPOCHS)
+    report["openvitals_gate"] = ov_gate
     _save_report(conn, report)
     return report
+
+
+OV_MIN_NIGHTS = 3
+OV_MIN_KAPPA = 0.4
+
+
+def _openvitals_gate(assembled: Sequence[dict]) -> dict:
+    nights, a_all, o_all = 0, [], []
+    for a in assembled:
+        pairs = [(x, y) for x, y in zip(a["labels"]["apple"], a["labels"]["openvitals"])
+                 if x in _IDX and y in _IDX]
+        if len(pairs) >= MIN_REF_EPOCHS:
+            nights += 1
+            a_all += [x for x, _ in pairs]
+            o_all += [y for _, y in pairs]
+    kap = cohen_kappa(a_all, o_all) if a_all else None
+    votes = nights >= OV_MIN_NIGHTS and kap is not None and kap >= OV_MIN_KAPPA
+    return {"nights": nights, "kappa_vs_apple": None if kap is None else round(kap, 3),
+            "votes": bool(votes), "needs": f"{OV_MIN_NIGHTS} nights at kappa >= {OV_MIN_KAPPA}"}
 
 
 def consensus_epochs(conn, night_date: str) -> List[Tuple[float, float, str]]:
