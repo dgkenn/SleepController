@@ -1377,3 +1377,36 @@ def test_heart_rate_comes_from_the_accepted_beat_intervals_when_there_are_enough
     ])
     assert ok is True and posted
     assert posted[0]["hr"] == round(60000.0 / 1020.0, 1)   # upper median of four accepted beats
+
+
+# ------------------------------------- Apple Watch via a heart-rate broadcaster app (2026-11-21)
+class _Dev:
+    def __init__(self, name, address):
+        self.name, self.address = name, address
+        self.metadata = {}
+
+
+def _scanner_of(*devices):
+    class _Scanner:
+        @staticmethod
+        async def discover(timeout=10.0):
+            return list(devices)
+    return _Scanner
+
+
+def test_a_watch_heart_rate_broadcaster_is_found(tmp_path, monkeypatch):
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+    got = asyncio.run(fwd._discover(_scanner_of(_Dev("Speaker", "01:01:01:01:01:01"),
+                                                _Dev("HeartBLE", "02:02:02:02:02:02")), None))
+    assert got == "02:02:02:02:02:02"
+
+
+def test_a_worn_polar_band_still_wins_over_the_watch(tmp_path, monkeypatch):
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+    got = asyncio.run(fwd._discover(_scanner_of(_Dev("Apple Watch", "02:02:02:02:02:02"),
+                                                _Dev("Polar Sense 1A2B", "03:03:03:03:03:03")), None))
+    assert got == "03:03:03:03:03:03"

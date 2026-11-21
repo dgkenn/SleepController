@@ -87,6 +87,11 @@ BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
 _BATTERY_WARN_PCT = 40
 # Names we'll auto-match when scanning (case-insensitive substring).
 _NAME_HINTS = ("polar", "verity", "sense", "h10", "oh1")
+# An Apple Watch has no Bluetooth heart-rate output of its own; a broadcaster app on it (HeartBLE,
+# Echo, ...) or on the iPhone (HRM) re-advertises its heart rate as a standard 0x180D strap. Tried
+# after the Polar names, so a worn Verity still wins; the 0x180D fallback below catches any
+# broadcaster whose name is not listed here.
+_WATCH_HINTS = ("heartble", "echo", "apple watch", "watch", "hrm", "heart rate")
 
 
 def _repo_root() -> Path:
@@ -744,7 +749,7 @@ async def _discover(BleakScanner, address_hint: str | None):
     # 20s, not 10. Advertising intervals are long, Windows' scanner is bursty, and a band that a
     # phone keeps grabbing only surfaces in SOME windows -- a short scan turns an intermittently
     # visible device into a permanently invisible one.
-    _log("scanning for a Polar/BLE heart-rate sensor (20s)...")
+    _log("scanning for a Polar/BLE heart-rate sensor or a watch heart-rate broadcaster (20s)...")
     # Signal strength at discovery is the one number that says whether the radio is placed
     # well: a link that drops mid-night at -90 dBm is a placement problem, at -60 dBm it is not.
     rssi: dict = {}
@@ -759,13 +764,14 @@ async def _discover(BleakScanner, address_hint: str | None):
                 pass
     except TypeError:                     # older bleak without return_adv
         devices = await BleakScanner.discover(timeout=20.0)
-    for d in devices:
-        name = (d.name or "").lower()
-        if any(h in name for h in _NAME_HINTS):
-            _log(f"found '{d.name}' at {d.address}"
-                 + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
-            _STATS["last_rssi"] = rssi.get(d.address)
-            return d.address
+    for hints in (_NAME_HINTS, _WATCH_HINTS):
+        for d in devices:
+            name = (d.name or "").lower()
+            if any(h in name for h in hints):
+                _log(f"found '{d.name}' at {d.address}"
+                     + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
+                _STATS["last_rssi"] = rssi.get(d.address)
+                return d.address
     # Fall back to any device advertising the HR service, if the backend exposes it.
     for d in devices:
         if any("180d" in u for u in _adv_uuids(d)):

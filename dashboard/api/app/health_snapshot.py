@@ -239,6 +239,15 @@ def _lan_url(run_dir: str | None) -> str | None:
         return None
 
 
+def _apple_health_block(repo) -> dict:
+    """Apple Watch uploads: counts and times only, never a value (the branch is public)."""
+    try:
+        from app import apple_health
+        return apple_health.summary(repo.conn)
+    except Exception as exc:
+        return {"error": type(exc).__name__}
+
+
 def _public_funnel_url(run_dir: str | None) -> str | None:
     """The Funnel URL as the PUBLIC snapshot may carry it: only while the dashboard login is on.
 
@@ -333,6 +342,7 @@ def build_health_snapshot(repo, run_dir: str | None = None, now: datetime | None
         "controller": _controller_block(repo),
         "wake_light": _wake_light_block(repo),
         "phone_alarm": _phone_alarm_block(repo),
+        "apple_health": _apple_health_block(repo),
         "dreamt": _dreamt_block(_resolve_run_dir(run_dir)),
         "mesa": _mesa_block(_resolve_run_dir(run_dir)),
     }

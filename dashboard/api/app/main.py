@@ -575,6 +575,24 @@ def hr_ingest(body: HRBody, request: Request, token: str | None = None,
     return services.ingest_hr(repo, payload)
 
 
+@app.post("/apple/health")
+def apple_health_ingest(request: Request, payload: dict = Body(...), token: str | None = None,
+                        repo=Depends(repo_dep)):
+    """Apple Watch data from the iPhone: point Health Auto Export's REST API automation here
+    (``POST <dashboard>/api/apple/health``, JSON format). Heart rate, HRV, respiratory rate,
+    SpO2, wrist temperature and Apple's sleep stages are stored on the box only."""
+    _bcg_auth(request, token)
+    from app import apple_health
+    return apple_health.ingest(repo.conn, payload)
+
+
+@app.get("/apple/health/summary")
+def apple_health_summary(request: Request, token: str | None = None, repo=Depends(repo_dep)):
+    _bcg_auth(request, token)
+    from app import apple_health
+    return apple_health.summary(repo.conn)
+
+
 @app.get("/admin/tailscale-login")
 def admin_tailscale_login(request: Request):
     """The pending Tailscale login URL, if remote access needs a browser re-attach.

@@ -190,6 +190,25 @@ CREATE TABLE IF NOT EXISTS actigraphy (
     source TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_actigraphy_ts ON actigraphy(ts);
+-- Apple Watch data pushed from the iPhone by Health Auto Export (app/apple_health.py). The app
+-- re-sends overlapping windows, so both tables are keyed for idempotent upserts. Kept on the box
+-- only: none of it goes into the public health snapshot or the night exports.
+CREATE TABLE IF NOT EXISTS apple_health (
+    ts TEXT NOT NULL,          -- ISO-8601 with offset, as the phone stamped it
+    metric TEXT NOT NULL,      -- heart_rate, heart_rate_variability, respiratory_rate, ...
+    value REAL,                -- the point value (avg when the export is aggregated)
+    extra TEXT,                -- JSON: min/max/units/source when present
+    received TEXT NOT NULL,
+    PRIMARY KEY (ts, metric)
+);
+CREATE TABLE IF NOT EXISTS apple_sleep (
+    start TEXT NOT NULL,
+    end TEXT NOT NULL,
+    stage TEXT NOT NULL,       -- core / deep / rem / awake / asleep / in_bed
+    source TEXT,
+    received TEXT NOT NULL,
+    PRIMARY KEY (start, end, stage)
+);
 CREATE INDEX IF NOT EXISTS idx_commands_status ON commands(status);
 CREATE INDEX IF NOT EXISTS idx_notes_date ON notes(date);
 CREATE INDEX IF NOT EXISTS idx_alerts_ack ON alerts(acknowledged);

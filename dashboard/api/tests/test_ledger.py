@@ -22,7 +22,10 @@ def test_ledger_shape(auth_client):
         for key in ("name", "phase", "value", "unit", "source", "maturity", "confidence", "note"):
             assert key in e
         assert e["phase"] in ("onset", "maintenance", "wake", "thermal")
-        assert e["source"] in ("preset", "learned", "measured")
+        # "reach_time": the lead time read off the thermal model's measured reach times
+        # (sleepctl/learning/lead_time.py). It appears once the shared test DB holds enough
+        # thermal samples from other tests, so whether it shows up depended on test order.
+        assert e["source"] in ("preset", "learned", "measured", "reach_time")
         assert 0.0 <= e["confidence"] <= 1.0
 
     for w in body["contradictions"]:
