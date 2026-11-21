@@ -53,11 +53,13 @@ def test_sleep_samples_as_newline_text(auth_client, monkeypatch, eastern):
     assert tuple(row) == ("2026-11-20T04:40:00+00:00", "rem", "Dean’s Apple Watch")
 
 
-def test_heart_rate_values_with_units(auth_client):
+def test_heart_rate_values_with_units(auth_client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(apple_health, "kick_consensus", lambda force=False: calls.append(force) or "started")
     body = {"kind": "heart_rate", "start": "2026-11-21T03:00:00-05:00\n2026-11-21T03:05:00-05:00",
             "value": "56 count/min\n54", "source": "Apple Watch"}
     out = auth_client.post("/apple/shortcut", json=body).json()
-    assert out["stored"] == 2
+    assert out["stored"] == 2 and calls == [True]     # reruns the comparison straight away
 
 
 def test_an_unreadable_upload_says_what_it_saw(auth_client):
@@ -91,4 +93,4 @@ def test_skips_are_explained_per_reason_and_source(auth_client, monkeypatch):
     assert out["stored"] == 1 and out["skipped"] == 2
     assert out["skipped_because"] == {"unknown sleep value 'Snoring'": 1,
                                       "unreadable start date 'soon'": 1}
-    assert out["by_source"] == {"Apple Watch": [1, 0], "Bevel": [0, 2]}
+    assert list(out["by_source"].items()) == [("Apple Watch", [1, 0]), ("Bevel", [0, 2])]

@@ -404,7 +404,8 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
     if skipped:
         out["skipped_because"] = reasons
     # per writing app: [stored, skipped] -- shows at a glance whether Bevel's stages came through
-    out["by_source"] = {k[:40]: v for k, v in list(by_source.items())[:10]}
+    ranked = sorted(by_source.items(), key=lambda kv: (-kv[1][0], -kv[1][1]))
+    out["by_source"] = {k[:40]: v for k, v in ranked[:10]}   # apps that stored anything first
     if note:
         out["note"] = note
     if skipped and not stored:
@@ -412,4 +413,9 @@ def ingest_shortcut(conn: sqlite3.Connection, payload: dict) -> dict:
                                "value": str(values[0])[:30] if values else None}
     if stored and kind in ("sleep", "sleep_analysis"):
         out["consensus"] = kick_consensus()
+    elif stored:
+        # heart rate completes the picture for nights with no live feed (the replay stages them
+        # from it), and it is normally sent straight after the sleep samples -- so rerun now
+        # rather than wait out the sleep upload's rerun window
+        out["consensus"] = kick_consensus(force=True)
     return out
