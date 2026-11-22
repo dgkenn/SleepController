@@ -217,6 +217,42 @@ def _ingest_sleep_point(conn, p: dict, received: str) -> tuple[int, int]:
     return 0, n
 
 
+_ATTEMPTS_DDL = ("CREATE TABLE IF NOT EXISTS apple_ingest_attempts (at TEXT, path TEXT, kind TEXT, "
+                 "ok INTEGER, stored INTEGER, skipped INTEGER, error TEXT)")
+
+
+def record_attempt(conn: sqlite3.Connection, path: str, result: Optional[dict],
+                   error: Optional[str] = None) -> None:
+    """Every upload that reaches the box, kept or not, so "nothing arrived" can be told apart from
+    "it arrived and was rejected". Counts and a short reason only -- never values."""
+    try:
+        r = result or {}
+        st = r.get("stored")
+        if isinstance(st, dict):
+            st = sum(v for v in st.values() if isinstance(v, int)) + int(r.get("sleep_segments") or 0)
+        conn.execute(_ATTEMPTS_DDL)
+        conn.execute("INSERT INTO apple_ingest_attempts VALUES (?,?,?,?,?,?,?)",
+                     (_now(), path, str(r.get("kind") or "")[:30], int(bool(r.get("ok"))),
+                      int(st or 0), int(r.get("skipped") or 0),
+                      (error or r.get("error") or "")[:120] or None))
+        conn.execute("DELETE FROM apple_ingest_attempts WHERE at < ?",
+                     ((datetime.now(timezone.utc) - timedelta(days=30)).isoformat(),))
+        conn.commit()
+    except Exception:
+        pass
+
+
+def recent_attempts(conn: sqlite3.Connection, n: int = 5) -> list:
+    try:
+        conn.execute(_ATTEMPTS_DDL)
+        rows = conn.execute("SELECT at, path, kind, ok, stored, skipped, error FROM "
+                            "apple_ingest_attempts ORDER BY rowid DESC LIMIT ?", (n,)).fetchall()
+    except sqlite3.Error:
+        return []
+    return [{"at": r[0], "path": r[1], "kind": r[2], "ok": bool(r[3]), "stored": r[4],
+             "skipped": r[5], "error": r[6]} for r in rows]
+
+
 def summary(conn: sqlite3.Connection, days: int = 7) -> dict:
     """Counts and times only -- safe for the public health snapshot (no values)."""
     try:
@@ -235,7 +271,9 @@ def summary(conn: sqlite3.Connection, days: int = 7) -> dict:
     return {"last_received": last, "points_7d": {m: n for m, n in rows},
             "sleep_segments_7d": segs[0] or 0, "sleep_nights_7d": segs[1] or 0,
             # which apps' stages are arriving, by kind only (the raw name carries a device name)
-            "sleep_sources_7d": _source_kinds(srcs)}
+            "sleep_sources_7d": _source_kinds(srcs),
+            # every upload that reached the box, including rejected ones (counts only)
+            "recent_uploads": recent_attempts(conn)}
 
 
 def _source_kinds(rows) -> dict:

@@ -72,7 +72,7 @@ def test_the_health_snapshot_carries_counts_but_no_values(auth_client):
     # rate 55 is not checked as a substring, since a timestamp can contain it)
     assert "61.5" not in json.dumps(block)
     assert set(block) == {"last_received", "points_7d", "sleep_segments_7d", "sleep_nights_7d",
-                          "sleep_sources_7d"}
+                          "sleep_sources_7d", "recent_uploads"}
     assert all(isinstance(v, int) for v in block["points_7d"].values())
 
 

@@ -115,3 +115,18 @@ def test_the_other_overnight_measurements(auth_client, monkeypatch, kind, value,
     got = get_repo().conn.execute("SELECT value FROM apple_health WHERE metric = ? AND ts = ?",
                                   (metric, "2026-11-21T08:00:00+00:00")).fetchone()[0]
     assert got == pytest.approx(stored_value)
+
+
+def test_every_upload_is_recorded_even_when_nothing_is_kept(auth_client):
+    from app import apple_health
+    from app.db import get_repo
+    auth_client.post("/apple/shortcut", json={"kind": "sleep", "start": ["garbage"], "end": ["x"],
+                                     "value": ["Core"]})
+    repo = get_repo()
+    try:
+        last = apple_health.recent_attempts(repo.conn, 1)[0]
+        assert last["path"] == "/apple/shortcut" and last["ok"] is False
+        assert last["stored"] == 0 and last["skipped"] == 1
+        assert "recent_uploads" in apple_health.summary(repo.conn)
+    finally:
+        repo.close()

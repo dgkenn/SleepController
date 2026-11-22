@@ -627,7 +627,13 @@ def apple_health_ingest(request: Request, payload: dict = Body(...), token: str 
     SpO2, wrist temperature and Apple's sleep stages are stored on the box only."""
     _bcg_auth(request, token)
     from app import apple_health
-    return apple_health.ingest(repo.conn, payload)
+    try:
+        out = apple_health.ingest(repo.conn, payload)
+    except Exception as exc:
+        apple_health.record_attempt(repo.conn, "/apple/health", None, type(exc).__name__)
+        raise
+    apple_health.record_attempt(repo.conn, "/apple/health", out)
+    return out
 
 
 @app.get("/staging/consensus")
@@ -656,7 +662,13 @@ def apple_shortcut_ingest(request: Request, payload: dict = Body(...), token: st
     newline-joined text. See app/apple_health.py and docs/APPLE_WATCH.md."""
     _bcg_auth(request, token)
     from app import apple_health
-    return apple_health.ingest_shortcut(repo.conn, payload)
+    try:
+        out = apple_health.ingest_shortcut(repo.conn, payload)
+    except Exception as exc:
+        apple_health.record_attempt(repo.conn, "/apple/shortcut", None, type(exc).__name__)
+        raise
+    apple_health.record_attempt(repo.conn, "/apple/shortcut", out)
+    return out
 
 
 @app.get("/apple/health/summary")
