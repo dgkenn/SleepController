@@ -1436,3 +1436,20 @@ def test_an_unnamed_broadcaster_is_found_by_its_advertised_heart_rate_service(tm
                           _Adv(["0000180d-0000-1000-8000-00805f9b34fb"]))}
 
     assert asyncio.run(fwd._discover(_Scanner, None)) == "02:02:02:02:02:02"
+
+
+def test_a_watch_broadcaster_is_tagged_as_a_watch_not_the_band():
+    fwd = _fwd()
+    assert fwd._source_for("watch", "verity") == "apple_watch_ble"
+    assert fwd._source_for("hr_service", "verity") == "ble_hr"
+    assert fwd._source_for("polar", "verity") == "verity"
+    assert fwd._source_for("polar", "apple_watch_ble") == "verity"    # back to the band
+    assert fwd._source_for("watch", "bedside_pi") == "bedside_pi"     # explicit --source wins
+
+
+def test_discovery_records_what_kind_of_device_it_found(tmp_path, monkeypatch):
+    import asyncio
+    fwd = _fwd()
+    monkeypatch.setattr(fwd, "_repo_root", lambda: tmp_path)
+    asyncio.run(fwd._discover(_scanner_of(_Dev("HeartBLE", "02:02:02:02:02:02")), None))
+    assert fwd._STATS["matched_kind"] == "watch"

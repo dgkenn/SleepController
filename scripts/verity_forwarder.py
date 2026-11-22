@@ -94,6 +94,19 @@ _NAME_HINTS = ("polar", "verity", "sense", "h10", "oh1")
 _WATCH_HINTS = ("heartble", "echo", "apple watch", "watch", "hrm", "heart rate")
 
 
+_DEFAULT_SOURCE = "verity"
+
+
+def _source_for(matched_kind, current: str) -> str:
+    if current != _DEFAULT_SOURCE and current not in ("apple_watch_ble", "ble_hr"):
+        return current                       # set explicitly on the command line
+    if matched_kind == "watch":
+        return "apple_watch_ble"
+    if matched_kind == "hr_service":
+        return "ble_hr"
+    return _DEFAULT_SOURCE
+
+
 def _repo_root() -> Path:
     here = Path(__file__).resolve().parent.parent
     return here
@@ -780,6 +793,7 @@ async def _discover(BleakScanner, address_hint: str | None):
         for d in devices:
             name = (d.name or getattr(advs.get(d.address), "local_name", None) or "").lower()
             if any(h in name for h in hints):
+                _STATS["matched_kind"] = "polar" if hints is _NAME_HINTS else "watch"
                 _log(f"found '{d.name}' at {d.address}"
                      + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
                 _STATS["last_rssi"] = rssi.get(d.address)
@@ -787,6 +801,7 @@ async def _discover(BleakScanner, address_hint: str | None):
     # Fall back to any device advertising the HR service, if the backend exposes it.
     for d in devices:
         if any("180d" in u for u in _adv_uuids(d, advs.get(d.address))):
+            _STATS["matched_kind"] = "hr_service"
             _log(f"found HR-service device '{d.name}' at {d.address}"
                  + (f" (rssi {rssi[d.address]} dBm)" if d.address in rssi else ""))
             _STATS["last_rssi"] = rssi.get(d.address)
@@ -1627,11 +1642,17 @@ async def _connect_and_stream(args, env) -> None:
 
     _STATS["via_last_resort"] = False
     _STATS["session_opened"] = False
+    _STATS["matched_kind"] = None
     address = await _discover(BleakScanner, args.address)
     if not address:
         _log("no Polar/HR sensor found this scan; will retry")
         await asyncio.sleep(args.retry_seconds)
         return
+    # A watch heart-rate broadcaster (HeartBLE, HeartCast, ...) is tagged as such rather than as
+    # the Polar band: it sends heart rate only, and the data-quality score must not dock it for
+    # beat intervals and breathing it can never send (data_quality.SOURCE_VITALS). Only the
+    # default tag is replaced; an explicit --source wins.
+    args.source = _source_for(_STATS.get("matched_kind"), args.source)
 
     _log(f"connecting to {address} ...")
     # Distinguish "the band is not here" from "the band is here but the connect is being
@@ -1882,7 +1903,7 @@ def main(argv=None) -> int:
     p.add_argument("--scan", action="store_true",
                    help="list nearby Polar/heart-rate sensors and exit (no connection, no stream)")
     p.add_argument("--scan-seconds", type=float, default=10.0, help="--scan duration")
-    p.add_argument("--source", default="verity", help="source tag stored with the samples")
+    p.add_argument("--source", default=_DEFAULT_SOURCE, help="source tag stored with the samples")
     p.add_argument("--batch-seconds", type=float, default=2.0, help="POST cadence")
     p.add_argument("--retry-seconds", type=float, default=10.0, help="reconnect backoff")
     p.add_argument("--connect-timeout", type=float, default=20.0,

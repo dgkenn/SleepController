@@ -44,7 +44,9 @@ class DataQuality:
 #: Vitals each heart-rate source can deliver at all. A source not listed is assumed to provide
 #: all three (the original behaviour).
 SOURCE_VITALS = {
-    "apple_watch": frozenset({"heart_rate"}),
+    "apple_watch": frozenset({"heart_rate"}),        # Health Data Server over Wi-Fi
+    "apple_watch_ble": frozenset({"heart_rate"}),    # a watch broadcaster app over Bluetooth
+    "ble_hr": frozenset({"heart_rate"}),             # an unnamed 0x180D broadcaster
 }
 
 

@@ -295,3 +295,9 @@ def test_fusion_carries_the_heart_rate_source_onto_the_frame():
     fuse_sample(f, WearableSample(timestamp=now, heart_rate=55.0, age_seconds=3.0,
                                   hr_source="apple_watch"))
     assert f.heart_rate == 55.0 and f.hr_source == "apple_watch"
+
+
+def test_a_watch_over_bluetooth_is_hr_only_too():
+    now = datetime(2026, 11, 22, 2, 0)
+    f = _good_frame(now, hrv=None, respiratory_rate=None, hr_source="apple_watch_ble")
+    assert "missing_vitals" not in " ".join(assess_data_quality(f, AppConfig.default()).reasons)

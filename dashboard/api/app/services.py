@@ -2255,7 +2255,7 @@ def wearable_pipeline(repo, run_dir: str | None = None) -> dict:
             checks.append(("stager_hr", used["hr_history_n"] > 0,
                            f"stager received {used['hr_history_n']} dense HR samples"
                            if used["hr_history_n"] else "HR is landing but the stager got none"))
-            checks.append(("fusion_hr", used["hr_source"] in ("cardiac", "verity", "wearable"),
+            checks.append(("fusion_hr", used["hr_source"] not in (None, "phone"),
                            f"controller HR source: {used['hr_source']}"))
         if acc_ok:
             checks.append(("wake_detector_acc", used["activity_units"] == "counts",
