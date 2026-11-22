@@ -1595,8 +1595,31 @@ class LiveDashboardDaemon:
                 auto_wake = _svc.calendar_effective_wake(self.repo)
                 if auto_wake is not None:
                     self.context.required_wake_time = auto_wake
+                else:
+                    self._arm_usual_wake()
             except Exception as exc:
                 self._skip("calendar auto-wake", exc)
+
+    def _arm_usual_wake(self) -> None:
+        """No alarm from the phone, the dashboard or the calendar by evening: arm the time you
+        usually wake on mornings like tomorrow (learning.habitual_wake), WITHOUT vibration -- the
+        bed warms toward it, it never buzzes on a guess. Once per evening; any real alarm that
+        arrives later replaces it through the normal set_wake path."""
+        now = datetime.now()
+        if not (now.hour >= 20 or now.hour < 3):
+            return
+        morning = (now + timedelta(days=1)).date() if now.hour >= 20 else now.date()
+        if getattr(self, "_usual_wake_for", None) == morning:
+            return
+        self._usual_wake_for = morning
+        from sleepctl.learning.habitual_wake import usual_wake
+        hhmm = usual_wake(self.repo.conn, morning, now)
+        if hhmm is None:
+            return
+        bridge.enqueue_command(self.repo.conn, "set_wake",
+                               {"wake_time": hhmm, "vibration_power": 0, "source": "usual"})
+        self._log(f"no alarm set: arming your usual {hhmm} wake for {morning} "
+                  "(warm-up only, no vibration)")
 
     def _safe_device_status(self) -> dict:
         fn = getattr(self.client, "device_status", None)
