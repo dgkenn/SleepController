@@ -1621,6 +1621,40 @@ class LiveDashboardDaemon:
         self._log(f"no alarm set: arming your usual {hhmm} wake for {morning} "
                   "(warm-up only, no vibration)")
 
+    _DIP_LEVELS = 8          # device level this far below the bed's own target = a dip
+
+    def _watch_level_dips(self, frame, now) -> None:
+        """Log when the bed's level falls well below the bed's own target, and what the Pod said.
+
+        The Pod's level was seen several times a day running down ~1 level a minute to cold and
+        snapping back, with the target unchanged and no one touching it. These lines record
+        whether the side was switched off, priming, or under the app's schedule at the time, so
+        the cause can be told from the log. Levels and device flags only -- nothing biometric."""
+        try:
+            level = getattr(frame, "device_level", None)
+            target = getattr(frame, "target_level", None)
+            open_dip = getattr(self, "_level_dip", None)
+            dipped = (isinstance(level, (int, float)) and isinstance(target, (int, float))
+                      and level <= target - self._DIP_LEVELS)
+            if dipped and open_dip is None:
+                st = self._safe_device_status()
+                sched = st.get("external_schedule") or {}
+                self._level_dip = {"at": now, "low": int(level)}
+                self._log(f"bed level dip: level {int(level)} vs the bed's target {int(target)} "
+                          f"-- side_on={st.get('side_on')} priming={st.get('priming')} "
+                          f"schedule={sched.get('activity')}/{sched.get('target_level')} "
+                          f"session={'yes' if self._session_running() else 'no'}")
+            elif dipped:
+                open_dip["low"] = min(open_dip["low"], int(level))
+            elif open_dip is not None:
+                mins = (now - open_dip["at"]).total_seconds() / 60.0
+                st = self._safe_device_status()
+                self._level_dip = None
+                self._log(f"bed level dip over after {mins:.0f} min (lowest {open_dip['low']}) "
+                          f"-- side_on={st.get('side_on')} priming={st.get('priming')}")
+        except Exception as exc:
+            self._skip("level dip watch", exc)
+
     def _safe_device_status(self) -> dict:
         fn = getattr(self.client, "device_status", None)
         try:
@@ -2743,6 +2777,7 @@ class LiveDashboardDaemon:
         frame = self._read_frame()
         now = self.client.now()
         self._record_thermal(frame, now)
+        self._watch_level_dips(frame, now)
         self._log_sensor_inventory()
         # Bedroom temperature from the Pod's settled water: recorded on tonight's context (the
         # learners' ambient covariate), never fed to the control law.

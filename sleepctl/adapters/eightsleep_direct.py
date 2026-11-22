@@ -767,6 +767,7 @@ class EightSleepDirectClient:
             "device_target_level": target,
             "now_heating": bool(now_active) and target is not None and target > 0,
             "now_cooling": bool(now_active) and target is not None and target < 0,
+            "side_on": now_active if isinstance(now_active, bool) else None,
             "external_schedule": {
                 "activity": kelvin.get("currentActivity"),
                 "target_level": kelvin.get("currentTargetLevel"),
